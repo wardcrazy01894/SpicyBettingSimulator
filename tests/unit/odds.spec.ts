@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MIN_STAKE_CENTS } from '../../src/shared/constants.js';
 import {
   EVEN_MONEY_UNIT,
   MAX_PAYOUT_CENTS,
