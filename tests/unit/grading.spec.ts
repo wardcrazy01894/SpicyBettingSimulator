@@ -582,6 +582,31 @@ describe('gradeBet — the §7.3 truth table, exhaustively', () => {
     expect(settled.pendingReason).toBeUndefined();
   });
 
+  it('pendingReason names the FIRST pending leg and each blocking cause', () => {
+    const multi = betFor(['pending', 'win', 'pending']);
+    expect(gradeBet(1000, multi.legs, multi.games).pendingReason).toMatch(/^leg 0: /);
+
+    const missing = betFor(['win', 'win']);
+    const games = new Map(missing.games);
+    const g1 = missing.legs[1]?.gameId ?? '';
+    games.delete(g1);
+    expect(gradeBet(1000, missing.legs, games).pendingReason).toBe(`leg 1: game ${g1} not found`);
+
+    const unusable = betFor(['win']);
+    const g0 = unusable.legs[0]?.gameId ?? '';
+    const broken = new Map(unusable.games);
+    broken.set(g0, { status: 'final', homeScore: null, awayScore: 24 });
+    expect(gradeBet(1000, unusable.legs, broken).pendingReason).toBe(
+      `leg 0: game ${g0} is final but its score is unusable`,
+    );
+
+    const malformed = betFor(['win']);
+    const badLeg = { ...malformed.legs[0]!, side: 'over' as const };
+    expect(gradeBet(1000, [badLeg], malformed.games).pendingReason).toBe(
+      `leg 0: malformed leg (${badLeg.market}/over, line ${String(badLeg.lineTenths)})`,
+    );
+  });
+
   it('a loss with pending legs is PENDING, not lost — pending is checked first', () => {
     // PLAN §7.3 orders the checks `pending` THEN `loss`, and §7.1 never even
     // selects a bet whose games are not all final/canceled. So an already-dead

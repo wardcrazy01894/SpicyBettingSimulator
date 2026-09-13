@@ -272,11 +272,10 @@ export function gradeBet(
 
   // 1. Pending beats everything, INCLUDING a loss. See note 1 in the header.
   //    Decided before any price derivation so this path can never throw.
-  const firstPending = grades.findIndex((g) => g === 'pending');
-  if (firstPending >= 0) {
-    const leg = legs[firstPending];
-    if (leg === undefined) throw new AppError('INTERNAL', 'leg index out of range');
-    return pendingOutcome(pendingReasonFor(firstPending, leg, games.get(leg.gameId)));
+  for (const [legIndex, leg] of legs.entries()) {
+    if (grades[legIndex] === 'pending') {
+      return pendingOutcome(pendingReasonFor(legIndex, leg, games.get(leg.gameId)));
+    }
   }
 
   const graded: GradedLeg[] = legs.map((leg, legIndex) => ({
