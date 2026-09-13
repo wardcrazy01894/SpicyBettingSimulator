@@ -82,6 +82,9 @@ export function isOrphanBankrollError(err: unknown): boolean {
  * True when the thrown value is a UNIQUE violation on the given index. Used to
  * recognise "this bet was already paid" without a read (PLAN.md §7.4).
  */
+// `hint` is matched as a plain substring of the SQLite message (e.g.
+// 'ledger.bankroll_id, ledger.kind, ledger.ref_id'); pass enough of the index's
+// column list to be unambiguous, not just one column name.
 export function isUniqueViolation(err: unknown, hint?: string): boolean {
   if (!thrownMentions(err, DB_MESSAGES.uniqueViolation)) return false;
   return hint === undefined ? true : thrownMentions(err, [hint]);

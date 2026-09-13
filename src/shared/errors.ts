@@ -140,8 +140,6 @@ export function fromThrown(value: unknown): AppError {
 export const DB_MESSAGES = {
   insufficientFunds: ['ledger: insufficient funds', 'CHECK constraint failed: balance_cents >= 0'],
   unknownBankroll: ['ledger: unknown bankroll_id'],
-  ledgerAppendOnly: ['ledger is append-only'],
-  balanceGuard: ['bankrolls: balance_cents may only be written by the ledger trigger'],
   uniqueViolation: ['UNIQUE constraint failed'],
 } as const;
 

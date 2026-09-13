@@ -259,6 +259,9 @@ CREATE TABLE ledger (
   UNIQUE (bankroll_id, kind, ref_id)
 );
 CREATE INDEX idx_ledger_bankroll ON ledger(bankroll_id, created_at DESC);
+-- Covering index for bankrolls_bu_balance_guard's SUM(amount_cents) per bankroll:
+-- the guard runs on every ledger insert, so keep it an index-only scan.
+CREATE INDEX idx_ledger_sum ON ledger (bankroll_id, amount_cents);
 CREATE INDEX idx_ledger_bet      ON ledger(bet_id);
 
 -- GUARDS: RAISE(ABORT) inside a BEFORE INSERT trigger is NOT suppressed by
@@ -317,9 +320,15 @@ BEGIN
   SELECT RAISE(ABORT, 'bankrolls: balance_cents may only be written by the ledger trigger');
 END;
 
+-- INSERT guard: a bankroll always opens at 0 (the deposit is a ledger row).
+-- Deliberately `<> 0`, NOT `<> SUM(ledger)`: BEFORE INSERT triggers fire before
+-- `OR IGNORE` resolves a uniqueness conflict, and PLAN.md §4.4's idempotent
+-- `INSERT OR IGNORE INTO bankrolls (..., 0, ...)` prelude runs on EVERY board
+-- view / bet placement — against a funded row, a SUM comparison would abort the
+-- whole batch. For a genuinely new id no ledger rows can exist
+-- (ledger_bi_bankroll_exists), so `<> 0` is equivalent for real inserts.
 CREATE TRIGGER bankrolls_bi_balance_guard BEFORE INSERT ON bankrolls
-WHEN NEW.balance_cents <> (SELECT COALESCE(SUM(amount_cents), 0) FROM ledger
-                            WHERE bankroll_id = NEW.id)
+WHEN NEW.balance_cents <> 0
 BEGIN
   SELECT RAISE(ABORT, 'bankrolls: balance_cents may only be written by the ledger trigger');
 END;

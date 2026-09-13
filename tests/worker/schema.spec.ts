@@ -136,6 +136,28 @@ describe('ledger invariants (DB-enforced)', () => {
     expect(await balance()).toBe(100000);
   });
 
+  it('the PLAN §4.4 ensureBankroll prelude is idempotent against a funded row', async () => {
+    // INSERT OR IGNORE fires BEFORE INSERT triggers before resolving the
+    // conflict; the guard must therefore tolerate a 0-balance "insert" that is
+    // about to be ignored because the (funded) row already exists.
+    const ensure = () =>
+      env.DB.batch([
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO bankrolls (id, user_id, league, season, balance_cents, created_at, updated_at)
+           VALUES (?1, ?2, 'nfl', 2026, 0, ?3, ?3)`,
+        ).bind(B, U, NOW),
+        env.DB.prepare(
+          `INSERT INTO ledger (id, bankroll_id, kind, ref_id, amount_cents, created_at)
+           SELECT ?1, ?2, 'deposit_initial', ?2, 100000, ?3
+            WHERE NOT EXISTS (SELECT 1 FROM ledger WHERE bankroll_id = ?2 AND kind = 'deposit_initial')`,
+        ).bind(`${B}-dep2`, B, NOW),
+      ]);
+    await ensure();
+    await ensure();
+    expect(await balance()).toBe(100000);
+    expect(await ledgerSum()).toBe(100000);
+  });
+
   it('a bankroll cannot be INSERTed with a non-zero opening balance', async () => {
     await expect(
       env.DB.prepare(
