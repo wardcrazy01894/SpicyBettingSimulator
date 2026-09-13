@@ -15,7 +15,13 @@ import { useBankroll } from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
 import { BetSlipContext } from './bet-slip.js';
 import { useConfig } from './config.js';
-import { asLineChangedDetails, buildPlaceBetRequest, computePreview } from './slip-preview.js';
+import {
+  applyLineChange,
+  asLineChangedDetails,
+  buildPlaceBetRequest,
+  computePreview,
+  lineChangeIsAcceptable,
+} from './slip-preview.js';
 import {
   emptySlipState,
   legKey,
@@ -24,9 +30,10 @@ import {
   slipReducer,
   slipStorageKey,
 } from './slip-reducer.js';
+import { useSession } from './session.js';
 import type { BetSlipApi } from './bet-slip.js';
 import type { LeagueSlip, SlipLeg, SlipMode } from './slip-reducer.js';
-import type { LineChangedDetails } from '../../shared/api-types.js';
+import type { LineChangedDetails, PlaceBetRequest } from '../../shared/api-types.js';
 import type { Cents, League, Market, Side } from '../../shared/types.js';
 import { LEAGUES } from '../../shared/types.js';
 
@@ -51,6 +58,7 @@ function writeStored(league: League, slip: LeagueSlip): void {
 
 export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
   const config = useConfig();
+  const session = useSession();
   const [state, dispatch] = useReducer(slipReducer, DEFAULT_LEAGUE, emptySlipState);
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -67,14 +75,19 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
 
   const league = state.active;
   const slip = state.byLeague[league];
+  const editingBetId = state.editingBetId;
 
-  // Persist whatever the active league's slip currently is.
+  // Persist whatever the active league's slip currently is — EXCEPT while an
+  // edit is borrowing the slot. Writing the edit's legs there would overwrite
+  // the draft the edit displaced, which `END_EDIT` is about to restore.
   useEffect(() => {
-    writeStored(league, slip);
-  }, [league, slip]);
+    if (editingBetId === null) writeStored(league, slip);
+  }, [league, slip, editingBetId]);
 
   const season = config.currentSeason[league];
-  const bankroll = useBankroll(league, season);
+  // Anonymous visitors have no bankroll; asking for one on /login collects a 401
+  // and fires the client's SESSION_EXPIRED side-channel for no reason.
+  const bankroll = useBankroll(league, season, session.status === 'authed');
   const availableCents = bankroll.data?.balanceCents ?? null;
 
   const setLeague = useCallback((next: League) => {
@@ -110,6 +123,10 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
     dispatch({ type: 'SET_STAKE', stakeCents: cents });
   }, []);
 
+  const dismissNotice = useCallback(() => {
+    dispatch({ type: 'DISMISS_NOTICE' });
+  }, []);
+
   const selected = useMemo(() => new Set(slip.legs.map(legKey)), [slip.legs]);
   const isSelected = useCallback(
     (gameId: string, market: Market, side: Side) => selected.has(legKey({ gameId, market, side })),
@@ -138,21 +155,24 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
   );
 
   const cancelEdit = useCallback(() => {
-    dispatch({ type: 'CLEAR' });
+    setLineChange(null);
+    setLastError(null);
+    dispatch({ type: 'END_EDIT' });
     setOpen(false);
   }, []);
 
-  const editingBetId = state.editingBetId;
-  const submit = useCallback(
-    async (acceptLineChange: boolean): Promise<void> => {
+  /** The one place a slip is sent. `body` is always built from what is ON SCREEN. */
+  const send = useCallback(
+    async (body: PlaceBetRequest): Promise<void> => {
       setSubmitting(true);
       setLastError(null);
       try {
-        const body = buildPlaceBetRequest(league, slip, acceptLineChange);
         if (editingBetId === null) await postBet(body);
         else await putBet(editingBetId, body);
         setLineChange(null);
-        dispatch({ type: 'CLEAR' });
+        // An edit hands the league's slot back to the draft it displaced; a
+        // plain placement just empties it.
+        dispatch(editingBetId === null ? { type: 'CLEAR' } : { type: 'END_EDIT' });
         setOpen(false);
         // A placement moves money and creates a bet; the board's `bettable`
         // flags may also have changed while the sheet was open.
@@ -169,8 +189,27 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
         setSubmitting(false);
       }
     },
-    [league, slip, editingBetId],
+    [editingBetId],
   );
+
+  const submit = useCallback(
+    () => send(buildPlaceBetRequest(league, slip, false)),
+    [send, league, slip],
+  );
+
+  const acceptLineChange = useCallback(async (): Promise<void> => {
+    if (lineChange === null) return;
+    // Re-price the slip FIRST, so the legs (and therefore the preview the user
+    // is looking at) carry the server's quoted values, then send those as
+    // `expected`. Resubmitting the stale `expected` with acceptLineChange:true
+    // booked a price the sheet had never shown.
+    const repriced = applyLineChange(slip, lineChange);
+    dispatch({ type: 'SET_LEGS', league, legs: repriced.legs });
+    await send(buildPlaceBetRequest(league, repriced, true));
+  }, [send, league, slip, lineChange]);
+
+  const notice = state.notice;
+  const canAcceptLineChange = lineChange !== null && lineChangeIsAcceptable(lineChange);
 
   const value = useMemo<BetSlipApi>(
     () => ({
@@ -186,16 +225,20 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
       setStakeCents,
       isSelected,
       preview,
+      notice,
+      dismissNotice,
       open,
       setOpen,
       availableCents,
       submitting,
       lastError,
       lineChange,
+      canAcceptLineChange,
       editingBetId,
       startEdit,
       cancelEdit,
       submit,
+      acceptLineChange,
     }),
     [
       league,
@@ -208,15 +251,19 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
       setStakeCents,
       isSelected,
       preview,
+      notice,
+      dismissNotice,
       open,
       availableCents,
       submitting,
       lastError,
       lineChange,
+      canAcceptLineChange,
       editingBetId,
       startEdit,
       cancelEdit,
       submit,
+      acceptLineChange,
     ],
   );
 

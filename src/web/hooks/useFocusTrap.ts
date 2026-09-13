@@ -7,7 +7,7 @@
  * document.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 
 const FOCUSABLE = [
@@ -24,6 +24,22 @@ export function useFocusTrap(
   active: boolean,
   onClose: () => void,
 ): void {
+  // `onClose` is read through a ref so it is NOT an effect dependency.
+  //
+  // This is the whole reason the trap is correct. Arming it moves focus to the
+  // first focusable child and disarming it restores focus to whatever opened
+  // the sheet, so a re-run is VISIBLE: it yanks the caret out of the stake box.
+  // With `onClose` in the dependency array, every render that produced a new
+  // handler re-armed the trap — and the slip context is re-memoised on every
+  // keystroke (SET_STAKE returns a new LeagueSlip, `computePreview` a new
+  // object), so a single keystroke stole focus and typing "12.50" was
+  // impossible. Deps are now only the things that genuinely change what the
+  // trap is trapping.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   useEffect(() => {
     if (!active) return;
     const container = ref.current;
@@ -39,7 +55,7 @@ export function useFocusTrap(
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -61,5 +77,5 @@ export function useFocusTrap(
       container.removeEventListener('keydown', onKeyDown);
       previous?.focus();
     };
-  }, [ref, active, onClose]);
+  }, [ref, active]);
 }

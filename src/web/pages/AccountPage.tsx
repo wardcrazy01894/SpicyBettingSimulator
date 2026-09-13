@@ -5,12 +5,16 @@ import type { ReactElement } from 'react';
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
 import { LeagueTabs } from '../components/LeagueTabs.js';
 import { LedgerList } from '../components/LedgerList.js';
+import { LoadMore } from '../components/LoadMore.js';
 import { Spinner } from '../components/Spinner.js';
-import { useBankroll, useLedger } from '../hooks/useApi.js';
+import { getLedger } from '../api/client.js';
+import { LEDGER_PAGE_SIZE, useBankroll, useLedger } from '../hooks/useApi.js';
+import { usePages } from '../hooks/usePages.js';
 import { formatRoi, LEAGUE_LABEL } from '../lib/labels.js';
 import { useConfig } from '../state/config.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
+import type { LedgerEntry } from '../../shared/api-types.js';
 import type { League } from '../../shared/types.js';
 
 function BankrollSummary(props: { readonly league: League }): ReactElement {
@@ -87,7 +91,21 @@ export function AccountPage(): ReactElement {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
-  const ledger = useLedger(league, config.currentSeason[league]);
+  const season = config.currentSeason[league];
+  const ledger = useLedger(league, season);
+  // `/api/ledger` pages with a cursor (§11.5). A season's history is longer than
+  // one page for anyone who bets more than once a week.
+  const paged = usePages<LedgerEntry>(
+    `${league}:${String(season ?? '')}`,
+    ledger.data === undefined
+      ? undefined
+      : { items: ledger.data.entries, nextCursor: ledger.data.nextCursor },
+    (entry) => entry.id,
+    async (cursor) => {
+      const page = await getLedger({ league, season, limit: LEDGER_PAGE_SIZE, cursor });
+      return { items: page.entries, nextCursor: page.nextCursor };
+    },
+  );
 
   const run = (action: () => Promise<void>): void => {
     setBusy(true);
@@ -120,10 +138,13 @@ export function AccountPage(): ReactElement {
       )}
       {ledger.loading && ledger.data === undefined && <Spinner label="Loading the ledger…" />}
       {ledger.data !== undefined &&
-        (ledger.data.entries.length === 0 ? (
+        (paged.items.length === 0 ? (
           <EmptyState title="No money has moved yet." />
         ) : (
-          <LedgerList entries={ledger.data.entries} />
+          <>
+            <LedgerList entries={paged.items} />
+            <LoadMore paged={paged} label="Load older entries" />
+          </>
         ))}
 
       <h3 className="section-title">Session</h3>

@@ -23,7 +23,13 @@ export function SlipSummary(props: {
         <dt>Price</dt>
         <dd>
           {preview.americanPrice === null ? '—' : formatAmerican(preview.americanPrice)}
-          {preview.decimalOdds !== null && (
+          {/*
+           * Only alongside a real American price. `americanPrice === null` means
+           * the parlay is past what an American integer can express, and the
+           * exact rational's decimal string is then 35 characters of noise that
+           * overflows the row — the cap message below is the useful signal.
+           */}
+          {preview.americanPrice !== null && preview.decimalOdds !== null && (
             <span className="slip-decimal"> · {preview.decimalOdds}</span>
           )}
         </dd>

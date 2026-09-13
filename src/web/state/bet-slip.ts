@@ -31,6 +31,10 @@ export interface BetSlipApi extends BetSlipState {
   readonly isSelected: (gameId: string, market: Market, side: Side) => boolean;
   readonly preview: SlipPreview;
 
+  /** Transient feedback for an action that deliberately did nothing (parlay full). */
+  readonly notice: string | null;
+  readonly dismissNotice: () => void;
+
   /** Sheet visibility. The collapsed `BetSlipBar` opens it on mobile. */
   readonly open: boolean;
   readonly setOpen: (open: boolean) => void;
@@ -42,6 +46,8 @@ export interface BetSlipApi extends BetSlipState {
   readonly lastError: unknown;
   /** Set by a 409 LINE_CHANGED; the sheet shows old vs new and an accept button. */
   readonly lineChange: LineChangedDetails | null;
+  /** False when a changed leg is no longer quoted at all — accepting is pointless. */
+  readonly canAcceptLineChange: boolean;
   readonly editingBetId: string | null;
   readonly startEdit: (
     betId: string,
@@ -51,7 +57,13 @@ export interface BetSlipApi extends BetSlipState {
     stakeCents: Cents,
   ) => void;
   readonly cancelEdit: () => void;
-  readonly submit: (acceptLineChange: boolean) => Promise<void>;
+  /** Place (or PUT) the slip exactly as it is shown. */
+  readonly submit: () => Promise<void>;
+  /**
+   * Re-price the slip to the server's quoted `current` values and resubmit with
+   * `acceptLineChange: true`. Never resubmits the stale `expected`.
+   */
+  readonly acceptLineChange: () => Promise<void>;
 }
 
 export const BetSlipContext = createContext<BetSlipApi | null>(null);

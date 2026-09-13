@@ -1,15 +1,20 @@
 /**
  * inputMode="decimal", quick chips, `parseDollarsToCents`.
  *
- * The typed text is NEVER turned into a float: `parseDollarsToCents` (shared,
- * with its own tests for "12.345", "1,000", ".5", "12.") does pure string →
- * integer-cents arithmetic. The raw text is held in local state so a half-typed
- * "12." is not rewritten under the caret.
+ * The text <-> cents rules live in `lib/stake-text.ts` so they are unit-tested
+ * without a DOM. The raw text is held in local state so a half-typed "12." is
+ * not rewritten under the caret.
+ *
+ * Text the parser REJECTS reports a stake of ZERO (it used to leave the previous
+ * stake live, so a box reading "$abc" stayed submittable at the last good
+ * amount). Zero fails `validatePlaceBet`'s minimum, which greys out the submit
+ * button, and `problem` says why.
  */
 import { useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { formatCents, parseDollarsToCents } from '../../shared/validate.js';
+import { centsToText, stakeFromText } from '../lib/stake-text.js';
+import { formatCents } from '../../shared/validate.js';
 import type { Cents } from '../../shared/types.js';
 
 export interface StakeInputProps {
@@ -22,30 +27,38 @@ export interface StakeInputProps {
 
 const QUICK_CHIPS_CENTS: readonly Cents[] = [500, 1000, 2500, 5000, 10_000];
 
-/** Cents → the text the input should show, without a currency symbol. */
-function centsToText(cents: Cents): string {
-  if (cents === 0) return '';
-  const whole = (cents - (cents % 100)) / 100;
-  const frac = cents % 100;
-  return frac === 0 ? String(whole) : `${String(whole)}.${String(frac).padStart(2, '0')}`;
-}
-
 export function StakeInput(props: StakeInputProps): ReactElement {
   const { stakeCents, maxCents, minCents, onChange } = props;
   const [text, setText] = useState(() => centsToText(stakeCents));
   const [problem, setProblem] = useState<string | null>(null);
   const [lastStake, setLastStake] = useState(stakeCents);
+  /** The cents WE last reported; anything else is an outside change. */
+  const [reported, setReported] = useState<Cents | null>(null);
 
   // Re-sync when a chip (or a slip reset) changes the stake from OUTSIDE. This
   // is React's documented "adjust state while rendering" pattern rather than an
   // effect: an effect here would paint the stale text first and then cascade a
   // second render (react-hooks/set-state-in-effect).
+  //
+  // `reported` is what keeps invalid text on screen: rejecting "abc" reports 0,
+  // and without this guard the resync would immediately blank the box the user
+  // is still typing in.
   if (lastStake !== stakeCents) {
     setLastStake(stakeCents);
-    const parsed = parseDollarsToCents(text);
-    // Leave a half-typed "12." alone when it already means this many cents.
-    if (!parsed.ok || parsed.value !== stakeCents) setText(centsToText(stakeCents));
+    if (reported !== stakeCents) {
+      setReported(null);
+      setProblem(null);
+      setText(centsToText(stakeCents));
+    }
   }
+
+  /** A chip: the text and the stake are both set from the outside, together. */
+  const commit = (cents: Cents): void => {
+    setReported(cents);
+    setProblem(null);
+    setText(centsToText(cents));
+    onChange(cents);
+  };
 
   return (
     <div className="stake">
@@ -64,21 +77,15 @@ export function StakeInput(props: StakeInputProps): ReactElement {
           autoComplete="off"
           placeholder="0.00"
           value={text}
+          aria-invalid={problem !== null}
+          {...(problem === null ? {} : { 'aria-describedby': 'stake-problem' })}
           onChange={(event) => {
             const next = event.target.value;
+            const entry = stakeFromText(next);
             setText(next);
-            if (next.trim() === '') {
-              setProblem(null);
-              onChange(0);
-              return;
-            }
-            const parsed = parseDollarsToCents(next);
-            if (parsed.ok) {
-              setProblem(null);
-              onChange(parsed.value);
-            } else {
-              setProblem(parsed.message);
-            }
+            setProblem(entry.problem);
+            setReported(entry.cents);
+            onChange(entry.cents);
           }}
         />
       </div>
@@ -90,7 +97,7 @@ export function StakeInput(props: StakeInputProps): ReactElement {
             type="button"
             className="chip-btn"
             onClick={() => {
-              onChange(cents);
+              commit(cents);
             }}
           >
             {formatCents(cents)}
@@ -101,14 +108,18 @@ export function StakeInput(props: StakeInputProps): ReactElement {
           className="chip-btn"
           disabled={maxCents < minCents}
           onClick={() => {
-            onChange(maxCents);
+            commit(maxCents);
           }}
         >
           MAX
         </button>
       </div>
 
-      {problem !== null && <p className="stake-problem">{problem}</p>}
+      {problem !== null && (
+        <p className="stake-problem" id="stake-problem">
+          {problem}
+        </p>
+      )}
     </div>
   );
 }

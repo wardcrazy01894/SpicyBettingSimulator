@@ -35,9 +35,15 @@ export function BetSlip(): ReactElement {
   const config = useConfig();
   const dialogRef = useRef<HTMLDivElement>(null);
 
+  // `setOpen` ONLY. The context object is re-memoised on every slip change — a
+  // keystroke in the stake box produces a new `LeagueSlip` and a new preview —
+  // so a `close` that depended on the whole context was a new function on every
+  // keystroke, which re-armed the focus trap and threw focus back to the Close
+  // button. `setOpen` is a `useState` setter and is stable for the app's life.
+  const { setOpen } = slip;
   const close = useCallback(() => {
-    slip.setOpen(false);
-  }, [slip]);
+    setOpen(false);
+  }, [setOpen]);
   useFocusTrap(dialogRef, slip.open, close);
 
   if (!slip.open) return <></>;
@@ -45,6 +51,9 @@ export function BetSlip(): ReactElement {
   const editing = slip.editingBetId !== null;
   const blocked = slip.preview.error !== null || slip.submitting;
   const maxStake = slip.availableCents ?? 0;
+  const modeOptions = MODE_OPTIONS.map((option) =>
+    option.value === 'parlay' && slip.legs.length < 2 ? { ...option, disabled: true } : option,
+  );
 
   return (
     <div className="sheet-backdrop">
@@ -66,7 +75,7 @@ export function BetSlip(): ReactElement {
         <Segmented
           label="Bet type"
           value={slip.mode}
-          options={MODE_OPTIONS}
+          options={modeOptions}
           onChange={slip.setMode}
         />
 
@@ -129,16 +138,22 @@ export function BetSlip(): ReactElement {
                 </li>
               ))}
             </ul>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={slip.submitting}
-              onClick={() => {
-                void slip.submit(true);
-              }}
-            >
-              Accept new line &amp; place
-            </button>
+            {slip.canAcceptLineChange ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={slip.submitting}
+                onClick={() => {
+                  void slip.acceptLineChange();
+                }}
+              >
+                Accept new line &amp; place
+              </button>
+            ) : (
+              <p className="banner-text">
+                One of these markets is no longer offered — remove that leg and try again.
+              </p>
+            )}
           </div>
         )}
 
@@ -163,7 +178,7 @@ export function BetSlip(): ReactElement {
             className="btn btn-primary"
             disabled={blocked}
             onClick={() => {
-              void slip.submit(false);
+              void slip.submit();
             }}
           >
             {slip.submitting

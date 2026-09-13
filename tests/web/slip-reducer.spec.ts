@@ -29,6 +29,8 @@ function leg(
     americanPrice: -110,
     label: `${gameId} ${market} ${side}`,
     kickoffAt: 1_800_000_000_000,
+    homeAbbr: 'HOME',
+    awayAbbr: 'AWAY',
   };
 }
 
@@ -141,10 +143,19 @@ describe('slipReducer', () => {
   });
 
   it('SET_STAKE and SET_MODE only touch the active league', () => {
-    let state = slipReducer(start(), { type: 'SET_STAKE', stakeCents: 5000 });
+    // Two legs, because SET_MODE now refuses to call a slip with fewer than two
+    // a "parlay" — that mode was unplaceable and used to be persisted anyway.
+    let state = slipReducer(start(), { type: 'TOGGLE_LEG', leg: leg('a'), maxLegs: MAX_LEGS });
+    state = slipReducer(state, { type: 'TOGGLE_LEG', leg: leg('b'), maxLegs: MAX_LEGS });
+    state = slipReducer(state, { type: 'SET_STAKE', stakeCents: 5000 });
     state = slipReducer(state, { type: 'SET_MODE', mode: 'parlay' });
     expect(state.byLeague.nfl).toMatchObject({ stakeCents: 5000, mode: 'parlay' });
     expect(state.byLeague.ncaaf).toEqual(EMPTY_SLIP);
+  });
+
+  it('SET_MODE refuses "parlay" below two legs', () => {
+    const state = slipReducer(start(), { type: 'SET_MODE', mode: 'parlay' });
+    expect(state.byLeague.nfl.mode).toBe('straight');
   });
 
   it('never mutates the state it is given', () => {
@@ -169,7 +180,9 @@ describe('legKey', () => {
 describe('slipStorageKey', () => {
   it('is versioned and per league', () => {
     expect(slipStorageKey('nfl')).not.toBe(slipStorageKey('ncaaf'));
-    expect(slipStorageKey('nfl')).toContain('v1');
+    // v2: `SlipLeg` gained homeAbbr/awayAbbr, which a v1 entry cannot supply.
+    expect(slipStorageKey('nfl')).toMatch(/\.v\d+\./);
+    expect(slipStorageKey('nfl')).toContain('v2');
   });
 });
 

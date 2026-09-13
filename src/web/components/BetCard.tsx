@@ -12,38 +12,18 @@ import type { ReactElement } from 'react';
 
 import { BetLegRow } from './BetLegRow.js';
 import { ErrorBanner } from './ErrorBanner.js';
-import { deleteBet } from '../api/client.js';
+import { deleteBet, getGame } from '../api/client.js';
 import { invalidate } from '../hooks/useResource.js';
 import { formatDateTime } from '../lib/datetime.js';
-import {
-  BET_STATUS_LABEL,
-  BET_TYPE_LABEL,
-  LEAGUE_LABEL,
-  pickLabel,
-  STATUS_TONE,
-} from '../lib/labels.js';
+import { BET_STATUS_LABEL, BET_TYPE_LABEL, LEAGUE_LABEL, STATUS_TONE } from '../lib/labels.js';
 import { useBetSlip } from '../state/bet-slip.js';
+import { gameIdsToRefresh, refreshSlipLegs } from '../state/edit-bet.js';
 import { formatAmerican } from '../../shared/odds.js';
 import { formatCents } from '../../shared/validate.js';
-import type { SlipLeg } from '../state/slip-reducer.js';
-import type { BetView } from '../../shared/api-types.js';
+import type { BetView, GameCard } from '../../shared/api-types.js';
 
 export interface BetCardProps {
   readonly bet: BetView;
-}
-
-/** A settled bet's legs become slip legs verbatim — same game, market, side, price. */
-function toSlipLegs(bet: BetView): readonly SlipLeg[] {
-  return bet.legs.map((leg) => ({
-    gameId: leg.gameId,
-    league: bet.league,
-    market: leg.market,
-    side: leg.side,
-    lineTenths: leg.lineTenths,
-    americanPrice: leg.americanPrice,
-    label: pickLabel(leg.market, leg.side, leg.lineTenths, leg.homeAbbr, leg.awayAbbr),
-    kickoffAt: leg.game.kickoffAt,
-  }));
 }
 
 export function BetCard(props: BetCardProps): ReactElement {
@@ -51,8 +31,39 @@ export function BetCard(props: BetCardProps): ReactElement {
   const slip = useBetSlip();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const [note, setNote] = useState<string | null>(null);
 
   const settled = bet.status !== 'pending';
+
+  /**
+   * Seed the edit slip from TODAY'S prices, not the placement snapshot.
+   *
+   * The snapshot is what the bet was booked at; resubmitting it as `expected`
+   * made a stake-only edit fail `409 LINE_CHANGED` on any leg whose line had
+   * moved, while the sheet went on displaying the old odds. Each leg's game is
+   * re-read (§11.3) and the slip is built from the current quote, so the sheet
+   * shows what the edit would actually cost.
+   */
+  const startEdit = (): void => {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    void Promise.all(gameIdsToRefresh(bet).map((id) => getGame(id)))
+      .then((responses) => {
+        const games = new Map<string, GameCard>(responses.map((r) => [r.game.id, r.game]));
+        const refreshed = refreshSlipLegs(bet, games);
+        if (refreshed.unrefreshed.length > 0) {
+          setNote('One of these markets is no longer posted — that leg still shows its old price.');
+        }
+        slip.startEdit(bet.id, bet.league, bet.betType, refreshed.legs, bet.stakeCents);
+      })
+      .catch((thrown: unknown) => {
+        setError(thrown);
+      })
+      .finally(() => {
+        setBusy(false);
+      });
+  };
 
   return (
     <article className="bet-card">
@@ -95,15 +106,8 @@ export function BetCard(props: BetCardProps): ReactElement {
         <span className="muted">Placed {formatDateTime(bet.placedAt)}</span>
         {bet.cancellable && (
           <div className="bet-actions">
-            <button
-              type="button"
-              className="btn btn-quiet"
-              disabled={busy}
-              onClick={() => {
-                slip.startEdit(bet.id, bet.league, bet.betType, toSlipLegs(bet), bet.stakeCents);
-              }}
-            >
-              Edit
+            <button type="button" className="btn btn-quiet" disabled={busy} onClick={startEdit}>
+              {busy ? 'Working…' : 'Edit'}
             </button>
             <button
               type="button"
@@ -132,6 +136,7 @@ export function BetCard(props: BetCardProps): ReactElement {
         )}
       </footer>
 
+      {note !== null && <p className="muted">{note}</p>}
       {error !== null && <ErrorBanner error={error} />}
     </article>
   );

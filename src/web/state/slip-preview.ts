@@ -21,6 +21,7 @@ import {
 } from '../../shared/odds.js';
 import { validatePlaceBet } from '../../shared/validate.js';
 import { messageForCode } from '../api/messages.js';
+import { pickLabel } from '../lib/labels.js';
 import type { LeagueSlip } from './slip-reducer.js';
 import type { LineChangedDetails, PlaceBetRequest } from '../../shared/api-types.js';
 import type { AmericanPrice, Cents, League } from '../../shared/types.js';
@@ -117,4 +118,49 @@ export function asLineChangedDetails(details: unknown): LineChangedDetails | nul
   if (typeof details !== 'object' || details === null) return null;
   const legs: unknown = (details as { legs?: unknown }).legs;
   return Array.isArray(legs) ? (details as LineChangedDetails) : null;
+}
+
+/**
+ * Can "accept the new line" even be offered? Only if the server still quotes
+ * EVERY changed leg. A `current: null` means the market was pulled, and
+ * resubmitting with `acceptLineChange` would just earn a 409 MARKET_UNAVAILABLE.
+ */
+export function lineChangeIsAcceptable(details: LineChangedDetails): boolean {
+  return details.legs.length > 0 && details.legs.every((leg) => leg.current !== null);
+}
+
+/**
+ * Rewrite the slip's legs to the prices the server just quoted back in a 409
+ * LINE_CHANGED.
+ *
+ * This is what makes "Accept new line & place" honest. Without it the retry
+ * resubmitted the STALE `expected` alongside `acceptLineChange: true`: the bet
+ * went through at a price the slip never showed, and the summary went on
+ * quoting the old one. The legs are re-priced first — which re-prices the
+ * preview the user is looking at — and the resubmitted `expected` is then the
+ * value the server itself reported.
+ */
+export function applyLineChange(slip: LeagueSlip, details: LineChangedDetails): LeagueSlip {
+  const byKey = new Map(
+    details.legs.map((leg) => [`${leg.gameId}|${leg.market}|${leg.side}`, leg.current]),
+  );
+  const legs = slip.legs.map((leg) => {
+    const current = byKey.get(`${leg.gameId}|${leg.market}|${leg.side}`);
+    // `undefined`: the server did not flag this leg. `null`: the market is gone,
+    // and there is no new price to move to — leave it for the user to remove.
+    if (current === undefined || current === null) return leg;
+    if (current.americanPrice === leg.americanPrice && current.lineTenths === leg.lineTenths) {
+      return leg;
+    }
+    const lineTenths = leg.market === 'moneyline' ? null : current.lineTenths;
+    return {
+      ...leg,
+      lineTenths,
+      americanPrice: current.americanPrice,
+      label: pickLabel(leg.market, leg.side, lineTenths, leg.homeAbbr, leg.awayAbbr),
+    };
+  });
+  // Identity in, identity out when nothing moved: the preview is memoised on
+  // the slip object, and a gratuitously new one would re-price for no reason.
+  return legs.some((leg, index) => leg !== slip.legs[index]) ? { ...slip, legs } : slip;
 }

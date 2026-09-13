@@ -15,58 +15,14 @@ import { MarketButton } from './MarketButton.js';
 import { TeamRow } from './TeamRow.js';
 import { formatCountdown, formatTime } from '../lib/datetime.js';
 import { gameClockLabel, pickLabel } from '../lib/labels.js';
+import { MARKET_CELLS, quoteFor } from '../lib/lines.js';
 import { useBetSlip } from '../state/bet-slip.js';
-import type { SlipLeg } from '../state/slip-reducer.js';
 import type { GameCard as GameCardData } from '../../shared/api-types.js';
-import type { AmericanPrice, LineTenths, Market, Side } from '../../shared/types.js';
 
 export interface GameCardProps {
   readonly game: GameCardData;
   /** Ticking wall clock from the page, so 300 cards share one timer. */
   readonly now: number;
-}
-
-interface MarketCell {
-  readonly market: Market;
-  readonly side: Side;
-  readonly lineTenths: LineTenths | null;
-  readonly price: AmericanPrice | null;
-}
-
-/** The six cells, in the column order spread / total / moneyline, away then home. */
-function cellsFor(game: GameCardData): readonly MarketCell[] {
-  const lines = game.lines;
-  const spread = lines?.spread ?? null;
-  const total = lines?.total ?? null;
-  const moneyline = lines?.moneyline ?? null;
-  return [
-    {
-      market: 'spread',
-      side: 'away',
-      lineTenths: spread?.awayTenths ?? null,
-      price: spread?.awayPrice ?? null,
-    },
-    {
-      market: 'total',
-      side: 'over',
-      lineTenths: total?.tenths ?? null,
-      price: total?.overPrice ?? null,
-    },
-    { market: 'moneyline', side: 'away', lineTenths: null, price: moneyline?.awayPrice ?? null },
-    {
-      market: 'spread',
-      side: 'home',
-      lineTenths: spread?.homeTenths ?? null,
-      price: spread?.homePrice ?? null,
-    },
-    {
-      market: 'total',
-      side: 'under',
-      lineTenths: total?.tenths ?? null,
-      price: total?.underPrice ?? null,
-    },
-    { market: 'moneyline', side: 'home', lineTenths: null, price: moneyline?.homePrice ?? null },
-  ];
 }
 
 export function GameCard(props: GameCardProps): ReactElement {
@@ -110,37 +66,46 @@ export function GameCard(props: GameCardProps): ReactElement {
             <span className="market-head">Spread</span>
             <span className="market-head">Total</span>
             <span className="market-head">Money</span>
-            {cellsFor(game).map((cell) => {
+            {MARKET_CELLS.map((cell) => {
+              const quote = quoteFor(game.lines, cell.market, cell.side);
+              const lineTenths = quote?.lineTenths ?? null;
               const label = pickLabel(
                 cell.market,
                 cell.side,
-                cell.lineTenths,
+                lineTenths,
                 game.home.abbr,
                 game.away.abbr,
               );
-              const leg: SlipLeg = {
-                gameId: game.id,
-                league: game.league,
-                market: cell.market,
-                side: cell.side,
-                lineTenths: cell.market === 'moneyline' ? null : cell.lineTenths,
-                americanPrice: cell.price ?? 0,
-                label,
-                kickoffAt: game.kickoffAt,
-              };
+              // NO leg object when the cell is not tappable. The old code built
+              // one eagerly with `americanPrice: cell.price ?? 0` — a price of
+              // ZERO, which is not a legal American price at all — for all six
+              // cells of every card on the board.
+              const disabled = !game.bettable || stale || quote === null;
               return (
                 <MarketButton
                   key={`${cell.market}:${cell.side}`}
                   gameId={game.id}
                   market={cell.market}
                   side={cell.side}
-                  lineTenths={cell.lineTenths}
-                  price={cell.price}
-                  disabled={!game.bettable || stale}
+                  lineTenths={lineTenths}
+                  price={quote?.americanPrice ?? null}
+                  disabled={disabled}
                   selected={slip.isSelected(game.id, cell.market, cell.side)}
                   ariaLabel={label}
                   onToggle={() => {
-                    slip.toggleLeg(leg);
+                    if (quote === null) return;
+                    slip.toggleLeg({
+                      gameId: game.id,
+                      league: game.league,
+                      market: cell.market,
+                      side: cell.side,
+                      lineTenths: cell.market === 'moneyline' ? null : quote.lineTenths,
+                      americanPrice: quote.americanPrice,
+                      label,
+                      kickoffAt: game.kickoffAt,
+                      homeAbbr: game.home.abbr,
+                      awayAbbr: game.away.abbr,
+                    });
                   }}
                 />
               );

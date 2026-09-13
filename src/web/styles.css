@@ -627,6 +627,29 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* "That parlay is full" — a refused tap, shown where the tap's result would be. */
+.slip-bar-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding-left: 10px;
+  border: 1px solid var(--push);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--push) 14%, var(--surface-2));
+  font-size: 14px;
+}
+
+/* --------------------------------------------------------- cursor paging */
+
+.load-more {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: var(--gap);
+}
+
 .sheet-backdrop {
   position: fixed;
   inset: 0;
@@ -813,9 +836,36 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * The input's own ring is suppressed because the RING BELONGS TO THE WRAPPER:
+ * `.stake-field` / `.field-input` draw the visible border, and an outline on the
+ * bare input renders inside it. `:focus-visible` on the wrapper replaces it —
+ * removing the indicator outright failed WCAG 2.4.7.
+ */
 .stake-input:focus,
 .field-input:focus {
   outline: none;
+}
+
+.stake-field:has(.stake-input:focus-visible),
+.field-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/*
+ * Global keyboard focus indicator (WCAG 2.4.7). Scoped to `:focus-visible` so a
+ * mouse or touch press does not leave a ring behind, and given an offset so it
+ * is legible against both the accent fill and the dark surfaces.
+ */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
 }
 
 .stake-chips {

@@ -48,16 +48,29 @@ export function useBets(status: 'open' | 'settled' | 'all'): Resource<BetsRespon
   return useResource(`bets:${status}`, () => getBets({ status }));
 }
 
-export function useBankroll(league: League, season: number | null): Resource<BankrollResponse> {
+/**
+ * `enabled` is how an anonymous visitor stops asking for a bankroll. The slip
+ * provider sits ABOVE the router's auth gate (PLAN.md §12.1), so on `/login` it
+ * was firing `GET /api/bankroll`, collecting a 401 and tripping the client's
+ * SESSION_EXPIRED side-channel before the user had even typed a password.
+ */
+export function useBankroll(
+  league: League,
+  season: number | null,
+  enabled = true,
+): Resource<BankrollResponse> {
   // A null season means the server has not opened this league's season yet;
   // there is no bankroll to ask for, so the hook stays idle rather than 400ing.
-  const key = season === null ? null : `bankroll:${league}:${String(season)}`;
+  const key = season === null || !enabled ? null : `bankroll:${league}:${String(season)}`;
   return useResource(key, () => getBankroll(league, season));
 }
 
+/** Page size asked for by both the ledger's first page and every "Load more". */
+export const LEDGER_PAGE_SIZE = 100;
+
 export function useLedger(league: League, season: number | null): Resource<LedgerResponse> {
   const key = `ledger:${league}:${String(season ?? '')}`;
-  return useResource(key, () => getLedger({ league, season, limit: 100 }));
+  return useResource(key, () => getLedger({ league, season, limit: LEDGER_PAGE_SIZE }));
 }
 
 export function useLeaderboard(

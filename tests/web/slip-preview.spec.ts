@@ -22,6 +22,8 @@ function leg(
     americanPrice,
     label: gameId,
     kickoffAt: 1_800_000_000_000,
+    homeAbbr: 'HOME',
+    awayAbbr: 'AWAY',
   };
 }
 
