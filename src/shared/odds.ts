@@ -32,6 +32,8 @@
  * exact arithmetic is the guarantee, not the empirical hit rate.
  */
 
+import { MAX_PAYOUT_CENTS } from './constants.js';
+import { AppError } from './errors.js';
 import type { AmericanPrice, Cents, Price } from './types.js';
 
 /** Decimal odds of 1.0 — the identity for parlay multiplication ("all legs pushed"). */
@@ -44,27 +46,139 @@ export const EVEN_MONEY_UNIT: Price = { num: 1n, den: 1n };
  */
 export { MAX_PAYOUT_CENTS } from './constants.js';
 
+/** The cap as a BigInt, so the comparison never touches a `number`. */
+const MAX_PAYOUT_CENTS_BIG = BigInt(MAX_PAYOUT_CENTS);
+
+/** Smallest legal American magnitude. |A| < 100 is not an American price at all. */
+const MIN_AMERICAN_MAGNITUDE = 100;
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * `NaN`, `Infinity` and `1.5` all have to die here rather than silently becoming
+ * a BigInt conversion error three frames down.
+ */
+function assertInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value)) {
+    throw new AppError('VALIDATION', `${label} must be a safe integer, got ${String(value)}.`);
+  }
+}
+
+/**
+ * Round a non-negative rational `p/q` half-up, in BigInt.
+ *
+ * PLAN §5.5 writes this as `(10x + 5) / 10` for a value already scaled by ten;
+ * the general form is `(2p + q) / (2q)`, and BigInt `/` truncating toward zero
+ * is exactly floor for non-negative operands. Never `Math.round` — that would be
+ * a float, and it rounds .5 toward +Infinity only for positive values anyway.
+ */
+function roundHalfUp(p: bigint, q: bigint): bigint {
+  return (2n * p + q) / (2n * q);
+}
+
+/** Euclid, in BigInt. Used only by `reducePrice`. */
+function gcd(a: bigint, b: bigint): bigint {
+  let x = a;
+  let y = b;
+  while (y !== 0n) {
+    const t = x % y;
+    x = y;
+    y = t;
+  }
+  return x;
+}
+
+/**
+ * A price usable as a payout multiplier: both parts strictly positive. 1/1 (all
+ * legs pushed) IS usable here — it is the multiplicative identity.
+ */
+function assertUsablePrice(price: Price): void {
+  if (price.num <= 0n || price.den <= 0n) {
+    throw new AppError(
+      'VALIDATION',
+      `Price ${price.num.toString()}/${price.den.toString()} is not a positive rational.`,
+    );
+  }
+}
+
+/**
+ * The whole payout computation, in BigInt, with NO cap check and NO `Number`
+ * conversion. `payoutCents` and `exceedsPayoutCap` are both thin wrappers, which
+ * is what makes them provably agree.
+ */
+function payoutCentsExact(stakeCents: Cents, price: Price): bigint {
+  assertInteger(stakeCents, 'Stake');
+  if (stakeCents < 0) {
+    throw new AppError('VALIDATION', `Stake must be non-negative, got ${String(stakeCents)}.`);
+  }
+  assertUsablePrice(price);
+  // BigInt `/` truncates toward zero; both operands are non-negative, so this IS
+  // floor. PLAN §5.3.
+  return (BigInt(stakeCents) * price.num) / price.den;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 /**
  * American price -> exact decimal-odds rational.
  *   A >= +100 : { A + 100, 100 }
  *   A <= -100 : { |A| + 100, |A| }
  * @throws AppError('VALIDATION') when |price| < 100 or it is not an integer.
  */
-export function americanToPrice(_american: AmericanPrice): Price {
-  throw new Error('not implemented: M2a');
+export function americanToPrice(american: AmericanPrice): Price {
+  assertInteger(american, 'American price');
+  if (american >= MIN_AMERICAN_MAGNITUDE) {
+    return { num: BigInt(american) + 100n, den: 100n };
+  }
+  if (american <= -MIN_AMERICAN_MAGNITUDE) {
+    const magnitude = BigInt(-american);
+    return { num: magnitude + 100n, den: magnitude };
+  }
+  throw new AppError(
+    'VALIDATION',
+    `American price magnitude must be at least ${String(MIN_AMERICAN_MAGNITUDE)}, got ${String(american)}.`,
+  );
 }
 
 /**
  * Exact rational -> American price, rounded half-up on the magnitude.
  * DISPLAY ONLY — never an input to a payout.
+ *
+ * `num >= 2*den` (decimal odds >= 2.0) is the positive branch; the boundary
+ * itself belongs to it, so 200/100 renders as +100, not -100. That makes -100
+ * and +100 — which are the SAME odds — canonicalise to +100, the one and only
+ * place where `priceToAmerican(americanToPrice(a)) !== a`.
+ *
+ * @throws AppError('VALIDATION') for a price with no American equivalent, i.e.
+ *   decimal odds <= 1.0. EVEN_MONEY_UNIT is the real-world case (every leg
+ *   pushed) and the UI renders it as "—" (PLAN §5.4), never as a price.
  */
-export function priceToAmerican(_price: Price): AmericanPrice {
-  throw new Error('not implemented: M2a');
+export function priceToAmerican(price: Price): AmericanPrice {
+  const { num, den } = price;
+  if (den <= 0n || num <= den) {
+    throw new AppError(
+      'VALIDATION',
+      `Price ${num.toString()}/${den.toString()} has no American equivalent (decimal odds must exceed 1.0).`,
+    );
+  }
+  return num >= 2n * den
+    ? Number(roundHalfUp(100n * (num - den), den))
+    : -Number(roundHalfUp(100n * den, num - den));
 }
 
 /** Product of leg prices. Empty input returns EVEN_MONEY_UNIT. */
-export function multiplyPrices(_prices: readonly Price[]): Price {
-  throw new Error('not implemented: M2a');
+export function multiplyPrices(prices: readonly Price[]): Price {
+  let num = 1n;
+  let den = 1n;
+  for (const price of prices) {
+    num *= price.num;
+    den *= price.den;
+  }
+  return { num, den };
 }
 
 /**
@@ -76,44 +190,78 @@ export function multiplyPrices(_prices: readonly Price[]): Price {
  *   MAX_PAYOUT_CENTS. The comparison is done in BigInt BEFORE the Number
  *   conversion, so an astronomically priced parlay can never produce a lossy
  *   `number` even transiently.
+ * @throws AppError('VALIDATION') for a negative or non-integer stake — BigInt
+ *   `/` truncates toward ZERO, so a negative stake would ceil rather than floor.
  */
-export function payoutCents(_stakeCents: Cents, _price: Price): Cents {
-  throw new Error('not implemented: M2a');
+export function payoutCents(stakeCents: Cents, price: Price): Cents {
+  const payout = payoutCentsExact(stakeCents, price);
+  if (payout > MAX_PAYOUT_CENTS_BIG) {
+    throw new AppError(
+      'PAYOUT_LIMIT_EXCEEDED',
+      `Payout would exceed the ${String(MAX_PAYOUT_CENTS)} cent cap.`,
+      { maxPayoutCents: MAX_PAYOUT_CENTS },
+    );
+  }
+  return Number(payout);
 }
 
 /** Non-throwing form, for pre-flight validation of a bet slip. */
-export function exceedsPayoutCap(_stakeCents: Cents, _price: Price): boolean {
-  throw new Error('not implemented: M2a');
+export function exceedsPayoutCap(stakeCents: Cents, price: Price): boolean {
+  return payoutCentsExact(stakeCents, price) > MAX_PAYOUT_CENTS_BIG;
 }
 
 /** `payoutCents - stakeCents`. */
-export function profitCents(_stakeCents: Cents, _price: Price): Cents {
-  throw new Error('not implemented: M2a');
+export function profitCents(stakeCents: Cents, price: Price): Cents {
+  return payoutCents(stakeCents, price) - stakeCents;
 }
 
 /** Implied probability, `den/num`. Float, DISPLAY ONLY. */
-export function impliedProbability(_price: Price): number {
-  throw new Error('not implemented: M2a');
+export function impliedProbability(price: Price): number {
+  return Number(price.den) / Number(price.num);
 }
 
 /** Book hold for a two-sided market: `sum(impliedProbability) - 1`. Display only. */
-export function marketHold(_prices: readonly Price[]): number {
-  throw new Error('not implemented: M2a');
+export function marketHold(prices: readonly Price[]): number {
+  let sum = 0;
+  for (const price of prices) {
+    sum += impliedProbability(price);
+  }
+  return sum - 1;
 }
 
-/** Decimal odds as a fixed-precision display string, e.g. "1.909". */
-export function formatDecimalOdds(_price: Price, _places?: number): string {
-  throw new Error('not implemented: M2a');
+/**
+ * Decimal odds as a fixed-precision display string, e.g. "1.909".
+ *
+ * Rounded half-up in BigInt, which is what makes it agree with PLAN §5.4's
+ * decimal column (210/110 -> "1.909091", not the truncated "1.909090"; the
+ * 10-leg -110 parlay -> "643.081618", not "643.081617").
+ */
+export function formatDecimalOdds(price: Price, places = 3): string {
+  if (!Number.isSafeInteger(places) || places < 0) {
+    throw new AppError(
+      'VALIDATION',
+      `places must be a non-negative integer, got ${String(places)}.`,
+    );
+  }
+  assertUsablePrice(price);
+  const scale = 10n ** BigInt(places);
+  const scaled = roundHalfUp(price.num * scale, price.den);
+  const whole = scaled / scale;
+  if (places === 0) return whole.toString();
+  const fraction = scaled % scale;
+  return `${whole.toString()}.${fraction.toString().padStart(places, '0')}`;
 }
 
 /** "+164" / "-110". */
-export function formatAmerican(_american: AmericanPrice): string {
-  throw new Error('not implemented: M2a');
+export function formatAmerican(american: AmericanPrice): string {
+  return american >= 0 ? `+${String(american)}` : String(american);
 }
 
 /** Reduce a rational by its GCD. Purely a hygiene helper; nothing depends on it. */
-export function reducePrice(_price: Price): Price {
-  throw new Error('not implemented: M2a');
+export function reducePrice(price: Price): Price {
+  assertUsablePrice(price);
+  const divisor = gcd(price.num, price.den);
+  return { num: price.num / divisor, den: price.den / divisor };
 }
 
 /**
@@ -123,6 +271,6 @@ export function reducePrice(_price: Price): Price {
  * would coerce it to REAL. `bet_legs.american_price` is the single source of
  * truth (PLAN.md §5.2).
  */
-export function priceFromLegs(_americanPrices: readonly AmericanPrice[]): Price {
-  throw new Error('not implemented: M2a');
+export function priceFromLegs(americanPrices: readonly AmericanPrice[]): Price {
+  return multiplyPrices(americanPrices.map(americanToPrice));
 }
