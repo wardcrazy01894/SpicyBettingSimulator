@@ -15,11 +15,14 @@ import type {
   AdminUsersResponse,
   JobRunResponse,
   JobRunsResponse,
+  ReconcileResponse,
 } from '../../shared/api-types.js';
 import { JOB_NAMES } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { validateDerivedKeyHex } from '../../shared/validate.js';
 import { listUsers, setDisabled, setPassword } from '../auth.js';
+import { reconcileBankrolls } from '../db.js';
+import { retrySettlement } from '../settle.js';
 import { recentRuns, runJob } from '../jobs.js';
 import type { JobName } from '../jobs.js';
 import { requireAdmin, requireAuth } from '../middleware.js';
@@ -113,10 +116,36 @@ export function adminRoutes(): Hono<AppContext> {
   // --- end jobs (M4) ------------------------------------------------------
 
   // --- bets (M6) ----------------------------------------------------------
-  // TODO(M6): POST /bets/:id/retry-settlement -> clear settle_attempts/settle_error
+  // PLAN.md §7.1's MANUAL way out of the 96-attempt park, for the case where the
+  // `games` row itself needed fixing and `resetDeferredBets` therefore cannot
+  // see a change. It zeroes the counter and the error and NOTHING else: no
+  // status, no payout, no ledger row. The bet is simply eligible for selection
+  // again on the next settle run.
+  app.post('/bets/:id/retry-settlement', async (c) => {
+    const betId = c.req.param('id');
+    const outcome = await retrySettlement(c.env, betId);
+    if (outcome === 'not-found') {
+      throw new AppError('BET_NOT_FOUND', `No bet ${betId}.`, { betId });
+    }
+    if (outcome === 'not-pending') {
+      throw new AppError('BET_NOT_PENDING', 'Only a pending bet can be re-queued.', { betId });
+    }
+    return c.body(null, 204);
+  });
+  // --- end bets (M6) ------------------------------------------------------
 
   // --- reconcile (M8) -----------------------------------------------------
-  // TODO(M8): POST /reconcile  -> reconcileBankrolls(env), read-only drift report
+  // READ-ONLY on purpose (PLAN.md §11.6): a drift between `balance_cents` and
+  // `SUM(ledger)` means a bug, and auto-repairing it would erase the evidence.
+  // POST rather than GET because it is an operator ACTION with a cost, and the
+  // CSRF header requirement applies to it like every other state-changing call.
+  app.post('/reconcile', async (c) => {
+    const { checked, drift } = await reconcileBankrolls(c.env);
+    if (drift.length > 0) console.error('[admin] bankroll drift detected', drift);
+    const body: ReconcileResponse = { checked, drift };
+    return c.json(body, 200);
+  });
+  // --- end reconcile (M8) -------------------------------------------------
 
   return app;
 }

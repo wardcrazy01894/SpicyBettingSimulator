@@ -263,17 +263,40 @@ describe('job_runs', () => {
     expect(run.stats?.['targetsProcessed']).toBeTypeOf('number');
   });
 
-  it('runJob("settle") records an ERROR while M6 is unimplemented, and never throws', async () => {
-    // The settle implementation is M6's; until it lands, `runJob` must record
-    // the failure rather than let it escape into `scheduled()`.
+  it('runJob("settle") records an ok run with the M6 settlement stats', async () => {
     const run = await runJob(env, 'settle', 'cron', NOW);
-    expect(run.status).toBe('error');
-    expect(run.error).toContain('M6');
+    expect(run.status).toBe('ok');
+    expect(run.error).toBeNull();
+    expect(run.job).toBe('settle');
+    // An empty database settles nothing, which is an `ok` run reporting zeroes —
+    // not an error, and not a silent success with no stats (PLAN.md §9.3).
+    expect(run.stats?.['selected']).toBe(0);
+    expect(run.stats?.['settled']).toBe(0);
+    expect(run.stats?.['deferred']).toBe(0);
+    expect(run.stats?.['stuck']).toEqual([]);
+    expect(run.stats?.['rowsWritten']).toBeTypeOf('number');
   });
 
-  it('runJob("maintenance") is a callable no-op that records a run (M6 fills it in)', async () => {
+  it('POST /api/admin/jobs/settle runs it inline and returns the stats', async () => {
+    const cookie = await registerAdmin('alex');
+    const res = await send('/api/admin/jobs/settle', {
+      method: 'POST',
+      headers: { 'X-SBS-Client': '1', cookie },
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await res.json<JobRunResponse>();
+    expect(body.run.job).toBe('settle');
+    expect(body.run.trigger).toBe('admin');
+    expect(body.run.status).toBe('ok');
+    expect(body.run.stats?.['selected']).toBe(0);
+  });
+
+  it('runJob("maintenance") records an ok run with the M6 sweep stats', async () => {
     const run = await runJob(env, 'maintenance', 'cron', NOW);
     expect(run.status).toBe('ok');
+    expect(run.error).toBeNull();
+    expect(run.stats?.['autoVoidedGames']).toEqual([]);
+    expect(run.stats?.['jobRunsPruned']).toBeTypeOf('number');
   });
 });
 
