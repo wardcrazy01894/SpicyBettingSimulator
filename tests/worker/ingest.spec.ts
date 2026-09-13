@@ -14,6 +14,7 @@ import { buildScoreboardUrl, EspnProvider } from '../../src/worker/espn.js';
 import {
   claimDueTargets,
   computeNextRunAt,
+  GAME_LIVE_SQL,
   ingestTarget,
   lineRowsWorthWriting,
   planTargets,
@@ -199,6 +200,7 @@ async function ingestSlate(
 ): Promise<{
   gamesUpserted: number;
   linesUpserted: number;
+  rowsWritten: number;
   rowsSkipped: number;
   error: string | null;
 }> {
@@ -208,8 +210,57 @@ async function ingestSlate(
   return {
     gamesUpserted: result.gamesUpserted,
     linesUpserted: result.linesUpserted,
+    rowsWritten: result.rowsWritten,
     rowsSkipped: result.rowsSkipped,
     error: result.error,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * rows_written instrumentation
+ *
+ * `upsertSlate` reports rowsWritten itself, but the point of §8.6 is that the
+ * PRODUCTION accounting must not be the only witness to its own correctness. So
+ * these tests wrap `env.DB.batch` and total `meta.rows_written` independently,
+ * and cross-check the two. `meta.rows_written` counts the TABLE row PLUS every
+ * INDEX entry the statement rewrote, which is the unit D1's 100k/day cap counts.
+ * ------------------------------------------------------------------ */
+
+interface BatchProbe {
+  /** Rows written by every batched statement since the last `reset()`. */
+  readonly rows: number;
+  reset(): void;
+  restore(): void;
+}
+
+function probeBatchRows(): BatchProbe {
+  const realBatch = env.DB.batch.bind(env.DB);
+  let rows = 0;
+  env.DB.batch = async <T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> => {
+    const results = await realBatch<T>(statements);
+    for (const r of results) {
+      const meta: { rows_written?: unknown; changes?: unknown } = r.meta;
+      // Fall back to `changes` if a future runtime stops reporting the field —
+      // an under-count is a visible test failure, a silent zero is not.
+      rows +=
+        typeof meta.rows_written === 'number'
+          ? meta.rows_written
+          : typeof meta.changes === 'number'
+            ? meta.changes
+            : 0;
+    }
+    return results;
+  };
+  return {
+    get rows() {
+      return rows;
+    },
+    reset() {
+      rows = 0;
+    },
+    restore() {
+      env.DB.batch = realBatch;
+    },
   };
 }
 
@@ -1022,56 +1073,277 @@ describe('write budget levers (PLAN.md §8.6)', () => {
     expect(staleAt - (fresh?.seen_at ?? 0)).toBeLessThan(3 * HOUR);
   });
 
-  it('BUDGET: 96 live refreshes of an 86-game CFB Saturday write < 5,000 rows', async () => {
-    // The regression guard §8.6 promises. Without L1/L2/L3 this is ~45,000
-    // meta.changes; with them it is the ~30 genuine per-game transitions.
+  it('BUDGET: 96 refreshes of an 86-game CFB Saturday write < 5,000 rows', async () => {
+    // THE REGRESSION GUARD §8.6 PROMISES — and the one the round-2 review found
+    // to be measuring the wrong thing. Three things it has to get right:
+    //
+    //   1. It asserts ROWS WRITTEN (`meta.rows_written`: the table row plus
+    //      every index entry the statement rewrote), not `meta.changes`.
+    //      `changes` is 0-or-1 per row matched and under-reports the real cost
+    //      by up to 4x, so a guard on `changes` cannot see the failure mode it
+    //      exists to catch.
+    //   2. THE CLOCK MOVES ON EVERY SINGLE REFRESH for every live game — which
+    //      is what actually happens. The old guard moved it every third run,
+    //      which hid the fact that L1 compare-and-skip buys NOTHING for a live
+    //      game: `display_clock` differs every time, so the upsert always fired.
+    //   3. The statuses transition the way a real Saturday does: four waves of
+    //      kickoffs, each game scheduled -> in_progress (3.5 h) -> final.
+    //
+    // MEASURED on this exact fixture (miniflare D1, summed `meta.rows_written`):
+    //     A/B split (this code)         2,979 rows   (1,569 changed games, 466 line rows)
+    //     single-statement upsert       6,978 rows   ( 2,035 meta.changes)
+    // and on the theoretical worst case of all 86 games live for all 96
+    // refreshes, which the four-wave model deliberately does NOT assert because
+    // it cannot physically happen:
+    //     A/B split                     8,686 rows
+    //     single-statement upsert      33,196 rows   ( 8,256 meta.changes)
+    // 33,196 is §8.6's "without the levers" figure, reproduced.
     const GAMES = 86;
+    const REFRESHES = 96;
+    /** Four kickoff waves: noon, 3:30, 7:00, 10:30 — and 3.5 h of football. */
+    const WAVE_MS = 3.5 * HOUR;
+    const kickoffOf = (i: number): number => T0 + (i % 4) * WAVE_MS;
+
     const base: EventSpec[] = Array.from({ length: GAMES }, (_, i) => ({
       eventId: `cfb-${String(i)}`,
       league: 'ncaaf' as const,
-      kickoffAt: T0 - HOUR,
-      status: 'in' as const,
+      kickoffAt: kickoffOf(i),
+      status: 'pre' as const,
       homeAbbr: `H${String(i)}`,
       awayAbbr: `A${String(i)}`,
       homeScore: 0,
       awayScore: 0,
-      period: 1,
-      displayClock: '15:00',
       // ESPN strips odds at kickoff, but keep them attached to prove L2 drops
       // them at the mapper rather than relying on the feed.
       odds: { spreadHome: -3.5, total: 50.5, mlHome: -180, mlAway: 150 },
     }));
 
+    /**
+     * One game's day. Exactly TWO indexed transitions (pre -> in, in -> post);
+     * everything else is clock and score churn on non-indexed columns.
+     */
+    const at = (run: number, i: number): EventSpec => {
+      const e = base[i]!;
+      const elapsed = T0 + run * 15 * MIN - e.kickoffAt;
+      if (elapsed < 0) return e;
+      if (elapsed >= WAVE_MS) {
+        return {
+          ...e,
+          status: 'post',
+          period: 4,
+          displayClock: '0:00',
+          homeScore: 28,
+          awayScore: 24,
+        };
+      }
+      const quarters = (elapsed - (elapsed % (45 * MIN))) / (45 * MIN);
+      return {
+        ...e,
+        status: 'in',
+        period: quarters + 1,
+        // THE CLOCK MOVES EVERY REFRESH. This is the whole point.
+        displayClock: `${String(15 - (run % 15))}:0${String(run % 10)}`,
+        homeScore: 7 * quarters,
+        awayScore: 6 * quarters,
+      };
+    };
+
+    const probe = probeBatchRows();
     let games = 0;
     let lines = 0;
-    // The slate is a pure function of `step`, so two consecutive runs inside the
-    // same step are byte-identical and MUST write nothing. A real score/clock
-    // transition lands every third refresh — the §8.6 model of "~30 genuine
-    // transitions per game across a live Saturday".
-    const step = (run: number): number => (run - (run % 3)) / 3;
-    const transitions = step(95); // 31 transitions after the initial insert
-    for (let run = 0; run < 96; run += 1) {
-      const now = T0 + run * 15 * MIN;
-      const s = step(run);
-      const slate = makeSlate(
-        base.map((e) => ({
-          ...e,
-          homeScore: s,
-          displayClock: `${String(15 - (s % 15))}:00`,
-        })),
-        'ncaaf',
-        now,
-      );
-      const res = await upsertSlate(env, slate, now);
-      games += res.games;
-      lines += res.lines;
+    let lineRowsForStartedGames = 0;
+    let rowsWritten = 0;
+    try {
+      for (let run = 0; run < REFRESHES; run += 1) {
+        const now = T0 + run * 15 * MIN;
+        const specs = base.map((_, i) => at(run, i));
+        const res = await upsertSlate(env, makeSlate(specs, 'ncaaf', now), now);
+        games += res.games;
+        lines += res.lines;
+        // L2 is a MAPPER guarantee: once every game in the slate has started,
+        // not one line row may be written however much the feed still carries.
+        if (specs.every((e) => e.status !== 'pre')) lineRowsForStartedGames += res.lines;
+        rowsWritten += res.rowsWritten;
+      }
+    } finally {
+      probe.restore();
     }
 
-    expect(lines).toBe(0); // L2: not one line row for a live slate
-    expect(games).toBeLessThan(5_000);
-    // ...and it is not trivially small either: the real transitions DO land.
-    expect(games).toBe(GAMES * (1 + transitions));
+    // The independent witness and the production accounting must agree exactly.
+    expect(rowsWritten).toBe(probe.rows);
+
+    // THE GUARD.
+    expect(rowsWritten).toBeLessThan(5_000);
+
+    // L2, stated as a measurement rather than prose.
+    expect(lines).toBeGreaterThan(0);
+    expect(lineRowsForStartedGames).toBe(0);
+
+    // ...and it is not trivially small either — every real change DID land.
+    expect(games).toBeGreaterThan(GAMES * 10);
+    expect(rowsWritten).toBeGreaterThan(GAMES * 20);
+
+    // The final state is the last payload, not a half-applied one.
+    const g = await gameRow('ncaaf:cfb-0');
+    expect(g?.status).toBe('final');
+    expect(g?.home_score).toBe(28);
+    expect(g?.away_score).toBe(24);
   }, 120_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * the A/B split — per-statement row costs (PLAN.md §8.5)
+ * ------------------------------------------------------------------ */
+
+describe('A/B split: rows written per kind of change (PLAN.md §8.5)', () => {
+  let probe: BatchProbe;
+
+  beforeEach(() => {
+    probe = probeBatchRows();
+  });
+  afterEach(() => {
+    probe.restore();
+  });
+
+  /** Upsert one slate and return what it cost, measured two independent ways. */
+  async function cost(
+    events: readonly EventSpec[],
+    now: number,
+  ): Promise<{ reported: number; measured: number; games: number }> {
+    probe.reset();
+    const res = await upsertSlate(env, makeSlate(events, 'nfl', now), now);
+    return { reported: res.rowsWritten, measured: probe.rows, games: res.games };
+  }
+
+  const LIVE = spec({ status: 'in', homeScore: 7, awayScore: 3, odds: undefined, period: 2 });
+
+  it('a first insert costs 4 rows per game (table + three indexes)', async () => {
+    const c = await cost([LIVE], T0);
+    expect(c.reported).toBe(6);
+    expect(c.measured).toBe(6);
+    expect(c.games).toBe(1);
+  });
+
+  it('an UNCHANGED re-ingest costs ZERO rows', async () => {
+    await cost([LIVE], T0);
+    const c = await cost([LIVE], T0 + 15 * MIN);
+    expect(c.reported).toBe(0);
+    expect(c.measured).toBe(0);
+    expect(c.games).toBe(0);
+  });
+
+  it('a CLOCK-ONLY change costs 1 row, not 4 — this is the whole fix', async () => {
+    await cost([LIVE], T0);
+    const c = await cost([{ ...LIVE, displayClock: '3:47' }], T0 + 15 * MIN);
+    expect(c.reported).toBe(1);
+    expect(c.measured).toBe(1);
+    expect((await gameRow('nfl:401872925'))?.display_clock).toBe('3:47');
+  });
+
+  it('a SCORE-ONLY change costs 1 row', async () => {
+    await cost([LIVE], T0);
+    const c = await cost([{ ...LIVE, homeScore: 14 }], T0 + 15 * MIN);
+    expect(c.reported).toBe(1);
+    expect(c.measured).toBe(1);
+    expect((await gameRow('nfl:401872925'))?.home_score).toBe(14);
+  });
+
+  it('a RANK-ONLY change costs 1 row', async () => {
+    await cost([{ ...LIVE, homeRank: 12 }], T0);
+    const c = await cost([{ ...LIVE, homeRank: 9 }], T0 + 15 * MIN);
+    expect(c.reported).toBe(1);
+    expect(c.measured).toBe(1);
+    expect((await gameRow('nfl:401872925'))?.home_rank).toBe(9);
+  });
+
+  it('an L3 "still here" touch costs 1 row', async () => {
+    await cost([LIVE], T0);
+    const c = await cost([LIVE], T0 + GAME_SEEN_TOUCH_MS + 1);
+    expect(c.reported).toBe(1);
+    expect(c.measured).toBe(1);
+    const g = await gameRow('nfl:401872925');
+    expect(g?.last_seen_at).toBe(T0 + GAME_SEEN_TOUCH_MS + 1);
+    expect(g?.updated_at).toBe(T0); // a touch is not a change
+  });
+
+  it('a STATUS transition costs 4 rows (the indexed write, paid once)', async () => {
+    await cost([spec({ status: 'pre', odds: undefined })], T0);
+    const c = await cost(
+      [spec({ status: 'in', homeScore: 7, awayScore: 0, odds: undefined, period: 1 })],
+      T0 + 15 * MIN,
+    );
+    // (A) applies and carries period/clock/scores with it, so (B) finds nothing.
+    expect(c.reported).toBe(4);
+    expect(c.measured).toBe(4);
+    expect(c.games).toBe(1); // ...and it is still ONE changed game, not two
+  });
+
+  it('a STATUS transition that ALSO moves a rank costs 4 + 1', async () => {
+    await cost([spec({ status: 'pre', odds: undefined, homeRank: 12 })], T0);
+    const c = await cost(
+      [spec({ status: 'in', odds: undefined, homeRank: 9, period: 1 })],
+      T0 + 15 * MIN,
+    );
+    expect(c.reported).toBe(5);
+    expect(c.measured).toBe(5);
+    expect(c.games).toBe(1);
+    expect((await gameRow('nfl:401872925'))?.home_rank).toBe(9);
+  });
+
+  it('a KICKOFF reschedule costs 4 rows (kickoff_at is in two indexes)', async () => {
+    await cost([spec({ odds: undefined })], T0);
+    const c = await cost([spec({ odds: undefined, kickoffAt: T0 + 6 * HOUR })], T0 + 15 * MIN);
+    expect(c.reported).toBe(4);
+    expect(c.measured).toBe(4);
+  });
+
+  it('a final game glitching back to scheduled costs ZERO rows', async () => {
+    await cost([spec({ status: 'post', homeScore: 27, awayScore: 24, odds: undefined })], T0);
+    const c = await cost(
+      [spec({ status: 'pre', homeScore: 0, awayScore: 0, odds: undefined })],
+      T0 + HOUR,
+    );
+    // Neither (A) nor (B) may apply: the never-regress guard is in BOTH.
+    expect(c.reported).toBe(0);
+    expect(c.measured).toBe(0);
+    const g = await gameRow('nfl:401872925');
+    expect(g?.status).toBe('final');
+    expect(g?.home_score).toBe(27);
+    expect(g?.display_clock).toBe('0:00'); // (B) did not move the clock either
+  });
+
+  it('rowsWritten also covers the game_lines rows and the target reschedule', async () => {
+    const t = await sundayNflTarget();
+    probe.reset();
+    const res = await ingestSlate([BASE_SPEC], T0, t);
+    // 6 (game INSERT: table + PK autoindex + UNIQUE autoindex + the three
+    // explicit indexes) + 2 (line INSERT: table + the composite-PK autoindex).
+    // The ingest_targets reschedule is a bare `.run()`, so the batch probe does
+    // not see it — hence the >= on the reported figure.
+    expect(probe.rows).toBe(8);
+    expect(res.rowsWritten).toBe(10); // ...+ 2 for the reschedule
+  });
+
+  it('SET LIST GUARD: (B) contains no indexed column', () => {
+    // A static assertion, because the failure mode is silent: adding `status`,
+    // `kickoff_at` or `week` to the live UPDATE's SET list quadruples every live
+    // refresh and no functional test would notice.
+    const setList = GAME_LIVE_SQL.slice(
+      GAME_LIVE_SQL.indexOf('SET'),
+      GAME_LIVE_SQL.indexOf('WHERE id = ?'),
+    );
+    const assigned = new Set(
+      [...setList.matchAll(/(?:^|,)\s*([a-z_]+)\s*=/gm)].map((m) => m[1] ?? ''),
+    );
+    // The three mutable columns covered by idx_games_board / _status / _week.
+    for (const column of ['status', 'kickoff_at', 'week']) {
+      expect(assigned.has(column), `${column} must not be SET by the live update`).toBe(false);
+    }
+    // ...and it MUST still carry the columns that used to be INSERT-only.
+    for (const column of ['home_rank', 'away_rank', 'home_logo', 'away_logo', 'name']) {
+      expect(assigned.has(column), `${column} must be SET by the live update`).toBe(true);
+    }
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -1134,6 +1406,40 @@ describe('computeNextRunAt', () => {
       'nfl',
       T0,
     );
+    expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + 15 * MIN);
+  });
+
+  it('a POSTPONED game does NOT pin the target to the 15-minute live tier', () => {
+    // `TERMINAL_STATUSES` is only {final, canceled}, so a postponed game stays
+    // "unfinished" indefinitely. With a one-sided `kickoffAt - now <= 3h` test
+    // its nominal kickoff, five hours in the past, still read as "live" — 96
+    // pointless refreshes a day, forever. It belongs in the discovery tier.
+    const slate = makeSlate([spec({ status: 'postponed', kickoffAt: T0 - 5 * HOUR })], 'nfl', T0);
+    expect(slate.games[0]?.status).toBe('postponed');
+    expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + 6 * HOUR);
+  });
+
+  it('an UNKNOWN-status game with a long-past kickoff also falls to discovery', () => {
+    const slate = makeSlate([spec({ status: 'pre', kickoffAt: T0 - 5 * HOUR })], 'nfl', T0);
+    // Force the parsed status to `unknown`, the other non-terminal straggler.
+    const unknown: ProviderSlate = {
+      ...slate,
+      games: slate.games.map((g) => ({ ...g, status: 'unknown' as const })),
+    };
+    expect(computeNextRunAt(target, unknown, false, T0)).toBe(T0 + 6 * HOUR);
+  });
+
+  it('a postponed game whose NEW kickoff is 2h out is live again', () => {
+    // The clamp is on the horizon, not on the status: once ESPN republishes a
+    // real upcoming kickoff the target goes back to the 15-minute tier.
+    const slate = makeSlate([spec({ status: 'postponed', kickoffAt: T0 + 2 * HOUR })], 'nfl', T0);
+    expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + 15 * MIN);
+  });
+
+  it('an IN_PROGRESS game is live no matter how long ago it kicked off', () => {
+    // The in_progress arm has no horizon at all — a game in a weather delay is
+    // still the thing we most need fresh scores for.
+    const slate = makeSlate([spec({ status: 'in', kickoffAt: T0 - 9 * HOUR })], 'nfl', T0);
     expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + 15 * MIN);
   });
 
@@ -1376,5 +1682,97 @@ describe('runRefresh', () => {
     const again = await runRefresh(env, T0 + MIN, 2);
     expect(again.gamesUpserted).toBe(0);
     expect(again.linesUpserted).toBe(0);
+    // ...except for the two target reschedules, which are unavoidable: this is
+    // the ONLY floor a quiet run has, and it is what §8.6 budgets at 192/day.
+    expect(again.rowsWritten).toBe(4); // 2 targets x (row + idx_ingest_targets_due)
+  });
+
+  it('reports rowsWritten, and job_runs.stats carries it (PLAN.md §8.6)', async () => {
+    const key = etDateKey(T0);
+    espn.set(key, [BASE_SPEC]);
+    const stats = await runRefresh(env, T0, 2);
+    // 6 (game INSERT) + 2 (line INSERT) + 2 x 2 (target reschedules).
+    expect(stats.rowsWritten).toBe(12);
+    expect(stats.gamesUpserted).toBe(1);
+
+    // ...and it survives the trip through job_runs.stats as a number.
+    await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?')
+      .bind(T0 + MIN)
+      .run();
+    const run = await runJob(env, 'refresh', 'cron', T0 + MIN);
+    expect(run.status).toBe('ok');
+    expect(run.stats?.['rowsWritten']).toBeTypeOf('number');
+    expect(run.stats?.['rowsSkipped']).toBeTypeOf('number');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * fields that used to be INSERT-only (PLAN.md §8.5)
+ * ------------------------------------------------------------------ */
+
+describe('the live update refreshes fields that used to go stale', () => {
+  it('a CFB rank moves during the week instead of being frozen at first sight', async () => {
+    // The bug: `home_rank`/`away_rank` were in the INSERT column list only, so a
+    // game first seen on Monday wore Monday's rank all week — and the ranks are
+    // the single most visible thing on a CFB board.
+    const t = await sundayNflTarget();
+    await ingestSlate([spec({ homeRank: 12, awayRank: 4, odds: undefined })], T0, t);
+    let g = await gameRow('nfl:401872925');
+    expect(g?.home_rank).toBe(12);
+    expect(g?.away_rank).toBe(4);
+
+    const res = await ingestSlate(
+      [spec({ homeRank: 9, awayRank: 5, odds: undefined })],
+      T0 + DAY,
+      t,
+    );
+    expect(res.gamesUpserted).toBe(1);
+    g = await gameRow('nfl:401872925');
+    expect(g?.home_rank).toBe(9);
+    expect(g?.away_rank).toBe(5);
+    // A rank move IS a data change, so updated_at advances.
+    expect(g?.updated_at).toBe(T0 + DAY);
+  });
+
+  it('a team dropping out of the rankings clears the rank rather than keeping it', async () => {
+    const t = await sundayNflTarget();
+    await ingestSlate([spec({ homeRank: 25, odds: undefined })], T0, t);
+    expect((await gameRow('nfl:401872925'))?.home_rank).toBe(25);
+    // 99 is ESPN's "unranked" sentinel; the parser maps it to null.
+    await ingestSlate([spec({ homeRank: 99, odds: undefined })], T0 + DAY, t);
+    expect((await gameRow('nfl:401872925'))?.home_rank).toBeNull();
+  });
+
+  it('a logo URL change lands', async () => {
+    const t = await sundayNflTarget();
+    await ingestSlate([spec({ odds: undefined })], T0, t);
+    const before = (await gameRow('nfl:401872925'))?.home_logo;
+    expect(before).toContain('/cin.png');
+
+    espn.setResponder(t.key, () => {
+      const payload = buildScoreboard([spec({ odds: undefined })]) as {
+        events: { competitions: { competitors: { team: Record<string, unknown> }[] }[] }[];
+      };
+      const team = payload.events[0]?.competitions[0]?.competitors[0]?.team;
+      if (team !== undefined) team['logo'] = 'https://a.espncdn.com/i/teamlogos/nfl/500/new.png';
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    await ingestTarget(env, new EspnProvider(env), t, T0 + DAY);
+    expect((await gameRow('nfl:401872925'))?.home_logo).toContain('/new.png');
+  });
+
+  it('neutral_site stays INSERT-only — a documented decision, not an oversight', async () => {
+    // PLAN.md §8.5: ESPN sets it when the event is created, grading reads the
+    // `bet_legs` snapshot rather than this column, and putting it in the compare
+    // tuple would add a column that never moves. If that ever stops being true,
+    // it goes in the LIVE update (1 row), never in the indexed one.
+    const t = await sundayNflTarget();
+    await ingestSlate([spec({ neutralSite: false, odds: undefined })], T0, t);
+    expect((await gameRow('nfl:401872925'))?.neutral_site).toBe(0);
+    await ingestSlate([spec({ neutralSite: true, odds: undefined })], T0 + DAY, t);
+    expect((await gameRow('nfl:401872925'))?.neutral_site).toBe(0);
   });
 });

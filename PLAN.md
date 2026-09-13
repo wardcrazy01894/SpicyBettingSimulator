@@ -1182,13 +1182,44 @@ board — it blocks `INSERT INTO bets` and the settlement batch. Write budget is
 therefore a **correctness** concern here, and the three levers below are v1
 requirements, not future optimisations.
 
-**L1 — compare-and-skip.** The `DO UPDATE` runs only when something actually
-changed. When it does not fire, SQLite writes zero rows **and zero index
-entries** — which matters because all three `games` indexes cover mutable
-columns (`kickoff_at`, `status`, `week`), so an unconditional upsert rewrites
-four rows per game whether or not anything moved.
+**L1 — compare-and-skip.** Every write's `WHERE` runs only when something
+actually changed. When it does not fire, SQLite writes zero rows **and zero index
+entries**.
+
+**L1b — the A/B split (added in the M4 round-2 review).** L1 on its own is not
+enough, and the reason is worth stating precisely, because the first
+implementation shipped without it.
+
+_Measured on miniflare D1_ — `meta.rows_written`, which counts the table row plus
+every index entry the statement rewrote, i.e. the unit the 100k/day cap counts:
+
+| Statement                                                                                  | rows_written |
+| ------------------------------------------------------------------------------------------ | ------------ |
+| `UPDATE games SET last_seen_at = ?`                                                        | **1**        |
+| `UPDATE games SET last_seen_at = ?, status = status, kickoff_at = kickoff_at, week = week` | **4**        |
+| `INSERT INTO games (...)` (a brand-new row)                                                | **6**        |
+
+SQLite rewrites an index entry whenever the index's column appears in an
+`UPDATE`'s `SET` list, **regardless of whether the value changed**. `games` has
+three explicit indexes covering exactly three mutable columns —
+`idx_games_board(league, kickoff_at)`, `idx_games_status(status, kickoff_at)`,
+`idx_games_week(league, season, season_type, week)` — so a single statement
+carrying the whole `SET` list costs 4 rows for **any** applied update, a
+clock-only change and an L3 touch included. (An `INSERT` is 6 because it also
+writes the `PRIMARY KEY` and `UNIQUE (provider, league, provider_event_id)`
+autoindexes; an `UPDATE` touches neither.)
+
+And for a **live** game `display_clock` changes on every single refresh, so
+clause (b) always fires and L1 saves nothing at all. Measured: 86 CFB games live
+across 96 refreshes with the clock moving each time = **33,196 rows/day** from
+`games` alone, which is §8.6's "without the levers" figure, reached _with_ L1.
+
+So each game is written as **two statements**:
 
 ```sql
+-- (A) FULL upsert. New rows take the INSERT path. The DO UPDATE fires ONLY when
+-- an INDEXED column really changed, so only genuine status/kickoff/week
+-- transitions pay the 4-row price.
 INSERT INTO games (...) VALUES (...)
 ON CONFLICT(id) DO UPDATE SET
   kickoff_at    = excluded.kickoff_at,
@@ -1200,53 +1231,74 @@ ON CONFLICT(id) DO UPDATE SET
   away_score    = COALESCE(excluded.away_score, games.away_score),
   week          = COALESCE(excluded.week, games.week),
   last_seen_at  = excluded.last_seen_at,
-  -- updated_at means "data changed", NOT "seen again": it advances only when the
-  -- clause-(b) tuple differs. An L3 touch (clause c) moves last_seen_at alone.
-  -- This is what keeps §7.1's resetDeferredBets predicate honest — a touch must
-  -- not hand a permanently-ungradeable bet a fresh 24 h budget every 6 h.
-  updated_at    = CASE WHEN
-    (games.status, games.kickoff_at, games.period, games.display_clock,
-     COALESCE(games.home_score, -1), COALESCE(games.away_score, -1),
-     COALESCE(games.week, -1))
-    IS NOT
-    (excluded.status, excluded.kickoff_at, excluded.period, excluded.display_clock,
-     COALESCE(COALESCE(excluded.home_score, games.home_score), -1),
-     COALESCE(COALESCE(excluded.away_score, games.away_score), -1),
-     COALESCE(COALESCE(excluded.week, games.week), -1))
-    THEN excluded.updated_at ELSE games.updated_at END
+  -- (A) fires only on a real transition, which IS a data change.
+  updated_at    = excluded.updated_at
 WHERE
   -- (a) never regress a final game; but do allow score corrections
   (games.status <> 'final' OR excluded.status = 'final')
-  AND (
-    -- (b) L1: only write if a value actually differs (row-value IS NOT)
-    (games.status, games.kickoff_at, games.period, games.display_clock,
-     COALESCE(games.home_score, -1), COALESCE(games.away_score, -1),
-     COALESCE(games.week, -1))
-    IS NOT
-    (excluded.status, excluded.kickoff_at, excluded.period, excluded.display_clock,
-     COALESCE(COALESCE(excluded.home_score, games.home_score), -1),
-     COALESCE(COALESCE(excluded.away_score, games.away_score), -1),
-     COALESCE(COALESCE(excluded.week, games.week), -1))
-    -- (c) L3: or the "still here" stamp is older than the touch interval
-    OR games.last_seen_at < excluded.last_seen_at - 21600000  -- GAME_SEEN_TOUCH_MS 6h
-  );
+  -- (b) an INDEXED column must actually differ
+  AND (games.status, games.kickoff_at, COALESCE(games.week, -1))
+      IS NOT
+      (excluded.status, excluded.kickoff_at, COALESCE(COALESCE(excluded.week, games.week), -1));
+
+-- (B) LIVE update. NO INDEXED COLUMN MAY APPEAR IN THIS SET LIST. 1 row written
+-- for a clock, score or rank change, and 1 for an L3 "seen" touch.
+UPDATE games SET
+  period = ?, display_clock = ?,
+  home_score = COALESCE(?, home_score), away_score = COALESCE(?, away_score),
+  status_detail = ?,
+  home_rank = ?, away_rank = ?, home_logo = ?, away_logo = ?,
+  name = ?, short_name = ?, home_name = ?, away_name = ?,
+  last_seen_at = ?,
+  -- updated_at means "data changed", NOT "seen again": it advances only when the
+  -- compare tuple differs. An L3 touch moves last_seen_at alone. This is what
+  -- keeps §7.1's resetDeferredBets predicate honest — a touch must not hand a
+  -- permanently-ungradeable bet a fresh 24 h budget every 6 h.
+  updated_at = CASE WHEN <compare tuple> IS NOT <new values> THEN ? ELSE updated_at END
+WHERE id = ?
+  AND (status <> 'final' OR ? = 'final')          -- the same never-regress guard
+  AND (<compare tuple> IS NOT <new values>
+       OR last_seen_at < ? - 21600000);           -- L3, GAME_SEEN_TOUCH_MS 6h
 ```
 
-Verified in sqlite3: an identical re-ingest gives `changes() = 0`; a score change
-gives `changes() = 1`; a `last_seen_at` older than the interval gives
-`changes() = 1` **but leaves `updated_at` unchanged** (round-3 review: without the
-`CASE`, the 6-hour touch re-armed `settle_attempts` for permanently-ungradeable
-bets, so the `MAX_SETTLE_ATTEMPTS` cap and the `stuck[]` alert could never fire).
+(A) runs first, so when it applies it already carries the new values and (B) finds
+nothing to do. The statement count per game doubles — an 86-game target is ~172
+statements across ~5 chunked batches in one invocation, the one deliberate
+exception to `db.ts`'s 40-per-invocation note — and the rows written collapse.
 
-**Deliberate omission from clause (b): `status_detail`.** It is in the `SET` list
-but not in the comparison tuple, so a change to _only_ the human-readable detail
+_Measured cost per kind of change_ (`tests/worker/ingest.spec.ts` asserts every
+row of this table, against both the production accounting and an independent
+`env.DB.batch` probe):
+
+| Change                       | rows_written                       |
+| ---------------------------- | ---------------------------------- |
+| nothing changed              | **0**                              |
+| clock only                   | **1**                              |
+| score only                   | **1**                              |
+| rank only                    | **1**                              |
+| L3 "still here" touch        | **1** (`updated_at` does NOT move) |
+| status transition            | **4**                              |
+| status transition + rank     | **4 + 1**                          |
+| kickoff reschedule           | **4**                              |
+| first insert                 | **6**                              |
+| final glitching to scheduled | **0** (both statements refuse)     |
+
+**Deliberate omission from (B)'s compare tuple: `status_detail`.** It is in the
+`SET` list but not in the tuple, so a change to _only_ the human-readable detail
 string (e.g. `"Final"` → `"Final/OT"`) is skipped until something else changes or
 the 6-hour touch fires. That is intentional — `status_detail` is cosmetic, it is
 not read by grading or bettability, and including it would cost writes for no
 behavioural gain. Noted here so it reads as a decision rather than an oversight.
 `display_clock` _is_ in the tuple, because a stopped clock is a useful signal that
-a game has stalled; see §8.6 for why it is also the first thing to drop if the
-write budget gets tight.
+a game has stalled — and after the A/B split it genuinely does cost 1 row, so the
+"drop `display_clock`" knob in §8.6 is now a last resort rather than a live
+concern.
+
+**Why ranks, logos and names are in (B).** They used to be in the `INSERT` column
+list only, so a CFB game first seen on Monday wore Monday's rank all week — on a
+board where the rank is the most visible thing about a matchup. None of them is
+indexed, so refreshing them rides along in (B) for the 1 row it was already going
+to cost.
 
 **L2 — no line writes for non-scheduled games.** Measured on the committed
 samples: **0 of 84** in-progress/final events carried odds, **16 of 16** scheduled
@@ -1264,6 +1316,11 @@ against a 3-hour `LINE_STALE_MS`.
 Other upsert rules:
 
 - `original_kickoff_at` is only in the `INSERT` column list, never in `DO UPDATE`.
+- `neutral_site` is likewise INSERT-only, and that is a **decision**: ESPN sets it
+  when the event is created, grading reads the `bet_legs` snapshot rather than
+  this column, and putting it in the compare tuple would add a column that never
+  moves. If ESPN is ever observed to correct it, it goes into (B) — where it
+  costs 1 row — never into (A).
 - `COALESCE` on scores means a feed that momentarily omits a score cannot null it
   out. (See §8.3 on why a pre-game `"0"` must not be treated as absent.)
 - Clause (a) means an ESPN glitch reporting a completed game as `STATUS_SCHEDULED`
@@ -1328,39 +1385,49 @@ _Worst day, WITHOUT the levers (i.e. what we would have shipped):_
 Half the daily budget on one Saturday, with a whole Sunday still to come, is not a
 safety margin. Hence L1/L2/L3 in §8.5.
 
-_Worst day, WITH the levers:_
+_Worst day, WITH the levers — MEASURED, not modelled._ The CFB `games` line is
+the one that used to be a guess; it is now the output of
+`tests/worker/ingest.spec.ts`, which drives 96 refreshes of 86 CFB games in four
+kickoff waves (scheduled → in_progress for 3.5 h → final), moving the clock on
+**every** refresh, and sums `meta.rows_written`:
 
-| Stream                              | Arithmetic                                                              | Rows                            |
-| ----------------------------------- | ----------------------------------------------------------------------- | ------------------------------- |
-| CFB Saturday `games` — real changes | 86 games × ~30 genuine status/score/clock transitions × 4               | **10,320**                      |
-| CFB `games` — L3 touches            | 86 × 4/day × 4                                                          | 1,376                           |
-| CFB `game_lines`                    | L2: zero while live; ~30 pre-game refreshes × 86 × (changed only, ~40%) | ~1,000                          |
-| NFL Sunday `games`                  | 13 × ~30 × 4                                                            | 1,560                           |
-| NFL `game_lines`                    | as above                                                                | ~200                            |
-| Other 8 date targets (quiet days)   | mostly `changes()=0`                                                    | ~500                            |
-| `ingest_targets` reschedules        | 96 runs × 2                                                             | 192                             |
-| bets / legs / ledger (10 users)     | —                                                                       | < 500                           |
-| sessions / throttle / job_runs      | —                                                                       | < 300                           |
-| **Total**                           |                                                                         | **≈ 16,000 / day — 16% of cap** |
+| Stream                              | Arithmetic                                               | Rows                          |
+| ----------------------------------- | -------------------------------------------------------- | ----------------------------- |
+| CFB Saturday `games` + `game_lines` | **measured**: 86 games × 96 refreshes, A/B split         | **2,979**                     |
+| NFL Sunday `games` + `game_lines`   | 13/86 of the above                                       | ~450                          |
+| Other 8 date targets (quiet days)   | mostly 0 rows; L3 touches at 1 row each                  | ~500                          |
+| `ingest_targets` reschedules        | 96 runs × 2 targets × 2 (row + `idx_ingest_targets_due`) | 384                           |
+| bets / legs / ledger (10 users)     | —                                                        | < 500                         |
+| sessions / throttle / job_runs      | —                                                        | < 300                         |
+| **Total**                           |                                                          | **≈ 5,100 / day — 5% of cap** |
 
-A typical weekday is under 1,500. The dominant remaining term is the ~30 genuine
-per-game transitions on a live Saturday, which is irreducible: those are real
-score and clock changes we need in order to grade bets.
+For reference, the same fixture run through the **single-statement** upsert this
+replaces writes **6,978** rows; and the theoretical worst case of all 86 games
+live for all 96 refreshes is **8,686** with the A/B split against **33,196**
+without it. A typical weekday is a few hundred.
 
-**`display_clock` is the one knob to watch.** It changes on essentially every
-refresh of a live game, which would defeat L1 on its own. Two defences:
-(a) `display_clock` and `period` are _not_ in any index, so a change costs 1 row
-not 4; (b) if the budget is ever tight, dropping `display_clock` from the
-comparison tuple (accepting a slightly stale clock in the UI) removes the term
-entirely. That knob is deliberately called out here so a future implementer does
-not have to rediscover it.
+The dominant remaining term is one row per live game per refresh — irreducible,
+because those are the real score and clock changes we need in order to grade bets.
+
+**`display_clock` is no longer the knob to watch.** An earlier draft of this
+section claimed "`display_clock` and `period` are not in any index, so a change
+costs 1 row not 4". **That was wrong**, and it is the mistake the A/B split
+exists to fix: the columns are indeed not indexed, but naming `status`,
+`kickoff_at` and `week` in the same `UPDATE`'s `SET` list rewrites all three
+indexes anyway, so a clock-only change cost **4** rows, not 1 (measured). With
+(A) and (B) separated the claim is finally true — a clock change costs exactly 1
+row — which demotes "drop `display_clock` from the comparison tuple" from a
+likely next step to a last resort worth about 1,200 rows a Saturday.
 
 **Observability, not faith.** Every `refresh` run records `rowsWritten` (summed
-from `meta.rows_written`) and `rowsSkipped` in `job_runs.stats`, and
-`GET /api/admin/jobs` surfaces a rolling daily total. `tests/worker/ingest.spec.ts`
-carries a regression assertion that 96 live refreshes of the 86-game CFB Saturday
-write **< 5,000** rows, so a change that silently defeats a lever fails CI rather
-than failing on a Saturday in November.
+from D1's `meta.rows_written`, covering games, lines and the target reschedule)
+and `rowsSkipped` in `job_runs.stats`. `GET /api/admin/jobs` folds a rolling-24h
+`dayRowsWritten` total into every run's `stats` — inside `stats` rather than
+beside it, because `api-types.ts` is frozen and `JobRunView.stats` is already
+`Record<string, unknown>`. `tests/worker/ingest.spec.ts` carries the regression
+assertion that 96 refreshes of the 86-game CFB Saturday write **< 5,000** rows,
+cross-checked against an independent `env.DB.batch` probe, so a change that
+silently defeats a lever fails CI rather than failing on a Saturday in November.
 
 ## 9. Cron, leases and crash recovery
 
@@ -2352,6 +2419,8 @@ friend who cannot find a game to bet):
   `seasontype=3` companion target (§8.2).
 - **After the first live Saturday**: compare measured rows-written to the §8.6
   model and, if it is running hot, drop `display_clock` from the compare tuple.
+  `GET /api/admin/jobs` reports `stats.dayRowsWritten` (rolling 24 h) for exactly
+  this check; §8.6 predicts ≈ 5,100/day.
 
 ---
 
@@ -2409,21 +2478,21 @@ collide, so each has a named rule rather than a hope:
 
 ## 17. Risks and mitigations
 
-| #   | Risk                                                                        | Likelihood    | Impact                                                                                                                                            | Mitigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| --- | --------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R1  | 10 ms CPU limit blown while ingesting an 86-game CFB Saturday               | **Medium**    | Ingest fails on the day that matters                                                                                                              | **Not** a parse problem — `JSON.parse` of the 1.3 MB file measures ~2.0 ms, and date-splitting saves only ~7% because the Saturday is 93% of the week. The risk is map + bind + `batch()`. Spike S1 (re-scoped) measures it. Fallback ladder: `REFRESH_TARGETS_PER_RUN=1` → drop `display_clock` from the compare tuple → split the mapping across two invocations via an internal self-`fetch` (each gets a fresh 10 ms) → split CFB by `groups=<conf>` → **last resort** Workers Paid ($5), which needs Alex's sign-off (Q1).                                                                                                                    |
-| R2  | ESPN changes the payload shape or rate-limits us                            | Medium        | Stale lines/scores                                                                                                                                | Total parser, warnings surfaced, backoff, existing rows never corrupted. Provider adapter means a swap to The Odds API is a new file, not a rewrite.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| R3  | D1 "queries per invocation" is really 50 and a batch counts per-statement   | Medium        | Settlement throws mid-run                                                                                                                         | Chunk at 20 bets; the job is safely resumable so a throw just defers work 15 min. Spike S2 confirms before raising.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| R4  | ESPN never posts a line for a CFB game users want to bet                    | High (normal) | UX confusion                                                                                                                                      | `lines: null` is a first-class rendered state ("line not posted"), not an error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| R5  | A friend finds a way to bet after kickoff                                   | Low           | Game integrity                                                                                                                                    | The guard is a DB-level `WHERE` inside the insert batch, plus a 60 s buffer, plus `status='scheduled'`. Tested.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| R6  | Client-side KDF feels slow / breaks on an old phone                         | Low           | Login friction                                                                                                                                    | 210k iterations ≈ 300 ms on a modern phone; `CLIENT_KDF.iterations` is a versioned constant and §10.4 describes the migration path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| R7  | Free-tier D1 **write** budget exceeded on a big Saturday                    | **Medium**    | **D1 returns errors for the rest of the UTC day — this blocks BET PLACEMENT and SETTLEMENT, not just the board.** Hard-enforced since 2026-09-01. | Naive design measured ≈ **48,500 rows/day** on a CFB Saturday (49% of cap, with Sunday still to come) — the earlier ~18% figure under-counted refresh frequency and indexes by ~3×. Three levers are **v1 requirements**, not future work (§8.5): L1 compare-and-skip upsert, L2 no line writes for non-scheduled games (0 of 84 started games carry odds), L3 touch intervals. Remodelled ≈ **16,000/day (16%)**. `job_runs.stats.rowsWritten` is reported daily and `ingest.spec.ts` has a CI regression assertion (< 5,000 rows for 96 live refreshes of the sample Saturday). Next knob if tight: drop `display_clock` from the compare tuple. |
-| R11 | A money or price value silently becomes a float in D1                       | Low (now)     | Unauditable cents; violates the project's first rule                                                                                              | SQLite `INTEGER` coerces >i64 to `REAL` (verified) and `bind()` truncates past 2^53. Mitigated structurally: **no rational is persisted** (§5.2), every money column is `CHECK`-bounded to `MAX_PAYOUT_CENTS`, leg prices are `CHECK abs(...) BETWEEN 100 AND 100000`, and eslint bans `Math.round/floor/ceil/trunc` and `parseFloat` in `src/shared` and `src/worker`.                                                                                                                                                                                                                                                                            |
-| R12 | Settlement queue starved by undecidable bets                                | Low           | Nothing settles at all                                                                                                                            | `bets.settle_attempts` + `ORDER BY settle_attempts ASC` + `MAX_SETTLE_ATTEMPTS` (§7.1). Columns added before the schema freeze.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| R13 | An `INSERT OR IGNORE` into `ledger` silently breaks `SUM(ledger) = balance` | Low           | Unrepairable drift in an append-only table                                                                                                        | the two `ledger_bi_*` `BEFORE INSERT` triggers — `RAISE(ABORT)` is not suppressible by `OR IGNORE` (verified both ways), and they raise distinct messages so an orphan-bankroll bug is not misreported to the user as insufficient funds. Plus a CLAUDE.md house rule and four named tests.                                                                                                                                                                                                                                                                                                                                                        |
-| R8  | Someone deletes/rewrites `migrations/0001_init.sql` after deploy            | Low           | Divergent prod schema                                                                                                                             | Frozen-after-M1 rule (§16) + `wrangler d1 migrations` tracking table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| R9  | ESPN rate limits / blocks the Worker IP range                               | Low           | Total ingest outage                                                                                                                               | Backoff + admin visibility; manual `refresh` trigger; documented fallback to The Odds API free tier (500 req/mo is enough at our cadence).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| R10 | Bet slip localStorage holds a stale line and the user is surprised          | Medium        | Trust                                                                                                                                             | `expected` + `409 LINE_CHANGED` + explicit "accept line change" confirm (§11.4).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| #   | Risk                                                                        | Likelihood    | Impact                                                                                                                                            | Mitigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --- | --------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  | 10 ms CPU limit blown while ingesting an 86-game CFB Saturday               | **Medium**    | Ingest fails on the day that matters                                                                                                              | **Not** a parse problem — `JSON.parse` of the 1.3 MB file measures ~2.0 ms, and date-splitting saves only ~7% because the Saturday is 93% of the week. The risk is map + bind + `batch()`, and the M4 A/B split (§8.5) DOUBLED the statement count to ~172 for an 86-game target — a deliberate trade of CPU for rows written, since only the latter is hard-enforced. Spike S1 (re-scoped) measures it. Fallback ladder: `REFRESH_TARGETS_PER_RUN=1` → drop `display_clock` from the compare tuple (now worth only ~1,200 rows/Saturday, so try it last among the cheap rungs) → split the mapping across two invocations via an internal self-`fetch` (each gets a fresh 10 ms) → split CFB by `groups=<conf>` → **last resort** Workers Paid ($5), which needs Alex's sign-off (Q1).                                                                                                                  |
+| R2  | ESPN changes the payload shape or rate-limits us                            | Medium        | Stale lines/scores                                                                                                                                | Total parser, warnings surfaced, backoff, existing rows never corrupted. Provider adapter means a swap to The Odds API is a new file, not a rewrite.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| R3  | D1 "queries per invocation" is really 50 and a batch counts per-statement   | Medium        | Settlement throws mid-run                                                                                                                         | Chunk at 20 bets; the job is safely resumable so a throw just defers work 15 min. Spike S2 confirms before raising.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| R4  | ESPN never posts a line for a CFB game users want to bet                    | High (normal) | UX confusion                                                                                                                                      | `lines: null` is a first-class rendered state ("line not posted"), not an error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| R5  | A friend finds a way to bet after kickoff                                   | Low           | Game integrity                                                                                                                                    | The guard is a DB-level `WHERE` inside the insert batch, plus a 60 s buffer, plus `status='scheduled'`. Tested.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| R6  | Client-side KDF feels slow / breaks on an old phone                         | Low           | Login friction                                                                                                                                    | 210k iterations ≈ 300 ms on a modern phone; `CLIENT_KDF.iterations` is a versioned constant and §10.4 describes the migration path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| R7  | Free-tier D1 **write** budget exceeded on a big Saturday                    | **Medium**    | **D1 returns errors for the rest of the UTC day — this blocks BET PLACEMENT and SETTLEMENT, not just the board.** Hard-enforced since 2026-09-01. | Naive design measured ≈ **48,500 rows/day** on a CFB Saturday (49% of cap, with Sunday still to come). Levers are **v1 requirements**, not future work (§8.5): L1 compare-and-skip, **L1b the A/B split** — without which L1 buys NOTHING for a live game, because `display_clock` moves every refresh (measured: 33,196 rows for 86 games × 96 refreshes even WITH L1) — L2 no line writes for non-scheduled games (0 of 84 started games carry odds), L3 touch intervals. **Measured** after the split: **2,979 rows** for that Saturday's ingest, ≈ 5,100/day all in (5% of cap). `job_runs.stats.rowsWritten` is recorded per run, `GET /api/admin/jobs` surfaces a rolling-24h `dayRowsWritten`, and `ingest.spec.ts` asserts < 5,000 rows for 96 refreshes of the sample Saturday with the clock moving every time. Next knob if tight: drop `display_clock` from the compare tuple (~1,200 rows). |
+| R11 | A money or price value silently becomes a float in D1                       | Low (now)     | Unauditable cents; violates the project's first rule                                                                                              | SQLite `INTEGER` coerces >i64 to `REAL` (verified) and `bind()` truncates past 2^53. Mitigated structurally: **no rational is persisted** (§5.2), every money column is `CHECK`-bounded to `MAX_PAYOUT_CENTS`, leg prices are `CHECK abs(...) BETWEEN 100 AND 100000`, and eslint bans `Math.round/floor/ceil/trunc` and `parseFloat` in `src/shared` and `src/worker`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| R12 | Settlement queue starved by undecidable bets                                | Low           | Nothing settles at all                                                                                                                            | `bets.settle_attempts` + `ORDER BY settle_attempts ASC` + `MAX_SETTLE_ATTEMPTS` (§7.1). Columns added before the schema freeze.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| R13 | An `INSERT OR IGNORE` into `ledger` silently breaks `SUM(ledger) = balance` | Low           | Unrepairable drift in an append-only table                                                                                                        | the two `ledger_bi_*` `BEFORE INSERT` triggers — `RAISE(ABORT)` is not suppressible by `OR IGNORE` (verified both ways), and they raise distinct messages so an orphan-bankroll bug is not misreported to the user as insufficient funds. Plus a CLAUDE.md house rule and four named tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| R8  | Someone deletes/rewrites `migrations/0001_init.sql` after deploy            | Low           | Divergent prod schema                                                                                                                             | Frozen-after-M1 rule (§16) + `wrangler d1 migrations` tracking table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| R9  | ESPN rate limits / blocks the Worker IP range                               | Low           | Total ingest outage                                                                                                                               | Backoff + admin visibility; manual `refresh` trigger; documented fallback to The Odds API free tier (500 req/mo is enough at our cadence).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| R10 | Bet slip localStorage holds a stale line and the user is surprised          | Medium        | Trust                                                                                                                                             | `expected` + `409 LINE_CHANGED` + explicit "accept line change" confirm (§11.4).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 ---
 
@@ -2435,14 +2504,20 @@ It is not. Measured locally, `JSON.parse` of the committed 1.3 MB CFB week file 
 **~2.0 ms** (20-run mean), and per-ET-date splitting barely helps anyway because
 the Saturday is 93% of the week (80 of 86 events).
 _Question_: does `map to rows + build ~172 bound statements + batch()` for one
-86-game CFB ET date fit inside the 10 ms free-tier CPU limit, **and** does the
-compare-and-skip upsert (§8.5) actually reduce `rows_written` as modelled in §8.6?
+86-game CFB ET date fit inside the 10 ms free-tier CPU limit? (The second half of
+this spike — "does the compare-and-skip upsert actually reduce `rows_written` as
+modelled in §8.6?" — IS NOW ANSWERED, in the wrong direction and then fixed: L1
+alone reduced nothing for a live game, and the A/B split of §8.5 took the measured
+Saturday from 33,196 rows to 2,979. `tests/worker/ingest.spec.ts` carries the
+numbers. What remains is CPU.)
+_Note_: the A/B split is what makes it ~172 statements rather than ~86 — two per
+game plus one per line. That trade is deliberate: rows written are hard-enforced,
+statements per invocation are the open question of S2.
 _Method_: after M4, `POST /api/admin/jobs/refresh` against a deployed Worker on a
-real Saturday date; read CPU time from `wrangler tail` and the dashboard; sum
-`meta.rows_written` from the batch results. Also instrument
-`performance.now()` around map/bind separately from parse in a pool-workers test.
-_Exit criterion_: a p95 CPU number for the worst target **and** a measured
-rows-written figure for one live refresh, plus a decision between (a) ship as is,
+real Saturday date; read CPU time from `wrangler tail` and the dashboard. Also
+instrument `performance.now()` around map/bind separately from parse in a
+pool-workers test.
+_Exit criterion_: a p95 CPU number for the worst target, plus a decision between (a) ship as is,
 (b) `REFRESH_TARGETS_PER_RUN=1`, (c) drop `display_clock` from the comparison
 tuple (§8.6), (d) split the mapping across two invocations via an internal
 self-`fetch`, (e) escalate to Alex re: Workers Paid.
@@ -2457,6 +2532,12 @@ _Method_: a pool-workers test plus one deployed probe that runs a batch of 60
 statements and observes whether it errors; cross-check `wrangler tail`.
 _Exit criterion_: a documented number in `CLAUDE.md` and a justified
 `SETTLE_CHUNK`. **Blocks raising `SETTLE_CHUNK` above 20.**
+_Raised urgency after M4_: `db.ts` says "budget ≤ 40 statements per invocation",
+and ingestion now issues ~172 in one — chunked into ~5 `batch()` calls of 40. If
+the answer is "50 QUERIES per invocation, and a batch of n counts as n", ingest is
+already over and the remedy is R1's "split the mapping across two invocations"
+rung, not a smaller chunk. `MAX_BATCH_STATEMENTS` is the size of ONE batch, not a
+per-invocation total, and db.ts now says so.
 
 **S3 — `@cloudflare/vitest-pool-workers` + D1 migrations ergonomics.**
 _Question_: does `applyD1Migrations` from `cloudflare:test` apply
@@ -2540,10 +2621,15 @@ by a friend who cannot find a game to bet.
    realistic prices (a 10-leg −110 parlay at a $1000 stake returns ~$643k). Happy
    with $1M, or would you rather it were lower so a lucky 10-leg parlay does not
    end the season's leaderboard on day one?
-10. **`display_clock` in the UI** — keeping a live game's clock current is the single
-    biggest remaining D1 write stream (§8.6). If the write budget gets tight, the
-    cheapest fix is to stop tracking `display_clock` and show only the period
-    ("Q3") rather than "Q3 7:42". Is a slightly stale clock acceptable?
+10. **`display_clock` in the UI** — keeping a live game's clock current is still the
+    single biggest remaining D1 write stream (§8.6), but the question is now much
+    less pressing than it was when it was first asked. The M4 A/B split took a
+    measured CFB Saturday from **33,196** rows to **2,979** (5% of the daily cap,
+    all streams in), and a clock change now costs exactly 1 row rather than 4.
+    Dropping `display_clock` from the compare tuple would save roughly 1,200 rows
+    a Saturday — worth having if we ever run hot, not worth a worse UI now. So:
+    **no decision needed from you today**; the answer is only wanted if
+    `GET /api/admin/jobs`'s `dayRowsWritten` starts approaching 50,000.
 
 ---
 

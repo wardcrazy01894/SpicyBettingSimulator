@@ -14,11 +14,20 @@
  * past the cap D1 returns errors, which blocks BET PLACEMENT and SETTLEMENT, not
  * just the board. Three levers are v1 requirements, not future work:
  *
- *   L1 COMPARE-AND-SKIP. The upsert's `DO UPDATE ... WHERE` compares old and new
- *      row values and skips entirely when nothing changed. A live 15-minute
- *      refresh of a game whose score has not moved writes ZERO rows -- and
- *      therefore zero index entries, which matters because all three `games`
- *      indexes cover mutable columns.
+ *   L1 COMPARE-AND-SKIP. Every write's `WHERE` compares old and new row values
+ *      and skips entirely when nothing changed. A refresh of a game whose data
+ *      has not moved writes ZERO rows -- and therefore zero index entries.
+ *   L1b INDEXED/NON-INDEXED SPLIT. L1 alone buys nothing for a LIVE game,
+ *      because `display_clock` changes on every single refresh. SQLite rewrites
+ *      an index whenever its column appears in an UPDATE's SET list, whether or
+ *      not the value changed, so a single statement carrying the whole SET list
+ *      costs 4 rows written (table + `idx_games_board` + `idx_games_status` +
+ *      `idx_games_week`) for a clock-only change. Each game is therefore written
+ *      as TWO statements: (A) the full upsert, whose WHERE demands that an
+ *      INDEXED column (`status`/`kickoff_at`/`week`) actually changed, and
+ *      (B) a plain UPDATE carrying only NON-indexed columns, which costs exactly
+ *      1 row. Measured on miniflare D1: clock-only 1, score-only 1, rank-only 1,
+ *      L3 touch 1, status transition 4, unchanged 0. See PLAN.md §8.5/§8.6.
  *   L2 NO LINE WRITES FOR NON-SCHEDULED GAMES. Measured on the committed
  *      samples: 0 of 84 in-progress/final events carried odds. Refreshing
  *      `game_lines` for a live game is pure waste; skip it at the mapper.
@@ -26,6 +35,15 @@
  *      than GAME_SEEN_TOUCH_MS (6 h) and `game_lines.seen_at` when older than
  *      LINE_SEEN_TOUCH_MS (45 min), so "still here" costs at most 4 and 32 row
  *      writes per game per day instead of 96.
+ *
+ * Observability, not faith: every run reports `rowsWritten` (summed from D1's
+ * `meta.rows_written`, which counts index entries) and `rowsSkipped` into
+ * `job_runs.stats`, and `tests/worker/ingest.spec.ts` carries the CI regression
+ * guard for 96 live refreshes of an 86-game Saturday.
+ *
+ * STATEMENT COUNT: two per game plus one per line, chunked through `runBatch` at
+ * MAX_BATCH_STATEMENTS. An 86-game target is ~172 statements in one invocation,
+ * which is the deliberate exception to db.ts's per-invocation budget note.
  */
 
 import {
@@ -38,7 +56,7 @@ import {
 import { etDateKeyRange, etDayBounds } from '../shared/time.js';
 import { LEAGUES } from '../shared/types.js';
 import type { EpochMs, Game, GameLines, League } from '../shared/types.js';
-import { changesAt, MAX_BATCH_STATEMENTS, runBatch } from './db.js';
+import { changesAt, MAX_BATCH_STATEMENTS, rowsWrittenAt, rowsWrittenOf, runBatch } from './db.js';
 import type { Env } from './env.js';
 import { readConfig } from './env.js';
 import { EspnProvider } from './espn.js';
@@ -59,10 +77,17 @@ export interface IngestTargetRow {
 
 export interface IngestStats {
   readonly targetsProcessed: number;
-  /** Rows that actually changed. Watch this against the 100k/day cap. */
+  /** `games` rows that actually changed (one per game, however many statements). */
   readonly gamesUpserted: number;
   readonly linesUpserted: number;
-  /** Rows the compare-and-skip guard left alone. */
+  /**
+   * D1 `meta.rows_written` summed over every statement the run issued: TABLE
+   * rows PLUS index entries, which is the unit the hard-enforced 100,000/day cap
+   * counts. THIS is the number to watch, not `gamesUpserted` — a single indexed
+   * `games` update costs 4 of these. PLAN.md §8.6.
+   */
+  readonly rowsWritten: number;
+  /** Upsert UNITS (one per game, one per line) the compare-and-skip guard left alone. */
   readonly rowsSkipped: number;
   readonly warnings: readonly string[];
   readonly failures: readonly { readonly targetId: string; readonly error: string }[];
@@ -71,6 +96,8 @@ export interface IngestStats {
 export interface IngestTargetResult {
   readonly gamesUpserted: number;
   readonly linesUpserted: number;
+  /** See `IngestStats.rowsWritten`. Includes this target's own reschedule write. */
+  readonly rowsWritten: number;
   readonly rowsSkipped: number;
   readonly error: string | null;
   /**
@@ -268,6 +295,13 @@ function notInClause(count: number): string {
  * against a supply of 96. Fits with 16 to spare. Two simultaneously-live targets
  * alternate in slot 1 and each get a 30-minute cadence.
  *
+ * DST FOOTNOTE: "11 dates" is the usual figure, not a constant. `etDateKeyRange`
+ * walks ET day boundaries, and the spring-forward day is 23 h long, so a 10-day
+ * INGEST_WINDOW_MS starting in that week spans TWELVE ET date keys — 24 targets,
+ * and 22 discovery targets wanting 88 slot-uses/day against the same supply of
+ * 96. Still fits, with 8 to spare instead of 16. It is one week a year and the
+ * margin holds, which is why the planner has no special case for it.
+ *
  * The reserved-slot query MUST exclude the id already claimed by slot 1
  * (`AND id <> :slot1Id`): on a run with no live target — most runs — slot 1's
  * pick also satisfies slot 2's predicate, and without the exclusion the run
@@ -360,19 +394,83 @@ export function toSlateTarget(row: IngestTargetRow): SlateTarget {
  * ------------------------------------------------------------------ */
 
 /**
- * The clause-(b) comparison tuple, shared verbatim by the `WHERE` and by the
- * `updated_at` CASE so the two can never drift. `status_detail` is DELIBERATELY
- * absent: it is cosmetic, nothing reads it, and including it would buy writes
- * for no behavioural gain (PLAN.md §8.5).
+ * THE A/B SPLIT (PLAN.md §8.5). Read this before touching either statement.
+ *
+ * SQLite rewrites an index entry whenever the index's column appears in an
+ * UPDATE's SET list, REGARDLESS of whether the value changed. Measured on
+ * miniflare D1:
+ *
+ *     UPDATE games SET last_seen_at = ?                             -> 1 row
+ *     UPDATE games SET last_seen_at = ?, status = status,
+ *                      kickoff_at = kickoff_at, week = week          -> 4 rows
+ *
+ * `games` has three indexes and they cover exactly three mutable columns:
+ * `idx_games_board(league, kickoff_at)`, `idx_games_status(status, kickoff_at)`,
+ * `idx_games_week(league, season, season_type, week)`. So ONE statement carrying
+ * the whole SET list costs 4 rows written for ANY applied update — a clock-only
+ * change and an L3 "seen" touch included. For a live game `display_clock` moves
+ * on every refresh, so compare-and-skip (L1) never fires and the old single
+ * statement cost 4 rows x 86 games x 96 refreshes = 33k rows on a Saturday, i.e.
+ * PLAN §8.6's "without the levers" figure.
+ *
+ * Hence two statements per game, in this order:
+ *
+ *   (A) GAME_UPSERT_SQL  INSERT ... ON CONFLICT DO UPDATE with the full SET
+ *       list, gated on an INDEXED column having actually changed. New rows take
+ *       the INSERT path. Only real status/kickoff/week transitions pay 4 rows.
+ *   (B) GAME_LIVE_SQL    a plain UPDATE whose SET list contains NO indexed
+ *       column, so it costs exactly 1 row. It carries the live churn
+ *       (period, clock, scores, detail) plus the fields that used to be
+ *       INSERT-only and went stale (ranks, logos, names).
+ *
+ * (A) runs first, so when it applies it already carries the new values and (B)
+ * finds nothing to do. Statement count doubles; rows written collapse.
+ *
+ * DELIBERATELY NOT UPDATED AT ALL:
+ *   * `original_kickoff_at` — a reschedule must keep the original (§8.5).
+ *   * `neutral_site` — a DECISION, not an oversight: ESPN sets it when the
+ *     event is created and flipping it after a bet was placed would silently
+ *     change nothing we grade on (grading reads the `bet_legs` snapshot), while
+ *     adding a column to the compare tuple that never moves. If ESPN is ever
+ *     observed to correct it, move it into (B), where it costs 1 row.
+ *   * `provider_event_id`, `league`, `season`, `season_type`, team ids/abbrs —
+ *     identity. A change there is a different game.
  */
-const GAMES_OLD_TUPLE = `(games.status, games.kickoff_at, games.period, games.display_clock,
-   COALESCE(games.home_score, -1), COALESCE(games.away_score, -1),
-   COALESCE(games.week, -1))`;
 
-const GAMES_NEW_TUPLE = `(excluded.status, excluded.kickoff_at, excluded.period, excluded.display_clock,
-   COALESCE(COALESCE(excluded.home_score, games.home_score), -1),
-   COALESCE(COALESCE(excluded.away_score, games.away_score), -1),
+/** The three INDEXED mutable columns. A change here is what (A) exists for. */
+const GAMES_INDEXED_OLD = `(games.status, games.kickoff_at, COALESCE(games.week, -1))`;
+const GAMES_INDEXED_NEW = `(excluded.status, excluded.kickoff_at,
    COALESCE(COALESCE(excluded.week, games.week), -1))`;
+
+/**
+ * (B)'s comparison tuple: every column (B) writes except `last_seen_at` (the L3
+ * stamp, which has its own clause) and `status_detail`.
+ *
+ * `status_detail` is DELIBERATELY absent — it is in the SET list but not the
+ * tuple, so a change to only the human-readable detail string ("Final" ->
+ * "Final/OT") is skipped until something else changes or the touch fires. It is
+ * cosmetic, nothing reads it, and including it would buy writes for no
+ * behavioural gain (PLAN.md §8.5).
+ *
+ * The old and new halves are shared verbatim by the `WHERE` and by the
+ * `updated_at` CASE so the two can never drift.
+ */
+const GAMES_LIVE_OLD = `(period, display_clock,
+   COALESCE(home_score, -1), COALESCE(away_score, -1),
+   COALESCE(home_rank, -1), COALESCE(away_rank, -1),
+   COALESCE(home_logo, ''), COALESCE(away_logo, ''),
+   name, short_name, home_name, away_name)`;
+
+/**
+ * The bound counterpart of `GAMES_LIVE_OLD`. Scores are COALESCEd against the
+ * stored value first, exactly as the SET list does, so a payload that omits a
+ * score neither nulls it out nor counts as a change.
+ */
+const GAMES_LIVE_NEW = `(?, ?,
+   COALESCE(COALESCE(?, home_score), -1), COALESCE(COALESCE(?, away_score), -1),
+   COALESCE(?, -1), COALESCE(?, -1),
+   COALESCE(?, ''), COALESCE(?, ''),
+   ?, ?, ?, ?)`;
 
 const GAME_UPSERT_SQL = `
 INSERT INTO games (
@@ -393,18 +491,57 @@ ON CONFLICT(id) DO UPDATE SET
   away_score    = COALESCE(excluded.away_score, games.away_score),
   week          = COALESCE(excluded.week, games.week),
   last_seen_at  = excluded.last_seen_at,
-  -- updated_at means "data changed", NOT "seen again": it advances only when the
-  -- clause-(b) tuple differs. An L3 touch (clause c) moves last_seen_at alone.
-  updated_at    = CASE WHEN ${GAMES_OLD_TUPLE} IS NOT ${GAMES_NEW_TUPLE}
-                       THEN excluded.updated_at ELSE games.updated_at END
+  -- (A) fires ONLY on a real status/kickoff/week transition, which is by
+  -- definition a data change, so updated_at advances unconditionally here. The
+  -- "seen again is not a change" rule lives in (B), which owns the L3 touch.
+  updated_at    = excluded.updated_at
 WHERE
   -- (a) never regress a final game; but do allow score corrections
   (games.status <> 'final' OR excluded.status = 'final')
+  -- (b) an INDEXED column must actually differ. Anything else is (B)'s job:
+  -- naming status/kickoff_at/week in the SET list costs 4 rows even when the
+  -- values are identical, so this statement must not run for clock churn.
+  AND ${GAMES_INDEXED_OLD} IS NOT ${GAMES_INDEXED_NEW}`;
+
+/**
+ * (B) THE LIVE UPDATE. NO INDEXED COLUMN MAY EVER APPEAR IN THIS SET LIST —
+ * adding `status`, `kickoff_at` or `week` here quadruples the cost of every
+ * live refresh and silently undoes the whole §8.6 budget. 1 row written.
+ *
+ * EXPORTED so `ingest.spec.ts` can assert that property statically. It is the
+ * one regression here that no functional test can see: the rows would still be
+ * correct, just 4x more expensive, and the bill arrives on a Saturday.
+ */
+export const GAME_LIVE_SQL = `
+UPDATE games SET
+  period        = ?,
+  display_clock = ?,
+  home_score    = COALESCE(?, home_score),
+  away_score    = COALESCE(?, away_score),
+  status_detail = ?,
+  home_rank     = ?,
+  away_rank     = ?,
+  home_logo     = ?,
+  away_logo     = ?,
+  name          = ?,
+  short_name    = ?,
+  home_name     = ?,
+  away_name     = ?,
+  last_seen_at  = ?,
+  -- updated_at means "data changed", NOT "seen again": it advances only when the
+  -- compare tuple differs. An L3 touch moves last_seen_at alone, which is what
+  -- keeps §7.1's resetDeferredBets predicate honest.
+  updated_at    = CASE WHEN ${GAMES_LIVE_OLD} IS NOT ${GAMES_LIVE_NEW}
+                       THEN ? ELSE updated_at END
+WHERE id = ?
+  -- the same never-regress-final guard as (A): a feed glitch reporting a played
+  -- game as scheduled must not move its clock or scores either.
+  AND (status <> 'final' OR ? = 'final')
   AND (
-    -- (b) L1: only write if a value actually differs (row-value IS NOT)
-    ${GAMES_OLD_TUPLE} IS NOT ${GAMES_NEW_TUPLE}
-    -- (c) L3: or the "still here" stamp is older than the touch interval
-    OR games.last_seen_at < excluded.last_seen_at - ${String(GAME_SEEN_TOUCH_MS)}
+    -- L1: only write if a value actually differs
+    ${GAMES_LIVE_OLD} IS NOT ${GAMES_LIVE_NEW}
+    -- L3: or the "still here" stamp is older than the touch interval
+    OR last_seen_at < ? - ${String(GAME_SEEN_TOUCH_MS)}
   )`;
 
 const LINE_OLD_TUPLE = `(game_lines.spread_home_tenths, game_lines.spread_home_price,
@@ -477,6 +614,58 @@ function gameStatement(env: Env, game: Game, now: EpochMs): D1PreparedStatement 
   );
 }
 
+/**
+ * The 12 values of `GAMES_LIVE_NEW`, in its exact column order. Built once and
+ * spliced into the bind list three times (the `updated_at` CASE, the `WHERE`
+ * compare, and nothing else) so the SQL and the bindings cannot drift.
+ */
+function liveTupleArgs(game: Game): readonly unknown[] {
+  return [
+    game.period,
+    game.displayClock,
+    game.home.score,
+    game.away.score,
+    game.home.rank,
+    game.away.rank,
+    game.home.logo,
+    game.away.logo,
+    game.name,
+    game.shortName,
+    game.home.name,
+    game.away.name,
+  ];
+}
+
+/** (B): the non-indexed live update. See the A/B note above `GAME_UPSERT_SQL`. */
+function gameLiveStatement(env: Env, game: Game, now: EpochMs): D1PreparedStatement {
+  const tuple = liveTupleArgs(game);
+  return env.DB.prepare(GAME_LIVE_SQL).bind(
+    // SET list
+    game.period,
+    game.displayClock,
+    game.home.score,
+    game.away.score,
+    game.statusDetail,
+    game.home.rank,
+    game.away.rank,
+    game.home.logo,
+    game.away.logo,
+    game.name,
+    game.shortName,
+    game.home.name,
+    game.away.name,
+    now, // last_seen_at
+    // updated_at = CASE WHEN <old> IS NOT <new> THEN ? ELSE updated_at END
+    ...tuple,
+    now,
+    // WHERE
+    game.id,
+    game.status, // the never-regress-final guard
+    ...tuple,
+    now, // last_seen_at < ? - GAME_SEEN_TOUCH_MS
+  );
+}
+
 function lineStatement(env: Env, line: GameLines, now: EpochMs): D1PreparedStatement {
   return env.DB.prepare(LINE_UPSERT_SQL).bind(
     line.gameId,
@@ -526,10 +715,26 @@ async function runChunked(
   return out;
 }
 
+export interface SlateWriteCounts {
+  /** `games` rows that changed, counted ONCE per game however many of (A)/(B) applied. */
+  readonly games: number;
+  readonly lines: number;
+  /**
+   * D1 `meta.rows_written` summed over every statement: table rows PLUS index
+   * entries, i.e. what the 100k/day cap actually counts. PLAN.md §8.6.
+   */
+  readonly rowsWritten: number;
+  /** Upsert UNITS (one per game, one per line) that wrote nothing at all. */
+  readonly skipped: number;
+}
+
 /**
- * The upsert batch for a slate. See PLAN.md §8.5 for the exact SQL semantics.
- * Returns the number of rows that ACTUALLY changed (from `meta.changes`), not
- * the number of statements issued -- that difference is the whole point of L1.
+ * The upsert batch for a slate. See PLAN.md §8.5 for the exact SQL semantics and
+ * the A/B note above `GAME_UPSERT_SQL` for why each game is two statements.
+ *
+ * `games`/`lines` count CHANGED ROWS, not statements issued — that difference is
+ * the whole point of L1. `rowsWritten` is the separate, larger number the D1 cap
+ * counts; do not conflate them.
  *
  * Every timestamp comes from `now`, never from `slate.fetchedAt`: the job
  * captures one clock and every guard in the run agrees with it.
@@ -538,13 +743,27 @@ export async function upsertSlate(
   env: Env,
   slate: ProviderSlate,
   now: EpochMs,
-): Promise<{ readonly games: number; readonly lines: number; readonly skipped: number }> {
+): Promise<SlateWriteCounts> {
   const lines = lineRowsWorthWriting(slate);
 
-  const gameStatements = slate.games.map((g) => gameStatement(env, g, now));
+  // Interleaved (A, B) per game so the pair is always adjacent and always in
+  // that order. MAX_BATCH_STATEMENTS is even, so a chunk boundary can never fall
+  // between a game's two statements.
+  const gameStatements: D1PreparedStatement[] = [];
+  for (const g of slate.games) {
+    gameStatements.push(gameStatement(env, g, now), gameLiveStatement(env, g, now));
+  }
   const gameResults = await runChunked(env.DB, gameStatements);
+
   let games = 0;
-  for (let i = 0; i < gameResults.length; i += 1) games += changesAt(gameResults, i);
+  let rowsWritten = 0;
+  for (let i = 0; i < gameResults.length; i += 1) rowsWritten += rowsWrittenAt(gameResults, i);
+  for (let i = 0; i < gameResults.length; i += 2) {
+    // One game == results[i] (A) and results[i + 1] (B). Either applying counts
+    // as one changed game; both applying (a status transition that also moved a
+    // rank) is still one game.
+    if (changesAt(gameResults, i) + changesAt(gameResults, i + 1) > 0) games += 1;
+  }
 
   // Lines go AFTER games in their own batch: `game_lines.game_id` has an FK to
   // `games(id)`, so a brand-new game's line cannot be written in the same batch
@@ -552,10 +771,13 @@ export async function upsertSlate(
   const lineStatements = lines.map((l) => lineStatement(env, l, now));
   const lineResults = await runChunked(env.DB, lineStatements);
   let lineCount = 0;
-  for (let i = 0; i < lineResults.length; i += 1) lineCount += changesAt(lineResults, i);
+  for (let i = 0; i < lineResults.length; i += 1) {
+    lineCount += changesAt(lineResults, i);
+    rowsWritten += rowsWrittenAt(lineResults, i);
+  }
 
-  const issued = gameStatements.length + lineStatements.length;
-  return { games, lines: lineCount, skipped: issued - games - lineCount };
+  const units = slate.games.length + lineStatements.length;
+  return { games, lines: lineCount, rowsWritten, skipped: units - games - lineCount };
 }
 
 /* ------------------------------------------------------------------ *
@@ -576,6 +798,16 @@ export async function upsertSlate(
  * would pin a finished slate to the 15-minute live cadence forever — 96 pointless
  * refreshes a day of rows that can never change again. The four tiers are a
  * partition, not a sequence.
+ *
+ * THE HORIZONS ARE CLAMPED AT BOTH ENDS for the same reason. `TERMINAL_STATUSES`
+ * is only {final, canceled}, so a `postponed` or `unknown` game stays in
+ * `unfinished` indefinitely — and with a one-sided `kickoffAt - now <= 3h` test a
+ * nominal kickoff five hours in the PAST still reads as "live", pinning its
+ * target to the 15-minute tier for as long as the game sits there. Requiring
+ * `0 <= kickoffAt - now` drops postponed/unknown games to the discovery tier
+ * (+6 h), which is the right cadence for "watch it in case it comes back";
+ * `maintenance` (§7.5) is what eventually converts a stuck one to `canceled`.
+ * A genuinely live game is caught by the `in_progress` arm, which has no horizon.
  */
 export function computeNextRunAt(
   target: IngestTargetRow,
@@ -599,12 +831,16 @@ export function computeNextRunAt(
   const unfinished = games.filter((g) => !TERMINAL_STATUSES.has(g.status));
   if (unfinished.length === 0) return now + REFRESH_DONE_MS;
 
-  const live = unfinished.some(
-    (g) => g.status === 'in_progress' || g.kickoffAt - now <= LIVE_HORIZON_MS,
-  );
+  /** `kickoffAt` is ahead of `now` by no more than `horizon`. Clamped both ends. */
+  const within = (g: Game, horizon: number): boolean => {
+    const ahead = g.kickoffAt - now;
+    return ahead >= 0 && ahead <= horizon;
+  };
+
+  const live = unfinished.some((g) => g.status === 'in_progress' || within(g, LIVE_HORIZON_MS));
   if (live) return now + REFRESH_LIVE_MS;
 
-  const soon = unfinished.some((g) => g.kickoffAt - now <= SOON_HORIZON_MS);
+  const soon = unfinished.some((g) => within(g, SOON_HORIZON_MS));
   return now + (soon ? REFRESH_SOON_MS : REFRESH_DISCOVERY_MS);
 }
 
@@ -643,12 +879,14 @@ export async function ingestTarget(
   let games = 0;
   let lines = 0;
   let skipped = 0;
+  let rowsWritten = 0;
   if (slate !== null) {
     try {
       const written = await upsertSlate(env, slate, now);
       games = written.games;
       lines = written.lines;
       skipped = written.skipped;
+      rowsWritten = written.rowsWritten;
     } catch (err) {
       // A D1 failure mid-slate is still a target failure: back the target off
       // and report it. Each statement is idempotent, so a partial apply heals.
@@ -659,29 +897,32 @@ export async function ingestTarget(
   const failed = error !== null;
   const nextRunAt = computeNextRunAt(target, failed ? null : slate, failed, now);
 
-  if (failed) {
-    await env.DB.prepare(
-      `UPDATE ingest_targets
-          SET next_run_at = ?, last_run_at = ?, last_status = 'error', last_error = ?,
-              consecutive_failures = consecutive_failures + 1, updated_at = ?
-        WHERE id = ?`,
-    )
-      .bind(nextRunAt, now, error, now, target.id)
-      .run();
-  } else {
-    await env.DB.prepare(
-      `UPDATE ingest_targets
-          SET next_run_at = ?, last_run_at = ?, last_status = 'ok', last_error = NULL,
-              consecutive_failures = 0, games_seen = ?, updated_at = ?
-        WHERE id = ?`,
-    )
-      .bind(nextRunAt, now, slate?.games.length ?? 0, now, target.id)
-      .run();
-  }
+  // The reschedule is itself a row write (plus `idx_ingest_targets_due`, since
+  // `next_run_at` is indexed), so it belongs in the same total the §8.6 budget
+  // is measured against rather than being quietly excluded.
+  const reschedule = failed
+    ? await env.DB.prepare(
+        `UPDATE ingest_targets
+            SET next_run_at = ?, last_run_at = ?, last_status = 'error', last_error = ?,
+                consecutive_failures = consecutive_failures + 1, updated_at = ?
+          WHERE id = ?`,
+      )
+        .bind(nextRunAt, now, error, now, target.id)
+        .run()
+    : await env.DB.prepare(
+        `UPDATE ingest_targets
+            SET next_run_at = ?, last_run_at = ?, last_status = 'ok', last_error = NULL,
+                consecutive_failures = 0, games_seen = ?, updated_at = ?
+          WHERE id = ?`,
+      )
+        .bind(nextRunAt, now, slate?.games.length ?? 0, now, target.id)
+        .run();
+  rowsWritten += rowsWrittenOf(reschedule);
 
   return {
     gamesUpserted: games,
     linesUpserted: lines,
+    rowsWritten,
     rowsSkipped: skipped,
     error,
     warnings: (slate?.warnings ?? []).map(warningText),
@@ -692,7 +933,14 @@ export async function ingestTarget(
  * The refresh job
  * ------------------------------------------------------------------ */
 
-/** Entry point for the `refresh` job. */
+/**
+ * Entry point for the `refresh` job.
+ *
+ * `rowsWritten` covers the games, lines and `ingest_targets` reschedules this run
+ * issued. It deliberately EXCLUDES `planTargets`, which is zero in steady state
+ * (`ON CONFLICT DO NOTHING` on 22 existing rows) and writes only on the first run
+ * after midnight ET; §8.6 budgets it as a separate ~192-rows/day line item.
+ */
 export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Promise<IngestStats> {
   await planTargets(env, now);
 
@@ -702,6 +950,7 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
   let gamesUpserted = 0;
   let linesUpserted = 0;
   let rowsSkipped = 0;
+  let rowsWritten = 0;
   const warnings: string[] = [];
   const failures: { targetId: string; error: string }[] = [];
 
@@ -710,6 +959,7 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
     gamesUpserted += result.gamesUpserted;
     linesUpserted += result.linesUpserted;
     rowsSkipped += result.rowsSkipped;
+    rowsWritten += result.rowsWritten;
     warnings.push(...result.warnings);
     if (result.error !== null) failures.push({ targetId: target.id, error: result.error });
   }
@@ -718,6 +968,7 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
     targetsProcessed: targets.length,
     gamesUpserted,
     linesUpserted,
+    rowsWritten,
     rowsSkipped,
     // The cap governs what is RECORDED, never what is parsed (PLAN.md §8.3).
     warnings: warnings.slice(0, ESPN_MAX_WARNINGS_RECORDED),

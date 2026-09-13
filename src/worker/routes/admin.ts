@@ -79,6 +79,13 @@ export function adminRoutes(): Hono<AppContext> {
   // (PLAN.md §9.3). Inline, not `ctx.waitUntil`: waitUntil grants wall time, not
   // CPU, so it would not help if S1 came back bad — `refreshTargetsPerRun`
   // drops an admin run to one target instead.
+  // A job whose BODY threw still returns 200 with `run.status === 'error'` and
+  // the message in `run.error` — deliberately, and documented in PLAN.md §9.3.
+  // The HTTP status answers "did the trigger work", which it did: the lease was
+  // taken, the run was recorded, and the failure is now visible in
+  // GET /api/admin/jobs exactly as a failed CRON run would be. Mapping it to 500
+  // would throw away the run id and the stats. `settle` does this today until M6
+  // lands. The only non-200 here is 409 JOB_LOCKED (the lease is held).
   app.post('/jobs/:job', async (c) => {
     const name = c.req.param('job');
     if (!isJobName(name)) {
@@ -93,8 +100,14 @@ export function adminRoutes(): Hono<AppContext> {
     return c.json(body, 200);
   });
 
+  // `recentRuns` folds a rolling-24h `dayRowsWritten` into every run's `stats`
+  // (PLAN.md §8.6) — that is the number to check against D1's hard-enforced
+  // 100k-rows/day cap. `c.var.now` so the window agrees with the rest of the
+  // request.
   app.get('/jobs', async (c) => {
-    const body: JobRunsResponse = { runs: await recentRuns(c.env, ADMIN_JOB_HISTORY) };
+    const body: JobRunsResponse = {
+      runs: await recentRuns(c.env, ADMIN_JOB_HISTORY, c.var.now),
+    };
     return c.json(body, 200);
   });
   // --- end jobs (M4) ------------------------------------------------------

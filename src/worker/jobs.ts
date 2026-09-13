@@ -151,8 +151,13 @@ function errorText(err: unknown): string {
 
 /**
  * Acquire the lease, write a `job_runs` row, run `body`, finalize the row.
- * Always resolves — an error inside `body` is recorded, never rethrown, so one
- * bad job cannot take down the scheduled handler.
+ * Always resolves — an error inside `body` OR in any of the three `job_runs`
+ * writes is recorded/logged, never rethrown, so one bad job (or a D1 hiccup
+ * while recording it) cannot take down the scheduled handler.
+ *
+ * `acquireLease` is the one call left unguarded on purpose: if the lock table
+ * itself is unreachable there is nothing to run and nowhere to record it, and
+ * the caller — `scheduled()` or the admin route — should see that.
  */
 export async function withJobRun(
   env: Env,
@@ -177,20 +182,34 @@ export async function withJobRun(
       stats: null,
       error: null,
     };
-    await insertRun(env, skipped);
+    try {
+      await insertRun(env, skipped);
+    } catch (err) {
+      console.error('[jobs] failed to record skipped run', job, runId, err);
+    }
     return skipped;
   }
 
-  await insertRun(env, {
-    id: runId,
-    job,
-    trigger,
-    startedAt: now,
-    finishedAt: null,
-    status: 'running',
-    stats: null,
-    error: null,
-  });
+  // `insertRun` goes inside a try for the same reason the finalize batch below
+  // does: this function's contract is "always resolves", and an uncaught D1
+  // error here would reject into `scheduled()` and take the whole cron
+  // invocation down BEFORE the job body ever ran. If the row cannot be written
+  // we record nothing, log, and press on — the lease is held either way, and the
+  // finalize batch below will fail its UPDATE harmlessly (0 rows matched).
+  try {
+    await insertRun(env, {
+      id: runId,
+      job,
+      trigger,
+      startedAt: now,
+      finishedAt: null,
+      status: 'running',
+      stats: null,
+      error: null,
+    });
+  } catch (err) {
+    console.error('[jobs] failed to record run start', job, runId, err);
+  }
 
   let stats: Readonly<Record<string, unknown>> | null = null;
   let error: string | null = null;
@@ -289,7 +308,52 @@ export function runJob(
   });
 }
 
-export async function recentRuns(env: Env, limit: number): Promise<readonly JobRun[]> {
+/** The rolling window `dayRowsWritten` covers. PLAN.md §8.6 / §15 M8. */
+const ROWS_WRITTEN_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Sum of `job_runs.stats.rowsWritten` over the last 24 hours, across every job.
+ *
+ * This is the number to check against D1's hard-enforced 100,000-rows-per-day
+ * free-tier cap (PLAN.md §8.6): past the cap D1 ERRORS, which blocks bet
+ * placement and settlement, not just the board. It is a rolling 24 h rather than
+ * a UTC day because the operator wants "are we running hot right now", and a
+ * UTC-day total is misleading at 00:05.
+ *
+ * THE `json_valid` GUARD IS LOAD-BEARING, not defensive dressing: SQLite's
+ * `json_extract` RAISES on malformed JSON rather than returning NULL (verified —
+ * `D1_ERROR: malformed JSON`), so a single corrupt `stats` blob would take down
+ * the whole admin jobs page, which is the one place you look when something is
+ * already wrong. `json_valid(NULL)` is NULL, so a missing `stats` is skipped by
+ * the same clause, and `SUM` ignores the NULLs either way.
+ */
+async function dayRowsWritten(env: Env, now: EpochMs): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(SUM(
+              CASE WHEN json_valid(stats) THEN json_extract(stats, '$.rowsWritten') END
+            ), 0) AS n
+       FROM job_runs
+      WHERE started_at >= ?`,
+  )
+    .bind(now - ROWS_WRITTEN_WINDOW_MS)
+    .first<{ n: number }>();
+  return typeof row?.n === 'number' ? row.n : 0;
+}
+
+/**
+ * The last `limit` runs, newest first, each with a rolling-24h `dayRowsWritten`
+ * folded INTO its `stats`.
+ *
+ * Why inside `stats` rather than beside it: `api-types.ts` is frozen after M2d
+ * (CLAUDE.md "Merge-conflict etiquette"), `JobRunsResponse` has no room for an
+ * extra field, and `JobRunView.stats` is already `Record<string, unknown>`. So
+ * the daily total rides along there and the admin page reads it off any run.
+ */
+export async function recentRuns(
+  env: Env,
+  limit: number,
+  now: EpochMs = Date.now(),
+): Promise<readonly JobRun[]> {
   const res = await env.DB.prepare(
     `SELECT id, job, trigger, started_at, finished_at, status, stats, error
        FROM job_runs
@@ -298,5 +362,10 @@ export async function recentRuns(env: Env, limit: number): Promise<readonly JobR
   )
     .bind(limit)
     .all<JobRunDbRow>();
-  return res.results.map(toJobRun);
+
+  const total = await dayRowsWritten(env, now);
+  return res.results.map((row) => {
+    const run = toJobRun(row);
+    return { ...run, stats: { ...(run.stats ?? {}), dayRowsWritten: total } };
+  });
 }

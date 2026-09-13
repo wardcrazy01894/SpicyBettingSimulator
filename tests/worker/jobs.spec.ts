@@ -121,11 +121,106 @@ describe('job_runs', () => {
     expect(run.error).toBeNull();
     expect(run.stats).toEqual({ targetsProcessed: 3, gamesUpserted: 7 });
 
-    const rows = await recentRuns(env, 50);
+    const rows = await recentRuns(env, 50, NOW);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe(run.id);
     expect(rows[0]?.status).toBe('ok');
-    expect(rows[0]?.stats).toEqual({ targetsProcessed: 3, gamesUpserted: 7 });
+    // What was STORED is exactly what the body returned; `recentRuns` folds the
+    // rolling-24h total in on the way out (PLAN.md §8.6).
+    expect(rows[0]?.stats).toEqual({
+      targetsProcessed: 3,
+      gamesUpserted: 7,
+      dayRowsWritten: 0,
+    });
+  });
+
+  it('recentRuns folds a rolling-24h dayRowsWritten into every run stats', async () => {
+    // Three runs: two inside the window, one a day and a bit before it.
+    await withJobRun(env, 'refresh', 'cron', NOW - 25 * 60 * 60_000, () =>
+      Promise.resolve({ rowsWritten: 9_000 }),
+    );
+    await withJobRun(env, 'refresh', 'cron', NOW - 60_000, () =>
+      Promise.resolve({ rowsWritten: 120 }),
+    );
+    await withJobRun(env, 'refresh', 'cron', NOW, () => Promise.resolve({ rowsWritten: 43 }));
+
+    const rows = await recentRuns(env, 50, NOW);
+    expect(rows).toHaveLength(3);
+    // 120 + 43; the 25-hour-old 9,000 is outside the window.
+    for (const row of rows) expect(row.stats?.['dayRowsWritten']).toBe(163);
+    // ...and the per-run figure is untouched.
+    expect(rows[0]?.stats?.['rowsWritten']).toBe(43);
+  });
+
+  it('recentRuns survives a run with null or non-numeric stats', async () => {
+    await withJobRun(env, 'refresh', 'cron', NOW, () => Promise.resolve({ rowsWritten: 7 }));
+    await env.DB.prepare(
+      `INSERT INTO job_runs (id, job, trigger, started_at, finished_at, status, stats, error)
+       VALUES ('corrupt', 'refresh', 'cron', ?, ?, 'ok', 'not json', NULL)`,
+    )
+      .bind(NOW, NOW)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO job_runs (id, job, trigger, started_at, finished_at, status, stats, error)
+       VALUES ('nostats', 'settle', 'cron', ?, ?, 'ok', NULL, NULL)`,
+    )
+      .bind(NOW, NOW)
+      .run();
+
+    const rows = await recentRuns(env, 50, NOW);
+    expect(rows).toHaveLength(3);
+    for (const row of rows) expect(row.stats?.['dayRowsWritten']).toBe(7);
+  });
+
+  it('withJobRun still resolves when the job_runs INSERT itself fails', async () => {
+    // The docstring promises "always resolves" — and the INSERT used to sit
+    // OUTSIDE the try, so a D1 hiccup while recording the START of a run would
+    // reject into `scheduled()` and take the whole cron invocation down before
+    // the body ever ran. Make every `INSERT INTO job_runs` throw and assert the
+    // run still completes, still runs its body, and still releases its lease.
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    let bodyRan = false;
+    env.DB.prepare = (sql: string) => {
+      if (sql.includes('INSERT INTO job_runs')) {
+        throw new Error('D1_ERROR: no such table: job_runs');
+      }
+      return realPrepare(sql);
+    };
+
+    try {
+      const run = await withJobRun(env, 'refresh', 'cron', NOW, () => {
+        bodyRan = true;
+        return Promise.resolve({ ok: true });
+      });
+      expect(bodyRan).toBe(true);
+      expect(run.status).toBe('ok');
+      expect(run.stats).toEqual({ ok: true });
+    } finally {
+      env.DB.prepare = realPrepare;
+    }
+
+    // Nothing was recorded — that is the documented degradation — but the lease
+    // was released, so the next scheduled run is not blocked for a whole TTL.
+    expect(await recentRuns(env, 50, NOW)).toHaveLength(0);
+    expect((await lockRow('refresh'))?.lease_until).toBe(0);
+  });
+
+  it('withJobRun still resolves when the lease is held AND the INSERT fails', async () => {
+    expect(await acquireLease(env, 'refresh', 'holder', NOW)).toBe(true);
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    env.DB.prepare = (sql: string) => {
+      if (sql.includes('INSERT INTO job_runs')) throw new Error('D1_ERROR: recording is down');
+      return realPrepare(sql);
+    };
+
+    try {
+      const run = await withJobRun(env, 'refresh', 'admin', NOW + 1, () => Promise.resolve({}));
+      expect(run.status).toBe('skipped');
+    } finally {
+      env.DB.prepare = realPrepare;
+    }
+    // The holder's lease is untouched.
+    expect((await lockRow('refresh'))?.run_id).toBe('holder');
   });
 
   it('records status error with the message, and does NOT rethrow', async () => {

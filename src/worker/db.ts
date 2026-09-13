@@ -6,7 +6,9 @@
  * Rules enforced by convention here:
  *   1. Anything that must be atomic is EXACTLY ONE batch().
  *   2. Never read-then-write; express the guard as a WHERE inside the write.
- *   3. Budget <= 40 statements per Worker invocation (see Spike S2).
+ *   3. `MAX_BATCH_STATEMENTS` (40) is the size of ONE batch() call, not a
+ *      per-invocation total. See the note on that constant: ingestion is the one
+ *      place that exceeds 40 statements in a single invocation, deliberately.
  */
 
 import { DB_MESSAGES, thrownMentions } from '../shared/errors.js';
@@ -31,9 +33,23 @@ export async function runBatch(
 }
 
 /**
- * PLAN.md §1 / Spike S2: keep well under the documented 50-per-invocation
- * figure. Enforced per runBatch() CALL; callers are responsible for issuing at
- * most one such batch per invocation for anything near the limit.
+ * The maximum number of statements in ONE `batch()` call. Enforced per
+ * `runBatch()` call.
+ *
+ * PLAN.md §1 / Spike S2: the D1 limits page says 50 queries per invocation, the
+ * 2026-02-11 changelog says 1000 for Cloudflare-service subrequests, and S2 (to
+ * settle which applies, and whether a `batch([...n])` counts as 1 or n) is STILL
+ * OPEN. Until it closes, everything that can be chunked is chunked at 40.
+ *
+ * THE ONE DELIBERATE EXCEPTION IS INGESTION. `upsertSlate()` issues two
+ * statements per game (PLAN.md §8.5's A/B split) plus one per line, so a live
+ * 86-game CFB target is ~172 statements across ~5 chunked batches in a single
+ * invocation. That is intentional and cannot be reduced without either dropping
+ * the write-budget levers (§8.6, a correctness concern under the hard-enforced
+ * 100k rows/day cap) or splitting one ET date across invocations — the last rung
+ * but one of R1's fallback ladder. Every other caller — settlement in
+ * particular, chunked at 20 bets — stays at or under one 40-statement batch per
+ * invocation.
  */
 export const MAX_BATCH_STATEMENTS = 40;
 
@@ -41,6 +57,28 @@ export const MAX_BATCH_STATEMENTS = 40;
 export function changesAt(results: readonly D1Result[], index: number): number {
   const meta = results[index]?.meta as { changes?: unknown } | undefined;
   return typeof meta?.changes === 'number' ? meta.changes : 0;
+}
+
+/**
+ * `results[index].meta.rows_written`, which is the number that counts against
+ * D1's hard-enforced 100,000-rows-per-day free-tier cap: it counts the TABLE row
+ * plus every INDEX entry the statement rewrote, so it is 4 for a `games` update
+ * that touches `status`/`kickoff_at`/`week` and 1 for one that does not.
+ * `meta.changes`, by contrast, is only ever 0 or 1 per row matched and therefore
+ * under-reports the real cost by up to 4x (PLAN.md §8.6).
+ *
+ * Falls back to `meta.changes` when the runtime omits the field, so a future
+ * D1/miniflare that stops reporting it degrades to an under-count rather than
+ * silently reporting zero.
+ */
+export function rowsWrittenAt(results: readonly D1Result[], index: number): number {
+  const meta = results[index]?.meta as { rows_written?: unknown } | undefined;
+  return typeof meta?.rows_written === 'number' ? meta.rows_written : changesAt(results, index);
+}
+
+/** `rowsWrittenAt` for a single `.run()` result. */
+export function rowsWrittenOf(result: D1Result): number {
+  return rowsWrittenAt([result], 0);
 }
 
 /** `SELECT` returning zero or one row. */
