@@ -22,8 +22,17 @@ import {
   priceToAmerican,
 } from '../../src/shared/odds.js';
 import { isOrphanBankrollError, isOverdraftError } from '../../src/worker/db.js';
+import { validatePlaceBet } from '../../src/shared/validate.js';
 import { bankrollId } from '../../src/worker/bankroll.js';
-import { cancelBet, editBet, placeBet } from '../../src/worker/bets.js';
+import {
+  betInsertSql,
+  buildPlacement,
+  cancelBet,
+  editBet,
+  editCancelSql,
+  placeBet,
+  resolveLegSnapshots,
+} from '../../src/worker/bets.js';
 import { buildApp } from '../../src/worker/index.js';
 import {
   balanceOf,
@@ -1023,6 +1032,327 @@ describe('editBet', () => {
     expect((await betRow(old.id))?.replaced_by_bet_id).toBe(parsed.bet.id);
     expect((await betRow(parsed.bet.id))?.replaces_bet_id).toBe(old.id);
     expect(parsed.bet.replacesBetId).toBe(old.id);
+  });
+
+  it('an edit may NOT move the bet to another league (409 MIXED_LEAGUE_PARLAY)', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 4 * HOUR });
+    await seedGameWithLine(env.DB, { id: gc(1), league: 'ncaaf', kickoffAt: NOW + 5 * HOUR });
+    const first = await post('/api/bets', straight(g(1), 2500), alex.cookie);
+    expect(first.status, await first.clone().text()).toBe(201);
+    const { bet: old } = await first.json<BetResponse>();
+
+    // An edit is cancel+place in one batch. Letting it change league would
+    // REFUND one bankroll and STAKE a different one under the banner of
+    // "editing a bet", and link two rows that never shared a ledger.
+    const res = await put(
+      `/api/bets/${old.id}`,
+      { ...straight(gc(1), 2500), league: 'ncaaf' },
+      alex.cookie,
+    );
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe('MIXED_LEAGUE_PARLAY');
+
+    expect((await betRow(old.id))?.status).toBe('pending');
+    expect(await betCount(alex.id)).toBe(1);
+    expect(await ledgerCount(alex.id, 'bet_refund')).toBe(0);
+    // The other bankroll was never even opened.
+    expect(await balanceOf(env.DB, bankrollId(alex.id, 'ncaaf', 2026))).toBeNull();
+    expect(await balanceOf(env.DB, bankrollId(alex.id, 'nfl', 2026))).toBe(
+      INITIAL_BANKROLL_CENTS - 2500,
+    );
+    await expectLedgerMatchesBalance();
+  });
+
+  it('an edit may NOT move the bet to another season (409 MIXED_SEASON_PARLAY)', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), season: 2026, kickoffAt: NOW + 4 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), season: 2027, kickoffAt: NOW + 5 * HOUR });
+    const first = await post('/api/bets', straight(g(1), 2500), alex.cookie);
+    expect(first.status, await first.clone().text()).toBe(201);
+    const { bet: old } = await first.json<BetResponse>();
+
+    const res = await put(`/api/bets/${old.id}`, straight(g(2), 2500), alex.cookie);
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe('MIXED_SEASON_PARLAY');
+
+    expect((await betRow(old.id))?.status).toBe('pending');
+    expect(await betCount(alex.id)).toBe(1);
+    expect(await ledgerCount(alex.id, 'bet_refund')).toBe(0);
+    expect(await balanceOf(env.DB, bankrollId(alex.id, 'nfl', 2027))).toBeNull();
+    await expectLedgerMatchesBalance();
+  });
+
+  it("an unauthorised PUT is a 404 that writes NOTHING — not even the caller's bankroll", async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 4 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 5 * HOUR });
+    const first = await post('/api/bets', straight(g(1), 2500), alex.cookie);
+    expect(first.status, await first.clone().text()).toBe(201);
+    const { bet: old } = await first.json<BetResponse>();
+
+    const bob = await register();
+    const res = await put(`/api/bets/${old.id}`, straight(g(2), 1000), bob.cookie);
+    expect(res.status).toBe(404);
+    expect(await errorCode(res)).toBe('BET_NOT_FOUND');
+
+    // The edit batch used to open with §14.2's lazy-bankroll prelude, which is
+    // UNGUARDED: it committed even though the edit itself matched nothing, so a
+    // 404 on somebody else's bet left rows behind for the caller. An edit needs
+    // no prelude at all — the bet being replaced already has a bankroll.
+    expect(await balanceOf(env.DB, bankrollId(bob.id, 'nfl', 2026))).toBeNull();
+    expect(await ledgerCount(bob.id)).toBe(0);
+    expect(await betCount(bob.id)).toBe(0);
+    expect((await betRow(old.id))?.status).toBe('pending');
+    await expectLedgerMatchesBalance();
+  });
+
+  it('buildPlacement omits the bankroll prelude for the edit half only', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 4 * HOUR });
+    const req = straight(g(1), 100);
+    const parsed = validatePlaceBet(req);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const legs = await resolveLegSnapshots(env, req, NOW);
+    const common = {
+      userId: alex.id,
+      input: parsed.value,
+      scope: { league: 'nfl', season: 2026 },
+      legs,
+      now: NOW,
+      replacesBetId: null,
+      requiresCancelledBetId: null,
+      memo: 'shape check',
+    } as const;
+
+    // Placement: two prelude statements sit in front of the `bets` INSERT.
+    const placement = buildPlacement(env, { ...common, includeBankrollPrelude: true });
+    expect(placement.betStatementIndex).toBe(2);
+    expect(placement.statements).toHaveLength(5); // bankroll + deposit + bet + leg + stake
+    // Edit: the `bets` INSERT is the very first statement of the placement half.
+    const edit = buildPlacement(env, { ...common, includeBankrollPrelude: false });
+    expect(edit.betStatementIndex).toBe(0);
+    expect(edit.statements).toHaveLength(3); // bet + leg + stake
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The guards that live INSIDE the batch (PLAN.md §14.1 / §14.2).
+//
+// These are the only thing standing between a rescheduled game and a free bet,
+// and the pre-flight reads mask them completely: with the world held still,
+// deleting `AND status = 'scheduled' AND kickoff_at > ?14` from `betInsertSql`
+// or making the edit's `COUNT(*) = :n` vacuous changes NOTHING observable,
+// because the pre-flight already rejected every input the guard would catch.
+//
+// Two complementary kinds of test cover them:
+//   (i)  the generated SQL is asserted to contain the guard text, and
+//   (ii) `BetHooks.beforeBatch` — a test-only seam that is `undefined` on every
+//        production call site — mutates the game row BETWEEN the read phase and
+//        `db.batch()`, which is exactly the window a concurrent ingestion write
+//        occupies, and the batch is then asserted to be a clean no-op.
+// ---------------------------------------------------------------------------
+
+describe('in-batch guards — the generated SQL', () => {
+  it('betInsertSql carries the §14.1 lock guard verbatim', () => {
+    const sql = betInsertSql(3, '');
+    expect(sql).toContain(`AND status = 'scheduled'`);
+    // STRICTLY greater: a kickoff exactly at the cutoff is CLOSED.
+    expect(sql).toContain('AND kickoff_at > ?14');
+    expect(sql).not.toContain('kickoff_at >= ?14');
+    // One bankroll, always — re-checked inside the batch, not just before it.
+    expect(sql).toContain('AND league = ?4 AND season = ?5');
+    expect(sql).toContain('WHERE id IN (?15, ?16, ?17)');
+    // `?7` is leg_count: EVERY requested game must come back bettable.
+    expect(sql).toContain(') = ?7');
+  });
+
+  it('editCancelSql carries BOTH the lock guard and the placement COUNT guard', () => {
+    const sql = editCancelSql(2);
+    // 1. the §14.2 lock over the OLD bet's legs' CURRENT game rows.
+    expect(sql).toContain(`AND (g.status <> 'scheduled' OR g.kickoff_at <= ?4)`);
+    // 2. the placement guard over the NEW legs, so neither half can land alone.
+    expect(sql).toContain(`AND status = 'scheduled'`);
+    expect(sql).toContain('AND kickoff_at > ?4');
+    expect(sql).not.toContain('kickoff_at >= ?4');
+    expect(sql).toContain('AND league = ?6 AND season = ?7');
+    expect(sql).toContain('WHERE id IN (?8, ?9)');
+    // `= ?10` (8 + legCount), NOT `>= 0` or a dropped comparison: a vacuous
+    // count would let the cancel + refund commit without the replacement.
+    expect(sql).toContain(') = ?10');
+    expect(editCancelSql(1)).toContain(') = ?9');
+  });
+});
+
+describe('placeBet — the game changes BETWEEN the read and the batch', () => {
+  interface Armed {
+    readonly alex: Account;
+    readonly bkId: string;
+    readonly ledgerBefore: number;
+    readonly balanceBefore: number | null;
+  }
+
+  /**
+   * A user whose bankroll is ALREADY open, so "nothing was written" is
+   * unambiguous: §14.2's prelude is deliberately unguarded and would otherwise
+   * create the bankroll legitimately on the way past.
+   */
+  async function armed(kickoffAt: number): Promise<Armed> {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt });
+    expect((await get('/api/bankroll?league=nfl&season=2026', alex.cookie)).status).toBe(200);
+    const bkId = bankrollId(alex.id, 'nfl', 2026);
+    return {
+      alex,
+      bkId,
+      ledgerBefore: await ledgerCount(alex.id),
+      balanceBefore: await balanceOf(env.DB, bkId),
+    };
+  }
+
+  async function expectNothingWritten(state: Armed): Promise<void> {
+    expect(await betCount(state.alex.id)).toBe(0);
+    expect(await legCount(state.alex.id)).toBe(0);
+    expect(await ledgerCount(state.alex.id, 'bet_stake')).toBe(0);
+    expect(await ledgerCount(state.alex.id)).toBe(state.ledgerBefore);
+    expect(await balanceOf(env.DB, state.bkId)).toBe(state.balanceBefore);
+    await expectLedgerMatchesBalance();
+  }
+
+  /** Place, mutating the game row after the snapshot read and before the batch. */
+  function placeWith(state: Armed, beforeBatch: () => Promise<void>): Promise<unknown> {
+    return placeBet(env, state.alex.id, straight(g(1), 2500), NOW, { beforeBatch });
+  }
+
+  it('kicks off in_progress mid-flight → GAME_NOT_BETTABLE, nothing written', async () => {
+    const state = await armed(NOW + 4 * HOUR);
+    const code = await codeOf(() =>
+      placeWith(state, () => updateGame(env.DB, g(1), { status: 'in_progress' })),
+    );
+    expect(code).toBe('GAME_NOT_BETTABLE');
+    await expectNothingWritten(state);
+  });
+
+  it('rescheduled into the past mid-flight → BETTING_CLOSED, nothing written', async () => {
+    const state = await armed(NOW + 4 * HOUR);
+    const code = await codeOf(() =>
+      placeWith(state, () => updateGame(env.DB, g(1), { kickoffAt: NOW - HOUR })),
+    );
+    expect(code).toBe('BETTING_CLOSED');
+    await expectNothingWritten(state);
+  });
+
+  it('kickoff moved to EXACTLY lockAt mid-flight → closed (`>`, never `>=`)', async () => {
+    const state = await armed(NOW + 4 * HOUR);
+    // lockAt == kickoff_at - BET_CUTOFF_BUFFER_MS, so `kickoff_at == now +
+    // buffer` is the first instant that must be refused. A `>=` guard sells it.
+    const code = await codeOf(() =>
+      placeWith(state, () => updateGame(env.DB, g(1), { kickoffAt: NOW + BET_CUTOFF_BUFFER_MS })),
+    );
+    expect(code).toBe('BETTING_CLOSED');
+    await expectNothingWritten(state);
+  });
+
+  it('one millisecond later than that still places', async () => {
+    const state = await armed(NOW + 4 * HOUR);
+    const { bet } = await placeBet(env, state.alex.id, straight(g(1), 2500), NOW, {
+      beforeBatch: () => updateGame(env.DB, g(1), { kickoffAt: NOW + BET_CUTOFF_BUFFER_MS + 1 }),
+    });
+    expect(bet.status).toBe('pending');
+    expect(await betCount(state.alex.id)).toBe(1);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('the game row disappearing mid-flight → GAME_NOT_FOUND, nothing written', async () => {
+    const state = await armed(NOW + 4 * HOUR);
+    const code = await codeOf(() =>
+      placeWith(state, async () => {
+        await env.DB.prepare(`DELETE FROM games WHERE id = ?1`).bind(g(1)).run();
+      }),
+    );
+    expect(code).toBe('GAME_NOT_FOUND');
+    await expectNothingWritten(state);
+  });
+});
+
+describe('editBet — the game changes BETWEEN the read and the batch', () => {
+  interface Edited {
+    readonly alex: Account;
+    readonly oldId: string;
+    readonly bkId: string;
+  }
+
+  /** A pending 2500c bet on g(1); g(2) is a second bettable game to move to. */
+  async function pending(): Promise<Edited> {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 6 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 7 * HOUR });
+    const res = await post('/api/bets', straight(g(1), 2500), alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+    return { alex, oldId: bet.id, bkId: bankrollId(alex.id, 'nfl', 2026) };
+  }
+
+  /**
+   * NEITHER HALF LANDED. The cancel UPDATE carries the placement guard, so when
+   * the replacement stops being placeable the cancel does not apply either: the
+   * old bet is untouched, no refund exists and no new bet row was created.
+   */
+  async function expectCleanNoOp(state: Edited): Promise<void> {
+    const row = await betRow(state.oldId);
+    expect(row?.status).toBe('pending');
+    expect(row?.cancelled_at).toBeNull();
+    expect(row?.replaced_by_bet_id).toBeNull();
+    expect(await betCount(state.alex.id)).toBe(1);
+    expect(await legCount(state.alex.id)).toBe(1);
+    expect(await ledgerCount(state.alex.id, 'bet_refund')).toBe(0);
+    expect(await balanceOf(env.DB, state.bkId)).toBe(INITIAL_BANKROLL_CENTS - 2500);
+    await expectLedgerMatchesBalance();
+  }
+
+  it('the replacement game goes in_progress mid-flight → clean no-op', async () => {
+    const state = await pending();
+    const code = await codeOf(() =>
+      editBet(env, state.alex.id, state.oldId, straight(g(2), 4000), NOW, {
+        beforeBatch: () => updateGame(env.DB, g(2), { status: 'in_progress' }),
+      }),
+    );
+    expect(code).toBe('GAME_NOT_BETTABLE');
+    await expectCleanNoOp(state);
+  });
+
+  it('the replacement game is rescheduled into the past mid-flight → clean no-op', async () => {
+    const state = await pending();
+    const code = await codeOf(() =>
+      editBet(env, state.alex.id, state.oldId, straight(g(2), 4000), NOW, {
+        beforeBatch: () => updateGame(env.DB, g(2), { kickoffAt: NOW - HOUR }),
+      }),
+    );
+    expect(code).toBe('BETTING_CLOSED');
+    await expectCleanNoOp(state);
+  });
+
+  it('the replacement game moves to EXACTLY lockAt mid-flight → clean no-op', async () => {
+    const state = await pending();
+    const code = await codeOf(() =>
+      editBet(env, state.alex.id, state.oldId, straight(g(2), 4000), NOW, {
+        beforeBatch: () => updateGame(env.DB, g(2), { kickoffAt: NOW + BET_CUTOFF_BUFFER_MS }),
+      }),
+    );
+    expect(code).toBe('BETTING_CLOSED');
+    await expectCleanNoOp(state);
+  });
+
+  it('the OLD bet locking mid-flight is also a clean no-op (409 BET_LOCKED)', async () => {
+    const state = await pending();
+    const code = await codeOf(() =>
+      editBet(env, state.alex.id, state.oldId, straight(g(2), 4000), NOW, {
+        beforeBatch: () => updateGame(env.DB, g(1), { status: 'in_progress' }),
+      }),
+    );
+    expect(code).toBe('BET_LOCKED');
+    await expectCleanNoOp(state);
   });
 });
 

@@ -167,6 +167,37 @@ export interface ResolvedLeg extends BetLegSnapshot {
   readonly legIndex: number;
 }
 
+/**
+ * TEST-ONLY seam. A no-op in production: the routes never pass it, so
+ * `hooks === undefined` and not a single extra statement, read or branch of
+ * consequence exists on the shipped path.
+ *
+ * WHY IT EXISTS. Every mutation here is one `db.batch()` whose guards live in
+ * the `WHERE` clauses of the writes themselves, and a pre-flight read
+ * (`resolveLegSnapshots`, the owner lookup in `editBet`) runs first purely to
+ * produce a SPECIFIC error message. That pre-flight masks the in-batch guards
+ * from the test suite completely: with the world held still, deleting
+ * `AND status = 'scheduled' AND kickoff_at > ?14` from `betInsertSql`, or
+ * weakening the edit's `COUNT(*) = :n`, changes no observable behaviour, because
+ * the pre-flight already rejected everything the guard would have caught. Those
+ * guards are the ONLY thing standing between a rescheduled game and a free bet,
+ * so they must be covered.
+ *
+ * `beforeBatch` runs after the reads and immediately before `db.batch()`, which
+ * is exactly the window a concurrent ingestion write occupies. A test uses it to
+ * move a kickoff into the past, flip a game to `in_progress` or delete the game
+ * row, then asserts the batch is a clean no-op. It does NOT weaken the
+ * single-batch design: nothing is read here, no guard moves out of its `WHERE`,
+ * and the production call sites are unchanged.
+ */
+export interface BetHooks {
+  readonly beforeBatch?: () => Promise<void>;
+}
+
+async function runHook(hooks: BetHooks | undefined): Promise<void> {
+  if (hooks?.beforeBatch !== undefined) await hooks.beforeBatch();
+}
+
 // ---------------------------------------------------------------------------
 // THE LITERAL SQL (PLAN.md §14.2). Kept as named constants so a reviewer can
 // diff them against the plan without reading the code that assembles them.
@@ -178,9 +209,22 @@ export interface ResolvedLeg extends BetLegSnapshot {
  * so a reschedule cannot race between the read and the write (PLAN.md §14.1).
  *
  * `?7` is `leg_count`, which is also the `= :n` the COUNT must reach.
- * `?15…` are the leg game ids.
+ * `?14` is `nowPlusBuffer`; `?15…` are the leg game ids.
+ *
+ * THE FOUR CONJUNCTS OF THE COUNT SUBQUERY ARE LORE, not decoration, and
+ * `tests/worker/bets.spec.ts` asserts this string contains each of them:
+ *   `id IN (…)` + `= ?7`   every requested game exists (none deleted under us)
+ *   `league`/`season`      one bankroll, always — a race cannot smuggle a leg
+ *                          from another season into this bankroll
+ *   `status = 'scheduled'` a game that went `in_progress` between the
+ *                          pre-flight read and this batch stops accepting bets
+ *   `kickoff_at > ?14`     STRICTLY greater: kickoff exactly at `lockAt` is
+ *                          CLOSED. `>=` would sell a bet one millisecond after
+ *                          the cutoff the UI showed.
+ *
+ * Exported for those assertions; nothing outside this module calls it.
  */
-function betInsertSql(legCount: number, extraGuard: string): string {
+export function betInsertSql(legCount: number, extraGuard: string): string {
   return `INSERT INTO bets (id, user_id, bankroll_id, league, season, bet_type, leg_count,
                     stake_cents, american_price, potential_payout_cents, status,
                     placed_at, earliest_kickoff_at, replaces_bet_id, created_at, updated_at)
@@ -213,8 +257,8 @@ SELECT ?1, b.bankroll_id, 'bet_stake', b.id, b.id, ?3, ?4, ?5
  * was rescheduled two hours earlier watch the first quarter and then cancel for
  * a full refund (CLAUDE.md rule 8b / PLAN.md §14.2).
  *
- * The EDIT variant of this statement is spelled out inline in `editBet`: it
- * needs an extra `SET` and an extra guard, and a template with holes in it would
+ * The EDIT variant is `editCancelSql()` below: it needs an extra `SET`, its own
+ * parameter numbering and a SECOND guard, and a template with holes in it would
  * be harder to diff against the plan than two explicit copies.
  */
 const CANCEL_UPDATE_SQL = `UPDATE bets
@@ -224,6 +268,45 @@ const CANCEL_UPDATE_SQL = `UPDATE bets
      SELECT 1 FROM bet_legs l JOIN games g ON g.id = l.game_id
       WHERE l.bet_id = ?1
         AND (g.status <> 'scheduled' OR g.kickoff_at <= ?4))`;
+
+/**
+ * The cancel half of an EDIT. Two guards, and BOTH are load-bearing:
+ *
+ *   1. the §14.2 lock `NOT EXISTS` over the OLD bet's legs' CURRENT games, and
+ *   2. the PLACEMENT guard — the same `COUNT(*) … = :n` over the NEW legs'
+ *      games that `betInsertSql` carries.
+ *
+ * (2) IS A DELIBERATE ADDITION TO PLAN.md §14.2's ORIGINAL SQL, and §14.2 has
+ * been amended to match. §14.2 guarded the place half on the cancel but not the
+ * reverse, and its "neither half can land alone" claim only holds for failures
+ * that THROW (validation, insufficient funds), which roll the batch back. A
+ * placement guard that merely matches ZERO ROWS throws nothing: the cancel and
+ * its refund would commit alone, the replacement would silently not exist, and
+ * the user would lose their position while the edit reported a 409. With the
+ * symmetric guard, each half is conditioned on the other and the batch is either
+ * a complete swap or a clean no-op.
+ *
+ * `?1` old bet, `?2` user, `?3` now, `?4` nowPlusBuffer, `?5` new bet id,
+ * `?6` league, `?7` season, `?8…` new leg game ids, then `:n` last.
+ *
+ * Exported so `tests/worker/bets.spec.ts` can assert the guard text is present;
+ * nothing outside this module calls it.
+ */
+export function editCancelSql(legCount: number): string {
+  return `UPDATE bets
+   SET status = 'cancelled', cancelled_at = ?3, updated_at = ?3,
+       replaced_by_bet_id = ?5
+ WHERE id = ?1 AND user_id = ?2 AND status = 'pending'
+   AND NOT EXISTS (
+     SELECT 1 FROM bet_legs l JOIN games g ON g.id = l.game_id
+      WHERE l.bet_id = ?1
+        AND (g.status <> 'scheduled' OR g.kickoff_at <= ?4))
+   AND (SELECT COUNT(*) FROM games
+         WHERE id IN (${placeholders(legCount, 8)})
+           AND league = ?6 AND season = ?7
+           AND status = 'scheduled'
+           AND kickoff_at > ?4) = ?${String(8 + legCount)}`;
+}
 
 /**
  * The refund, guarded THREE ways.
@@ -316,15 +399,25 @@ async function loadGames(env: Env, gameIds: readonly string[]): Promise<Map<stri
  * The current `game_lines` row per game. `PRIMARY KEY (game_id, provider)`
  * allows more than one book; v1 only ever writes DraftKings, and if a second
  * provider ever appears the most recently CONFIRMED row wins.
+ *
+ * THE TIE-BREAK MATCHES THE BOARD. `routes/games.ts` picks the board's line with
+ * `ORDER BY seen_at DESC, provider ASC LIMIT 1` — freshest first, then the
+ * alphabetically first provider. Here the rows are walked in ASCENDING order and
+ * each overwrites the last, so the WINNER IS THE ROW THAT SORTS LAST; the exact
+ * reverse, `seen_at ASC, provider DESC`, is therefore the same choice. Left
+ * arbitrary, two books that were confirmed in the same poll could show one price
+ * on the board and charge the other at placement — a "the screen said −110"
+ * complaint that `LINE_CHANGED` would not even catch, because the client's
+ * `expected` came from the board.
  */
 async function loadLines(env: Env, gameIds: readonly string[]): Promise<Map<string, LineRow>> {
   const rows = await queryAll<LineRow>(
     env.DB.prepare(
       `SELECT * FROM game_lines WHERE game_id IN (${placeholders(gameIds.length)})
-        ORDER BY seen_at ASC`,
+        ORDER BY seen_at ASC, provider DESC`,
     ).bind(...gameIds),
   );
-  // ASC + overwrite leaves the freshest row per game.
+  // ASC + overwrite leaves the freshest row per game, lowest provider on a tie.
   const byGame = new Map<string, LineRow>();
   for (const row of rows) byGame.set(row.game_id, row);
   return byGame;
@@ -435,14 +528,14 @@ export async function resolveLegSnapshots(
 // Placement
 // ---------------------------------------------------------------------------
 
-interface PlacementPlan {
+export interface PlacementPlan {
   readonly betId: string;
   readonly statements: readonly D1PreparedStatement[];
   /** Offset of the `bets` INSERT within `statements`; `meta.changes` there is the verdict. */
   readonly betStatementIndex: number;
 }
 
-interface PlacementArgs {
+export interface PlacementArgs {
   readonly userId: string;
   readonly input: PlaceBetInput;
   readonly scope: { readonly league: League; readonly season: number };
@@ -452,6 +545,20 @@ interface PlacementArgs {
   /** When set, the bet only lands if THIS call's cancel of that bet applied. */
   readonly requiresCancelledBetId: string | null;
   readonly memo: string;
+  /**
+   * Prepend §14.2's lazy-bankroll prelude (`INSERT OR IGNORE bankrolls` +
+   * the opening `deposit_initial`).
+   *
+   * TRUE for a fresh placement, which may be the user's first bet of the season.
+   * FALSE for an edit: the bet being replaced already belongs to a bankroll, and
+   * `editBet` forces the replacement into that same `(league, season)`, so the
+   * row provably exists. Running it anyway made a 404 `PUT /api/bets/:id` on
+   * somebody else's bet commit the CALLER's bankroll prelude — a durable write
+   * on a request that was refused and reported as having found nothing. The
+   * `ledger_bi_bankroll_exists` trigger is the backstop if this reasoning ever
+   * stops holding: an orphan stake row aborts the batch rather than landing.
+   */
+  readonly includeBankrollPrelude: boolean;
 }
 
 /**
@@ -460,8 +567,11 @@ interface PlacementArgs {
  * The payout cap is checked in BigInt BEFORE `priceToAmerican`, so an absurdly
  * priced parlay fails with `409 PAYOUT_LIMIT_EXCEEDED` rather than
  * `priceToAmerican`'s `400 VALIDATION` (PLAN.md §5.2b).
+ *
+ * Exported for `tests/worker/bets.spec.ts`, which asserts the shape of the plan
+ * (notably that an edit's plan carries NO bankroll prelude).
  */
-function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
+export function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
   const { input, legs, now, scope } = args;
   const price = priceFromLegs(legs.map((l) => l.americanPrice));
   if (exceedsPayoutCap(input.stakeCents, price)) {
@@ -533,7 +643,9 @@ function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
     args.memo,
   );
 
-  const prelude = ensureBankrollStatements(env, args.userId, scope.league, scope.season, now);
+  const prelude = args.includeBankrollPrelude
+    ? ensureBankrollStatements(env, args.userId, scope.league, scope.season, now)
+    : [];
   return {
     betId,
     statements: [...prelude, betStatement, ...legStatements, stakeStatement],
@@ -553,6 +665,7 @@ export async function placeBet(
   userId: string,
   req: PlaceBetRequest,
   now: EpochMs,
+  hooks?: BetHooks,
 ): Promise<PlaceBetResult> {
   const input = validated(req);
   const scope = await scopeFor(env, input);
@@ -566,8 +679,10 @@ export async function placeBet(
     replacesBetId: null,
     requiresCancelledBetId: null,
     memo: 'bet placed',
+    includeBankrollPrelude: true,
   });
 
+  await runHook(hooks);
   const results = await runPlacementBatch(env, plan.statements);
   if (changesAt(results, plan.betStatementIndex) !== 1) {
     // Every later statement is guarded on the bet row, so the batch was a clean
@@ -721,16 +836,31 @@ async function rejectCancel(env: Env, userId: string, betId: string, now: EpochM
  * Edit == atomic cancel + place in ONE batch. The new bet is priced from CURRENT
  * lines, never from the old snapshot.
  *
- * DELIBERATE ADDITION TO §14.2's SQL, called out for review: the cancel UPDATE
- * carries the PLACEMENT guard too (the same `COUNT(*) … = :n` over the NEW legs'
- * games). §14.2 guards the place half on the cancel but not the reverse, and its
- * claim that "neither half can land alone" only holds for failures that THROW
- * (validation, funds). A placement guard that merely matches 0 rows throws
- * nothing, so without this the cancel + refund would commit alone and the user
- * would silently lose their bet. With it, both guards must hold or the batch is
- * a clean no-op.
+ * DELIBERATE ADDITION TO §14.2's ORIGINAL SQL (the plan has since been amended
+ * to match): the cancel UPDATE carries the PLACEMENT guard too — see
+ * `editCancelSql` for why the symmetry is required rather than merely tidy.
  *
- * @throws every code `placeBet` throws, plus BET_LOCKED | BET_NOT_PENDING
+ * TWO FURTHER RULES, both about WHERE THE MONEY LIVES:
+ *
+ *   * THE EDIT MUST KEEP THE BET'S ORIGINAL `(league, season)`. Allowing it to
+ *     change would let a `PUT` move money between two different bankrolls —
+ *     refund one season, stake another — under the banner of "editing a bet",
+ *     and it makes `replaces_bet_id` link two rows that never shared a ledger.
+ *     A user who wants a bet in another league places a new one. Mismatches are
+ *     the same 409s a mixed parlay gets, for the same reason.
+ *   * THE EDIT BATCH CARRIES NO BANKROLL PRELUDE. The old bet already belongs to
+ *     a bankroll and the rule above pins the replacement to it, so there is
+ *     nothing to create — and running the prelude meant an unauthorised `PUT`
+ *     that answers 404 still committed the caller's bankroll rows.
+ *
+ * The owner lookup that enforces both runs BEFORE anything is built. It is not a
+ * read-then-write guard: `bets.league` / `bets.season` / `bets.user_id` are
+ * immutable once written, so nothing it reads can change under the batch, and
+ * every mutable condition (`status = 'pending'`, the kickoff lock) still lives
+ * in the `WHERE` of the UPDATE.
+ *
+ * @throws every code `placeBet` throws, plus BET_NOT_FOUND | BET_LOCKED |
+ *         BET_NOT_PENDING
  */
 export async function editBet(
   env: Env,
@@ -738,9 +868,33 @@ export async function editBet(
   betId: string,
   req: PlaceBetRequest,
   now: EpochMs,
+  hooks?: BetHooks,
 ): Promise<{ readonly bet: BetView; readonly replacedBetId: string }> {
   const input = validated(req);
+  const target = await queryOne<{ league: string; season: number }>(
+    env.DB.prepare(`SELECT league, season FROM bets WHERE id = ?1 AND user_id = ?2`).bind(
+      betId,
+      userId,
+    ),
+  );
+  // 404, never 403 — and BEFORE any statement is built, so an unauthorised edit
+  // writes nothing at all.
+  if (target === null) throw new AppError('BET_NOT_FOUND', 'No such bet.');
+
   const scope = await scopeFor(env, input);
+  if (scope.league !== target.league) {
+    throw new AppError('MIXED_LEAGUE_PARLAY', 'An edit cannot change the bet’s league.', {
+      requested: scope.league,
+      actual: target.league,
+    });
+  }
+  if (scope.season !== target.season) {
+    throw new AppError('MIXED_SEASON_PARLAY', 'An edit cannot change the bet’s season.', {
+      requested: scope.season,
+      actual: target.season,
+    });
+  }
+
   const legs = await resolveLegSnapshots(env, input, now);
   const plan = buildPlacement(env, {
     userId,
@@ -751,27 +905,13 @@ export async function editBet(
     replacesBetId: betId,
     requiresCancelledBetId: betId,
     memo: 'bet placed (edit)',
+    // Same (league, season) as the old bet, so its bankroll already exists.
+    includeBankrollPrelude: false,
   });
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
   const gameIds = legs.map((l) => l.gameId);
 
-  // Built explicitly rather than through cancelUpdateSql(): the edit variant
-  // needs its own parameter numbering for the extra SET and the extra guard.
-  const cancelStatement = env.DB.prepare(
-    `UPDATE bets
-   SET status = 'cancelled', cancelled_at = ?3, updated_at = ?3,
-       replaced_by_bet_id = ?5
- WHERE id = ?1 AND user_id = ?2 AND status = 'pending'
-   AND NOT EXISTS (
-     SELECT 1 FROM bet_legs l JOIN games g ON g.id = l.game_id
-      WHERE l.bet_id = ?1
-        AND (g.status <> 'scheduled' OR g.kickoff_at <= ?4))
-   AND (SELECT COUNT(*) FROM games
-         WHERE id IN (${placeholders(gameIds.length, 8)})
-           AND league = ?6 AND season = ?7
-           AND status = 'scheduled'
-           AND kickoff_at > ?4) = ?${String(8 + gameIds.length)}`,
-  ).bind(
+  const cancelStatement = env.DB.prepare(editCancelSql(gameIds.length)).bind(
     betId,
     userId,
     now,
@@ -787,6 +927,7 @@ export async function editBet(
     refundInsertSql(`\n   AND b.replaced_by_bet_id = ?7`),
   ).bind(betId, userId, now, nowPlusBuffer, newId(), 'replaced by edit', plan.betId);
 
+  await runHook(hooks);
   const results = await runPlacementBatch(env, [
     cancelStatement,
     refundStatement,
@@ -794,8 +935,9 @@ export async function editBet(
   ]);
   if (changesAt(results, 0) !== 1) {
     // Either the old bet could not be cancelled, or the new legs are no longer
-    // placeable. The old bet's own state is the more specific answer, so it is
-    // diagnosed first; `rejectCancel` only throws when it really is at fault.
+    // placeable; the batch cannot say which. Re-read the old bet's status (the
+    // up-front read is stale by now — a concurrent DELETE may have cancelled it
+    // between the two) and answer with whichever fault is the more specific.
     const row = await queryOne<{ status: string }>(
       env.DB.prepare(`SELECT status FROM bets WHERE id = ?1 AND user_id = ?2`).bind(betId, userId),
     );
@@ -880,8 +1022,15 @@ async function loadLegs(env: Env, betIds: readonly string[]): Promise<Map<string
  * List a user's bets. For OPEN bets each leg carries a live `projected` grade
  * computed from the current game row — computed on read, never persisted.
  *
- * `status=open` is exactly `status='pending'`; `settled` is its complement, so a
- * cancelled bet is reachable from the UI's "history" tab rather than vanishing.
+ * FILTER SEMANTICS, DECIDED AND DOCUMENTED (PLAN.md §11.4): `status=open` is
+ * exactly `status='pending'`, and `status=settled` IS ITS COMPLEMENT — it
+ * therefore INCLUDES `cancelled` bets, which are not "settled" in the betting
+ * sense at all. That is deliberate: the two filters partition a user's bets, so
+ * the UI's "history" tab shows cancellations rather than letting them vanish
+ * from both tabs. `cancelled` is still excluded from every STATISTIC
+ * (`summariseSettled` counts only won/lost/push/void), so the record and ROI are
+ * unaffected. Callers wanting true settlements only should filter on
+ * `bet.status` client-side.
  */
 export async function listBets(
   env: Env,
