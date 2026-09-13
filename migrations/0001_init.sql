@@ -260,7 +260,9 @@ CREATE TABLE ledger (
 );
 CREATE INDEX idx_ledger_bankroll ON ledger(bankroll_id, created_at DESC);
 -- Covering index for bankrolls_bu_balance_guard's SUM(amount_cents) per bankroll:
--- the guard runs on every ledger insert, so keep it an index-only scan.
+-- the guard runs on every ledger insert, so keep it an index-only scan. NOT a
+-- duplicate of idx_ledger_bankroll above (which orders the history view by
+-- created_at) — both earn their keep; do not "clean up" either.
 CREATE INDEX idx_ledger_sum ON ledger (bankroll_id, amount_cents);
 CREATE INDEX idx_ledger_bet      ON ledger(bet_id);
 
