@@ -51,6 +51,13 @@ export const PUSH_AMERICAN_PRICE: AmericanPrice = 100;
  * Largest |American| the schema accepts (`bets.american_price CHECK
  * abs(...) <= 100000000`). `priceToAmerican` refuses to return anything larger,
  * so a display price can never be bound as Infinity or a non-safe integer.
+ *
+ * INVARIANT (pinned by a test): every price a PLACEABLE bet can carry fits.
+ * The largest placeable decimal is MAX_PAYOUT_CENTS / MIN_STAKE_CENTS = 1e6,
+ * whose American is +99,999,900 — inside this bound by 100 points. That margin
+ * exists ONLY because MIN_STAKE_CENTS is 100; lowering the minimum stake would
+ * require raising this bound AND the schema CHECK together, or settlement of a
+ * total-loss bet (which re-renders the full placement price) would throw.
  */
 const MAX_ABS_AMERICAN_OUTPUT = 100_000_000n;
 
@@ -186,12 +193,15 @@ export function priceToAmerican(price: Price): AmericanPrice {
       `Price ${num.toString()}/${den.toString()} has no American equivalent (decimal odds must exceed 1.0).`,
     );
   }
-  const magnitude =
-    num >= 2n * den ? roundHalfUp(100n * (num - den), den) : roundHalfUp(100n * den, num - den);
+  const positive = num >= 2n * den;
+  const magnitude = positive
+    ? roundHalfUp(100n * (num - den), den)
+    : roundHalfUp(100n * den, num - den);
   if (magnitude > MAX_ABS_AMERICAN_OUTPUT) {
+    // The value itself is deliberately omitted: it can be hundreds of digits.
     throw new AppError('VALIDATION', 'Price is too long to express as an American price.');
   }
-  return num >= 2n * den ? Number(magnitude) : -Number(magnitude);
+  return positive ? Number(magnitude) : -Number(magnitude);
 }
 
 /** Product of leg prices. Empty input returns EVEN_MONEY_UNIT. */
@@ -231,7 +241,9 @@ export function payoutCents(stakeCents: Cents, price: Price): Cents {
 
 /**
  * Cap check for pre-flight validation of a bet slip: returns true/false instead
- * of throwing PAYOUT_LIMIT_EXCEEDED. It still throws VALIDATION for a stake or
+ * of throwing PAYOUT_LIMIT_EXCEEDED. PLACEMENT ORDER (M5): check the cap
+ * BEFORE calling `priceToAmerican` for the display price, so an over-cap parlay
+ * fails with 409 PAYOUT_LIMIT_EXCEEDED rather than priceToAmerican's 400. It still throws VALIDATION for a stake or
  * price that is not a legal input (negative, non-integer, degenerate price).
  */
 export function exceedsPayoutCap(stakeCents: Cents, price: Price): boolean {

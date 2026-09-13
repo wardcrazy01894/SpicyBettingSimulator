@@ -472,6 +472,34 @@ describe('MAX_PAYOUT_CENTS', () => {
     expectAppError(() => priceToAmerican({ num: 1_000_002n, den: 1n }), 'VALIDATION');
   });
 
+  it('every PLACEABLE price has an American representation (bound covers MIN_STAKE_CENTS)', () => {
+    // Analytic edge: decimal 1e6 is the largest placeable (payout == cap at min stake).
+    const edge: Price = { num: 1_000_000n, den: 1n };
+    expect(exceedsPayoutCap(MIN_STAKE_CENTS, edge)).toBe(false);
+    expect(priceToAmerican(edge)).toBe(99_999_900);
+    // Randomised: any parlay that is placeable at the minimum stake renders.
+    let seed = 12345;
+    const rnd = (): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed / 2147483648;
+    };
+    let placeable = 0;
+    for (let i = 0; i < 3000; i += 1) {
+      const legCount = 1 + ((rnd() * 10) % 10);
+      const legs: AmericanPrice[] = [];
+      for (let j = 0; j < legCount; j += 1) {
+        const mag = 100 + ((rnd() * 99901) % 99901);
+        const whole = mag - (mag % 1);
+        legs.push(rnd() < 0.5 ? -whole : whole);
+      }
+      const price = priceFromLegs(legs);
+      if (exceedsPayoutCap(MIN_STAKE_CENTS, price)) continue;
+      placeable += 1;
+      expect(Number.isSafeInteger(priceToAmerican(price))).toBe(true);
+    }
+    expect(placeable).toBeGreaterThan(100);
+  });
+
   it('PUSH_AMERICAN_PRICE is the literal settlement writes for an all-push bet', () => {
     expect(PUSH_AMERICAN_PRICE).toBe(100);
     expectAppError(() => priceToAmerican(EVEN_MONEY_UNIT), 'VALIDATION');

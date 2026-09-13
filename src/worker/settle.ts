@@ -27,12 +27,14 @@
  * PRICE: `bets` stores no rational. The effective price is recomputed inside the
  * job from the SURVIVING (won) legs' `american_price` integers via
  * `priceFromLegs()`, and the resulting American integer is WRITTEN BACK to
- * `bets.american_price` in the same settlement UPDATE. When NO leg survives
- * (all push/void) write `PUSH_AMERICAN_PRICE` (100) from odds.ts — do NOT call
- * `priceToAmerican(priceFromLegs([]))`: even money has no American form and
- * that call throws, which would park every all-push parlay as "stuck". Without that write-back a
+ * `bets.american_price` in the same settlement UPDATE. Without that write-back a
  * push-repriced parlay would pay 3644c while still displaying the 3-leg +811 it
  * was placed at. The displayed price must match what was paid.
+ *
+ * When NO leg survives (all push/void) write `PUSH_AMERICAN_PRICE` (100) from
+ * odds.ts — do NOT call `priceToAmerican(priceFromLegs([]))`: even money has no
+ * American form and that call throws, which would park every all-push parlay
+ * as "stuck".
  *
  * Re-pricing can only ever DECREASE the payout: every legal American price has
  * decimal odds strictly greater than 1 (the minimum over the whole legal domain
