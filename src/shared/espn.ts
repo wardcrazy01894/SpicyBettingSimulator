@@ -314,7 +314,14 @@ function sideSnapshot(node: unknown): { readonly line: unknown; readonly odds: u
 
 /** A short, safe rendering of a raw feed value for a warning message. */
 function rawText(value: unknown): string {
-  const text = typeof value === 'string' ? value : String(JSON.stringify(value));
+  // JSON.stringify is typed as returning string but yields undefined for
+  // undefined/functions/symbols; guard those explicitly.
+  const text =
+    typeof value === 'string'
+      ? value
+      : value === undefined || typeof value === 'function' || typeof value === 'symbol'
+        ? typeof value
+        : JSON.stringify(value);
   return text.length > 24 ? `${text.slice(0, 24)}…` : text;
 }
 
