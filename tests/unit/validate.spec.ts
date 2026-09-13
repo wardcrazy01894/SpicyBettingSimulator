@@ -20,7 +20,7 @@ import {
 
 // Compile-time pin: a validated bet IS a wire request (PLAN §11.4). If the two
 // shapes ever drift this file stops typechecking.
-const _pin = (v: PlaceBetInput): PlaceBetRequest => v;
+const asWireRequest = (v: PlaceBetInput): PlaceBetRequest => v;
 
 /** TDD contract for src/shared/validate.ts (M2d). */
 
@@ -156,6 +156,7 @@ describe('validatePlaceBet', () => {
 
   it('accepts a valid straight and defaults acceptLineChange to false', () => {
     const v = ok(validatePlaceBet(straight()));
+    expect(asWireRequest(v)).toBe(v);
     expect(v).toEqual({
       league: 'nfl',
       betType: 'straight',
