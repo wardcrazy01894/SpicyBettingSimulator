@@ -1,11 +1,12 @@
 import { defineConfig } from 'vitest/config';
 
-// Two projects:
+// Three projects:
 //   unit   -> pure logic in src/shared (node env, fast)
 //   worker -> Worker + real D1 via @cloudflare/vitest-pool-workers
+//   web    -> pure UI helpers in src/web/lib and the slip reducer (node env)
 export default defineConfig({
   test: {
-    projects: ['vitest.unit.config.ts', 'vitest.workers.config.ts'],
+    projects: ['vitest.unit.config.ts', 'vitest.workers.config.ts', 'vitest.web.config.ts'],
     coverage: {
       provider: 'v8',
       include: ['src/shared/**/*.ts'],

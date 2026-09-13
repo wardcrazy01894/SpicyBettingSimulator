@@ -5,59 +5,50 @@
  *
  * Routes: / (games), /bets, /leaderboard, /account, /admin, /login
  *
- * M1 STATE: a minimal health panel proving the dev loop (vite -> /api proxy ->
- * wrangler dev -> Worker). M7a replaces this with the real provider stack.
+ * ORDER MATTERS. Session is outermost because everything below it needs to know
+ * whether there is a user; Config is next because the slip needs
+ * `currentSeason`/`maxParlayLegs`/`minStakeCents` before it can price anything;
+ * the slip is innermost because only the board and My Bets touch it.
+ *
+ * `/login` sits OUTSIDE `<AppShell>` — the shell redirects anonymous visitors to
+ * it, so nesting them would loop.
  */
 
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import type { ReactElement } from 'react';
-import { useEffect, useState } from 'react';
-import type { HealthResponse } from '../shared/api-types.js';
 
-type HealthState =
-  | { readonly kind: 'loading' }
-  | { readonly kind: 'ok'; readonly health: HealthResponse }
-  | { readonly kind: 'error'; readonly message: string };
+import { AppShell } from './components/AppShell.js';
+import { AccountPage } from './pages/AccountPage.js';
+import { AdminPage } from './pages/AdminPage.js';
+import { AuthPage } from './pages/AuthPage.js';
+import { GamesPage } from './pages/GamesPage.js';
+import { LeaderboardPage } from './pages/LeaderboardPage.js';
+import { MyBetsPage } from './pages/MyBetsPage.js';
+import { NotFoundPage } from './pages/NotFoundPage.js';
+import { BetSlipProvider } from './state/BetSlipContext.js';
+import { ConfigProvider } from './state/ConfigContext.js';
+import { SessionProvider } from './state/SessionContext.js';
 
 export function App(): ReactElement {
-  const [state, setState] = useState<HealthState>({ kind: 'loading' });
-
-  useEffect(() => {
-    const ac = new AbortController();
-    void (async () => {
-      try {
-        const res = await fetch('/api/health', { signal: ac.signal });
-        if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
-        const health = (await res.json()) as HealthResponse;
-        if (!ac.signal.aborted) setState({ kind: 'ok', health });
-      } catch (err) {
-        if (!ac.signal.aborted) {
-          setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
-        }
-      }
-    })();
-    return () => {
-      ac.abort();
-    };
-  }, []);
-
   return (
-    <main className="shell">
-      <h1>Spicy Betting Simulator</h1>
-      <p className="muted">Fake money. Real lines. (M1 dev-loop check)</p>
-      {state.kind === 'loading' && <p>Checking the API…</p>}
-      {state.kind === 'error' && <p className="error">API unreachable: {state.message}</p>}
-      {state.kind === 'ok' && (
-        <dl className="kv">
-          <dt>API</dt>
-          <dd>ok</dd>
-          <dt>Version</dt>
-          <dd>{state.health.version}</dd>
-          <dt>Server time</dt>
-          <dd>{new Date(state.health.now).toLocaleString()}</dd>
-          <dt>Invite required</dt>
-          <dd>{state.health.inviteRequired ? 'yes' : 'no'}</dd>
-        </dl>
-      )}
-    </main>
+    <BrowserRouter>
+      <SessionProvider>
+        <ConfigProvider>
+          <BetSlipProvider>
+            <Routes>
+              <Route path="/login" element={<AuthPage />} />
+              <Route element={<AppShell />}>
+                <Route index element={<GamesPage />} />
+                <Route path="/bets" element={<MyBetsPage />} />
+                <Route path="/leaderboard" element={<LeaderboardPage />} />
+                <Route path="/account" element={<AccountPage />} />
+                <Route path="/admin" element={<AdminPage />} />
+                <Route path="*" element={<NotFoundPage />} />
+              </Route>
+            </Routes>
+          </BetSlipProvider>
+        </ConfigProvider>
+      </SessionProvider>
+    </BrowserRouter>
   );
 }
