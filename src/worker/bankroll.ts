@@ -8,6 +8,7 @@
 import type { BankrollResponse } from '../shared/api-types.js';
 import type { Cents, EpochMs, League } from '../shared/types.js';
 import type { Env } from './env.js';
+import { nowMs, queryOne } from './db.js';
 
 /** Deterministic id: `<userId>:<league>:<season>`. */
 export function bankrollId(_userId: string, _league: League, _season: number): string {
@@ -68,8 +69,22 @@ export function pendingStakeCents(_env: Env, _bankrollId: string): Promise<Cents
  * derived from the legs' own game rows (see `placeBet`), so a bet can never be
  * charged to a bankroll its games do not belong to.
  */
-export function currentSeasonFor(_env: Env, _league: League): Promise<number | null> {
-  throw new Error('not implemented: M5');
+export async function currentSeasonFor(env: Env, league: League): Promise<number | null> {
+  const now = nowMs();
+  const upcoming = await queryOne<{ season: number }>(
+    env.DB.prepare(
+      `SELECT season FROM games
+        WHERE league = ?1 AND kickoff_at >= ?2 AND status = 'scheduled'
+        ORDER BY kickoff_at ASC LIMIT 1`,
+    ).bind(league, now),
+  );
+  if (upcoming) return upcoming.season;
+  const latest = await queryOne<{ season: number }>(
+    env.DB.prepare(
+      `SELECT season FROM games WHERE league = ?1 ORDER BY kickoff_at DESC LIMIT 1`,
+    ).bind(league),
+  );
+  return latest?.season ?? null;
 }
 
 /**

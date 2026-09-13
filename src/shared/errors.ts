@@ -97,18 +97,20 @@ export class AppError extends Error {
 
   /** Canonical HTTP status for this error's code. */
   get status(): number {
-    throw new Error('not implemented: M2d');
+    return ERROR_STATUS[this.code];
   }
 
   /** Serialize to the wire envelope. */
   toBody(): ApiErrorBody {
-    throw new Error('not implemented: M2d');
+    return this.details === undefined
+      ? { error: { code: this.code, message: this.message } }
+      : { error: { code: this.code, message: this.message, details: this.details } };
   }
 }
 
 /** Narrowing helper used by the Hono error handler. */
-export function isAppError(_value: unknown): _value is AppError {
-  throw new Error('not implemented: M2d');
+export function isAppError(value: unknown): value is AppError {
+  return value instanceof AppError;
 }
 
 /**
@@ -118,6 +120,34 @@ export function isAppError(_value: unknown): _value is AppError {
  * INSUFFICIENT_FUNDS and `UNIQUE constraint failed: ledger...` becomes a
  * recognised already-settled signal. See PLAN.md §4.2 and §7.4.
  */
-export function fromThrown(_value: unknown): AppError {
-  throw new Error('not implemented: M2d');
+export function fromThrown(value: unknown): AppError {
+  if (isAppError(value)) return value;
+  const text = collectMessages(value);
+  // The two ledger BEFORE INSERT triggers raise DISTINCT messages on purpose:
+  // insufficient funds is a legitimate user outcome, an unknown bankroll is a
+  // bug and must surface as INTERNAL (PLAN.md §4.2).
+  if (
+    text.includes('ledger: insufficient funds') ||
+    text.includes('CHECK constraint failed: balance_cents >= 0')
+  ) {
+    return new AppError('INSUFFICIENT_FUNDS', 'Insufficient funds for this stake.');
+  }
+  // Deliberately generic: the original message may contain SQL or a stack.
+  return new AppError('INTERNAL', 'Something went wrong.');
+}
+
+/** Message text of a thrown value and its `cause` chain, joined. */
+function collectMessages(value: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = value;
+  for (let depth = 0; depth < 5 && cur !== undefined && cur !== null; depth += 1) {
+    if (cur instanceof Error) {
+      parts.push(cur.message);
+      cur = cur.cause;
+    } else {
+      parts.push(typeof cur === 'string' ? cur : '');
+      cur = undefined;
+    }
+  }
+  return parts.join(' | ');
 }

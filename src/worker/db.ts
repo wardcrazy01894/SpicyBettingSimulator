@@ -16,26 +16,37 @@ import type { Env } from './env.js';
  * `results[i].meta.changes` to learn whether a conditional write applied — that
  * is how every guard in this codebase reports success without a second read.
  */
-export function runBatch(
-  _db: D1Database,
-  _statements: readonly D1PreparedStatement[],
+export async function runBatch(
+  db: D1Database,
+  statements: readonly D1PreparedStatement[],
 ): Promise<readonly D1Result[]> {
-  throw new Error('not implemented: M1');
+  if (statements.length === 0) return [];
+  if (statements.length > MAX_BATCH_STATEMENTS) {
+    throw new Error(
+      `runBatch: ${String(statements.length)} statements exceeds budget ${String(MAX_BATCH_STATEMENTS)}`,
+    );
+  }
+  return db.batch([...statements]);
 }
 
+/** PLAN.md §1 / Spike S2: keep well under the documented 50-per-invocation figure. */
+export const MAX_BATCH_STATEMENTS = 40;
+
 /** `results[index].meta.changes`, defaulting to 0. */
-export function changesAt(_results: readonly D1Result[], _index: number): number {
-  throw new Error('not implemented: M1');
+export function changesAt(results: readonly D1Result[], index: number): number {
+  const meta = results[index]?.meta as { changes?: unknown } | undefined;
+  return typeof meta?.changes === 'number' ? meta.changes : 0;
 }
 
 /** `SELECT` returning zero or one row. */
-export function queryOne<T>(_stmt: D1PreparedStatement): Promise<T | null> {
-  throw new Error('not implemented: M1');
+export async function queryOne<T>(stmt: D1PreparedStatement): Promise<T | null> {
+  return (await stmt.first<T>()) ?? null;
 }
 
 /** `SELECT` returning many rows. */
-export function queryAll<T>(_stmt: D1PreparedStatement): Promise<readonly T[]> {
-  throw new Error('not implemented: M1');
+export async function queryAll<T>(stmt: D1PreparedStatement): Promise<readonly T[]> {
+  const res = await stmt.all<T>();
+  return res.results;
 }
 
 /**
@@ -72,7 +83,7 @@ export function isUniqueViolation(_err: unknown, _hint?: string): boolean {
 
 /** `crypto.randomUUID()`, wrapped so tests can inject a deterministic source. */
 export function newId(): string {
-  throw new Error('not implemented: M1');
+  return crypto.randomUUID();
 }
 
 /**
@@ -81,7 +92,7 @@ export function newId(): string {
  * want every guard in a batch to agree. Never derived from client input.
  */
 export function nowMs(): number {
-  throw new Error('not implemented: M1');
+  return Date.now();
 }
 
 /** Handy for tests: assert `SUM(ledger.amount_cents) === bankrolls.balance_cents`. */

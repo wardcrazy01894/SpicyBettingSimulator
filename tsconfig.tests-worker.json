@@ -2,7 +2,7 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2023"],
-    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"],
+    "types": ["@cloudflare/workers-types"],
     "outDir": "./.tsbuild/tests-worker",
     "tsBuildInfoFile": "./.tsbuild/tests-worker.tsbuildinfo"
   },

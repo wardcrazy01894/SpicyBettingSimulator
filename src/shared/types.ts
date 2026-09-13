@@ -5,7 +5,8 @@
  * Every other track treats it as read-only (PLAN.md §16).
  */
 
-export type League = 'nfl' | 'ncaaf';
+export const LEAGUES = ['nfl', 'ncaaf'] as const;
+export type League = (typeof LEAGUES)[number];
 
 export type GameStatus =
   'scheduled' | 'in_progress' | 'final' | 'postponed' | 'canceled' | 'unknown';

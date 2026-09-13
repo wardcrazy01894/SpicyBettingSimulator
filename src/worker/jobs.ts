@@ -63,8 +63,17 @@ export function withJobRun(
 }
 
 /** Maps a cron expression from `ScheduledEvent.cron` to a job name. */
-export function jobForCron(_cron: string): JobName | null {
-  throw new Error('not implemented: M4');
+export function jobForCron(cron: string): JobName | null {
+  switch (cron.trim()) {
+    case '*/15 * * * *':
+      return 'refresh';
+    case '5-59/15 * * * *':
+      return 'settle';
+    case '30 8 * * *':
+      return 'maintenance';
+    default:
+      return null;
+  }
 }
 
 /** Runs a named job. Shared by the cron handler and POST /api/admin/jobs/:job. */
