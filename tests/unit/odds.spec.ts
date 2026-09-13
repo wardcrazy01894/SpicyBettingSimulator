@@ -105,19 +105,23 @@ describe('americanToPrice', () => {
     expect(americanToPrice(2000)).toEqual<Price>({ num: 2100n, den: 100n });
   });
 
-  // ~200k BigInt round-trips: ~1.5 s locally, >5 s on a cold GitHub runner.
-  it('is total on the CHECK-bounded domain |A| in [100, 100000]', { timeout: 60_000 }, () => {
+  // Exhaustive over the ~200k-value domain. Failures are ACCUMULATED and
+  // asserted once: 400k expect() calls inside the loop cost ~1.5 s locally and
+  // blew vitest's 5 s default on a cold GitHub runner; the BigInt math itself
+  // is ~15 ms. The timeout is headroom for a slow runner, not a budget.
+  it('is total on the CHECK-bounded domain |A| in [100, 100000]', { timeout: 20_000 }, () => {
     // bet_legs.american_price is CHECK (abs(...) BETWEEN 100 AND 100000).
     expect(americanToPrice(100000)).toEqual<Price>({ num: 100100n, den: 100n });
     expect(americanToPrice(-100000)).toEqual<Price>({ num: 100100n, den: 100000n });
+    const bad: number[] = [];
     for (let a = 100; a <= 100000; a += 1) {
       for (const signed of [a, -a]) {
         const p = americanToPrice(signed);
-        expect(p.den).toBeGreaterThan(0n);
         // Decimal odds are strictly greater than 1.0 everywhere on the domain.
-        expect(p.num).toBeGreaterThan(p.den);
+        if (!(p.den > 0n && p.num > p.den)) bad.push(signed);
       }
     }
+    expect(bad).toEqual([]);
   });
 
   it('rejects |price| < 100', () => {
@@ -173,7 +177,7 @@ describe('priceToAmerican (display only)', () => {
     expect(priceToAmerican(priceFromLegs(Array<AmericanPrice>(10).fill(-110)))).toBe(64208);
   });
 
-  it('inverse round-trips over the whole CHECK-bounded domain', { timeout: 60_000 }, () => {
+  it('inverse round-trips over the whole CHECK-bounded domain', () => {
     // Property sweep, ~200k values. -100 and +100 are THE SAME decimal odds
     // (2.0), so the pair canonicalises to +100 — the single documented
     // non-identity, pinned by the "+/- boundary" test above.
@@ -362,27 +366,31 @@ describe('payoutCents', () => {
     },
   );
 
-  it('property: matches a BigInt oracle for every stake in [100, 200000] over a price set', () => {
-    const prices: readonly Price[] = [
-      americanToPrice(-110),
-      americanToPrice(164),
-      americanToPrice(-100),
-      EVEN_MONEY_UNIT,
-      priceFromLegs(REGRESSION_LEGS),
-    ];
-    for (const price of prices) {
-      for (let stake = 100; stake <= 200000; stake += 1) {
-        const expected = exactPayout(stake, price);
-        if (expected > BigInt(MAX_PAYOUT_CENTS)) continue;
-        const actual = payoutCents(stake, price);
-        if (actual !== Number(expected)) {
-          // Report rather than assert in the hot loop: 1M expect() calls is slow.
-          expect({ stake, price, actual }).toEqual({ stake, price, actual: Number(expected) });
+  it(
+    'property: matches a BigInt oracle for every stake in [100, 200000] over a price set',
+    { timeout: 20_000 },
+    () => {
+      const prices: readonly Price[] = [
+        americanToPrice(-110),
+        americanToPrice(164),
+        americanToPrice(-100),
+        EVEN_MONEY_UNIT,
+        priceFromLegs(REGRESSION_LEGS),
+      ];
+      for (const price of prices) {
+        for (let stake = 100; stake <= 200000; stake += 1) {
+          const expected = exactPayout(stake, price);
+          if (expected > BigInt(MAX_PAYOUT_CENTS)) continue;
+          const actual = payoutCents(stake, price);
+          if (actual !== Number(expected)) {
+            // Report rather than assert in the hot loop: 1M expect() calls is slow.
+            expect({ stake, price, actual }).toEqual({ stake, price, actual: Number(expected) });
+          }
         }
       }
-    }
-    expect(payoutCents(200000, americanToPrice(-110))).toBe(381818);
-  }, 60_000);
+      expect(payoutCents(200000, americanToPrice(-110))).toBe(381818);
+    },
+  );
 
   it('never returns a non-integer or a negative', () => {
     const prices = [-110, 164, -100, 100, -2984, 100000, -100000].map(americanToPrice);
@@ -548,17 +556,13 @@ describe('profitCents', () => {
     expect(profitCents(746, americanToPrice(-2984))).toBe(25);
   });
 
-  it(
-    'is never negative on the valid domain (a winning bet always returns the stake)',
-    { timeout: 60_000 },
-    () => {
-      for (let a = 100; a <= 3000; a += 7) {
-        for (const signed of [a, -a]) {
-          expect(profitCents(100, americanToPrice(signed))).toBeGreaterThanOrEqual(0);
-        }
+  it('is never negative on the valid domain (a winning bet always returns the stake)', () => {
+    for (let a = 100; a <= 3000; a += 7) {
+      for (const signed of [a, -a]) {
+        expect(profitCents(100, americanToPrice(signed))).toBeGreaterThanOrEqual(0);
       }
-    },
-  );
+    }
+  });
 
   it('propagates the payout cap', () => {
     expectAppError(
@@ -715,7 +719,7 @@ describe('reducePrice / priceFromLegs', () => {
     },
   );
 
-  it('is lossless across the whole CHECK-bounded leg domain', { timeout: 60_000 }, () => {
+  it('is lossless across the whole CHECK-bounded leg domain', () => {
     for (let a = 100; a <= 100000; a += 997) {
       for (const signed of [a, -a]) {
         const single = priceFromLegs([signed]);
