@@ -42,6 +42,22 @@ export function pruneJobRuns(_env: Env, _keepPerJob: number): Promise<number> {
   throw new Error('not implemented: M6');
 }
 
+/**
+ * TODO(M6): implement the real pass — auto-void, stuck reporting and pruning.
+ *
+ * M4 lands a CALLABLE NO-OP on purpose. `runJob('maintenance')` and the
+ * `30 8 * * *` cron must reach a function that returns, so the lease, the
+ * `job_runs` row and `POST /api/admin/jobs/maintenance` are all exercisable
+ * before M6 exists. Every helper above still throws `not implemented: M6`, so
+ * there is no way to mistake this for a working implementation: it does nothing
+ * and says so in its own stats.
+ */
 export function runMaintenance(_env: Env, _now: EpochMs): Promise<MaintenanceStats> {
-  throw new Error('not implemented: M6');
+  return Promise.resolve({
+    autoVoidedGames: [],
+    stuckGames: [],
+    sessionsPruned: 0,
+    throttleRowsPruned: 0,
+    jobRunsPruned: 0,
+  });
 }

@@ -77,4 +77,12 @@ export const DK_VECTORS = {
  */
 export const WRONG_DK = '10290684da42e23a6f56a63c1a2caba7cef40dd59be2f35303c6b3f43305bdd1';
 
-// TODO(M4): stubEspn() from ./fixtures.ts; afterEach -> restore()
+/**
+ * (M4) The `https://espn.test/**` fetch stub lives in ./fixtures.ts and is
+ * installed PER SPEC FILE (`stubEspn()` in `beforeEach`, `restore()` in
+ * `afterEach`) rather than globally here. Each file owns its own slates and can
+ * mutate them mid-test — kick a game off, move a line, serve a 503 — which a
+ * single shared installation could not express. Files that make no upstream
+ * request are left with the real `fetch`, so a test that accidentally starts
+ * talking to the network fails loudly instead of being quietly served a fixture.
+ */
