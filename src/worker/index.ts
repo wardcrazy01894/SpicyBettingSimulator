@@ -32,6 +32,10 @@ import {
 import type { AppContext } from './middleware.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
+import { bankrollRoutes } from './routes/bankroll.js';
+import { betsRoutes } from './routes/bets.js';
+import { gamesRoutes } from './routes/games.js';
+import { leaderboardRoutes } from './routes/leaderboard.js';
 import { metaRoutes } from './routes/meta.js';
 
 /**
@@ -51,10 +55,10 @@ export function buildApp(): Hono<AppContext> {
 
   app.route('/api', metaRoutes());
   app.route('/api/auth', authRoutes());
-  // TODO(M5): app.route('/api/games', gamesRoutes());
-  // TODO(M5): app.route('/api/bets', betsRoutes());
-  // TODO(M5): app.route('/api', bankrollRoutes());
-  // TODO(M5): app.route('/api/leaderboard', leaderboardRoutes());
+  app.route('/api/games', gamesRoutes());
+  app.route('/api/bets', betsRoutes());
+  app.route('/api', bankrollRoutes());
+  app.route('/api/leaderboard', leaderboardRoutes());
   app.route('/api/admin', adminRoutes());
 
   // Anything under /api that no route claimed is OUR 404, never index.html.

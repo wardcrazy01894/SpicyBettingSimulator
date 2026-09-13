@@ -1732,7 +1732,30 @@ Server-side placement is **one `batch()`** (§14.2).
 | GET    | `/api/bets`     | `?status=open\|settled\|all&league=&season=&limit=&cursor=`. Returns `BetView[]` with legs; for open bets each leg carries a live `projected: 'win'\|'loss'\|'push'\|'pending'` computed from the current game row (never persisted). |
 | GET    | `/api/bets/:id` | `404 BET_NOT_FOUND` if not yours (not `403` — no existence oracle)                                                                                                                                                                    |
 | DELETE | `/api/bets/:id` | Cancel + full refund. `409 BET_LOCKED`, `409 BET_NOT_PENDING`                                                                                                                                                                         |
-| PUT    | `/api/bets/:id` | Edit = atomic cancel + place. Body identical to `POST`. Returns `200 {bet, replacedBetId}`. All `POST` errors plus `409 BET_LOCKED`.                                                                                                  |
+| PUT    | `/api/bets/:id` | Edit = atomic cancel + place. Body identical to `POST`. Returns `200 {bet, replacedBetId}`. All `POST` errors plus `409 BET_LOCKED`. **Must keep the bet's `(league, season)`** — see below.                                          |
+
+**`status=open` / `status=settled` PARTITION a user's bets, so `settled`
+INCLUDES `cancelled`.** `open` is exactly `status = 'pending'` and `settled` is
+its complement. A cancelled bet is not "settled" in the betting sense, but the
+two filters are the history UI's two tabs and a bet that appeared in neither
+would simply vanish from the app. Cancelled bets remain excluded from every
+_statistic_ (§11.5's record and ROI count only `won`/`lost`/`push`/`void`), so
+nothing downstream is skewed; a caller wanting true settlements only filters on
+`bet.status` itself.
+
+**`PUT` may not change the bet's `(league, season)`.** An edit is one atomic
+cancel + place, so a league or season change would refund one bankroll and stake
+a _different_ one in the same batch — moving money between bankrolls under the
+banner of "editing a bet", and linking two rows through `replaces_bet_id` /
+`replaced_by_bet_id` that never shared a ledger. The season pair would also make
+`GET /api/bets?season=` return a chain whose halves disagree. A user who wants a
+bet in another league or season places a new one and cancels the old. Mismatches
+get the same codes the equivalent parlay fault gets: `409 MIXED_LEAGUE_PARLAY`
+when the new legs' league differs from the bet's, `409 MIXED_SEASON_PARLAY` when
+the season does. Both are rejected before any statement is built, and the check
+is safe outside the batch because `bets.league`, `bets.season` and `bets.user_id`
+are immutable once written (every mutable condition still lives in the `WHERE` of
+the UPDATE — §14.2).
 
 `BetView = { id, league, season, betType, stakeCents, americanPrice, decimalOdds
 (string, for display), potentialPayoutCents, toWinCents, status, payoutCents,
@@ -2095,8 +2118,22 @@ distinguishes `BET_LOCKED` from `BET_NOT_PENDING` from `BET_NOT_FOUND`.
 
 **Edit (`PUT /api/bets/:id`)**, one `batch()`:
 
+Before anything is built, the handler loads the target bet by `(id, user_id)`.
+Not yours or not there → `404 BET_NOT_FOUND`, having written nothing. That read
+is also what pins the edit's scope: **an edit must keep the bet's original
+`(league, season)`** (see §11.4), so the replacement always lands on the bankroll
+the old bet is already charged to. Two consequences: the edit batch needs **no
+bankroll prelude** (statements 0a/0b of placement — the bankroll provably exists,
+and running the unguarded prelude anyway meant a 404 `PUT` still committed the
+caller's bankroll rows), and the `bankroll_id` is identical on both halves, so
+the refund and the new stake can never straddle two bankrolls.
+
 ```sql
--- 1. cancel half, with the SAME leg->game lock guard as above
+-- 1. cancel half. TWO guards, and the second is NOT optional:
+--      (a) the SAME leg->game lock guard as the plain cancel above, over the
+--          OLD bet's legs' CURRENT game rows, and
+--      (b) the PLACEMENT guard — the identical `COUNT(*) … = :n` that statement
+--          3's INSERT carries, over the NEW legs' games.
 UPDATE bets
    SET status = 'cancelled', cancelled_at = :now,
        replaced_by_bet_id = :newBetId, updated_at = :now
@@ -2104,7 +2141,12 @@ UPDATE bets
    AND NOT EXISTS (
      SELECT 1 FROM bet_legs l JOIN games g ON g.id = l.game_id
       WHERE l.bet_id = :oldId
-        AND (g.status <> 'scheduled' OR g.kickoff_at <= :nowPlusBuffer));
+        AND (g.status <> 'scheduled' OR g.kickoff_at <= :nowPlusBuffer))
+   AND (SELECT COUNT(*) FROM games
+         WHERE id IN (:g1,…,:gn)
+           AND league = :league AND season = :season
+           AND status = 'scheduled'
+           AND kickoff_at > :nowPlusBuffer) = :n;
 
 -- 2. refund, guarded on this call having won it
 INSERT INTO ledger (...)
@@ -2114,18 +2156,58 @@ SELECT :refundId, b.bankroll_id, 'bet_refund', b.id, b.id, b.stake_cents, :now, 
    AND NOT EXISTS (SELECT 1 FROM ledger
                     WHERE bankroll_id = b.bankroll_id AND kind = 'bet_refund' AND ref_id = b.id);
 
--- 3..  the full placement sequence above with replaces_bet_id = :oldId, and its
---      statement 1 ADDITIONALLY guarded on the cancel having applied:
+-- 3..  the placement sequence above MINUS its 0a/0b bankroll prelude, with
+--      replaces_bet_id = :oldId, and its statement 1 ADDITIONALLY guarded on the
+--      cancel having applied:
 --        AND EXISTS (SELECT 1 FROM bets
 --                     WHERE id = :oldId AND status = 'cancelled'
 --                       AND replaced_by_bet_id = :newBetId)
 ```
 
-If the cancel half fails the lock check, the place half is guarded off and the
-whole thing is a clean no-op → `409 BET_LOCKED`. If the place half fails
-validation or funds, the batch rolls back and the old bet is untouched and still
-`pending`. **Neither half can land alone.** The new bet is priced from **current**
-`game_lines`, never from the old snapshot.
+**Why the guard is symmetric, and why "neither half can land alone" is otherwise
+false.** There are two kinds of failure inside a `batch()` and they behave
+completely differently:
+
+- A statement that **throws** — a `CHECK`, a `UNIQUE`, or a trigger's
+  `RAISE(ABORT)` such as `ledger_bi_sufficient_funds` — rolls the entire batch
+  back. Nothing lands. Validation and insufficient funds are this kind.
+- A guarded `INSERT … SELECT … WHERE` whose guard **matches zero rows** throws
+  nothing at all. It is a successful statement that wrote 0 rows, and every
+  statement around it still commits.
+
+Guarding the place half on the cancel (statement 3's `EXISTS`) therefore only
+covers the first direction, and only for throwing failures. Take the second
+direction: the user's replacement leg is rescheduled, or flips to `in_progress`,
+in the window between the handler's pre-flight read and the batch. Statement 1's
+lock guard is about the OLD bet's games and still passes, so the cancel applies
+and statement 2 refunds — then statement 3's own `COUNT(*) = :n` matches nothing,
+so the new bet is never inserted, its legs and stake are guarded off it, and the
+batch **commits**. The user's position has silently disappeared and the response
+is a 409 that claims nothing happened. That is the single worst outcome this
+milestone can produce, and no throwing failure is involved anywhere.
+
+Repeating the placement guard on the cancel closes it: each half is now
+conditioned on the other, so the batch is either a complete swap or a clean
+no-op, whichever way the world moves. **With the symmetric guard — and only with
+it — neither half can land alone.**
+
+Failure verdicts: cancel guard fails → nothing applied → `409 BET_LOCKED`.
+Placement guard fails → nothing applied → the specific `BETTING_CLOSED` /
+`GAME_NOT_BETTABLE` / `GAME_NOT_FOUND` from a re-query. Throwing failure →
+rollback, old bet untouched and still `pending` → e.g. `409 INSUFFICIENT_FUNDS`.
+The new bet is priced from **current** `game_lines`, never from the old snapshot.
+
+**These in-batch guards are invisible to an ordinary test.** The handler's
+pre-flight read rejects every input the guard would catch, so with the world held
+still, deleting `AND status = 'scheduled' AND kickoff_at > :nowPlusBuffer`, or
+making either `COUNT(*) = :n` vacuous, changes nothing observable —
+three such mutations once survived the whole suite. `tests/worker/bets.spec.ts`
+therefore (i) asserts the generated SQL literally contains each conjunct and
+(ii) uses `BetHooks.beforeBatch`, a test-only seam that is `undefined` on every
+production call site, to mutate the game row in exactly the window a concurrent
+ingestion write occupies. `kickoff_at > :nowPlusBuffer` is **strictly** greater —
+a kickoff exactly at `lockAt` is closed — and that boundary is pinned by a test
+on both sides.
 
 ### 14.3 Line snapshot immutability and provenance
 

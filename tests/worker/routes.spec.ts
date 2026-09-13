@@ -1,17 +1,75 @@
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import type { HealthResponse, ConfigResponse } from '../../src/shared/api-types.js';
+import type {
+  BankrollResponse,
+  ConfigResponse,
+  GamesResponse,
+  HealthResponse,
+  LeaderboardResponse,
+  UserResponse,
+} from '../../src/shared/api-types.js';
 import type { ApiErrorBody } from '../../src/shared/errors.js';
-import { CLIENT_KDF, MAX_PAYOUT_CENTS, MIN_STAKE_CENTS } from '../../src/shared/constants.js';
+import {
+  BET_CUTOFF_BUFFER_MS,
+  BOARD_MAX_GAMES,
+  CLIENT_KDF,
+  LINE_STALE_MS,
+  MAX_PAYOUT_CENTS,
+  MIN_STAKE_CENTS,
+} from '../../src/shared/constants.js';
 import { buildApp } from '../../src/worker/index.js';
+import { fullLine, seedGame, seedGameWithLine, seedLine, seedSettledBet } from './seed.js';
 
 /** Hit the real app (same code path as the module-level fetch handler). */
-function get(path: string): Promise<Response> {
-  return Promise.resolve(buildApp().request(`https://example.com${path}`, undefined, env));
+function get(path: string, cookie?: string): Promise<Response> {
+  const init = cookie === undefined ? undefined : { headers: { cookie } };
+  return Promise.resolve(buildApp().request(`https://example.com${path}`, init, env));
 }
 
 /** The invite code bound in vitest.workers.config.ts. */
 const INVITE = 'test-invite';
+const HOUR = 60 * 60 * 1000;
+
+/**
+ * Sign a NEW user up and hand back their cookie + id.
+ *
+ * vitest-pool-workers 0.22 gives each test FILE fresh storage but does NOT roll
+ * back between tests, and `ledger` has a BEFORE DELETE trigger so no cleanup
+ * hook could truncate it. Every test therefore gets its own user, its own game
+ * ids (`gid()`) and — where a query is scoped by season — its own season.
+ */
+async function register(base = 'user'): Promise<{ cookie: string; id: string; name: string }> {
+  userSeq += 1;
+  const username = `${base}${String(userSeq)}`;
+  const res = await buildApp().request(
+    'https://example.com/api/auth/signup',
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-SBS-Client': '1' },
+      body: JSON.stringify({ username, dk: 'a'.repeat(64), inviteCode: INVITE }),
+    },
+    env,
+  );
+  expect(res.status, await res.clone().text()).toBe(201);
+  const parsed = await res.json<UserResponse>();
+  return {
+    cookie: /sbs_session=[^;]*/.exec(res.headers.get('set-cookie') ?? '')?.[0] ?? '',
+    id: parsed.user.id,
+    name: username,
+  };
+}
+
+let userSeq = 0;
+let scopeSeq = 0;
+/** A namespace unique to the calling test: game ids and leaderboard seasons. */
+function scope(): { gid: (n: string | number, league?: string) => string; season: number } {
+  scopeSeq += 1;
+  const n = scopeSeq;
+  return {
+    gid: (k, league = 'nfl') => `${league}:s${String(n)}-${String(k)}`,
+    season: 3000 + n,
+  };
+}
 
 /** TDD contract for M1/M3/M5 routing and the asset/API boundary. */
 
@@ -173,18 +231,273 @@ describe('routing', () => {
 });
 
 describe('games board', () => {
-  it.todo('bettable is false once now >= lockAt, even if the game is still scheduled');
-  it.todo('bettable is false when the line is stale');
-  it.todo('lines: null renders as "not posted", not as an error');
-  it.todo('respects the BOARD_MAX_GAMES cap');
+  it('bettable is false once now >= lockAt, even if the game is still scheduled', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const now = Date.now();
+    // Still `scheduled`, still in the future — but inside the cutoff buffer.
+    await seedGameWithLine(env.DB, {
+      id: gid('locked'),
+      season,
+      kickoffAt: now + BET_CUTOFF_BUFFER_MS - 5_000,
+    });
+    await seedGameWithLine(env.DB, { id: gid('open'), season, kickoffAt: now + 4 * HOUR });
+
+    const res = await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(200);
+    const board = await res.json<GamesResponse>();
+    const byId = new Map(board.games.map((g) => [g.id, g]));
+    expect(byId.get(gid('locked'))?.status).toBe('scheduled');
+    expect(byId.get(gid('locked'))?.bettable).toBe(false);
+    expect(byId.get(gid('locked'))?.lockAt).toBe(now + BET_CUTOFF_BUFFER_MS - 5_000 - 60_000);
+    expect(byId.get(gid('open'))?.bettable).toBe(true);
+
+    // ...and a game that is not `scheduled` is never bettable either.
+    await seedGameWithLine(env.DB, {
+      id: gid('live'),
+      season,
+      kickoffAt: now + 4 * HOUR,
+      status: 'in_progress',
+    });
+    const second = await (
+      await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
+    ).json<GamesResponse>();
+    expect(second.games.find((g) => g.id === gid('live'))?.bettable).toBe(false);
+  });
+
+  it('bettable is false when the line is stale', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const now = Date.now();
+    await seedGame(env.DB, { id: gid('stale'), season, kickoffAt: now + 6 * HOUR });
+    // captured_at is fresh; only seen_at is old. Staleness must key off seen_at.
+    await seedLine(env.DB, {
+      ...fullLine(gid('stale'), now - LINE_STALE_MS - 1_000),
+      capturedAt: now - 1_000,
+    });
+    const board = await (
+      await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
+    ).json<GamesResponse>();
+    const game = board.games.find((g) => g.id === gid('stale'));
+    expect(game?.lines?.stale).toBe(true);
+    expect(game?.bettable).toBe(false);
+  });
+
+  it('lines: null renders as "not posted", not as an error', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const now = Date.now();
+    // A normal CFB state early in the week: a game with no line row at all.
+    await seedGame(env.DB, {
+      id: gid('nolines', 'ncaaf'),
+      league: 'ncaaf',
+      season,
+      kickoffAt: now + 3 * 24 * HOUR,
+    });
+    const res = await get(`/api/games?league=ncaaf&season=${String(season)}`, alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(200);
+    const board = await res.json<GamesResponse>();
+    expect(board.games).toHaveLength(1);
+    expect(board.games[0]?.lines).toBeNull();
+    expect(board.games[0]?.bettable).toBe(false);
+  });
+
+  it('respects the BOARD_MAX_GAMES cap', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const now = Date.now();
+    const statements: D1PreparedStatement[] = [];
+    for (let i = 0; i < BOARD_MAX_GAMES + 5; i += 1) {
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO games (id, provider, provider_event_id, league, season, season_type, week,
+                              name, short_name, kickoff_at, original_kickoff_at, status,
+                              neutral_site, home_team_id, home_abbr, home_name,
+                              away_team_id, away_abbr, away_name,
+                              first_seen_at, last_seen_at, updated_at)
+           VALUES (?1, 'espn', ?1, 'nfl', ?4, 2, 1, 'A at B', 'A @ B', ?2, ?2, 'scheduled',
+                   0, 'th', 'HOM', 'Home', 'ta', 'AWY', 'Away', ?3, ?3, ?3)`,
+        ).bind(gid(i), now + HOUR + i * 1000, now, season),
+      );
+    }
+    for (let i = 0; i < statements.length; i += 50) {
+      await env.DB.batch(statements.slice(i, i + 50));
+    }
+    const board = await (
+      await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
+    ).json<GamesResponse>();
+    expect(board.games).toHaveLength(BOARD_MAX_GAMES);
+  });
 });
 
 describe('leaderboard semantics', () => {
-  it.todo('balanceCents excludes pending stakes');
-  it.todo('equityCents === balanceCents + pendingStakeCents');
-  it.todo('record counts settled bets only and excludes cancelled bets');
-  it.todo('roi excludes push and void from BOTH numerator and denominator');
-  it.todo('roi is null when there is no settled action');
-  it.todo('ranks by balance desc, then roi desc, then username');
-  it.todo('all-time pools the numerator and denominator rather than averaging ROIs');
+  interface Season {
+    readonly season: number;
+    readonly cookie: string;
+    readonly names: { alex: string; bob: string; carol: string };
+  }
+
+  /** PLAN.md §11.5 spelled out as data: three users, one season, known results. */
+  async function seedSeason(): Promise<Season> {
+    const now = Date.now();
+    const { season } = scope();
+    const alex = await register('alex');
+    const bob = await register('bob');
+    const carol = await register('carol');
+    const bet = (
+      id: string,
+      userId: string,
+      status: 'won' | 'lost' | 'push' | 'void' | 'cancelled' | 'pending',
+      stakeCents: number,
+      payoutCents?: number,
+    ): Promise<void> =>
+      seedSettledBet(env.DB, {
+        id: `${String(season)}-${id}`,
+        userId,
+        season,
+        status,
+        stakeCents,
+        ...(payoutCents === undefined ? {} : { payoutCents }),
+        placedAt: now,
+      });
+
+    // alex: won 2500 -> 4772, lost 1000, push 500, void 500, cancelled 9999.
+    await bet('alex-won', alex.id, 'won', 2500, 4772);
+    await bet('alex-lost', alex.id, 'lost', 1000, 0);
+    await bet('alex-push', alex.id, 'push', 500, 500);
+    await bet('alex-void', alex.id, 'void', 500, 500);
+    await bet('alex-cancelled', alex.id, 'cancelled', 9999);
+    // bob: one open bet only — exposure but no settled action.
+    await bet('bob-open', bob.id, 'pending', 3000);
+    // carol: exactly the same balance as alex, but a worse ROI.
+    await bet('carol-won', carol.id, 'won', 10_000, 11_272);
+    return {
+      season,
+      cookie: alex.cookie,
+      names: { alex: alex.name, bob: bob.name, carol: carol.name },
+    };
+  }
+
+  async function board(s: Season): Promise<LeaderboardResponse> {
+    const res = await get(`/api/leaderboard?league=nfl&season=${String(s.season)}`, s.cookie);
+    expect(res.status, await res.clone().text()).toBe(200);
+    return res.json<LeaderboardResponse>();
+  }
+
+  it('balanceCents excludes pending stakes', async () => {
+    const bob = await register('bob');
+    const { season } = scope();
+    await seedSettledBet(env.DB, {
+      id: `open-${String(season)}`,
+      userId: bob.id,
+      season,
+      status: 'pending',
+      stakeCents: 3000,
+    });
+    const res = await get(`/api/bankroll?league=nfl&season=${String(season)}`, bob.cookie);
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await res.json<BankrollResponse>();
+    expect(body.balanceCents).toBe(97_000);
+    expect(body.pendingStakeCents).toBe(3000);
+  });
+
+  it('equityCents === balanceCents + pendingStakeCents', async () => {
+    const bob = await register('bob');
+    const { season } = scope();
+    await seedSettledBet(env.DB, {
+      id: `open-${String(season)}`,
+      userId: bob.id,
+      season,
+      status: 'pending',
+      stakeCents: 3000,
+    });
+    const body = await (
+      await get(`/api/bankroll?league=nfl&season=${String(season)}`, bob.cookie)
+    ).json<BankrollResponse>();
+    expect(body.equityCents).toBe(body.balanceCents + body.pendingStakeCents);
+    expect(body.equityCents).toBe(100_000);
+  });
+
+  it('record counts settled bets only and excludes cancelled bets', async () => {
+    const s = await seedSeason();
+    const rows = (await board(s)).rows;
+    // The 9,999c cancelled bet appears nowhere in the record.
+    expect(rows.find((r) => r.username === s.names.alex)?.record).toEqual({
+      won: 1,
+      lost: 1,
+      push: 1,
+      void: 1,
+    });
+    expect(rows.find((r) => r.username === s.names.bob)?.record).toEqual({
+      won: 0,
+      lost: 0,
+      push: 0,
+      void: 0,
+    });
+  });
+
+  it('roi excludes push and void from BOTH numerator and denominator', async () => {
+    const s = await seedSeason();
+    const rows = (await board(s)).rows;
+    // won 4772 on 2500 + lost 0 on 1000 => (4772 - 3500) / 3500.
+    // The 500c push and the 500c void are in NEITHER sum.
+    expect(rows.find((r) => r.username === s.names.alex)?.roi).toBeCloseTo(
+      (4772 - 3500) / 3500,
+      12,
+    );
+  });
+
+  it('roi is null when there is no settled action', async () => {
+    const s = await seedSeason();
+    const rows = (await board(s)).rows;
+    expect(rows.find((r) => r.username === s.names.bob)?.roi).toBeNull();
+  });
+
+  it('ranks by balance desc, then roi desc, then username', async () => {
+    const s = await seedSeason();
+    const body = await board(s);
+    // alex:  100000 - 2500 + 4772 - 1000 - 500 + 500 - 500 + 500 - 9999 + 9999 = 101272
+    // carol: 100000 - 10000 + 11272                                            = 101272
+    // bob:   100000 - 3000                                                     = 97000
+    expect(body.rows.map((r) => r.balanceCents)).toEqual([101_272, 101_272, 97_000]);
+    // Tied on balance: alex's ROI (0.3634) beats carol's (0.1272).
+    expect(body.rows.map((r) => r.username)).toEqual([s.names.alex, s.names.carol, s.names.bob]);
+    expect(body.rows.map((r) => r.rank)).toEqual([1, 2, 3]);
+    expect(body.rows[0]?.equityCents).toBe(101_272);
+    expect(body.rows[2]?.equityCents).toBe(100_000);
+  });
+
+  it('all-time pools the numerator and denominator rather than averaging ROIs', async () => {
+    const alex = await register('alex');
+    const a = scope();
+    const b = scope();
+    // Season A: +1000 profit on a 1000 stake  (ROI 1.0)
+    await seedSettledBet(env.DB, {
+      id: `pool-a-${String(a.season)}`,
+      userId: alex.id,
+      season: a.season,
+      status: 'won',
+      stakeCents: 1000,
+      payoutCents: 2000,
+    });
+    // Season B: -9000 on a 9000 stake         (ROI -1.0)
+    await seedSettledBet(env.DB, {
+      id: `pool-b-${String(b.season)}`,
+      userId: alex.id,
+      season: b.season,
+      status: 'lost',
+      stakeCents: 9000,
+      payoutCents: 0,
+    });
+    const body = await (
+      await get('/api/leaderboard/all-time', alex.cookie)
+    ).json<LeaderboardResponse>();
+    expect(body.league).toBe('all');
+    expect(body.season).toBeNull();
+    const row = body.rows.find((r) => r.username === alex.name);
+    // The average of the two ROIs is 0. The POOLED figure is (2000-10000)/10000.
+    expect(row?.roi).toBeCloseTo(-0.8, 12);
+    expect(row?.balanceCents).toBe(101_000 + 91_000);
+    expect(row?.record).toEqual({ won: 1, lost: 1, push: 0, void: 0 });
+  });
 });
