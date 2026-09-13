@@ -1509,7 +1509,7 @@ password length is enforced client-side and documented as advisory.
 
 ```
 KDF_VERSION = 1
-CLIENT_KDF = { algorithm: 'PBKDF2', hash: 'SHA-256', iterations: 210_000, keyLength: 32, saltPrefix: 'SBS-v1|' }
+CLIENT_KDF = { algorithm: 'PBKDF2', hash: 'SHA-256', iterations: 210_000, keyLengthBytes: 32, saltPrefix: 'SBS-v1|' }
 SERVER_KDF_ITERATIONS = 1_000
 ```
 
@@ -1578,7 +1578,7 @@ with codes enumerated in `src/shared/errors.ts`. All state-changing routes requi
 | ------ | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/api/health`   | `200 {ok, version, now, inviteRequired}` — no DB access                                                                                                                                                                                                                                                                                              |
 | GET    | `/api/config`   | `200 {leagues, currentSeason:{nfl,ncaaf}, minStakeCents, maxParlayLegs, cutoffBufferMs, initialBankrollCents, maxPayoutCents}` — these field names match `ConfigResponse` in `src/shared/api-types.ts` exactly; `maxPayoutCents` exists because the bet slip calls `exceedsPayoutCap()` for pre-flight (§5.2b) and must not disagree with the server |
-| GET    | `/api/auth/kdf` | `200 {version, algorithm, hash, iterations, keyLength, saltPrefix}`                                                                                                                                                                                                                                                                                  |
+| GET    | `/api/auth/kdf` | `200 {version, algorithm, hash, iterations, keyLengthBytes, saltPrefix}`                                                                                                                                                                                                                                                                             |
 
 ### 11.2 Auth
 

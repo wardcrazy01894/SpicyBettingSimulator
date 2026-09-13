@@ -15,31 +15,23 @@ import {
   USERNAME_MIN,
   USERNAME_PATTERN,
 } from './constants.js';
+import type { PlaceBetLegRequest, PlaceBetRequest } from './api-types.js';
 import { LEAGUES } from './types.js';
-import type { AmericanPrice, Cents, League, LineTenths, Market, Side } from './types.js';
+import type { AmericanPrice, BetType, Cents, LineTenths, Market, Side } from './types.js';
 
 /** A discriminated result so callers never have to catch for control flow. */
 export type ValidationResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly message: string; readonly field?: string };
 
-export interface PlaceBetLegInput {
-  readonly gameId: string;
-  readonly market: Market;
-  readonly side: Side;
-  readonly expected?: {
-    readonly americanPrice: AmericanPrice;
-    readonly lineTenths: LineTenths | null;
-  };
-}
+/** The validated leg IS the wire shape — derived, so the two can never drift. */
+export type PlaceBetLegInput = PlaceBetLegRequest;
 
-export interface PlaceBetInput {
-  readonly league: League;
-  readonly betType: 'straight' | 'parlay';
-  readonly stakeCents: Cents;
+/** The wire request with `acceptLineChange` defaulted (never undefined after validation). */
+export type PlaceBetInput = Omit<PlaceBetRequest, 'acceptLineChange' | 'legs'> & {
   readonly acceptLineChange: boolean;
   readonly legs: readonly PlaceBetLegInput[];
-}
+};
 
 export interface SignupInput {
   readonly username: string;
@@ -56,7 +48,7 @@ export interface LoginInput {
 
 const MARKETS: readonly Market[] = ['moneyline', 'spread', 'total'];
 const SIDES: readonly Side[] = ['home', 'away', 'over', 'under'];
-const BET_TYPES = ['straight', 'parlay'] as const;
+const BET_TYPES: readonly BetType[] = ['straight', 'parlay'];
 export const DISPLAY_NAME_MAX = 40;
 
 function bad<T>(message: string, field?: string): ValidationResult<T> {
@@ -96,12 +88,24 @@ export function validateDerivedKeyHex(raw: unknown): ValidationResult<string> {
   return good(raw);
 }
 
+/**
+ * Control characters (C0/C1), Unicode format characters (bidi overrides,
+ * zero-width joiners, etc.) and unassigned/surrogate/private-use code points
+ * are rejected — they render invisibly and are the classic leaderboard
+ * spoofing tools. \p{C} covers Cc, Cf, Cs, Co and Cn.
+ */
+const FORBIDDEN_NAME_CHARS = /\p{C}/u;
+
 function validateDisplayName(raw: unknown, fallback: string): ValidationResult<string> {
   if (raw === undefined || raw === null) return good(fallback);
   if (typeof raw !== 'string') return bad('displayName must be a string', 'displayName');
   const d = raw.trim();
   if (d.length === 0) return good(fallback);
-  if (d.length > DISPLAY_NAME_MAX) {
+  if (FORBIDDEN_NAME_CHARS.test(d)) {
+    return bad('displayName contains control or invisible characters', 'displayName');
+  }
+  // Count code points, not UTF-16 units, so 40 emoji are 40 characters.
+  if (Array.from(d).length > DISPLAY_NAME_MAX) {
     return bad(`displayName must be at most ${String(DISPLAY_NAME_MAX)} characters`, 'displayName');
   }
   return good(d);
@@ -228,7 +232,7 @@ export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput>
   if (typeof stake !== 'number' || !Number.isSafeInteger(stake) || stake < MIN_STAKE_CENTS) {
     return bad(`stakeCents must be an integer >= ${String(MIN_STAKE_CENTS)}`, 'stakeCents');
   }
-  const alc = body['acceptLineChange'];
+  const alc = body['acceptLineChange'] ?? undefined; // null behaves like absent, as inviteCode does
   if (alc !== undefined && typeof alc !== 'boolean') {
     return bad('acceptLineChange must be a boolean', 'acceptLineChange');
   }

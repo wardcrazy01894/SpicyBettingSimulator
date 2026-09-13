@@ -10,7 +10,17 @@ import {
   validateSignup,
   validateUsername,
 } from '../../src/shared/validate.js';
-import { MAX_PARLAY_LEGS, MIN_STAKE_CENTS } from '../../src/shared/constants.js';
+import type { PlaceBetInput } from '../../src/shared/validate.js';
+import type { PlaceBetRequest } from '../../src/shared/api-types.js';
+import {
+  MAX_ABS_LINE_TENTHS,
+  MAX_PARLAY_LEGS,
+  MIN_STAKE_CENTS,
+} from '../../src/shared/constants.js';
+
+// Compile-time pin: a validated bet IS a wire request (PLAN §11.4). If the two
+// shapes ever drift this file stops typechecking.
+const _pin = (v: PlaceBetInput): PlaceBetRequest => v;
 
 /** TDD contract for src/shared/validate.ts (M2d). */
 
@@ -77,6 +87,28 @@ describe('validateSignup', () => {
     expect(v.displayName).toBe('Big Al');
     expect(v.inviteCode).toBe('x');
     expect(validateSignup({ username: 'alex', displayName: 'x'.repeat(41), dk: DK }).ok).toBe(
+      false,
+    );
+  });
+  it('treats an all-whitespace displayName as absent and an empty inviteCode as null', () => {
+    const v = ok(
+      validateSignup({ username: 'alex', displayName: '   ', dk: DK, inviteCode: '  ' }),
+    );
+    expect(v.displayName).toBe('alex');
+    expect(v.inviteCode).toBeNull();
+  });
+  it('rejects control, bidi-override and zero-width characters in displayName', () => {
+    for (const bad of ['a\u202eb', '\u0000bad', 'zero\u200bwidth', 'tab\tname', 'nl\nname']) {
+      expect(fail(validateSignup({ username: 'alex', displayName: bad, dk: DK })).field).toBe(
+        'displayName',
+      );
+    }
+  });
+  it('counts displayName length in code points, not UTF-16 units', () => {
+    expect(validateSignup({ username: 'alex', displayName: '😀'.repeat(40), dk: DK }).ok).toBe(
+      true,
+    );
+    expect(validateSignup({ username: 'alex', displayName: '😀'.repeat(41), dk: DK }).ok).toBe(
       false,
     );
   });
@@ -196,6 +228,52 @@ describe('validatePlaceBet', () => {
     expect(fail(validatePlaceBet(straight({ legs: [leg('g1', 'spread', 'left')] }))).field).toBe(
       'legs[0].side',
     );
+  });
+  it('rejects legs that are not an array, and legs that are not objects', () => {
+    expect(fail(validatePlaceBet(straight({ betType: 'parlay', legs: {} }))).field).toBe('legs');
+    expect(fail(validatePlaceBet(straight({ legs: 'g1' }))).field).toBe('legs');
+    expect(fail(validatePlaceBet(straight({ legs: ['g1'] }))).field).toBe('legs[0]');
+    expect(fail(validatePlaceBet(straight({ legs: [null] }))).field).toBe('legs[0]');
+  });
+  it('rejects a moneyline expected block that carries a line (mirrors the DB CHECK)', () => {
+    expect(
+      fail(
+        validatePlaceBet(
+          straight({
+            legs: [
+              { ...leg('g1', 'moneyline'), expected: { americanPrice: -150, lineTenths: -35 } },
+            ],
+          }),
+        ),
+      ).field,
+    ).toBe('legs[0].expected.lineTenths');
+  });
+  it('bounds expected.lineTenths by MAX_ABS_LINE_TENTHS', () => {
+    const at = validatePlaceBet(
+      straight({
+        legs: [
+          { ...leg('g1'), expected: { americanPrice: -110, lineTenths: -MAX_ABS_LINE_TENTHS } },
+        ],
+      }),
+    );
+    expect(at.ok).toBe(true);
+    expect(
+      fail(
+        validatePlaceBet(
+          straight({
+            legs: [
+              {
+                ...leg('g1'),
+                expected: { americanPrice: -110, lineTenths: MAX_ABS_LINE_TENTHS + 1 },
+              },
+            ],
+          }),
+        ),
+      ).field,
+    ).toBe('legs[0].expected.lineTenths');
+  });
+  it('treats acceptLineChange: null like absent (consistent with inviteCode)', () => {
+    expect(ok(validatePlaceBet(straight({ acceptLineChange: null }))).acceptLineChange).toBe(false);
   });
   it('validates the optional expected block per leg', () => {
     const good = validatePlaceBet(
