@@ -22,7 +22,12 @@
  *
  * The headline fact both files prove: ESPN REMOVES odds the moment a game
  * starts, which is exactly why a bet must snapshot its line at placement.
+ *
+ * Every accessor returns a FRESH deep clone, so a test that mutates a payload
+ * cannot leak into the next test.
  */
+
+import { readFileSync } from 'node:fs';
 
 export interface ScoreboardOverride {
   readonly eventId: string;
@@ -34,28 +39,303 @@ export interface ScoreboardOverride {
   readonly dropOdds?: boolean;
 }
 
+/* ------------------------------------------------------------------ *
+ * Minimal MUTABLE views of the ESPN shape. Only the fields the
+ * overrides touch are named; everything else rides along untyped.
+ * ------------------------------------------------------------------ */
+
+interface EspnStatusType {
+  id?: string;
+  name: string;
+  state: string;
+  completed: boolean;
+  description?: string;
+  detail?: string;
+  shortDetail?: string;
+}
+
+interface EspnStatus {
+  clock?: number;
+  displayClock?: string;
+  period?: number;
+  type: EspnStatusType;
+}
+
+interface EspnCompetitor {
+  id?: string;
+  homeAway?: string;
+  score?: string;
+  team?: Record<string, unknown>;
+  curatedRank?: { current?: number };
+  winner?: boolean;
+  linescores?: unknown;
+}
+
+interface EspnCompetition {
+  id?: string;
+  date?: string;
+  startDate?: string;
+  neutralSite?: boolean;
+  competitors?: EspnCompetitor[];
+  status?: EspnStatus;
+  odds?: unknown[];
+}
+
+interface EspnEvent {
+  id?: string;
+  date?: string;
+  name?: string;
+  shortName?: string;
+  season?: { year: number; type: number };
+  week?: { number: number };
+  competitions?: EspnCompetition[];
+  status?: EspnStatus;
+}
+
+interface EspnScoreboard {
+  season?: { year: number; type: number };
+  week?: { number: number };
+  events: unknown[];
+}
+
+/* ------------------------------------------------------------------ *
+ * Sample loading
+ * ------------------------------------------------------------------ */
+
+const SAMPLE_FILES = {
+  nfl: new URL('../../docs/samples/espn-nfl-scoreboard.json', import.meta.url),
+  cfb: new URL('../../docs/samples/espn-cfb-scoreboard.json', import.meta.url),
+} as const;
+
+export type SampleName = keyof typeof SAMPLE_FILES;
+
+/** Parsed once per process; every caller gets a structural clone of it. */
+const cache = new Map<SampleName, EspnScoreboard>();
+
+function loadSample(name: SampleName): EspnScoreboard {
+  const cached = cache.get(name);
+  if (cached !== undefined) return cached;
+  const parsed = JSON.parse(readFileSync(SAMPLE_FILES[name], 'utf8')) as EspnScoreboard;
+  cache.set(name, parsed);
+  return parsed;
+}
+
+function cloneSample(name: SampleName): EspnScoreboard {
+  return structuredClone(loadSample(name));
+}
+
 /** Raw parsed JSON of docs/samples/espn-nfl-scoreboard.json. */
 export function nflScoreboard(): unknown {
-  throw new Error('not implemented: M2c');
+  return cloneSample('nfl');
 }
 
 /** Raw parsed JSON of docs/samples/espn-cfb-scoreboard.json. */
 export function cfbScoreboard(): unknown {
-  throw new Error('not implemented: M2c');
+  return cloneSample('cfb');
+}
+
+/**
+ * The `status.type` shapes ESPN actually emits, so an override can name a status
+ * by string and still get a coherent `state`/`completed` pair. An unrecognised
+ * name is deliberately allowed through with a non-committal `state`, which is
+ * how the parser's `unknown` branch gets exercised.
+ */
+const STATUS_TYPES: Readonly<Record<string, Omit<EspnStatusType, 'name'>>> = {
+  STATUS_SCHEDULED: { id: '1', state: 'pre', completed: false, description: 'Scheduled' },
+  STATUS_IN_PROGRESS: { id: '2', state: 'in', completed: false, description: 'In Progress' },
+  STATUS_HALFTIME: { id: '23', state: 'in', completed: false, description: 'Halftime' },
+  STATUS_END_PERIOD: { id: '22', state: 'in', completed: false, description: 'End of Period' },
+  STATUS_FINAL: { id: '3', state: 'post', completed: true, description: 'Final' },
+  STATUS_POSTPONED: { id: '6', state: 'post', completed: false, description: 'Postponed' },
+  STATUS_CANCELED: { id: '5', state: 'post', completed: false, description: 'Canceled' },
+  STATUS_FORFEIT: { id: '9', state: 'post', completed: false, description: 'Forfeit' },
+};
+
+/** Build a `status` block for a status name, preserving period/clock if given. */
+export function makeStatus(name: string, period = 0, displayClock = '0:00'): EspnStatus {
+  const known = STATUS_TYPES[name] ?? { state: 'unknown', completed: false, description: name };
+  return {
+    clock: 0,
+    displayClock,
+    period,
+    type: {
+      ...known,
+      name,
+      detail: known.description ?? name,
+      shortDetail: known.description ?? name,
+    },
+  };
 }
 
 /**
  * Deep-clone a sample payload and apply per-event overrides, so a test can say
  * "make event 401872925 FINAL 27-24" without hand-writing 15 KB of JSON.
+ *
+ * An `eventId` that is not in the sample is a test bug, so it throws rather than
+ * silently doing nothing.
  */
 export function makeScoreboard(
-  _base: 'nfl' | 'cfb',
-  _overrides: readonly ScoreboardOverride[],
+  base: SampleName,
+  overrides: readonly ScoreboardOverride[],
 ): unknown {
-  throw new Error('not implemented: M2c');
+  const payload = cloneSample(base);
+  const events = payload.events as EspnEvent[];
+  for (const override of overrides) {
+    const event = events.find((e) => e.id === override.eventId);
+    if (event === undefined) {
+      throw new Error(`makeScoreboard: no event ${override.eventId} in the ${base} sample`);
+    }
+    const competition = event.competitions?.[0];
+    if (competition === undefined) {
+      throw new Error(`makeScoreboard: event ${override.eventId} has no competition`);
+    }
+
+    if (override.status !== undefined) {
+      const status = makeStatus(
+        override.status,
+        competition.status?.period ?? 0,
+        competition.status?.displayClock ?? '0:00',
+      );
+      competition.status = status;
+      // Real ESPN keeps event.status and competitions[0].status in lock-step.
+      event.status = structuredClone(status);
+    }
+
+    if (override.date !== undefined) {
+      event.date = override.date;
+      competition.date = override.date;
+      competition.startDate = override.date;
+    }
+
+    const competitors = competition.competitors ?? [];
+    if (override.homeScore !== undefined) {
+      const home = competitors.find((c) => c.homeAway === 'home');
+      if (home !== undefined) home.score = override.homeScore;
+    }
+    if (override.awayScore !== undefined) {
+      const away = competitors.find((c) => c.homeAway === 'away');
+      if (away !== undefined) away.score = override.awayScore;
+    }
+
+    if (override.dropOdds === true) delete competition.odds;
+  }
+  return payload;
 }
+
+/* ------------------------------------------------------------------ *
+ * Malformed payload — one deliberately broken event per failure mode.
+ * ------------------------------------------------------------------ */
+
+function team(id: string, abbr: string, name: string): Record<string, unknown> {
+  return {
+    id,
+    abbreviation: abbr,
+    displayName: name,
+    shortDisplayName: abbr,
+    logo: `https://a.espncdn.com/i/teamlogos/nfl/500/${abbr.toLowerCase()}.png`,
+  };
+}
+
+function competitor(homeAway: string, id: string, abbr: string, score: string): EspnCompetitor {
+  return {
+    id,
+    homeAway,
+    score,
+    team: team(id, abbr, `${abbr} Team`),
+    curatedRank: { current: 99 },
+  };
+}
+
+/** The one event in `malformedScoreboard()` that is fully well-formed. */
+export const MALFORMED_GOOD_EVENT_ID = 'good-1';
+
+/**
+ * Ids of the broken events in `malformedScoreboard()`, in payload order. Each is
+ * expected to be skipped with exactly one warning.
+ */
+export const MALFORMED_BROKEN_EVENT_IDS = [
+  'no-competitions',
+  'one-competitor',
+  'three-competitors',
+  'two-home-teams',
+  'no-abbreviation',
+  'bad-date',
+  'no-season',
+] as const;
 
 /** A payload with deliberately broken events, for the defensive-parser tests. */
 export function malformedScoreboard(): unknown {
-  throw new Error('not implemented: M2c');
+  const good: EspnEvent = {
+    id: MALFORMED_GOOD_EVENT_ID,
+    date: '2026-09-13T17:00Z',
+    name: 'Away Team at Home Team',
+    shortName: 'AWY @ HOM',
+    season: { year: 2026, type: 2 },
+    week: { number: 2 },
+    competitions: [
+      {
+        id: MALFORMED_GOOD_EVENT_ID,
+        date: '2026-09-13T17:00Z',
+        neutralSite: false,
+        status: makeStatus('STATUS_SCHEDULED'),
+        competitors: [competitor('home', '1', 'HOM', '0'), competitor('away', '2', 'AWY', '0')],
+      },
+    ],
+  };
+
+  const withCompetitors = (id: string, competitors: EspnCompetitor[]): EspnEvent => ({
+    id,
+    date: '2026-09-13T17:00Z',
+    name: 'Broken Game',
+    shortName: 'BRK',
+    season: { year: 2026, type: 2 },
+    week: { number: 2 },
+    competitions: [
+      { id, date: '2026-09-13T17:00Z', status: makeStatus('STATUS_SCHEDULED'), competitors },
+    ],
+  });
+
+  const noAbbr = withCompetitors('no-abbreviation', [
+    competitor('home', '1', 'HOM', '0'),
+    competitor('away', '2', 'AWY', '0'),
+  ]);
+  const noAbbrTeam = noAbbr.competitions?.[0]?.competitors?.[1]?.team;
+  if (noAbbrTeam !== undefined) delete noAbbrTeam['abbreviation'];
+
+  const badDate = withCompetitors('bad-date', [
+    competitor('home', '1', 'HOM', '0'),
+    competitor('away', '2', 'AWY', '0'),
+  ]);
+  badDate.date = 'not-a-date';
+
+  const noSeason = withCompetitors('no-season', [
+    competitor('home', '1', 'HOM', '0'),
+    competitor('away', '2', 'AWY', '0'),
+  ]);
+  delete noSeason.season;
+
+  return {
+    season: { year: 2026, type: 2 },
+    week: { number: 2 },
+    events: [
+      good,
+      { id: 'no-competitions', date: '2026-09-13T17:00Z', season: { year: 2026, type: 2 } },
+      withCompetitors('one-competitor', [competitor('home', '1', 'HOM', '0')]),
+      withCompetitors('three-competitors', [
+        competitor('home', '1', 'HOM', '0'),
+        competitor('away', '2', 'AWY', '0'),
+        competitor('away', '3', 'XTR', '0'),
+      ]),
+      withCompetitors('two-home-teams', [
+        competitor('home', '1', 'HOM', '0'),
+        competitor('home', '2', 'AWY', '0'),
+      ]),
+      noAbbr,
+      badDate,
+      noSeason,
+      null,
+      'garbage',
+      42,
+    ],
+  };
 }
