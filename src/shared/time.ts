@@ -20,12 +20,14 @@ export const MS_PER_DAY = 86_400_000;
 
 /**
  * ESPN emits `"2026-09-13T17:00Z"` — ISO 8601 with NO seconds. We accept that
- * plus the fuller ISO forms, and nothing else: `Date.parse` also honours
+ * plus the fuller ISO forms (seconds, fractions, numeric offsets) and a bare
+ * date, and nothing else: no space separator, and NO time without a Z/offset
+ * (Node parses that as local time, workerd as UTC). `Date.parse` also honours
  * implementation-defined formats ("Sep 13 2026"), and an implementation-defined
  * kickoff time is not something a betting lock should ever be derived from.
  */
 const ISO_8601 =
-  /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+  /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2}))?$/;
 
 /**
  * One formatter, created once. Constructing an `Intl.DateTimeFormat` is the
@@ -134,7 +136,16 @@ export function etDateKeyRange(from: EpochMs, to: EpochMs): readonly string[] {
 export function parseIsoToEpochMs(iso: unknown): EpochMs | null {
   if (typeof iso !== 'string') return null;
   const trimmed = iso.trim();
-  if (!ISO_8601.test(trimmed)) return null;
+  const m = ISO_8601.exec(trimmed);
+  if (m === null) return null;
+  // A time without a Z/offset is local time in Node and UTC in workerd; the
+  // regex above refuses it so the two runtimes can never disagree. Also refuse
+  // calendar rollovers ("2026-02-30") that Date.parse would silently accept.
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) return null;
   const ms = Date.parse(trimmed);
   return Number.isFinite(ms) ? ms : null;
 }

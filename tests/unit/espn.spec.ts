@@ -370,6 +370,10 @@ describe('mapEspnStatus', () => {
   it('STATUS_HALFTIME -> in_progress', () => {
     expect(mapEspnStatus(statusType('STATUS_HALFTIME', 'in', false))).toBe('in_progress');
     expect(mapEspnStatus(statusType('STATUS_END_PERIOD', 'in', false))).toBe('in_progress');
+    // Documented extras: a delay is a (probably temporary) postponement; the
+    // British spelling of canceled is canceled.
+    expect(mapEspnStatus(statusType('STATUS_DELAYED', 'in', false))).toBe('postponed');
+    expect(mapEspnStatus(statusType('STATUS_CANCELLED', 'post', true))).toBe('canceled');
   });
 
   it("state 'post' + completed -> final", () => {
@@ -862,6 +866,58 @@ describe('defensive behaviour', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.eventId).toBe('1');
     expect(warnings[0]?.reason).toMatch(/spread/i);
+  });
+
+  it('mirrors an unusable away spread line from home, but says so in the warning', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      pointSpread: {
+        home: { close: { line: '-3.5', odds: '-110' } },
+        away: { close: { line: '-9999', odds: '-110' } },
+      },
+    });
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(result?.lines?.spread).toEqual({
+      homeTenths: -35,
+      homePrice: -110,
+      awayTenths: 35,
+      awayPrice: -110,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.reason).toMatch(/away line -9999.*mirrored/);
+  });
+
+  it('drops a spread whose sides do not mirror (favourite number on both sides)', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      pointSpread: {
+        home: { close: { line: '-3.5', odds: '-110' } },
+        away: { close: { line: '-3.5', odds: '-110' } },
+      },
+      moneyline: { home: { close: { odds: '-198' } }, away: { close: { odds: '+164' } } },
+    });
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(result?.lines?.spread).toBeNull();
+    expect(result?.lines?.moneyline).toEqual({ homePrice: -198, awayPrice: 164 });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.reason).toMatch(/do not mirror.*home -3\.5.*away -3\.5/);
+  });
+
+  it('drops an unusable total and names the offending value in the warning', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      total: {
+        over: { close: { line: 'o−50.5', odds: '-110' } },
+        under: { close: { line: 'u−50.5', odds: '-110' } },
+      },
+    });
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(result?.lines).toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.reason).toMatch(/total: unusable line o−50\.5/);
   });
 
   it('drops an out-of-range price and warns', () => {

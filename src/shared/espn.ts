@@ -234,8 +234,10 @@ const POSTPONED_NAMES = new Set(['STATUS_POSTPONED', 'STATUS_DELAYED', 'STATUS_S
 /**
  * Map ESPN's status to ours, using `state` + `completed` rather than string
  * equality on `name`, so OT/forfeit/unknown future variants degrade safely.
- *   STATUS_POSTPONED | STATUS_SUSPENDED  -> 'postponed'
- *   STATUS_CANCELED | STATUS_FORFEIT     -> 'canceled'
+ *   STATUS_POSTPONED | STATUS_SUSPENDED | STATUS_DELAYED -> 'postponed'
+ *     (a rain delay that resumes flips back to in_progress on the next refresh;
+ *      §7.5's 7-day auto-void is harmless for a resumed game)
+ *   STATUS_CANCELED | STATUS_CANCELLED | STATUS_FORFEIT  -> 'canceled'
  *   state 'post' && completed            -> 'final'
  *   state 'in'                           -> 'in_progress'  (includes STATUS_HALFTIME)
  *   state 'pre'                          -> 'scheduled'
@@ -310,7 +312,18 @@ function sideSnapshot(node: unknown): { readonly line: unknown; readonly odds: u
   return null;
 }
 
-function parseSpreadMarket(entry: unknown): SpreadMarket | null {
+/** A short, safe rendering of a raw feed value for a warning message. */
+function rawText(value: unknown): string {
+  const text = typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value));
+  return text.length > 24 ? `${text.slice(0, 24)}…` : text;
+}
+
+/**
+ * Market parsers push a human-readable reason into `notes` whenever they drop
+ * a market or fall back, so an operator reading `GET /api/admin/jobs` can tell
+ * a Unicode-minus regression from a bounds violation (PLAN §14.8).
+ */
+function parseSpreadMarket(entry: unknown, notes: string[]): SpreadMarket | null {
   const pointSpread = prop(entry, 'pointSpread');
   const home = sideSnapshot(prop(pointSpread, 'home'));
   const away = sideSnapshot(prop(pointSpread, 'away'));
@@ -320,15 +333,34 @@ function parseSpreadMarket(entry: unknown): SpreadMarket | null {
   // a missing line (home perspective). `details` ("CIN -3.5") never is — it is
   // display text keyed on an abbreviation.
   const homeTenths = parseLineToTenths(home.line) ?? parseLineToTenths(prop(entry, 'spread'));
-  if (homeTenths === null) return null;
-  const awayTenths = parseLineToTenths(away.line) ?? -homeTenths;
+  if (homeTenths === null) {
+    notes.push(`spread: unusable home line ${rawText(home.line)}`);
+    return null;
+  }
+  let awayTenths = parseLineToTenths(away.line);
+  if (awayTenths === null) {
+    if (away.line !== undefined) {
+      notes.push(`spread: unusable away line ${rawText(away.line)}, mirrored home`);
+    }
+    awayTenths = -homeTenths;
+  } else if (awayTenths !== -homeTenths) {
+    // Spreads MUST mirror. A feed that put the favourite's number on both sides
+    // would snapshot a wrong line into every away leg, so drop the market.
+    notes.push(
+      `spread: sides do not mirror (home ${rawText(home.line)}, away ${rawText(away.line)})`,
+    );
+    return null;
+  }
   const homePrice = parseAmericanPrice(home.odds);
   const awayPrice = parseAmericanPrice(away.odds);
-  if (homePrice === null || awayPrice === null) return null;
+  if (homePrice === null || awayPrice === null) {
+    notes.push(`spread: unusable price ${rawText(homePrice === null ? home.odds : away.odds)}`);
+    return null;
+  }
   return { homeTenths, homePrice, awayTenths, awayPrice };
 }
 
-function parseTotalMarket(entry: unknown): TotalMarket | null {
+function parseTotalMarket(entry: unknown, notes: string[]): TotalMarket | null {
   const total = prop(entry, 'total');
   const over = sideSnapshot(prop(total, 'over'));
   const under = sideSnapshot(prop(total, 'under'));
@@ -338,21 +370,30 @@ function parseTotalMarket(entry: unknown): TotalMarket | null {
     parseLineToTenths(over.line) ??
     parseLineToTenths(under.line) ??
     parseLineToTenths(prop(entry, 'overUnder'));
-  if (tenths === null) return null;
+  if (tenths === null) {
+    notes.push(`total: unusable line ${rawText(over.line)}`);
+    return null;
+  }
   const overPrice = parseAmericanPrice(over.odds);
   const underPrice = parseAmericanPrice(under.odds);
-  if (overPrice === null || underPrice === null) return null;
+  if (overPrice === null || underPrice === null) {
+    notes.push(`total: unusable price ${rawText(overPrice === null ? over.odds : under.odds)}`);
+    return null;
+  }
   return { tenths, overPrice, underPrice };
 }
 
-function parseMoneylineMarket(entry: unknown): MoneylineMarket | null {
+function parseMoneylineMarket(entry: unknown, notes: string[]): MoneylineMarket | null {
   const moneyline = prop(entry, 'moneyline');
   const home = sideSnapshot(prop(moneyline, 'home'));
   const away = sideSnapshot(prop(moneyline, 'away'));
   if (home === null || away === null) return null;
   const homePrice = parseAmericanPrice(home.odds);
   const awayPrice = parseAmericanPrice(away.odds);
-  if (homePrice === null || awayPrice === null) return null;
+  if (homePrice === null || awayPrice === null) {
+    notes.push(`moneyline: unusable price ${rawText(homePrice === null ? home.odds : away.odds)}`);
+    return null;
+  }
   return { homePrice, awayPrice };
 }
 
@@ -490,18 +531,20 @@ function parseLines(
   if (entry === null) return null;
 
   const provider = asString(prop(prop(entry, 'provider'), 'name')) ?? 'unknown';
-  const spread = parseSpreadMarket(entry);
-  const total = parseTotalMarket(entry);
-  const moneyline = parseMoneylineMarket(entry);
+  const notes: string[] = [];
+  const spread = parseSpreadMarket(entry, notes);
+  const total = parseTotalMarket(entry, notes);
+  const moneyline = parseMoneylineMarket(entry, notes);
 
-  if (spread === null && isObject(prop(entry, 'pointSpread'))) {
-    warnings?.push({ eventId, reason: `${provider}: dropped an unusable spread market` });
-  }
-  if (total === null && isObject(prop(entry, 'total'))) {
-    warnings?.push({ eventId, reason: `${provider}: dropped an unusable total market` });
-  }
-  if (moneyline === null && isObject(prop(entry, 'moneyline'))) {
-    warnings?.push({ eventId, reason: `${provider}: dropped an unusable moneyline market` });
+  // Present-but-unusable markets warn with the parser's diagnostic; a market
+  // whose container node is simply absent is silent (normal for ESPN).
+  const generic: string[] = [];
+  if (spread === null && isObject(prop(entry, 'pointSpread'))) generic.push('spread');
+  if (total === null && isObject(prop(entry, 'total'))) generic.push('total');
+  if (moneyline === null && isObject(prop(entry, 'moneyline'))) generic.push('moneyline');
+  if (notes.length > 0 || generic.length > 0) {
+    const detail = notes.length > 0 ? notes.join('; ') : `dropped unusable ${generic.join(', ')}`;
+    warnings?.push({ eventId, reason: `${provider}: ${detail}` });
   }
 
   if (spread === null && total === null && moneyline === null) return null;

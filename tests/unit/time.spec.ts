@@ -194,6 +194,16 @@ describe('parseIsoToEpochMs', () => {
   it('rejects the loose formats Date.parse would otherwise accept', () => {
     // Implementation-defined Date.parse fallbacks must not become kickoff times.
     expect(parseIsoToEpochMs('Sep 13 2026')).toBeNull();
+    // No Z/offset: Node would read local time and workerd UTC — refused outright.
+    expect(parseIsoToEpochMs('2026-09-13T17:00')).toBeNull();
+    expect(parseIsoToEpochMs('2026-09-13T17:00:00')).toBeNull();
+    // Space separator goes through V8's legacy parser — refused.
+    expect(parseIsoToEpochMs('2026-09-13 17:00Z')).toBeNull();
+    // Calendar rollover that Date.parse would silently turn into March 2.
+    expect(parseIsoToEpochMs('2026-02-30T00:00Z')).toBeNull();
+    expect(parseIsoToEpochMs('2026-02-28T00:00Z')).toBe(Date.UTC(2026, 1, 28));
+    expect(parseIsoToEpochMs('2024-02-29T00:00Z')).toBe(Date.UTC(2024, 1, 29));
+    expect(parseIsoToEpochMs('2026-02-29T00:00Z')).toBeNull();
     expect(parseIsoToEpochMs('09/13/2026')).toBeNull();
   });
 });
