@@ -92,16 +92,21 @@ export function validateDerivedKeyHex(raw: unknown): ValidationResult<string> {
  * Control characters (C0/C1), Unicode format characters (bidi overrides,
  * zero-width joiners, etc.) and unassigned/surrogate/private-use code points
  * are rejected — they render invisibly and are the classic leaderboard
- * spoofing tools. \p{C} covers Cc, Cf, Cs, Co and Cn.
+ * spoofing tools. \p{C} covers Cc, Cf, Cs, Co and Cn — EXCEPT U+200D (ZWJ) and
+ * U+FE0E/U+FE0F (variation selectors), which are how family/profession/flag
+ * emoji are composed and must stay allowed. Line/paragraph separators (Zl/Zp)
+ * are rejected too.
  */
-const FORBIDDEN_NAME_CHARS = /\p{C}/u;
+const FORBIDDEN_NAME_CHARS = /\p{C}|\p{Zl}|\p{Zp}/u;
+/** Emoji joiners/selectors are format chars but legitimate; removed before the check. */
+const EMOJI_JOINERS = /\u200d|\ufe0e|\ufe0f/gu;
 
 function validateDisplayName(raw: unknown, fallback: string): ValidationResult<string> {
   if (raw === undefined || raw === null) return good(fallback);
   if (typeof raw !== 'string') return bad('displayName must be a string', 'displayName');
   const d = raw.trim();
   if (d.length === 0) return good(fallback);
-  if (FORBIDDEN_NAME_CHARS.test(d)) {
+  if (FORBIDDEN_NAME_CHARS.test(d.replace(EMOJI_JOINERS, ''))) {
     return bad('displayName contains control or invisible characters', 'displayName');
   }
   // Count code points, not UTF-16 units, so 40 emoji are 40 characters.

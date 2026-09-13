@@ -104,6 +104,16 @@ describe('validateSignup', () => {
       );
     }
   });
+  it('allows ZWJ-composed emoji and variation selectors, rejects line separators', () => {
+    for (const good of ['👩‍💻 Alex', '👨‍👩‍👧 fam', '🏳️‍🌈', '❤️ Al']) {
+      expect(validateSignup({ username: 'alex', displayName: good, dk: DK }).ok).toBe(true);
+    }
+    for (const bad of ['a\u2028b', 'a\u2029b']) {
+      expect(fail(validateSignup({ username: 'alex', displayName: bad, dk: DK })).field).toBe(
+        'displayName',
+      );
+    }
+  });
   it('counts displayName length in code points, not UTF-16 units', () => {
     expect(validateSignup({ username: 'alex', displayName: '😀'.repeat(40), dk: DK }).ok).toBe(
       true,
