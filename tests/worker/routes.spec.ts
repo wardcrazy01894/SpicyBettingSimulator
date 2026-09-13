@@ -1,7 +1,8 @@
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import type {
-  BankrollResponse,
+  BankrollView,
+  BankrollsResponse,
   ConfigResponse,
   GamesResponse,
   HealthResponse,
@@ -19,6 +20,14 @@ import {
 } from '../../src/shared/constants.js';
 import { buildApp } from '../../src/worker/index.js';
 import { fullLine, seedGame, seedGameWithLine, seedLine, seedSettledBet } from './seed.js';
+
+/** The caller's main balance out of `GET /api/bankroll`'s `{ balances }` list. */
+async function mainBalance(res: Response): Promise<BankrollView> {
+  const body = await res.json<BankrollsResponse>();
+  const main = body.balances.find((b) => b.kind === 'main');
+  if (main === undefined) throw new Error(`no main balance in ${JSON.stringify(body)}`);
+  return main;
+}
 
 /** Hit the real app (same code path as the module-level fetch handler). */
 function get(path: string, cookie?: string): Promise<Response> {
@@ -99,6 +108,12 @@ describe('routing', () => {
     expect(body.cutoffBufferMs).toBe(60_000);
     // No games ingested yet -> no current season for either league.
     expect(body.currentSeason).toEqual({ nfl: null, ncaaf: null });
+    // M5b: the teaser card is echoed in full so the slip prices a teaser from
+    // server truth rather than from its own bundled copy of constants.ts.
+    expect(body.teaserPoints).toEqual([60, 65, 70]);
+    expect(body.teaserPayouts[60]?.[3]).toBe(150);
+    expect(body.teaserPayouts[65]?.[2]).toBe(-130);
+    expect(body.teaserPayouts[70]?.[10]).toBe(1500);
   });
 
   it('GET /api/auth/kdf returns the public client KDF parameters', async () => {
@@ -394,9 +409,9 @@ describe('leaderboard semantics', () => {
       status: 'pending',
       stakeCents: 3000,
     });
-    const res = await get(`/api/bankroll?league=nfl&season=${String(season)}`, bob.cookie);
+    const res = await get('/api/bankroll', bob.cookie);
     expect(res.status, await res.clone().text()).toBe(200);
-    const body = await res.json<BankrollResponse>();
+    const body = await mainBalance(res);
     expect(body.balanceCents).toBe(97_000);
     expect(body.pendingStakeCents).toBe(3000);
   });
@@ -411,9 +426,7 @@ describe('leaderboard semantics', () => {
       status: 'pending',
       stakeCents: 3000,
     });
-    const body = await (
-      await get(`/api/bankroll?league=nfl&season=${String(season)}`, bob.cookie)
-    ).json<BankrollResponse>();
+    const body = await mainBalance(await get('/api/bankroll', bob.cookie));
     expect(body.equityCents).toBe(body.balanceCents + body.pendingStakeCents);
     expect(body.equityCents).toBe(100_000);
   });
@@ -453,21 +466,28 @@ describe('leaderboard semantics', () => {
     expect(rows.find((r) => r.username === s.names.bob)?.roi).toBeNull();
   });
 
-  it('ranks by balance desc, then roi desc, then username', async () => {
+  it('ranks by equity desc, then roi desc, then username', async () => {
     const s = await seedSeason();
     const body = await board(s);
+    // Scoped to this test's three users: balances are ACCOUNT-level since M5b,
+    // so every user the file ever created appears on every board.
+    const names: readonly string[] = [s.names.alex, s.names.bob, s.names.carol];
+    const mine = body.rows.filter((r) => names.includes(r.username));
     // alex:  100000 - 2500 + 4772 - 1000 - 500 + 500 - 500 + 500 - 9999 + 9999 = 101272
     // carol: 100000 - 10000 + 11272                                            = 101272
     // bob:   100000 - 3000                                                     = 97000
-    expect(body.rows.map((r) => r.balanceCents)).toEqual([101_272, 101_272, 97_000]);
-    // Tied on balance: alex's ROI (0.3634) beats carol's (0.1272).
-    expect(body.rows.map((r) => r.username)).toEqual([s.names.alex, s.names.carol, s.names.bob]);
-    expect(body.rows.map((r) => r.rank)).toEqual([1, 2, 3]);
-    expect(body.rows[0]?.equityCents).toBe(101_272);
-    expect(body.rows[2]?.equityCents).toBe(100_000);
+    expect(mine.map((r) => r.balanceCents)).toEqual([101_272, 101_272, 97_000]);
+    // Tied on equity too (neither alex nor carol has an open bet): alex's ROI
+    // (0.3634) beats carol's (0.1272), so ROI is what separates them.
+    expect(mine.map((r) => r.equityCents)).toEqual([101_272, 101_272, 100_000]);
+    expect(mine.map((r) => r.username)).toEqual([s.names.alex, s.names.carol, s.names.bob]);
+    // Ranks are ascending and dense within the slice, whatever the offset is.
+    expect(mine.map((r) => r.rank)).toEqual([...mine].map((r) => r.rank).sort((a, b) => a - b));
+    expect(mine[0]?.equityCents).toBe(101_272);
+    expect(mine[2]?.equityCents).toBe(100_000);
   });
 
-  it('all-time pools the numerator and denominator rather than averaging ROIs', async () => {
+  it('the unfiltered board pools the numerator and denominator rather than averaging ROIs', async () => {
     const alex = await register('alex');
     const a = scope();
     const b = scope();
@@ -493,11 +513,13 @@ describe('leaderboard semantics', () => {
       await get('/api/leaderboard/all-time', alex.cookie)
     ).json<LeaderboardResponse>();
     expect(body.league).toBe('all');
-    expect(body.season).toBeNull();
     const row = body.rows.find((r) => r.username === alex.name);
     // The average of the two ROIs is 0. The POOLED figure is (2000-10000)/10000.
     expect(row?.roi).toBeCloseTo(-0.8, 12);
-    expect(row?.balanceCents).toBe(101_000 + 91_000);
+    // ONE balance: 100000 + (2000 - 1000) + (0 - 9000) = 92000. M5 summed two
+    // per-season bankrolls here (101000 + 91000); there is only one pot now, so
+    // the opening deposit is granted once rather than once per season.
+    expect(row?.balanceCents).toBe(92_000);
     expect(row?.record).toEqual({ won: 1, lost: 1, push: 0, void: 0 });
   });
 });

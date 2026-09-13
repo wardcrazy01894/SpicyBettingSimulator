@@ -27,12 +27,18 @@ export interface SlipLeg {
   readonly awayAbbr: string;
 }
 
-export type SlipMode = 'straight' | 'parlay';
+export type SlipMode = 'straight' | 'parlay' | 'teaser';
 
 export interface LeagueSlip {
   readonly mode: SlipMode;
   readonly legs: readonly SlipLeg[];
   readonly stakeCents: number;
+  /**
+   * The teaser tier in TENTHS (60/65/70). Carried on every slip, not only a
+   * teaser one, so switching Parlay → Teaser → Parlay remembers the selector
+   * instead of snapping back to 6 points each time.
+   */
+  readonly teaserPointsTenths: number;
 }
 
 /** The draft slip that `START_EDIT` displaced, kept so `END_EDIT` can put it back. */
@@ -70,6 +76,7 @@ export type SlipAction =
       readonly side: Side;
     }
   | { readonly type: 'SET_MODE'; readonly mode: SlipMode }
+  | { readonly type: 'SET_TEASER_POINTS'; readonly pointsTenths: number }
   | { readonly type: 'SET_STAKE'; readonly stakeCents: number }
   /** Re-price the legs in place, e.g. after accepting a 409 LINE_CHANGED. */
   | { readonly type: 'SET_LEGS'; readonly league: League; readonly legs: readonly SlipLeg[] }
@@ -81,13 +88,23 @@ export type SlipAction =
       readonly mode: SlipMode;
       readonly legs: readonly SlipLeg[];
       readonly stakeCents: number;
+      /** Present when the bet being edited is a teaser. */
+      readonly teaserPointsTenths?: number;
     }
   /** Leave edit mode (cancelled OR submitted) and restore the displaced draft. */
   | { readonly type: 'END_EDIT' }
   | { readonly type: 'DISMISS_NOTICE' }
   | { readonly type: 'HYDRATE'; readonly league: League; readonly slip: LeagueSlip };
 
-export const EMPTY_SLIP: LeagueSlip = { mode: 'straight', legs: [], stakeCents: 0 };
+/** The default tier, in tenths: 6 points. Mirrors TEASER_POINTS_TENTHS[0]. */
+export const DEFAULT_TEASER_POINTS_TENTHS = 60;
+
+export const EMPTY_SLIP: LeagueSlip = {
+  mode: 'straight',
+  legs: [],
+  stakeCents: 0,
+  teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
+};
 
 export function emptySlipState(active: League): SlipState {
   const byLeague = Object.fromEntries(LEAGUES.map((l) => [l, EMPTY_SLIP])) as Record<
@@ -117,12 +134,18 @@ export function slipStorageKey(league: League): string {
 }
 
 /**
- * A slip with 2+ legs IS a parlay and one with ≤1 leg IS a straight — that is
- * what `validatePlaceBet` enforces — so the mode follows the leg count after any
+ * A slip with ≤1 leg IS a straight and one with 2+ legs is a MULTI — that is what
+ * `validatePlaceBet` enforces — so the mode follows the leg count after any
  * structural change instead of letting the user hold an unsubmittable slip.
+ *
+ * Which multi it is stays the USER'S choice: adding a third leg to a teaser
+ * leaves it a teaser. Only `straight` is overridden upward, because there is no
+ * such thing as a two-leg straight; and everything is forced back to `straight`
+ * below two legs, because there is no one-leg parlay OR teaser.
  */
-function modeFor(legs: readonly SlipLeg[]): SlipMode {
-  return legs.length > 1 ? 'parlay' : 'straight';
+function modeFor(legs: readonly SlipLeg[], current: SlipMode): SlipMode {
+  if (legs.length <= 1) return 'straight';
+  return current === 'straight' ? 'parlay' : current;
 }
 
 /** Every structural write also clears the transient notice. */
@@ -159,7 +182,7 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
       if (slip.legs.some((l) => legKey(l) === key)) {
         const legs = slip.legs.filter((l) => legKey(l) !== key);
         return {
-          ...withSlip(state, league, { ...slip, legs, mode: modeFor(legs) }),
+          ...withSlip(state, league, { ...slip, legs, mode: modeFor(legs, slip.mode) }),
           active: league,
         };
       }
@@ -173,22 +196,30 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
         return { ...state, active: league, notice: parlayFullNotice(action.maxLegs) };
       }
       const legs = [...others, action.leg];
-      return { ...withSlip(state, league, { ...slip, legs, mode: modeFor(legs) }), active: league };
+      return {
+        ...withSlip(state, league, { ...slip, legs, mode: modeFor(legs, slip.mode) }),
+        active: league,
+      };
     }
 
     case 'REMOVE_LEG': {
       const slip = state.byLeague[state.active];
       const key = legKey(action);
       const legs = slip.legs.filter((l) => legKey(l) !== key);
-      return withSlip(state, state.active, { ...slip, legs, mode: modeFor(legs) });
+      return withSlip(state, state.active, { ...slip, legs, mode: modeFor(legs, slip.mode) });
     }
 
     case 'SET_MODE': {
       const slip = state.byLeague[state.active];
-      // "Parlay" below two legs is not a bet anyone can place, and persisting it
+      // A multi below two legs is not a bet anyone can place, and persisting one
       // resurrected an unsubmittable slip on the next reload.
-      const mode = action.mode === 'parlay' && slip.legs.length < 2 ? 'straight' : action.mode;
+      const mode = action.mode !== 'straight' && slip.legs.length < 2 ? 'straight' : action.mode;
       return withSlip(state, state.active, { ...slip, mode });
+    }
+
+    case 'SET_TEASER_POINTS': {
+      const slip = state.byLeague[state.active];
+      return withSlip(state, state.active, { ...slip, teaserPointsTenths: action.pointsTenths });
     }
 
     case 'SET_STAKE': {
@@ -201,7 +232,7 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
       return withSlip(state, action.league, {
         ...slip,
         legs: action.legs,
-        mode: modeFor(action.legs),
+        mode: modeFor(action.legs, slip.mode),
       });
     }
 
@@ -221,6 +252,10 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
           mode: action.mode,
           legs: action.legs,
           stakeCents: action.stakeCents,
+          // A non-teaser edit keeps whatever tier the displaced draft had, so
+          // cancelling the edit restores a slip that looks exactly as it did.
+          teaserPointsTenths:
+            action.teaserPointsTenths ?? base.byLeague[action.league].teaserPointsTenths,
         }),
         active: action.league,
         editingBetId: action.betId,
@@ -298,9 +333,19 @@ export function parseStoredSlip(raw: string | null, league: League): LeagueSlip 
   const mode = parsed['mode'];
   const stake = parsed['stakeCents'];
   const rawLegs = parsed['legs'];
-  if (mode !== 'straight' && mode !== 'parlay') return null;
+  const points = parsed['teaserPointsTenths'];
+  if (mode !== 'straight' && mode !== 'parlay' && mode !== 'teaser') return null;
   if (typeof stake !== 'number' || !Number.isSafeInteger(stake) || stake < 0) return null;
   if (!Array.isArray(rawLegs)) return null;
+  // A v2 entry (pre-teaser) has no tier at all; that is not corruption, so it
+  // takes the default rather than throwing the whole slip away.
+  const teaserPointsTenths =
+    points === undefined
+      ? DEFAULT_TEASER_POINTS_TENTHS
+      : points === 60 || points === 65 || points === 70
+        ? points
+        : null;
+  if (teaserPointsTenths === null) return null;
   const legs: SlipLeg[] = [];
   for (const rawLeg of rawLegs) {
     const leg = parseLeg(rawLeg, league);
@@ -311,13 +356,14 @@ export function parseStoredSlip(raw: string | null, league: League): LeagueSlip 
   // one-leg "parlay" (the mode toggle used to allow it) is not placeable, and
   // rehydrating it put the user back in front of an unsubmittable slip. The
   // stored `mode` is still VALIDATED above; it is just not authoritative.
-  return { mode: modeFor(legs), legs, stakeCents: stake };
+  return { mode: modeFor(legs, mode), legs, stakeCents: stake, teaserPointsTenths };
 }
 
 export function serialiseSlip(slip: LeagueSlip): string {
   return JSON.stringify({
     mode: slip.mode,
     stakeCents: slip.stakeCents,
+    teaserPointsTenths: slip.teaserPointsTenths,
     legs: slip.legs.map((l) => ({
       gameId: l.gameId,
       market: l.market,

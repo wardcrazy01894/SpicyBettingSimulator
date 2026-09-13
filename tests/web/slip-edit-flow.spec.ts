@@ -18,6 +18,7 @@ import {
   lineChangeIsAcceptable,
 } from '../../src/web/state/slip-preview.js';
 import {
+  DEFAULT_TEASER_POINTS_TENTHS,
   EMPTY_SLIP,
   emptySlipState,
   parlayFullNotice,
@@ -173,6 +174,7 @@ describe('applyLineChange', () => {
     mode: legs.length > 1 ? 'parlay' : 'straight',
     legs,
     stakeCents,
+    teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
   });
 
   it('rewrites the leg to the price and line the SERVER quoted', () => {
@@ -368,7 +370,12 @@ describe('mode follows the leg count', () => {
   });
 
   it('round-trips the abbreviations the relabelling depends on', () => {
-    const before: LeagueSlip = { mode: 'straight', legs: [leg('g1')], stakeCents: 1000 };
+    const before: LeagueSlip = {
+      mode: 'straight',
+      legs: [leg('g1')],
+      stakeCents: 1000,
+      teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
+    };
     const after = parseStoredSlip(serialiseSlip(before), 'nfl');
     expect(after?.legs[0]?.homeAbbr).toBe('HOME');
     expect(after?.legs[0]?.awayAbbr).toBe('AWAY');

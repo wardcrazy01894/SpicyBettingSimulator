@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_TEASER_POINTS_TENTHS,
   EMPTY_SLIP,
   emptySlipState,
   legKey,
@@ -192,6 +193,7 @@ describe('persistence', () => {
       mode: 'parlay' as const,
       legs: [leg('g1'), leg('g2', 'total', 'over')],
       stakeCents: 1234,
+      teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
     };
     const parsed = parseStoredSlip(serialiseSlip(slip), 'nfl');
     expect(parsed).toEqual(slip);
@@ -201,11 +203,47 @@ describe('persistence', () => {
     expect(parseStoredSlip(null, 'nfl')).toBeNull();
     expect(parseStoredSlip('not json', 'nfl')).toBeNull();
     expect(parseStoredSlip('[]', 'nfl')).toBeNull();
-    expect(parseStoredSlip('{"mode":"teaser","legs":[],"stakeCents":0}', 'nfl')).toBeNull();
+    expect(parseStoredSlip('{"mode":"round-robin","legs":[],"stakeCents":0}', 'nfl')).toBeNull();
     expect(parseStoredSlip('{"mode":"straight","legs":[],"stakeCents":-1}', 'nfl')).toBeNull();
     expect(
       parseStoredSlip('{"mode":"straight","legs":[{"gameId":""}],"stakeCents":0}', 'nfl'),
     ).toBeNull();
+    // A tier that is not on the card is corruption, not an old entry.
+    expect(
+      parseStoredSlip(
+        '{"mode":"straight","legs":[],"stakeCents":0,"teaserPointsTenths":61}',
+        'nfl',
+      ),
+    ).toBeNull();
+  });
+
+  it("'teaser' is a legal stored mode now, and a v2 entry without a tier gets the default", () => {
+    // A pre-M5b entry has no `teaserPointsTenths` at all; throwing the whole
+    // slip away for that would lose a draft for no reason.
+    const legacy = parseStoredSlip('{"mode":"straight","legs":[],"stakeCents":250}', 'nfl');
+    expect(legacy?.teaserPointsTenths).toBe(DEFAULT_TEASER_POINTS_TENTHS);
+    expect(legacy?.stakeCents).toBe(250);
+    // ...and every tier on the card round-trips.
+    for (const tenths of [60, 65, 70]) {
+      const raw = serialiseSlip({
+        mode: 'teaser',
+        legs: [leg('g1'), leg('g2', 'total', 'over')],
+        stakeCents: 500,
+        teaserPointsTenths: tenths,
+      });
+      const parsed = parseStoredSlip(raw, 'nfl');
+      expect(parsed?.mode).toBe('teaser');
+      expect(parsed?.teaserPointsTenths).toBe(tenths);
+    }
+    // A ONE-leg "teaser" is not placeable and is normalised back to a straight,
+    // exactly as a one-leg "parlay" already was.
+    const single = serialiseSlip({
+      mode: 'teaser',
+      legs: [leg('g1')],
+      stakeCents: 500,
+      teaserPointsTenths: 60,
+    });
+    expect(parseStoredSlip(single, 'nfl')?.mode).toBe('straight');
   });
 
   it('rejects a hand-edited price that is not a safe integer', () => {
@@ -222,6 +260,7 @@ describe('persistence', () => {
       mode: 'straight',
       legs: [leg('g1', 'spread', 'home', 'nfl')],
       stakeCents: 100,
+      teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
     });
     expect(parseStoredSlip(raw, 'ncaaf')?.legs[0]?.league).toBe('ncaaf');
   });

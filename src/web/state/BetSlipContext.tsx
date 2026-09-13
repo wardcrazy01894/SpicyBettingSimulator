@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 
 import { ApiError, postBet, putBet } from '../api/client.js';
-import { useBankroll } from '../hooks/useApi.js';
+import { useBalances } from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
 import { BetSlipContext } from './bet-slip.js';
 import { useConfig } from './config.js';
@@ -84,11 +84,12 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
     if (editingBetId === null) writeStored(league, slip);
   }, [league, slip, editingBetId]);
 
-  const season = config.currentSeason[league];
-  // Anonymous visitors have no bankroll; asking for one on /login collects a 401
-  // and fires the client's SESSION_EXPIRED side-channel for no reason.
-  const bankroll = useBankroll(league, season, session.status === 'authed');
-  const availableCents = bankroll.data?.balanceCents ?? null;
+  // ONE account balance, whatever league tab is showing (M5b). Anonymous
+  // visitors have none; asking on /login collects a 401 and fires the client's
+  // SESSION_EXPIRED side-channel for no reason.
+  const balances = useBalances(session.status === 'authed');
+  const mainBalance = balances.data?.balances.find((b) => b.kind === 'main') ?? null;
+  const availableCents = mainBalance?.balanceCents ?? null;
 
   const setLeague = useCallback((next: League) => {
     dispatch({ type: 'SET_LEAGUE', league: next });
@@ -118,6 +119,10 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
     dispatch({ type: 'SET_MODE', mode });
   }, []);
 
+  const setTeaserPoints = useCallback((pointsTenths: number) => {
+    dispatch({ type: 'SET_TEASER_POINTS', pointsTenths });
+  }, []);
+
   const setStakeCents = useCallback((cents: Cents) => {
     setLastError(null);
     dispatch({ type: 'SET_STAKE', stakeCents: cents });
@@ -133,9 +138,10 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
     [selected],
   );
 
+  const teaserPayouts = config.teaserPayouts;
   const preview = useMemo(
-    () => computePreview(league, slip, availableCents),
-    [league, slip, availableCents],
+    () => computePreview(league, slip, availableCents, teaserPayouts),
+    [league, slip, availableCents, teaserPayouts],
   );
 
   const startEdit = useCallback(
@@ -145,10 +151,19 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
       mode: SlipMode,
       legs: readonly SlipLeg[],
       stakeCents: Cents,
+      teaserPointsTenths?: number,
     ) => {
       setLineChange(null);
       setLastError(null);
-      dispatch({ type: 'START_EDIT', betId, league: betLeague, mode, legs, stakeCents });
+      dispatch({
+        type: 'START_EDIT',
+        betId,
+        league: betLeague,
+        mode,
+        legs,
+        stakeCents,
+        ...(teaserPointsTenths === undefined ? {} : { teaserPointsTenths }),
+      });
       setOpen(true);
     },
     [],
@@ -217,11 +232,13 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
       mode: slip.mode,
       legs: slip.legs,
       stakeCents: slip.stakeCents,
+      teaserPointsTenths: slip.teaserPointsTenths,
       setLeague,
       toggleLeg,
       removeLeg,
       clear,
       setMode,
+      setTeaserPoints,
       setStakeCents,
       isSelected,
       preview,
@@ -248,6 +265,7 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
       removeLeg,
       clear,
       setMode,
+      setTeaserPoints,
       setStakeCents,
       isSelected,
       preview,

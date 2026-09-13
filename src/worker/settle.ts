@@ -43,6 +43,26 @@
  * American form and that call throws, which would park every all-push parlay
  * as "stuck". `effectiveAmericanPrice()` in grading.ts handles that for us.
  *
+ * PRICING IS AN ARGUMENT, NOT AN INFERENCE (M5b). `gradeBet` takes a fourth
+ * parameter, `pricing`, and M6 MUST build it from the BET ROW — never from the
+ * legs, which are deliberately indistinguishable:
+ *
+ *     const pricing = bet.bet_type === 'teaser'
+ *       ? { kind: 'teaser', pointsTenths: bet.teaser_points_tenths }
+ *       : { kind: 'parlay' };
+ *
+ * A teaser's legs carry the TEASED line in `bet_legs.line_tenths` (which is what
+ * makes grading identical) and a placeholder `american_price` of 100 (which is
+ * what makes `priceFromLegs` meaningless for them). Omitting `pricing` defaults
+ * to `{kind:'parlay'}` and would pay a 3-leg teaser as 2.0^3 instead of the
+ * card's +150 — the one place this change can go silently wrong, so the
+ * selection query must read `bet_type` and `teaser_points_tenths` alongside
+ * `stake_cents`. Everything downstream — `effectiveAmericanPrice`, the
+ * write-back, the ledger row — is unchanged: every card value round-trips
+ * through `priceToAmerican` exactly, and a teaser that reduces below two
+ * surviving legs comes back as `push` with `payout = stake`, which is already a
+ * shape this job handles.
+ *
  * Re-pricing can only ever DECREASE the payout: every legal American price has
  * decimal odds strictly greater than 1 (the minimum over the whole legal domain
  * is 1.001, at -100000), so dropping pushed/voided legs strictly shrinks the

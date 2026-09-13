@@ -7,7 +7,8 @@
  * its OWN delimited block and touches nobody else's. M3 landed the skeleton
  * early (M3 and M4 run in parallel and M3's user routes had nothing to attach
  * to) together with the `/users` block below and one placeholder per remaining
- * group. M4 replaces its placeholder in place; nothing else here moves.
+ * group. M4 replaces its placeholder in place; M5b appends `/balances`; nothing
+ * else here moves.
  */
 
 import { Hono } from 'hono';
@@ -17,12 +18,14 @@ import type {
   JobRunsResponse,
   ReconcileResponse,
 } from '../../shared/api-types.js';
-import { JOB_NAMES } from '../../shared/constants.js';
+import { JOB_NAMES, MAX_PAYOUT_CENTS } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { validateDerivedKeyHex } from '../../shared/validate.js';
 import { listUsers, setDisabled, setPassword } from '../auth.js';
 import { reconcileBankrolls } from '../db.js';
 import { retrySettlement } from '../settle.js';
+import { adminAdjust } from '../bankroll.js';
+import { isOverdraftError } from '../db.js';
 import { recentRuns, runJob } from '../jobs.js';
 import type { JobName } from '../jobs.js';
 import { requireAdmin, requireAuth } from '../middleware.js';
@@ -75,6 +78,53 @@ export function adminRoutes(): Hono<AppContext> {
     return c.body(null, 204);
   });
   // --- end users (M3) -----------------------------------------------------
+
+  // --- balances (M5b) -----------------------------------------------------
+  /**
+   * `POST /api/admin/users/:id/adjust {amountCents, memo}` — credit or debit a
+   * user's main balance. Either sign.
+   *
+   * The overdraft rule is NOT re-implemented here: a debit larger than the
+   * balance is refused by `ledger_bi_sufficient_funds`, which rolls the batch
+   * back, and that abort is mapped to `409 INSUFFICIENT_FUNDS` below. Checking
+   * the balance first and then writing would be the read-then-write CLAUDE.md
+   * rule 5 forbids, and would be racy besides.
+   */
+  app.post('/users/:id/adjust', async (c) => {
+    const raw = await readJson(c);
+    const amountCents = isRecord(raw) ? raw['amountCents'] : undefined;
+    if (typeof amountCents !== 'number' || !Number.isSafeInteger(amountCents)) {
+      throw new AppError('VALIDATION', 'amountCents must be an integer number of cents', {
+        field: 'amountCents',
+      });
+    }
+    if (amountCents === 0) {
+      throw new AppError('VALIDATION', 'amountCents must not be zero', { field: 'amountCents' });
+    }
+    if (Math.abs(amountCents) > MAX_PAYOUT_CENTS) {
+      throw new AppError('VALIDATION', 'amountCents is out of range', { field: 'amountCents' });
+    }
+    const rawMemo = isRecord(raw) ? raw['memo'] : undefined;
+    if (rawMemo !== undefined && rawMemo !== null && typeof rawMemo !== 'string') {
+      throw new AppError('VALIDATION', 'memo must be a string', { field: 'memo' });
+    }
+    try {
+      await adminAdjust(
+        c.env,
+        c.req.param('id'),
+        amountCents,
+        typeof rawMemo === 'string' && rawMemo !== '' ? rawMemo : null,
+        c.var.now,
+      );
+    } catch (err) {
+      if (isOverdraftError(err)) {
+        throw new AppError('INSUFFICIENT_FUNDS', 'That would overdraw the balance.');
+      }
+      throw err;
+    }
+    return c.body(null, 204);
+  });
+  // --- end balances (M5b) -------------------------------------------------
 
   // --- jobs (M4) ----------------------------------------------------------
   // Runs the IDENTICAL function the cron handler runs, with trigger='admin' and

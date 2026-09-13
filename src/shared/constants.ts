@@ -6,7 +6,13 @@
  * deployed server.
  */
 
-/** Opening bankroll for every new (user, league, season). */
+import type { AmericanPrice } from './types.js';
+
+/**
+ * Opening balance, deposited once per ACCOUNT in the signup batch (M5b). It is
+ * not per league, not per season and never re-granted: there is exactly one
+ * `deposit_initial` ledger row per balance, for the life of the account.
+ */
 export const INITIAL_BANKROLL_CENTS = 100_000;
 
 /** Minimum stake: $1.00. Also enforced by a CHECK constraint on `bets`. */
@@ -32,6 +38,62 @@ export const MAX_PAYOUT_CENTS = 100_000_000;
 /** Parlay leg bounds. A straight bet is exactly 1 leg. */
 export const MIN_PARLAY_LEGS = 2;
 export const MAX_PARLAY_LEGS = 10;
+
+// ---------------------------------------------------------------------------
+// Teasers (M5b). Research and sources: docs/teaser-odds.md, summarised in
+// PLAN.md §5.8.
+// ---------------------------------------------------------------------------
+
+/**
+ * The point tiers we offer, in TENTHS of a point: 6, 6.5 and 7.
+ *
+ * Tenths because 6.5 has no integer representation in points, and because every
+ * other line quantity in this system is already tenths (PLAN.md §3.1) — mixing
+ * units is how a 6.5-point teaser ends up teasing by 6.
+ */
+export const TEASER_POINTS_TENTHS = [60, 65, 70] as const;
+export type TeaserPointsTenths = (typeof TEASER_POINTS_TENTHS)[number];
+
+/** A teaser is a parlay shape: never fewer than two legs, never more than ten. */
+export const MIN_TEASER_LEGS = 2;
+
+/** Leg counts the card prices. Same ceiling as a parlay. */
+export type TeaserLegCount = 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+
+/**
+ * THE TEASER CARD: a FIXED price per (points, legs), in integer American.
+ *
+ * A teaser is NOT priced as the product of its legs — that is the whole point of
+ * the product. Moving every line six points in the bettor's favour destroys the
+ * legs' individual prices, so the book posts a flat card instead, and
+ * `bet_legs.american_price` for a teaser leg is a placeholder (+100, even money)
+ * that carries no pricing meaning. `bets.american_price` is the card value.
+ *
+ * These are the Bovada "classic standard" numbers — the only fully populated
+ * 2-10 leg × 6/6.5/7-point grid that is actually published, and the closest
+ * match to what the industry calls the standard teaser card. DraftKings differs
+ * only at 3-leg/6-point (+160 vs +150) and FanDuel prices 2-leg/6-point nearer
+ * -110; neither publishes a complete grid. Sources in docs/teaser-odds.md.
+ *
+ * Every value round-trips through `americanToPrice`/`priceToAmerican` exactly
+ * (verified, 27/27), so settlement can write the effective price back through
+ * the same path a parlay uses. The worst payout the card can produce is the
+ * 10-leg 6-point +2500 at the full 100,000¢ bankroll = 2,600,000¢ (verified),
+ * which is 38× under MAX_PAYOUT_CENTS — so `exceedsPayoutCap` is unreachable for
+ * a teaser in practice and is still checked, for free, on the shared path.
+ */
+export const TEASER_PAYOUTS: Readonly<
+  Record<TeaserPointsTenths, Readonly<Record<TeaserLegCount, AmericanPrice>>>
+> = {
+  60: { 2: -120, 3: 150, 4: 260, 5: 400, 6: 600, 7: 900, 8: 1400, 9: 1900, 10: 2500 },
+  65: { 2: -130, 3: 135, 4: 225, 5: 350, 6: 500, 7: 800, 8: 1100, 9: 1500, 10: 2000 },
+  70: { 2: -140, 3: 120, 4: 200, 5: 325, 6: 450, 7: 700, 8: 900, 9: 1200, 10: 1500 },
+};
+
+/** True for a value that indexes `TEASER_PAYOUTS`. */
+export function isTeaserPoints(value: unknown): value is TeaserPointsTenths {
+  return (TEASER_POINTS_TENTHS as readonly unknown[]).includes(value);
+}
 
 /**
  * Betting closes this long BEFORE the stored kickoff time. Covers clock skew,

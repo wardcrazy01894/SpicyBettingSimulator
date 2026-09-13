@@ -12,13 +12,25 @@
  * capture time into `bet_legs`. An optional `expected` block gives the user
  * line-change protection (409 LINE_CHANGED).
  *
- * `bets.season` is derived from the LEGS' games, never from a wall-clock guess,
- * and all legs must share one (league, season) so exactly one bankroll is
- * charged -- otherwise MIXED_LEAGUE_PARLAY / MIXED_SEASON_PARLAY.
+ * WHICH BALANCE IS CHARGED is now an explicit choice (M5b): `bankrollId` on the
+ * request, defaulting to the caller's `main`. It is no longer implied by the
+ * legs' (league, season), which means legs may span leagues and seasons freely
+ * -- `bets.league` becomes `'mixed'` and `bets.season` is the season of the
+ * EARLIEST-KICKOFF leg, both purely as stats labels. MIXED_LEAGUE_PARLAY and
+ * MIXED_SEASON_PARLAY are consequently never thrown from anywhere.
+ *
+ * TEASERS. A teaser's legs are resolved from the market exactly like any other
+ * bet -- including `expected`, which is compared against the BOOK line, so
+ * LINE_CHANGED means the same thing it always did -- and are then MOVED:
+ * `bet_legs.line_tenths` holds the TEASED line (what grading reads),
+ * `original_line_tenths` holds the book's. The legs' own prices are discarded
+ * (`american_price = 100`, a placeholder) because a teaser is priced once, at
+ * the bet level, from `TEASER_PAYOUTS`.
  *
  * `bets` stores NO decimal-odds rational. `american_price` is display and
- * `potential_payout_cents` is capped at MAX_PAYOUT_CENTS; the exact price is
- * always recomputed from `bet_legs.american_price` (PLAN.md §5.2).
+ * `potential_payout_cents` is capped at MAX_PAYOUT_CENTS; for a parlay the exact
+ * price is always recomputed from `bet_legs.american_price` (PLAN.md §5.2), and
+ * for a teaser from `(teaser_points_tenths, leg_count)`.
  */
 
 import type {
@@ -29,6 +41,7 @@ import type {
 } from '../shared/api-types.js';
 import type {
   AmericanPrice,
+  BetLeague,
   BetLegSnapshot,
   BetStatus,
   BetType,
@@ -49,23 +62,20 @@ import {
 import { AppError } from '../shared/errors.js';
 import { projectLeg } from '../shared/grading.js';
 import {
+  PUSH_AMERICAN_PRICE,
   americanToPrice,
   exceedsPayoutCap,
   formatDecimalOdds,
   payoutCents,
   priceFromLegs,
   priceToAmerican,
+  teasedLineTenths,
+  teaserPrice,
 } from '../shared/odds.js';
 import { lockAtFor } from '../shared/time.js';
 import type { PlaceBetInput } from '../shared/validate.js';
 import { validatePlaceBet } from '../shared/validate.js';
-import {
-  bankrollId,
-  ensureBankrollStatements,
-  isLeague,
-  placeholders,
-  resolveBetScope,
-} from './bankroll.js';
+import { isLeague, placeholders, resolveBankrollId } from './bankroll.js';
 import {
   changesAt,
   isOrphanBankrollError,
@@ -123,6 +133,7 @@ interface BetRow {
   league: string;
   season: number;
   bet_type: string;
+  teaser_points_tenths: number | null;
   leg_count: number;
   stake_cents: number;
   american_price: number;
@@ -147,6 +158,7 @@ interface LegRow {
   market: string;
   side: string;
   line_tenths: number | null;
+  original_line_tenths: number | null;
   american_price: number;
   provider: string;
   line_captured_at: number;
@@ -162,9 +174,16 @@ interface LegRow {
   g_away_score: number | null;
 }
 
-/** The immutable snapshot plus its position in the bet. */
+/**
+ * The immutable snapshot plus its position in the bet, the season of its game
+ * (which is where `bets.season` comes from — CLAUDE.md rule 8c) and, once a
+ * teaser has been applied, the book line the teased one replaced.
+ */
 export interface ResolvedLeg extends BetLegSnapshot {
   readonly legIndex: number;
+  readonly season: number;
+  /** The pre-tease line. `null` on a straight or parlay leg. */
+  readonly originalLineTenths: LineTenths | null;
 }
 
 /**
@@ -204,43 +223,52 @@ async function runHook(hooks: BetHooks | undefined): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Statement 1 of placement. Guarded on ALL legs being bettable AND sharing the
- * one `(league, season)` the bankroll is keyed on, re-checked INSIDE the batch
- * so a reschedule cannot race between the read and the write (PLAN.md §14.1).
+ * Statement 1 of placement, guarded INSIDE the batch so a reschedule cannot race
+ * between the read and the write (PLAN.md §14.1).
  *
  * `?7` is `leg_count`, which is also the `= :n` the COUNT must reach.
- * `?14` is `nowPlusBuffer`; `?15…` are the leg game ids.
+ * `?14` is `nowPlusBuffer`; `?15` is `teaser_points_tenths`; `?16…` the game ids.
  *
- * THE FOUR CONJUNCTS OF THE COUNT SUBQUERY ARE LORE, not decoration, and
- * `tests/worker/bets.spec.ts` asserts this string contains each of them:
+ * THE GUARDS ARE LORE, not decoration, and `tests/worker/bets.spec.ts` asserts
+ * this string contains each of them:
  *   `id IN (…)` + `= ?7`   every requested game exists (none deleted under us)
- *   `league`/`season`      one bankroll, always — a race cannot smuggle a leg
- *                          from another season into this bankroll
  *   `status = 'scheduled'` a game that went `in_progress` between the
  *                          pre-flight read and this batch stops accepting bets
  *   `kickoff_at > ?14`     STRICTLY greater: kickoff exactly at `lockAt` is
  *                          CLOSED. `>=` would sell a bet one millisecond after
  *                          the cutoff the UI showed.
+ *   the `bankrolls` EXISTS THE BALANCE IS THE CALLER'S. This one REPLACES the
+ *                          `league = ?4 AND season = ?5` conjuncts M5 carried:
+ *                          those pinned the bet to the one bankroll its legs
+ *                          implied, and legs no longer imply a bankroll at all.
+ *                          The balance is named on the request instead, so the
+ *                          thing that must be re-checked in the batch is
+ *                          OWNERSHIP — `resolveBankrollId` reads it beforehand
+ *                          only to produce a specific 404, and a read followed
+ *                          by an unguarded write is the read-then-write CLAUDE.md
+ *                          rule 5 forbids.
  *
  * Exported for those assertions; nothing outside this module calls it.
  */
 export function betInsertSql(legCount: number, extraGuard: string): string {
   return `INSERT INTO bets (id, user_id, bankroll_id, league, season, bet_type, leg_count,
                     stake_cents, american_price, potential_payout_cents, status,
-                    placed_at, earliest_kickoff_at, replaces_bet_id, created_at, updated_at)
-SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?12, ?13, ?11, ?11
+                    placed_at, earliest_kickoff_at, replaces_bet_id,
+                    teaser_points_tenths, created_at, updated_at)
+SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?12, ?13, ?15, ?11, ?11
  WHERE (SELECT COUNT(*) FROM games
-         WHERE id IN (${placeholders(legCount, 15)})
-           AND league = ?4 AND season = ?5
+         WHERE id IN (${placeholders(legCount, 16)})
            AND status = 'scheduled'
-           AND kickoff_at > ?14) = ?7${extraGuard}`;
+           AND kickoff_at > ?14) = ?7
+   AND EXISTS (SELECT 1 FROM bankrolls WHERE id = ?3 AND user_id = ?2)${extraGuard}`;
 }
 
 /** Statements 2..n+1: one per leg, each guarded on the bet row existing. */
 const LEG_INSERT_SQL = `INSERT INTO bet_legs (id, bet_id, leg_index, game_id, league, market, side,
-                      line_tenths, american_price, provider, line_captured_at,
-                      snapshot_at, kickoff_at_snapshot, home_abbr, away_abbr)
-SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+                      line_tenths, original_line_tenths, american_price, provider,
+                      line_captured_at, snapshot_at, kickoff_at_snapshot,
+                      home_abbr, away_abbr)
+SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?16, ?9, ?10, ?11, ?12, ?13, ?14, ?15
  WHERE EXISTS (SELECT 1 FROM bets WHERE id = ?2)`;
 
 /** Statement n+2: the stake debit, sourced from the bet row the batch just wrote. */
@@ -287,7 +315,10 @@ const CANCEL_UPDATE_SQL = `UPDATE bets
  * a complete swap or a clean no-op.
  *
  * `?1` old bet, `?2` user, `?3` now, `?4` nowPlusBuffer, `?5` new bet id,
- * `?6` league, `?7` season, `?8…` new leg game ids, then `:n` last.
+ * `?6…` new leg game ids, then `:n` last. The `league`/`season` conjuncts M5
+ * carried are gone for the same reason they left `betInsertSql`: an edit is
+ * pinned to the OLD BET'S BALANCE (read from `bets.bankroll_id`, immutable), not
+ * to a league.
  *
  * Exported so `tests/worker/bets.spec.ts` can assert the guard text is present;
  * nothing outside this module calls it.
@@ -302,10 +333,9 @@ export function editCancelSql(legCount: number): string {
       WHERE l.bet_id = ?1
         AND (g.status <> 'scheduled' OR g.kickoff_at <= ?4))
    AND (SELECT COUNT(*) FROM games
-         WHERE id IN (${placeholders(legCount, 8)})
-           AND league = ?6 AND season = ?7
+         WHERE id IN (${placeholders(legCount, 6)})
            AND status = 'scheduled'
-           AND kickoff_at > ?4) = ?${String(8 + legCount)}`;
+           AND kickoff_at > ?4) = ?${String(6 + legCount)}`;
 }
 
 /**
@@ -502,6 +532,13 @@ export async function resolveLegSnapshots(
     }
     resolved.push({
       legIndex,
+      season: game.season,
+      // A leg is resolved from the MARKET, never from the bet type: a teaser's
+      // legs are snapshotted at the book's line and price here, and moved
+      // afterwards by `applyTease`. That is what keeps `expected` (and therefore
+      // LINE_CHANGED) meaningful — it compares against the number the board
+      // showed, not against one the server invented.
+      originalLineTenths: null,
       gameId: leg.gameId,
       league: game.league,
       market: leg.market,
@@ -538,27 +575,70 @@ export interface PlacementPlan {
 export interface PlacementArgs {
   readonly userId: string;
   readonly input: PlaceBetInput;
-  readonly scope: { readonly league: League; readonly season: number };
+  /** The balance to charge. Already proven to be the caller's. */
+  readonly bankrollId: string;
   readonly legs: readonly ResolvedLeg[];
   readonly now: EpochMs;
   readonly replacesBetId: string | null;
   /** When set, the bet only lands if THIS call's cancel of that bet applied. */
   readonly requiresCancelledBetId: string | null;
   readonly memo: string;
-  /**
-   * Prepend §14.2's lazy-bankroll prelude (`INSERT OR IGNORE bankrolls` +
-   * the opening `deposit_initial`).
-   *
-   * TRUE for a fresh placement, which may be the user's first bet of the season.
-   * FALSE for an edit: the bet being replaced already belongs to a bankroll, and
-   * `editBet` forces the replacement into that same `(league, season)`, so the
-   * row provably exists. Running it anyway made a 404 `PUT /api/bets/:id` on
-   * somebody else's bet commit the CALLER's bankroll prelude — a durable write
-   * on a request that was refused and reported as having found nothing. The
-   * `ledger_bi_bankroll_exists` trigger is the backstop if this reasoning ever
-   * stops holding: an orphan stake row aborts the batch rather than landing.
-   */
-  readonly includeBankrollPrelude: boolean;
+}
+
+/**
+ * The league label for a bet: the legs' one league, or `'mixed'` when they span
+ * both. INFORMATIONAL — it drives the stats filters and the UI, never the money.
+ */
+export function betLeagueOf(legs: readonly ResolvedLeg[]): BetLeague {
+  const first = legs[0]?.league;
+  if (first === undefined) throw new AppError('VALIDATION', 'A bet must have at least one leg.');
+  return legs.every((leg) => leg.league === first) ? first : 'mixed';
+}
+
+/**
+ * The season label for a bet: the season of the EARLIEST-KICKOFF leg.
+ *
+ * Read from the legs' own `games` rows, never from a wall clock (CLAUDE.md rule
+ * 8c): a January bowl belongs to the season it is part of, not the calendar year
+ * it is played in. With legs free to span seasons this is a label rather than a
+ * partition, and "the first game to kick off" is the one a human would name.
+ */
+export function betSeasonOf(legs: readonly ResolvedLeg[]): number {
+  let chosen = legs[0];
+  if (chosen === undefined) throw new AppError('VALIDATION', 'A bet must have at least one leg.');
+  for (const leg of legs) {
+    if (leg.kickoffAtSnapshot < chosen.kickoffAtSnapshot) chosen = leg;
+  }
+  return chosen.season;
+}
+
+/**
+ * Move every leg's line `pointsTenths` in the bettor's favour and discard the
+ * legs' individual prices.
+ *
+ * `american_price = PUSH_AMERICAN_PRICE` (100) on a teaser leg is a PLACEHOLDER,
+ * not a price: the schema requires `abs(american_price) BETWEEN 100 AND 100000`
+ * on every leg, a teaser has no per-leg price to store, and 100 (even money) is
+ * the one value that is unambiguously "no price here". Nothing reads it —
+ * `gradeBet` is handed `{kind:'teaser'}` and prices from the card.
+ *
+ * @throws AppError VALIDATION for a moneyline leg. `validatePlaceBet` already
+ *   refuses one; this is the backstop that keeps the invariant local.
+ */
+function applyTease(legs: readonly ResolvedLeg[], pointsTenths: number): readonly ResolvedLeg[] {
+  return legs.map((leg) => {
+    if (leg.market === 'moneyline' || leg.lineTenths === null) {
+      throw new AppError('VALIDATION', 'A teaser leg must be a spread or a total.', {
+        field: `legs[${String(leg.legIndex)}].market`,
+      });
+    }
+    return {
+      ...leg,
+      lineTenths: teasedLineTenths(leg.market, leg.side, leg.lineTenths, pointsTenths),
+      originalLineTenths: leg.lineTenths,
+      americanPrice: PUSH_AMERICAN_PRICE,
+    };
+  });
 }
 
 /**
@@ -566,14 +646,32 @@ export interface PlacementArgs {
  *
  * The payout cap is checked in BigInt BEFORE `priceToAmerican`, so an absurdly
  * priced parlay fails with `409 PAYOUT_LIMIT_EXCEEDED` rather than
- * `priceToAmerican`'s `400 VALIDATION` (PLAN.md §5.2b).
+ * `priceToAmerican`'s `400 VALIDATION` (PLAN.md §5.2b). A teaser cannot reach the
+ * cap at all — the card's worst cell at the full bankroll is 2,600,000¢ against
+ * 100,000,000¢ — but it goes through the same check rather than a special case.
  *
- * Exported for `tests/worker/bets.spec.ts`, which asserts the shape of the plan
- * (notably that an edit's plan carries NO bankroll prelude).
+ * THERE IS NO BANKROLL PRELUDE ANY MORE. The balance is created at signup and
+ * named on the request; `betInsertSql`'s `EXISTS` over `bankrolls` is what
+ * proves it is the caller's, inside the batch.
+ *
+ * Exported for `tests/worker/bets.spec.ts`, which asserts the shape of the plan.
  */
 export function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
-  const { input, legs, now, scope } = args;
-  const price = priceFromLegs(legs.map((l) => l.americanPrice));
+  const { input, now } = args;
+  const teaserPoints = input.betType === 'teaser' ? (input.teaserPoints ?? null) : null;
+  if (input.betType === 'teaser' && teaserPoints === null) {
+    // Unreachable via `validated()`; stated so the schema's paired CHECK is not
+    // the first thing to notice a missing tier.
+    throw new AppError('TEASER_INVALID', 'A teaser must name its point tier.', {
+      field: 'teaserPoints',
+    });
+  }
+  const legs = teaserPoints === null ? args.legs : applyTease(args.legs, teaserPoints);
+
+  const price =
+    teaserPoints === null
+      ? priceFromLegs(legs.map((l) => l.americanPrice))
+      : americanToPrice(teaserPrice(teaserPoints, legs.length));
   if (exceedsPayoutCap(input.stakeCents, price)) {
     throw new AppError(
       'PAYOUT_LIMIT_EXCEEDED',
@@ -588,20 +686,19 @@ export function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
     legs[0]?.kickoffAtSnapshot ?? now,
   );
   const betId = newId();
-  const bkId = bankrollId(args.userId, scope.league, scope.season);
   const gameIds = legs.map((l) => l.gameId);
 
   const extraGuard =
     args.requiresCancelledBetId === null
       ? ''
-      : `\n   AND EXISTS (SELECT 1 FROM bets\n                WHERE id = ?${String(15 + legs.length)} AND status = 'cancelled'\n                  AND replaced_by_bet_id = ?1)`;
+      : `\n   AND EXISTS (SELECT 1 FROM bets\n                WHERE id = ?${String(16 + legs.length)} AND status = 'cancelled'\n                  AND replaced_by_bet_id = ?1)`;
 
   const betStatement = env.DB.prepare(betInsertSql(legs.length, extraGuard)).bind(
     betId,
     args.userId,
-    bkId,
-    scope.league,
-    scope.season,
+    args.bankrollId,
+    betLeagueOf(legs),
+    betSeasonOf(legs),
     input.betType,
     legs.length,
     input.stakeCents,
@@ -611,6 +708,7 @@ export function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
     earliestKickoffAt,
     args.replacesBetId,
     now + BET_CUTOFF_BUFFER_MS,
+    teaserPoints,
     ...gameIds,
     ...(args.requiresCancelledBetId === null ? [] : [args.requiresCancelledBetId]),
   );
@@ -632,6 +730,7 @@ export function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
       leg.kickoffAtSnapshot,
       leg.homeAbbr,
       leg.awayAbbr,
+      leg.originalLineTenths,
     ),
   );
 
@@ -643,22 +742,21 @@ export function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
     args.memo,
   );
 
-  const prelude = args.includeBankrollPrelude
-    ? ensureBankrollStatements(env, args.userId, scope.league, scope.season, now)
-    : [];
   return {
     betId,
-    statements: [...prelude, betStatement, ...legStatements, stakeStatement],
-    betStatementIndex: prelude.length,
+    statements: [betStatement, ...legStatements, stakeStatement],
+    betStatementIndex: 0,
   };
 }
 
 /**
- * @throws AppError VALIDATION | GAME_NOT_FOUND | GAME_NOT_BETTABLE |
- *                  BETTING_CLOSED | MARKET_UNAVAILABLE | LINE_CHANGED |
- *                  INSUFFICIENT_FUNDS | MIXED_LEAGUE_PARLAY |
- *                  MIXED_SEASON_PARLAY | DUPLICATE_GAME_IN_PARLAY |
- *                  PAYOUT_LIMIT_EXCEEDED
+ * @throws AppError VALIDATION | TEASER_INVALID | BANKROLL_NOT_FOUND |
+ *                  GAME_NOT_FOUND | GAME_NOT_BETTABLE | BETTING_CLOSED |
+ *                  MARKET_UNAVAILABLE | LINE_CHANGED | INSUFFICIENT_FUNDS |
+ *                  DUPLICATE_GAME_IN_PARLAY | PAYOUT_LIMIT_EXCEEDED
+ *
+ * MIXED_LEAGUE_PARLAY / MIXED_SEASON_PARLAY are deliberately absent: legs may
+ * span leagues and seasons since M5b.
  */
 export async function placeBet(
   env: Env,
@@ -668,18 +766,19 @@ export async function placeBet(
   hooks?: BetHooks,
 ): Promise<PlaceBetResult> {
   const input = validated(req);
-  const scope = await scopeFor(env, input);
-  const legs = await resolveLegSnapshots(env, input, now);
+  const [bankrollId, legs] = await Promise.all([
+    resolveBankrollId(env, userId, input.bankrollId),
+    resolveLegSnapshots(env, input, now),
+  ]);
   const plan = buildPlacement(env, {
     userId,
     input,
-    scope,
+    bankrollId,
     legs,
     now,
     replacesBetId: null,
     requiresCancelledBetId: null,
     memo: 'bet placed',
-    includeBankrollPrelude: true,
   });
 
   await runHook(hooks);
@@ -687,32 +786,9 @@ export async function placeBet(
   if (changesAt(results, plan.betStatementIndex) !== 1) {
     // Every later statement is guarded on the bet row, so the batch was a clean
     // no-op. Re-query to say precisely WHY (PLAN.md §14.2).
-    await rejectPlacement(env, input, scope, now);
+    await rejectPlacement(env, input, now);
   }
   return { bet: await requireBet(env, userId, plan.betId, now) };
-}
-
-/**
- * The legs' own `(league, season)`, cross-checked against the league the client
- * claimed. v1 charges exactly one bankroll per bet, so the request's `league`
- * disagreeing with the games is the same fault as two legs disagreeing with each
- * other and gets the same code.
- */
-async function scopeFor(
-  env: Env,
-  input: PlaceBetInput,
-): Promise<{ readonly league: League; readonly season: number }> {
-  const scope = await resolveBetScope(
-    env,
-    input.legs.map((l) => l.gameId),
-  );
-  if (scope.league !== input.league) {
-    throw new AppError('MIXED_LEAGUE_PARLAY', 'Every leg must be in the requested league.', {
-      requested: input.league,
-      actual: scope.league,
-    });
-  }
-  return scope;
 }
 
 /** Run a placement/cancel/edit batch, mapping DB-level aborts to API codes. */
@@ -727,7 +803,8 @@ async function runPlacementBatch(
       throw new AppError('INSUFFICIENT_FUNDS', 'Insufficient funds for this stake.');
     }
     if (isOrphanBankrollError(err)) {
-      // Always a bug: the prelude in this very batch creates the bankroll.
+      // Always a bug: the stake row is sourced from `bets.bankroll_id`, and the
+      // bet only lands when its balance EXISTS and belongs to the caller.
       console.error('[bets] orphan bankroll on a guarded batch', err);
       throw new AppError('INTERNAL', 'Something went wrong.');
     }
@@ -747,12 +824,7 @@ async function runPlacementBatch(
  * all means the world changed under us between the pre-flight read and the
  * batch, and "you were too late" is the only honest generic answer.
  */
-async function rejectPlacement(
-  env: Env,
-  input: PlaceBetInput,
-  scope: { readonly league: League; readonly season: number },
-  now: EpochMs,
-): Promise<never> {
+async function rejectPlacement(env: Env, input: PlaceBetInput, now: EpochMs): Promise<never> {
   const gameIds = input.legs.map((l) => l.gameId);
   const games = await loadGames(env, gameIds);
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
@@ -769,12 +841,6 @@ async function rejectPlacement(
     }
     if (game.kickoff_at <= nowPlusBuffer) {
       throw new AppError('BETTING_CLOSED', `Betting on ${gameId} has closed.`, { gameId });
-    }
-    if (game.league !== scope.league) {
-      throw new AppError('MIXED_LEAGUE_PARLAY', 'Every leg must be in the same league.');
-    }
-    if (game.season !== scope.season) {
-      throw new AppError('MIXED_SEASON_PARLAY', 'Every leg must be in the same season.');
     }
   }
   throw new AppError('BETTING_CLOSED', 'The market changed before your bet was placed.');
@@ -840,24 +906,22 @@ async function rejectCancel(env: Env, userId: string, betId: string, now: EpochM
  * to match): the cancel UPDATE carries the PLACEMENT guard too — see
  * `editCancelSql` for why the symmetry is required rather than merely tidy.
  *
- * TWO FURTHER RULES, both about WHERE THE MONEY LIVES:
+ * ONE FURTHER RULE, about WHERE THE MONEY LIVES: **an edit must keep the bet's
+ * BALANCE.** Allowing it to change would let a `PUT` refund one balance and
+ * stake a different one in the same batch, under the banner of "editing a bet",
+ * and it makes `replaces_bet_id` link two rows that never shared a ledger. That
+ * rule used to be spelled `(league, season)`, because a balance was implied by
+ * them; now it is spelled directly, and it is the only thing left of it — the
+ * replacement's legs may be in any league or season, because the balance they
+ * are charged to no longer depends on that. A caller who names a DIFFERENT
+ * `bankrollId` is refused rather than silently overridden.
  *
- *   * THE EDIT MUST KEEP THE BET'S ORIGINAL `(league, season)`. Allowing it to
- *     change would let a `PUT` move money between two different bankrolls —
- *     refund one season, stake another — under the banner of "editing a bet",
- *     and it makes `replaces_bet_id` link two rows that never shared a ledger.
- *     A user who wants a bet in another league places a new one. Mismatches are
- *     the same 409s a mixed parlay gets, for the same reason.
- *   * THE EDIT BATCH CARRIES NO BANKROLL PRELUDE. The old bet already belongs to
- *     a bankroll and the rule above pins the replacement to it, so there is
- *     nothing to create — and running the prelude meant an unauthorised `PUT`
- *     that answers 404 still committed the caller's bankroll rows.
- *
- * The owner lookup that enforces both runs BEFORE anything is built. It is not a
- * read-then-write guard: `bets.league` / `bets.season` / `bets.user_id` are
- * immutable once written, so nothing it reads can change under the batch, and
- * every mutable condition (`status = 'pending'`, the kickoff lock) still lives
- * in the `WHERE` of the UPDATE.
+ * The owner lookup that enforces it runs BEFORE anything is built, so an
+ * unauthorised edit writes nothing at all. It is not a read-then-write guard:
+ * `bets.bankroll_id` and `bets.user_id` are immutable once written, so nothing
+ * it reads can change under the batch, and every mutable condition
+ * (`status = 'pending'`, the kickoff lock) still lives in the `WHERE` of the
+ * UPDATE.
  *
  * @throws every code `placeBet` throws, plus BET_NOT_FOUND | BET_LOCKED |
  *         BET_NOT_PENDING
@@ -871,8 +935,8 @@ export async function editBet(
   hooks?: BetHooks,
 ): Promise<{ readonly bet: BetView; readonly replacedBetId: string }> {
   const input = validated(req);
-  const target = await queryOne<{ league: string; season: number }>(
-    env.DB.prepare(`SELECT league, season FROM bets WHERE id = ?1 AND user_id = ?2`).bind(
+  const target = await queryOne<{ bankroll_id: string }>(
+    env.DB.prepare(`SELECT bankroll_id FROM bets WHERE id = ?1 AND user_id = ?2`).bind(
       betId,
       userId,
     ),
@@ -880,18 +944,9 @@ export async function editBet(
   // 404, never 403 — and BEFORE any statement is built, so an unauthorised edit
   // writes nothing at all.
   if (target === null) throw new AppError('BET_NOT_FOUND', 'No such bet.');
-
-  const scope = await scopeFor(env, input);
-  if (scope.league !== target.league) {
-    throw new AppError('MIXED_LEAGUE_PARLAY', 'An edit cannot change the bet’s league.', {
-      requested: scope.league,
-      actual: target.league,
-    });
-  }
-  if (scope.season !== target.season) {
-    throw new AppError('MIXED_SEASON_PARLAY', 'An edit cannot change the bet’s season.', {
-      requested: scope.season,
-      actual: target.season,
+  if (input.bankrollId !== undefined && input.bankrollId !== target.bankroll_id) {
+    throw new AppError('VALIDATION', 'An edit cannot move a bet to another balance.', {
+      field: 'bankrollId',
     });
   }
 
@@ -899,14 +954,12 @@ export async function editBet(
   const plan = buildPlacement(env, {
     userId,
     input,
-    scope,
+    bankrollId: target.bankroll_id,
     legs,
     now,
     replacesBetId: betId,
     requiresCancelledBetId: betId,
     memo: 'bet placed (edit)',
-    // Same (league, season) as the old bet, so its bankroll already exists.
-    includeBankrollPrelude: false,
   });
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
   const gameIds = legs.map((l) => l.gameId);
@@ -917,8 +970,6 @@ export async function editBet(
     now,
     nowPlusBuffer,
     plan.betId,
-    scope.league,
-    scope.season,
     ...gameIds,
     gameIds.length,
   );
@@ -949,7 +1000,7 @@ export async function editBet(
     }
     if (await stillCancellable(env, betId, nowPlusBuffer)) {
       // The old bet is fine; it is the replacement that cannot be placed.
-      await rejectPlacement(env, input, scope, now);
+      await rejectPlacement(env, input, now);
     }
     throw new AppError('BET_LOCKED', 'One of this bet’s games has locked.');
   }
@@ -1037,8 +1088,9 @@ export async function listBets(
   userId: string,
   filter: {
     readonly status: 'open' | 'settled' | 'all';
-    readonly league?: League;
-    readonly season?: number;
+    /** Matches `bets.league` exactly, so `'mixed'` is its own filter value. */
+    readonly league?: BetLeague;
+    /** No `season`: the product has no concept of one (PLAN.md §19 Q5). */
     readonly limit: number;
     readonly cursor?: string;
   },
@@ -1053,7 +1105,6 @@ export async function listBets(
   if (filter.status === 'open') clauses.push(`status = 'pending'`);
   if (filter.status === 'settled') clauses.push(`status <> 'pending'`);
   if (filter.league !== undefined) clauses.push(`league = ${next(filter.league)}`);
-  if (filter.season !== undefined) clauses.push(`season = ${next(filter.season)}`);
   if (filter.cursor !== undefined) {
     const cursor = decodeBetCursor(filter.cursor);
     const at = next(cursor.placedAt);
@@ -1110,9 +1161,11 @@ export function toBetView(bet: BetRow, legs: readonly LegRow[], now: EpochMs): B
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
   return {
     id: bet.id,
-    league: bet.league as League,
+    bankrollId: bet.bankroll_id,
+    league: bet.league as BetLeague,
     season: bet.season,
     betType: bet.bet_type as BetType,
+    teaserPoints: bet.teaser_points_tenths,
     stakeCents: bet.stake_cents,
     americanPrice: bet.american_price,
     decimalOdds: formatDecimalOdds(price),
@@ -1154,9 +1207,11 @@ function toLegView(leg: LegRow, pending: boolean): BetLegView {
     id: leg.id,
     legIndex: leg.leg_index,
     gameId: leg.game_id,
+    league: snapshot.league,
     market: snapshot.market,
     side: snapshot.side,
     lineTenths: leg.line_tenths,
+    originalLineTenths: leg.original_line_tenths,
     americanPrice: leg.american_price,
     provider: leg.provider,
     lineCapturedAt: leg.line_captured_at,

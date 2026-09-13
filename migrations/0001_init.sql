@@ -11,7 +11,12 @@
 --     reaches 20+ digits and SQLite silently stores that as REAL (verified). See
 --     PLAN.md 5.2.
 --
--- THIS FILE IS FROZEN AFTER MILESTONE M1. Schema changes go in 0002_*.sql.
+-- THIS FILE IS EDITABLE UNTIL THE FIRST REMOTE DEPLOY (M8). Nothing is deployed
+-- yet, so a cross-cutting schema change (M5b: account balances, cross-league
+-- bets, teasers) is applied here IN PLACE rather than as a second migration that
+-- immediately rewrites tables nobody has ever populated. From M8's first
+-- `wrangler d1 migrations apply --remote` onward this file is frozen for good and
+-- every change is a new numbered 0002_*.sql.
 
 -- ---------------------------------------------------------------------------
 -- users
@@ -132,21 +137,36 @@ CREATE TABLE game_lines (
 );
 
 -- ---------------------------------------------------------------------------
--- bankrolls — one per (user, league, season). id is deterministic:
---   '<userId>:<league>:<season>'  so lazy creation is INSERT OR IGNORE.
+-- bankrolls — ACCOUNT BALANCES (M5b). One balance is one pot of fake money that
+-- belongs to a user and persists forever: it is not scoped to a league or to a
+-- season, there is no rollover, and nothing creates one lazily. The 'main'
+-- balance is created in the SIGNUP batch and is the one the leaderboard ranks.
+--
+-- Modelled as a LIST rather than a single column on `users` on purpose: the
+-- product owner wants side pots ("playoff challenge", "bowl season") later, and
+-- `bets.bankroll_id` + the ledger already key off a balance id, so the only
+-- thing a second balance needs is a row. `kind='custom'` is reserved for those;
+-- v1 never writes one.
+--
 -- balance_cents is a CACHE maintained exclusively by the ledger triggers below.
 -- ---------------------------------------------------------------------------
 CREATE TABLE bankrolls (
   id            TEXT    PRIMARY KEY,
   user_id       TEXT    NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  league        TEXT    NOT NULL CHECK (league IN ('nfl', 'ncaaf')),
-  season        INTEGER NOT NULL,
+  name          TEXT    NOT NULL DEFAULT 'Main',
+  kind          TEXT    NOT NULL DEFAULT 'main' CHECK (kind IN ('main', 'custom')),
   balance_cents INTEGER NOT NULL DEFAULT 0 CHECK (balance_cents >= 0),
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
-  UNIQUE (user_id, league, season)
+  UNIQUE (user_id, name)
 );
-CREATE INDEX idx_bankrolls_board ON bankrolls(league, season, balance_cents DESC);
+-- Exactly ONE 'main' balance per user. A PARTIAL unique index, not a plain one:
+-- `kind='custom'` rows are unconstrained here and are separated only by
+-- UNIQUE(user_id, name). Without this a second signup-style batch (or a repair
+-- route run twice) could open a second main balance and the leaderboard would
+-- silently pick whichever row it found first.
+CREATE UNIQUE INDEX idx_bankrolls_main ON bankrolls(user_id) WHERE kind = 'main';
+CREATE INDEX idx_bankrolls_user ON bankrolls(user_id, balance_cents DESC);
 
 -- ---------------------------------------------------------------------------
 -- bets
@@ -155,10 +175,22 @@ CREATE TABLE bets (
   id                     TEXT    PRIMARY KEY,
   user_id                TEXT    NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   bankroll_id            TEXT    NOT NULL REFERENCES bankrolls(id) ON DELETE RESTRICT,
-  league                 TEXT    NOT NULL CHECK (league IN ('nfl', 'ncaaf')),
+  -- 'mixed' when the legs span both leagues (M5b: cross-league parlays and
+  -- teasers are legal, because a balance is no longer scoped to a league).
+  -- INFORMATIONAL — it drives the stats filters, never the money.
+  league                 TEXT    NOT NULL CHECK (league IN ('nfl', 'ncaaf', 'mixed')),
+  -- Season of the EARLIEST-KICKOFF leg. Also informational; legs may span
+  -- seasons, so this is a label for the bet, not a partition of the balance.
   season                 INTEGER NOT NULL,
-  bet_type               TEXT    NOT NULL CHECK (bet_type IN ('straight', 'parlay')),
+  bet_type               TEXT    NOT NULL CHECK (bet_type IN ('straight', 'parlay', 'teaser')),
   leg_count              INTEGER NOT NULL CHECK (leg_count BETWEEN 1 AND 10),
+  -- Teaser tier in TENTHS of a point: 60 / 65 / 70 == 6 / 6.5 / 7 points. Tenths
+  -- for the same reason lines are (PLAN.md §3.1) — 6.5 is not representable as an
+  -- integer number of points. NULL for every other bet type; the paired CHECK
+  -- below makes the two facts inseparable.
+  teaser_points_tenths   INTEGER
+                           CHECK (teaser_points_tenths IS NULL
+                                  OR teaser_points_tenths IN (60, 65, 70)),
   stake_cents            INTEGER NOT NULL CHECK (stake_cents >= 100),
   -- NO stored rational. The exact decimal odds of a parlay are the product of
   -- the leg rationals and can reach 20+ digits, which SQLite would silently
@@ -195,8 +227,16 @@ CREATE TABLE bets (
   replaced_by_bet_id     TEXT,
   created_at             INTEGER NOT NULL,
   updated_at             INTEGER NOT NULL,
-  CHECK (bet_type = 'parlay' OR leg_count = 1),
-  CHECK (bet_type = 'straight' OR leg_count >= 2),
+  -- A straight is exactly one leg; a parlay OR A TEASER is two or more. Written
+  -- as two one-sided CHECKs against 'straight' rather than against 'parlay', so
+  -- adding `teaser` to the bet_type enum did not silently make a 1-leg teaser
+  -- legal (the old `bet_type = 'parlay' OR leg_count = 1` would have).
+  CHECK (bet_type <> 'straight' OR leg_count = 1),
+  CHECK (bet_type =  'straight' OR leg_count >= 2),
+  -- The tier and the type are the same fact. An `=` between two predicates is a
+  -- biconditional in SQLite, so this rejects BOTH a teaser with no tier and a
+  -- parlay that carries one.
+  CHECK ((bet_type = 'teaser') = (teaser_points_tenths IS NOT NULL)),
   CHECK (status = 'pending' OR payout_cents IS NOT NULL OR status = 'cancelled')
 );
 CREATE INDEX idx_bets_user     ON bets(user_id, status, earliest_kickoff_at DESC);
@@ -216,7 +256,13 @@ CREATE TABLE bet_legs (
   league              TEXT    NOT NULL CHECK (league IN ('nfl', 'ncaaf')),
   market              TEXT    NOT NULL CHECK (market IN ('moneyline', 'spread', 'total')),
   side                TEXT    NOT NULL CHECK (side IN ('home', 'away', 'over', 'under')),
+  -- THE LINE THIS LEG IS GRADED ON. For a teaser leg that is the TEASED line
+  -- (the book's number moved `teaser_points_tenths` in the bettor's favour), so
+  -- grading needs no knowledge of teasers at all — it keeps reading one column.
   line_tenths         INTEGER,                        -- NULL for moneyline
+  -- The BOOK's line before the tease, kept for display ("-7.5 → -1.5") and for
+  -- audit. NULL for straight and parlay legs, which are never moved.
+  original_line_tenths INTEGER,
   -- The American integer IS the snapshot. Exact decimal odds are derived from it
   -- by americanToPrice(), which is a total, deterministic, lossless function of
   -- this one integer -- so there is no second source of truth to drift.
@@ -243,7 +289,8 @@ CREATE INDEX idx_bet_legs_game ON bet_legs(game_id);
 -- ledger — APPEND-ONLY source of truth for money.
 -- ref_id is the idempotency key:
 --   bet_stake / bet_payout / bet_refund -> the bet id
---   deposit_initial                     -> the literal 'init'
+--   deposit_initial                     -> the literal 'init' (written in the
+--                                          SIGNUP batch; one per balance, ever)
 --   admin_adjust                        -> a caller-supplied uuid
 -- ---------------------------------------------------------------------------
 CREATE TABLE ledger (
@@ -322,13 +369,15 @@ BEGIN
   SELECT RAISE(ABORT, 'bankrolls: balance_cents may only be written by the ledger trigger');
 END;
 
--- INSERT guard: a bankroll always opens at 0 (the deposit is a ledger row).
--- Deliberately `<> 0`, NOT `<> SUM(ledger)`: BEFORE INSERT triggers fire before
--- `OR IGNORE` resolves a uniqueness conflict, and PLAN.md §4.4's idempotent
--- `INSERT OR IGNORE INTO bankrolls (..., 0, ...)` prelude runs on EVERY board
--- view / bet placement — against a funded row, a SUM comparison would abort the
--- whole batch. For a genuinely new id no ledger rows can exist
--- (ledger_bi_bankroll_exists), so `<> 0` is equivalent for real inserts.
+-- INSERT guard: a balance always opens at 0 (the deposit is a ledger row).
+-- Deliberately `<> 0`, NOT `<> SUM(ledger)`: BEFORE INSERT triggers fire BEFORE
+-- `OR IGNORE` resolves a uniqueness conflict, so an idempotent
+-- `INSERT OR IGNORE INTO bankrolls (..., 0, ...)` aimed at an already-FUNDED row
+-- would abort the whole batch under a SUM comparison. M5b moved balance creation
+-- into the signup batch and deleted the per-request prelude, but the admin
+-- repair path (`ensureMainBalance`) is still shaped that way, and the reasoning
+-- must survive regardless: for a genuinely new id no ledger rows can exist
+-- (ledger_bi_bankroll_exists), so `<> 0` is equivalent for every real insert.
 CREATE TRIGGER bankrolls_bi_balance_guard BEFORE INSERT ON bankrolls
 WHEN NEW.balance_cents <> 0
 BEGIN

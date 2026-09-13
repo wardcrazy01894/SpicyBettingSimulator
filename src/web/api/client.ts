@@ -17,10 +17,11 @@ import { CSRF_HEADER, CSRF_HEADER_VALUE } from '../../shared/constants.js';
 import { ERROR_STATUS } from '../../shared/errors.js';
 import type { ErrorCode } from '../../shared/errors.js';
 import type {
+  AdminAdjustRequest,
   AdminSetDisabledRequest,
   AdminSetPasswordRequest,
   AdminUsersResponse,
-  BankrollResponse,
+  BankrollsResponse,
   BetResponse,
   BetsResponse,
   ConfigResponse,
@@ -38,7 +39,7 @@ import type {
   SignupRequest,
   UserResponse,
 } from '../../shared/api-types.js';
-import type { League } from '../../shared/types.js';
+import type { BetLeague, League } from '../../shared/types.js';
 
 export class ApiError extends Error {
   readonly code: ErrorCode;
@@ -258,10 +259,10 @@ export function getGame(id: string): Promise<SingleGameResponse> {
 // §11.4 bets
 // ---------------------------------------------------------------------------
 
+/** No `season`: the product has no concept of one (PLAN.md §19 Q5). */
 export interface BetsQuery {
   readonly status?: 'open' | 'settled' | 'all' | null;
-  readonly league?: League | null;
-  readonly season?: number | null;
+  readonly league?: BetLeague | null;
   readonly limit?: number | null;
   readonly cursor?: string | null;
 }
@@ -296,13 +297,20 @@ export function deleteBet(id: string): Promise<void> {
 // §11.5 bankroll / ledger / leaderboard
 // ---------------------------------------------------------------------------
 
-export function getBankroll(league: League, season: number | null): Promise<BankrollResponse> {
-  return apiGet<BankrollResponse>(`/api/bankroll${query({ league, season })}`);
+/**
+ * Every account balance the caller owns. `league` narrows the RECORD and ROI
+ * only; the money columns are always the whole balance. There is no season
+ * filter anywhere in the product (PLAN.md §19 Q5).
+ */
+export function getBalances(
+  params: { readonly league?: BetLeague | null } = {},
+): Promise<BankrollsResponse> {
+  return apiGet<BankrollsResponse>(`/api/bankroll${query({ ...params })}`);
 }
 
 export interface LedgerQuery {
-  readonly league?: League | null;
-  readonly season?: number | null;
+  /** Which balance's history. Absent means the caller's main balance. */
+  readonly bankrollId?: string | null;
   readonly limit?: number | null;
   readonly cursor?: string | null;
 }
@@ -311,15 +319,9 @@ export function getLedger(params: LedgerQuery = {}): Promise<LedgerResponse> {
   return apiGet<LedgerResponse>(`/api/ledger${query({ ...params })}`);
 }
 
-export function getLeaderboard(
-  league: League,
-  season: number | null,
-): Promise<LeaderboardResponse> {
-  return apiGet<LeaderboardResponse>(`/api/leaderboard${query({ league, season })}`);
-}
-
-export function getAllTimeLeaderboard(): Promise<LeaderboardResponse> {
-  return apiGet<LeaderboardResponse>('/api/leaderboard/all-time');
+/** `league: 'all'` is the default board; a league narrows record/ROI only. */
+export function getLeaderboard(league: League | 'all'): Promise<LeaderboardResponse> {
+  return apiGet<LeaderboardResponse>(`/api/leaderboard${query({ league })}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +350,16 @@ export function postAdminUserPassword(userId: string, dk: string): Promise<void>
 export function postAdminUserDisabled(userId: string, disabled: boolean): Promise<void> {
   const body: AdminSetDisabledRequest = { disabled };
   return apiVoid('POST', `/api/admin/users/${encodeURIComponent(userId)}/disabled`, body);
+}
+
+/** Credit or debit a user's main balance. Either sign; an overdraft is a 409. */
+export function postAdminUserAdjust(
+  userId: string,
+  amountCents: number,
+  memo?: string,
+): Promise<void> {
+  const body: AdminAdjustRequest = memo === undefined ? { amountCents } : { amountCents, memo };
+  return apiVoid('POST', `/api/admin/users/${encodeURIComponent(userId)}/adjust`, body);
 }
 
 export function postAdminRetrySettlement(betId: string): Promise<void> {

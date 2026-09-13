@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { MIN_STAKE_CENTS } from '../../src/shared/constants.js';
+import {
+  MAX_PARLAY_LEGS,
+  MIN_STAKE_CENTS,
+  TEASER_POINTS_TENTHS,
+} from '../../src/shared/constants.js';
 import {
   EVEN_MONEY_UNIT,
   MAX_PAYOUT_CENTS,
@@ -16,6 +20,8 @@ import {
   priceToAmerican,
   profitCents,
   reducePrice,
+  teasedLineTenths,
+  teaserPrice,
 } from '../../src/shared/odds.js';
 import { AppError } from '../../src/shared/errors.js';
 import type { AmericanPrice, Cents, Price } from '../../src/shared/types.js';
@@ -730,5 +736,116 @@ describe('reducePrice / priceFromLegs', () => {
         });
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Teasers (M5b). PLAN.md §5.8; sources in docs/teaser-odds.md.
+// ---------------------------------------------------------------------------
+
+describe('teaserPrice — the fixed card', () => {
+  it('returns the published value for every (tier, leg count) cell it is asked for', () => {
+    // Pinned literally rather than read back out of TEASER_PAYOUTS: a test that
+    // indexes the same table it is checking proves only that lookup works.
+    expect(teaserPrice(60, 2)).toBe(-120);
+    expect(teaserPrice(60, 3)).toBe(150);
+    expect(teaserPrice(60, 10)).toBe(2500);
+    expect(teaserPrice(65, 2)).toBe(-130);
+    expect(teaserPrice(65, 6)).toBe(500);
+    expect(teaserPrice(70, 2)).toBe(-140);
+    expect(teaserPrice(70, 3)).toBe(120);
+    expect(teaserPrice(70, 10)).toBe(1500);
+  });
+
+  it('more points is always a worse price at the same leg count', () => {
+    for (let legs = 2; legs <= MAX_PARLAY_LEGS; legs += 1) {
+      const six = payoutCents(100_000, americanToPrice(teaserPrice(60, legs)));
+      const sixHalf = payoutCents(100_000, americanToPrice(teaserPrice(65, legs)));
+      const seven = payoutCents(100_000, americanToPrice(teaserPrice(70, legs)));
+      expect(six).toBeGreaterThan(sixHalf);
+      expect(sixHalf).toBeGreaterThan(seven);
+    }
+  });
+
+  it('more legs is always a better price at the same tier', () => {
+    for (const points of TEASER_POINTS_TENTHS) {
+      for (let legs = 2; legs < MAX_PARLAY_LEGS; legs += 1) {
+        const here = payoutCents(100_000, americanToPrice(teaserPrice(points, legs)));
+        const more = payoutCents(100_000, americanToPrice(teaserPrice(points, legs + 1)));
+        expect(more).toBeGreaterThan(here);
+      }
+    }
+  });
+
+  it('every cell round-trips exactly through americanToPrice/priceToAmerican', () => {
+    // Settlement writes the effective price back through priceToAmerican, so a
+    // cell that did not round-trip would display a price nobody was ever paid.
+    for (const points of TEASER_POINTS_TENTHS) {
+      for (let legs = 2; legs <= MAX_PARLAY_LEGS; legs += 1) {
+        const american = teaserPrice(points, legs);
+        expect(priceToAmerican(americanToPrice(american))).toBe(american);
+      }
+    }
+  });
+
+  it('the worst cell at the full bankroll is far under MAX_PAYOUT_CENTS', () => {
+    // REPL-verified: 10 legs, 6 points, +2500, 100,000c stake -> 2,600,000c.
+    const worst = payoutCents(100_000, americanToPrice(teaserPrice(60, 10)));
+    expect(worst).toBe(2_600_000);
+    expect(worst).toBeLessThan(MAX_PAYOUT_CENTS);
+    expect(exceedsPayoutCap(100_000, americanToPrice(teaserPrice(60, 10)))).toBe(false);
+  });
+
+  it('rejects a tier that is not on the card, including points-not-tenths', () => {
+    for (const bad of [6, 6.5, 7, 0, 55, 61, 75, -60]) {
+      expectAppError(() => teaserPrice(bad, 3), 'VALIDATION');
+    }
+  });
+
+  it('rejects a leg count off the card — there is no one-team teaser', () => {
+    for (const bad of [0, 1, 11, 2.5, -2]) {
+      expectAppError(() => teaserPrice(60, bad), 'VALIDATION');
+    }
+  });
+});
+
+describe('teasedLineTenths', () => {
+  it('moves a spread toward the bettor on BOTH sides (the line already carries the sign)', () => {
+    // REPL-verified: home -7.5 @6 -> -1.5; away +3.5 @6 -> +9.5.
+    expect(teasedLineTenths('spread', 'home', -75, 60)).toBe(-15);
+    expect(teasedLineTenths('spread', 'away', 35, 60)).toBe(95);
+    expect(teasedLineTenths('spread', 'home', -75, 65)).toBe(-10);
+    expect(teasedLineTenths('spread', 'home', -75, 70)).toBe(-5);
+  });
+
+  it('moves a total DOWN for an over and UP for an under', () => {
+    // REPL-verified: 45.5 @6 -> over 39.5, under 51.5.
+    expect(teasedLineTenths('total', 'over', 455, 60)).toBe(395);
+    expect(teasedLineTenths('total', 'under', 455, 60)).toBe(515);
+    expect(teasedLineTenths('total', 'over', 455, 70)).toBe(385);
+  });
+
+  it('always moves the line in the direction that helps, never against', () => {
+    for (const points of TEASER_POINTS_TENTHS) {
+      for (const line of [-175, -75, -35, 0, 35, 95]) {
+        expect(teasedLineTenths('spread', 'home', line, points)).toBeGreaterThan(line);
+      }
+      for (const line of [355, 455, 605]) {
+        expect(teasedLineTenths('total', 'over', line, points)).toBeLessThan(line);
+        expect(teasedLineTenths('total', 'under', line, points)).toBeGreaterThan(line);
+      }
+    }
+  });
+
+  it('a half-point line teased 6.5 lands on an exact whole number', () => {
+    // That is a real push risk and must be exact rather than rounded away.
+    expect(teasedLineTenths('spread', 'home', -75, 65)).toBe(-10);
+    expect(teasedLineTenths('total', 'over', 455, 65)).toBe(390);
+  });
+
+  it('refuses a moneyline, a bad tier and a non-integer line', () => {
+    expectAppError(() => teasedLineTenths('total', 'home', 455, 60), 'VALIDATION');
+    expectAppError(() => teasedLineTenths('spread', 'home', -75, 6), 'VALIDATION');
+    expectAppError(() => teasedLineTenths('spread', 'home', -7.5, 60), 'VALIDATION');
   });
 });

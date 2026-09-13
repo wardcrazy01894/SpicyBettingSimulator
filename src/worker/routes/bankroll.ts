@@ -1,12 +1,13 @@
 /** /api/bankroll and /api/ledger. PLAN.md §11.5. */
 
 import { Hono } from 'hono';
-import type { BankrollResponse, LedgerResponse } from '../../shared/api-types.js';
+import type { BankrollsResponse, LedgerResponse } from '../../shared/api-types.js';
 import { AppError } from '../../shared/errors.js';
-import { currentSeasonFor, getBankrollSummary, listLedger } from '../bankroll.js';
+import { listBalances, listLedger } from '../bankroll.js';
+import type { StatsFilter } from '../bankroll.js';
 import { requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
-import { readInt, readLeague, readLimit } from './games.js';
+import { readBetLeague, readLimit } from './games.js';
 
 const DEFAULT_LEDGER_PAGE = 50;
 const MAX_LEDGER_PAGE = 200;
@@ -16,65 +17,41 @@ export function bankrollRoutes(): Hono<AppContext> {
   app.use('/bankroll', requireAuth());
   app.use('/ledger', requireAuth());
 
+  /**
+   * Every balance the caller owns. `?league=` is OPTIONAL and narrows
+   * `record`/`roi`/`settledCount` only — the money columns are always the whole
+   * balance (see `listBalances`). There is no `?season=`: the product has no
+   * concept of a season (PLAN.md §19 Q5).
+   *
+   * This route no longer creates anything. A balance is opened in the signup
+   * batch; a GET that wrote two rows was only ever there to serve the
+   * per-(league, season) bankrolls this milestone deleted.
+   */
   app.get('/bankroll', async (c) => {
-    const league = readLeague(c.req.query('league'));
-    const season = await resolveSeason(c, league);
     const user = c.var.user;
     if (user === null) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
-    // Reading the bankroll is one of PLAN.md §4.4's lazy-creation points.
-    const body: BankrollResponse = await getBankrollSummary(
-      c.env,
-      user.id,
-      league,
-      season,
-      c.var.now,
-    );
+    const league = readBetLeague(c.req.query('league'));
+    const filter: StatsFilter = league === undefined ? {} : { league };
+    const body: BankrollsResponse = await listBalances(c.env, user.id, filter);
     return c.json(body);
   });
 
   app.get('/ledger', async (c) => {
-    const league = readLeague(c.req.query('league'));
-    const season = await resolveSeason(c, league);
     const user = c.var.user;
     if (user === null) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
     const cursor = c.req.query('cursor');
+    const bankrollId = c.req.query('bankrollId');
     const body: LedgerResponse = await listLedger(
       c.env,
       user.id,
-      league,
-      season,
+      bankrollId === undefined || bankrollId === '' ? undefined : bankrollId,
       {
         limit: readLimit(c.req.query('limit'), DEFAULT_LEDGER_PAGE, MAX_LEDGER_PAGE),
         ...(cursor === undefined || cursor === '' ? {} : { cursor }),
       },
-      c.var.now,
     );
     return c.json(body);
   });
 
   return app;
-}
-
-/**
- * `season` is optional on the wire; absent means "the one I am playing", which
- * `currentSeasonFor` derives from the NEXT game to kick off rather than from a
- * wall clock or `MAX(games.season)` (PLAN.md §4.4).
- */
-async function resolveSeason(
-  c: {
-    env: AppContext['Bindings'];
-    var: AppContext['Variables'];
-    req: { query: (k: string) => string | undefined };
-  },
-  league: 'nfl' | 'ncaaf',
-): Promise<number> {
-  const requested = readInt(c.req.query('season'), 'season');
-  if (requested !== undefined) return requested;
-  const current = await currentSeasonFor(c.env, league, c.var.now);
-  if (current === null) {
-    throw new AppError('VALIDATION', 'No season is in play yet; pass ?season=', {
-      field: 'season',
-    });
-  }
-  return current;
 }

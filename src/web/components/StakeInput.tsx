@@ -19,7 +19,16 @@ import type { Cents } from '../../shared/types.js';
 
 export interface StakeInputProps {
   readonly stakeCents: Cents;
-  /** MAX chip target; also the balance used for the "more than you have" hint. */
+  /**
+   * MAX chip target; also the balance used for the "more than you have" hint.
+   *
+   * **THE WHOLE AVAILABLE BALANCE, and nothing may cap it lower** (decided
+   * 2026-09-14, PLAN.md §19 Q7): going all-in is allowed, the balance already
+   * excludes stakes riding on open bets, and the only other limit in the system
+   * is `MAX_PAYOUT_CENTS` — which bites on the PAYOUT, not the stake. The slip
+   * passes `availableCents` straight through; if a house limit is ever wanted it
+   * belongs in `constants.ts` and in the server's validation, not in this chip.
+   */
   readonly maxCents: Cents;
   readonly minCents: Cents;
   readonly onChange: (cents: Cents) => void;

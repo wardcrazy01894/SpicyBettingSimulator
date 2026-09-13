@@ -19,6 +19,7 @@ import type { ErrorCode } from '../../shared/errors.js';
 export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   VALIDATION: "That doesn't look right — check the highlighted field and try again.",
   MALFORMED_JSON: 'The app sent something the server could not read. Please reload.',
+  TEASER_INVALID: 'That teaser is not one we offer — pick 6, 6.5 or 7 points.',
 
   UNAUTHENTICATED: 'Your session expired. Please sign in again.',
   INVALID_CREDENTIALS: 'Wrong username or password.',
@@ -29,13 +30,18 @@ export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   NOT_FOUND: 'Not found.',
   GAME_NOT_FOUND: 'That game is no longer on the board.',
   BET_NOT_FOUND: 'That bet no longer exists.',
+  BANKROLL_NOT_FOUND: 'That balance does not exist.',
 
   USERNAME_TAKEN: 'That username is taken. Pick another one.',
   GAME_NOT_BETTABLE: 'That game is no longer open for betting.',
   BETTING_CLOSED: 'Betting closed on that game — it is about to kick off.',
   MARKET_UNAVAILABLE: 'That line is no longer available. Refresh the board.',
   LINE_CHANGED: 'The line moved while you were building this bet.',
-  INSUFFICIENT_FUNDS: 'Not enough in your bankroll for that stake.',
+  INSUFFICIENT_FUNDS: 'Not enough in your balance for that stake.',
+  // DEPRECATED since M5b — the server never sends these any more (legs may span
+  // leagues and seasons). Kept because `ERROR_MESSAGES` is a TOTAL record over
+  // `ERROR_CODES`, and because a client this new can still be talking to a
+  // server that predates the change.
   MIXED_LEAGUE_PARLAY: 'Every leg of a parlay has to be in the same league.',
   MIXED_SEASON_PARLAY: 'Every leg of a parlay has to be in the same season.',
   DUPLICATE_GAME_IN_PARLAY: 'A parlay cannot include the same game twice.',

@@ -12,6 +12,7 @@
  */
 
 import {
+  americanToPrice,
   exceedsPayoutCap,
   formatDecimalOdds,
   payoutCents,
@@ -24,7 +25,7 @@ import { messageForCode } from '../api/messages.js';
 import { pickLabel } from '../lib/labels.js';
 import type { LeagueSlip } from './slip-reducer.js';
 import type { LineChangedDetails, PlaceBetRequest } from '../../shared/api-types.js';
-import type { AmericanPrice, Cents, League } from '../../shared/types.js';
+import type { AmericanPrice, Cents, League, Price } from '../../shared/types.js';
 
 export interface SlipPreview {
   /** null when there are no legs, or the parlay is too long to express. */
@@ -48,10 +49,16 @@ export function buildPlaceBetRequest(
     betType: slip.mode,
     stakeCents: slip.stakeCents,
     acceptLineChange,
+    // Tenths, and only on a teaser — the server rejects it on anything else.
+    ...(slip.mode === 'teaser' ? { teaserPoints: asTeaserPoints(slip.teaserPointsTenths) } : {}),
     legs: slip.legs.map((leg) => ({
       gameId: leg.gameId,
       market: leg.market,
       side: leg.side,
+      // The BOOK's line and price, even in teaser mode. `expected` is an
+      // optimistic check against what the BOARD showed; the tease is applied by
+      // the server afterwards, so sending the teased number would make every
+      // teaser a false LINE_CHANGED.
       expected: {
         americanPrice: leg.americanPrice,
         lineTenths: leg.market === 'moneyline' ? null : leg.lineTenths,
@@ -60,10 +67,52 @@ export function buildPlaceBetRequest(
   };
 }
 
+/** Narrow a stored tenths value to the wire union. Falls back to 6 points. */
+function asTeaserPoints(tenths: number): 60 | 65 | 70 {
+  return tenths === 65 || tenths === 70 ? tenths : 60;
+}
+
+/**
+ * The price a slip is quoting, as an exact rational.
+ *
+ * A TEASER IS PRICED FROM THE SERVER'S CARD, not from the legs: `config.
+ * teaserPayouts` is echoed by `GET /api/config` precisely so the slip and the
+ * server cannot disagree. A cell the server did not send yields `null`, which
+ * renders as "—" rather than as a number this client invented.
+ */
+function slipPrice(slip: LeagueSlip, card: TeaserCard | null): Price | null {
+  if (slip.mode !== 'teaser') return priceFromLegs(slip.legs.map((leg) => leg.americanPrice));
+  const american = card?.[slip.teaserPointsTenths]?.[slip.legs.length];
+  if (american === undefined) return null;
+  try {
+    return americanToPrice(american);
+  } catch {
+    return null;
+  }
+}
+
+/** `ConfigResponse['teaserPayouts']`, named so the signatures stay readable. */
+type TeaserCard = Readonly<Record<number, Readonly<Record<number, AmericanPrice>>>>;
+
+/**
+ * The price to SHOW, or null when there is nothing honest to show. `null` means
+ * either "no price yet" or "past what an American integer can express" — the
+ * latter only for an absurd parlay, which the payout cap rejects anyway.
+ */
+function displayAmerican(price: Price | null): AmericanPrice | null {
+  if (price === null) return null;
+  try {
+    return priceToAmerican(price);
+  } catch {
+    return null;
+  }
+}
+
 export function computePreview(
   league: League,
   slip: LeagueSlip,
   availableCents: Cents | null,
+  teaserPayouts: TeaserCard | null = null,
 ): SlipPreview {
   if (slip.legs.length === 0) {
     return {
@@ -75,19 +124,22 @@ export function computePreview(
     };
   }
 
-  const price = priceFromLegs(slip.legs.map((leg) => leg.americanPrice));
-  const decimalOdds = formatDecimalOdds(price);
-  let americanPrice: AmericanPrice | null;
-  try {
-    americanPrice = priceToAmerican(price);
-  } catch {
-    // Only reachable for an absurd parlay, which the cap check below rejects too.
-    americanPrice = null;
-  }
+  const price = slipPrice(slip, teaserPayouts);
+  const decimalOdds = price === null ? null : formatDecimalOdds(price);
+  const americanPrice = displayAmerican(price);
 
   const validation = validatePlaceBet(buildPlaceBetRequest(league, slip, false));
   if (!validation.ok) {
     return { americanPrice, decimalOdds, toWinCents: 0, payoutCents: 0, error: validation.message };
+  }
+  if (price === null) {
+    return {
+      americanPrice,
+      decimalOdds,
+      toWinCents: 0,
+      payoutCents: 0,
+      error: 'That teaser is not priced right now — reload and try again.',
+    };
   }
 
   // Cap FIRST, in BigInt, before any Number conversion (PLAN.md §5.2b).

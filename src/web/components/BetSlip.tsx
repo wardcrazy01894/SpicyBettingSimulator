@@ -1,9 +1,13 @@
 /**
- * The slip sheet: straight/parlay toggle, leg list, stake input, live to-win.
- * role="dialog" with focus trapping.
+ * The slip sheet: Straight / Parlay / Teaser toggle, leg list, stake input, live
+ * to-win. role="dialog" with focus trapping.
  *
  * On a 409 LINE_CHANGED it shows the old and new prices and offers an explicit
  * "accept and place" — it never silently re-submits with acceptLineChange.
+ *
+ * TEASER MODE shows each leg as "book line → teased line" and prices the whole
+ * slip from `config.teaserPayouts`, which the SERVER echoes. The legs' own
+ * prices are hidden there because they are not what the bet pays.
  */
 import { useCallback, useRef } from 'react';
 import type { ReactElement } from 'react';
@@ -13,21 +17,37 @@ import { Segmented } from './Segmented.js';
 import { SlipSummary } from './SlipSummary.js';
 import { StakeInput } from './StakeInput.js';
 import { useFocusTrap } from '../hooks/useFocusTrap.js';
-import { formatAmerican } from '../../shared/odds.js';
+import { formatAmerican, teasedLineTenths } from '../../shared/odds.js';
 import { formatCents, formatLineTenths } from '../../shared/validate.js';
-import { MARKET_LABEL } from '../lib/labels.js';
+import { MARKET_LABEL, teaserPointsLabel } from '../lib/labels.js';
 import { useBetSlip } from '../state/bet-slip.js';
 import { useConfig } from '../state/config.js';
-import type { SlipMode } from '../state/slip-reducer.js';
+import type { SlipLeg, SlipMode } from '../state/slip-reducer.js';
 import type { LineTenths } from '../../shared/types.js';
 
 const MODE_OPTIONS: readonly { value: SlipMode; label: string }[] = [
   { value: 'straight', label: 'Straight' },
   { value: 'parlay', label: 'Parlay' },
+  { value: 'teaser', label: 'Teaser' },
 ];
 
 function lineText(lineTenths: LineTenths | null, signed: boolean): string {
   return lineTenths === null ? '' : ` ${formatLineTenths(lineTenths, signed)}`;
+}
+
+/**
+ * "-7.5 → -1.5" for a teasable leg, or a reason it cannot be teased.
+ *
+ * A moneyline leg already in the slip when the user switches to Teaser is NOT
+ * silently dropped — deleting somebody's pick to make their slip valid is worse
+ * than telling them — so it renders as "no line to tease" and the preview's own
+ * validation error blocks the submit until they remove it.
+ */
+function teaseText(leg: SlipLeg, pointsTenths: number): string {
+  if (leg.market === 'moneyline' || leg.lineTenths === null) return 'no line to tease';
+  const signed = leg.market === 'spread';
+  const teased = teasedLineTenths(leg.market, leg.side, leg.lineTenths, pointsTenths);
+  return `${formatLineTenths(leg.lineTenths, signed)} → ${formatLineTenths(teased, signed)}`;
 }
 
 export function BetSlip(): ReactElement {
@@ -51,9 +71,15 @@ export function BetSlip(): ReactElement {
   const editing = slip.editingBetId !== null;
   const blocked = slip.preview.error !== null || slip.submitting;
   const maxStake = slip.availableCents ?? 0;
+  // Neither multi is placeable below two legs, so both are greyed until then.
   const modeOptions = MODE_OPTIONS.map((option) =>
-    option.value === 'parlay' && slip.legs.length < 2 ? { ...option, disabled: true } : option,
+    option.value !== 'straight' && slip.legs.length < 2 ? { ...option, disabled: true } : option,
   );
+  const teasing = slip.mode === 'teaser';
+  const pointsOptions = config.teaserPoints.map((tenths) => ({
+    value: tenths,
+    label: teaserPointsLabel(tenths),
+  }));
 
   return (
     <div className="sheet-backdrop">
@@ -79,6 +105,21 @@ export function BetSlip(): ReactElement {
           onChange={slip.setMode}
         />
 
+        {teasing && (
+          <>
+            <Segmented<number>
+              label="Teaser points"
+              value={slip.teaserPointsTenths}
+              options={pointsOptions}
+              onChange={slip.setTeaserPoints}
+            />
+            <p className="muted slip-hint">
+              Every line moves {teaserPointsLabel(slip.teaserPointsTenths)} your way. Spreads and
+              totals only — moneylines cannot be teased.
+            </p>
+          </>
+        )}
+
         {slip.legs.length === 0 ? (
           <p className="empty-hint">Tap a price on the board to add a leg.</p>
         ) : (
@@ -89,7 +130,11 @@ export function BetSlip(): ReactElement {
                   <span className="slip-leg-pick">{leg.label}</span>
                   <span className="slip-leg-market">{MARKET_LABEL[leg.market]}</span>
                 </div>
-                <span className="slip-leg-price">{formatAmerican(leg.americanPrice)}</span>
+                <span className="slip-leg-price">
+                  {teasing
+                    ? teaseText(leg, slip.teaserPointsTenths)
+                    : formatAmerican(leg.americanPrice)}
+                </span>
                 <button
                   type="button"
                   className="btn btn-quiet"
@@ -115,7 +160,7 @@ export function BetSlip(): ReactElement {
         <SlipSummary preview={slip.preview} stakeCents={slip.stakeCents} />
 
         {slip.availableCents !== null && (
-          <p className="slip-balance">Bankroll {formatCents(slip.availableCents)}</p>
+          <p className="slip-balance">Balance {formatCents(slip.availableCents)}</p>
         )}
 
         {slip.lineChange !== null && (

@@ -101,7 +101,12 @@ export async function run(key: string, load: () => Promise<unknown>): Promise<vo
   if (inflight.get(key) === startedIn) inflight.delete(key);
   // A response from before a `clearCache()` belongs to nobody: drop it.
   const fresh = startedIn === generation;
-  const again = pending.delete(key) && fresh;
+  // `fresh` FIRST, so a stale run neither writes nor re-runs — and, because
+  // `&&` short-circuits, does not reach into `pending` at all. That is not just
+  // tidier: the only way `fresh` is false is that `clearCache()` ran, and
+  // `clearCache()` has already emptied `pending`. Consuming an entry from it
+  // here would mean consuming one that a LATER, live run had queued.
+  const again = fresh && pending.delete(key);
   if (fresh) cache.set(key, settled);
   notify();
   if (again) void run(key, load);

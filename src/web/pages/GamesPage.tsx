@@ -52,12 +52,7 @@ export function GamesPage(): ReactElement {
             slip.setLeague(next);
           }}
         />
-        <WeekPicker
-          week={week ?? board.data?.week ?? null}
-          season={board.data?.season ?? season}
-          weeks={weeks}
-          onChange={setWeek}
-        />
+        <WeekPicker week={week ?? board.data?.week ?? null} weeks={weeks} onChange={setWeek} />
       </div>
 
       {board.error !== undefined && board.data === undefined && (

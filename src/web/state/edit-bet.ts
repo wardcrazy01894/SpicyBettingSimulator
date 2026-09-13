@@ -42,14 +42,22 @@ export function refreshSlipLegs(bet: BetView, games: ReadonlyMap<string, GameCar
 
     if (quote === null) {
       unrefreshed.push(leg.gameId);
+      // THE BOOK LINE, NOT THE STORED ONE. On a teaser leg `lineTenths` is the
+      // TEASED number; seeding the slip with it and letting the server tease it
+      // again would move the line twice. `originalLineTenths` is exactly the
+      // pre-tease value, and it is null on every other kind of leg.
+      const bookLine =
+        leg.market === 'moneyline' ? null : (leg.originalLineTenths ?? leg.lineTenths);
       return {
         gameId: leg.gameId,
-        league: bet.league,
+        // The LEG's league, not the bet's: `bet.league` may be `'mixed'` since
+        // M5b, and a slip leg is always in exactly one real league.
+        league: leg.league,
         market: leg.market,
         side: leg.side,
-        lineTenths: leg.market === 'moneyline' ? null : leg.lineTenths,
+        lineTenths: bookLine,
         americanPrice: leg.americanPrice,
-        label: pickLabel(leg.market, leg.side, leg.lineTenths, homeAbbr, awayAbbr),
+        label: pickLabel(leg.market, leg.side, bookLine, homeAbbr, awayAbbr),
         kickoffAt,
         homeAbbr,
         awayAbbr,
@@ -59,7 +67,7 @@ export function refreshSlipLegs(bet: BetView, games: ReadonlyMap<string, GameCar
     const lineTenths = leg.market === 'moneyline' ? null : quote.lineTenths;
     return {
       gameId: leg.gameId,
-      league: bet.league,
+      league: leg.league,
       market: leg.market,
       side: leg.side,
       lineTenths,

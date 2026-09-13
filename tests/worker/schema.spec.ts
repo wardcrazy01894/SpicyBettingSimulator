@@ -30,8 +30,8 @@ async function seedUserAndBankroll(): Promise<void> {
        VALUES (?1, ?2, 'Alex', 210000, X'00', 1000, X'00', ?3, ?3)`,
     ).bind(U, `alex${String(seq)}`, NOW),
     env.DB.prepare(
-      `INSERT INTO bankrolls (id, user_id, league, season, balance_cents, created_at, updated_at)
-       VALUES (?1, ?2, 'nfl', 2026, 0, ?3, ?3)`,
+      `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+       VALUES (?1, ?2, 'Main', 'main', 0, ?3, ?3)`,
     ).bind(B, U, NOW),
     env.DB.prepare(
       `INSERT INTO ledger (id, bankroll_id, kind, ref_id, amount_cents, created_at)
@@ -109,6 +109,112 @@ describe('migration 0001', () => {
     }>();
     expect(rows.results.map((r) => r.name)).toEqual(['maintenance', 'refresh', 'settle']);
   });
+
+  it('bankrolls carry no league or season, and bets/bet_legs carry the teaser columns', async () => {
+    const columns = async (table: string): Promise<string[]> => {
+      const res = await env.DB.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
+      return res.results.map((r) => r.name);
+    };
+    const bankrolls = await columns('bankrolls');
+    expect(bankrolls).toContain('name');
+    expect(bankrolls).toContain('kind');
+    // M5b: a balance is account-level. These two are what made it per-season.
+    expect(bankrolls).not.toContain('league');
+    expect(bankrolls).not.toContain('season');
+    expect(await columns('bets')).toContain('teaser_points_tenths');
+    expect(await columns('bet_legs')).toContain('original_line_tenths');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M5b's bet-shape CHECKs. Each one is the DB half of a rule the application
+// also enforces, so a bug in `validatePlaceBet` cannot land a bet that grading
+// would then have to guess about.
+// ---------------------------------------------------------------------------
+
+describe('bets CHECK constraints (M5b)', () => {
+  beforeEach(seedUserAndBankroll);
+
+  /** A `bets` row with everything defaulted, so each test varies one thing. */
+  function insertBet(
+    id: string,
+    over: {
+      league?: string;
+      betType?: string;
+      legCount?: number;
+      teaserPointsTenths?: number | null;
+    } = {},
+  ): Promise<unknown> {
+    return env.DB.prepare(
+      `INSERT INTO bets (id, user_id, bankroll_id, league, season, bet_type, leg_count,
+                         stake_cents, american_price, potential_payout_cents, status,
+                         placed_at, earliest_kickoff_at, teaser_points_tenths,
+                         created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 2026, ?5, ?6, 1000, -110, 1909, 'pending', ?7, ?7, ?8, ?7, ?7)`,
+    )
+      .bind(
+        `${B}-${id}`,
+        U,
+        B,
+        over.league ?? 'nfl',
+        over.betType ?? 'straight',
+        over.legCount ?? 1,
+        NOW,
+        over.teaserPointsTenths ?? null,
+      )
+      .run();
+  }
+
+  it("accepts league 'mixed' for a cross-league bet", async () => {
+    await insertBet('mixed', { league: 'mixed', betType: 'parlay', legCount: 2 });
+    await expect(insertBet('nba', { league: 'nba' })).rejects.toThrow(/CHECK constraint failed/);
+  });
+
+  it('a teaser needs a tier, and nothing else may carry one', async () => {
+    await insertBet('t6', { betType: 'teaser', legCount: 3, teaserPointsTenths: 60 });
+    await expect(insertBet('t-none', { betType: 'teaser', legCount: 3 })).rejects.toThrow(
+      /CHECK constraint failed/,
+    );
+    await expect(
+      insertBet('p-tier', { betType: 'parlay', legCount: 3, teaserPointsTenths: 60 }),
+    ).rejects.toThrow(/CHECK constraint failed/);
+    await expect(
+      insertBet('s-tier', { betType: 'straight', teaserPointsTenths: 60 }),
+    ).rejects.toThrow(/CHECK constraint failed/);
+  });
+
+  it('only 60, 65 and 70 tenths are on the card', async () => {
+    for (const [i, tier] of [60, 65, 70].entries()) {
+      await insertBet(`ok${String(i)}`, {
+        betType: 'teaser',
+        legCount: 2,
+        teaserPointsTenths: tier,
+      });
+    }
+    for (const [i, tier] of [6, 55, 61, 75, 0].entries()) {
+      await expect(
+        insertBet(`bad${String(i)}`, {
+          betType: 'teaser',
+          legCount: 2,
+          teaserPointsTenths: tier,
+        }),
+      ).rejects.toThrow(/CHECK constraint failed/);
+    }
+  });
+
+  it('a straight is exactly one leg; a parlay OR A TEASER is two or more', async () => {
+    await expect(insertBet('s2', { betType: 'straight', legCount: 2 })).rejects.toThrow(
+      /CHECK constraint failed/,
+    );
+    await expect(insertBet('p1', { betType: 'parlay', legCount: 1 })).rejects.toThrow(
+      /CHECK constraint failed/,
+    );
+    // The pre-M5b CHECK was `bet_type = 'parlay' OR leg_count = 1`, which would
+    // have let this through the moment 'teaser' joined the enum.
+    await expect(
+      insertBet('t1', { betType: 'teaser', legCount: 1, teaserPointsTenths: 60 }),
+    ).rejects.toThrow(/CHECK constraint failed/);
+  });
 });
 
 describe('ledger invariants (DB-enforced)', () => {
@@ -136,37 +242,82 @@ describe('ledger invariants (DB-enforced)', () => {
     expect(await balance()).toBe(100000);
   });
 
-  it('the PLAN §4.4 ensureBankroll prelude is idempotent against a funded row', async () => {
-    // INSERT OR IGNORE fires BEFORE INSERT triggers before resolving the
-    // conflict; the guard must therefore tolerate a 0-balance "insert" that is
-    // about to be ignored because the (funded) row already exists.
+  it('the M5b ensureMainBalance repair path is idempotent against a funded row', async () => {
+    // Both statements are guarded `INSERT … SELECT … WHERE (NOT) EXISTS`, so a
+    // second run matches zero rows everywhere instead of opening a second main
+    // balance or landing a second deposit. The `bankrolls` BEFORE INSERT guard
+    // must also tolerate the 0-balance insert that is about to match nothing.
     const ensure = () =>
       env.DB.batch([
         env.DB.prepare(
-          `INSERT OR IGNORE INTO bankrolls (id, user_id, league, season, balance_cents, created_at, updated_at)
-           VALUES (?1, ?2, 'nfl', 2026, 0, ?3, ?3)`,
-        ).bind(B, U, NOW),
+          `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+           SELECT ?1, ?2, 'Main', 'main', 0, ?3, ?3
+            WHERE NOT EXISTS (SELECT 1 FROM bankrolls WHERE user_id = ?2 AND kind = 'main')`,
+        ).bind(`${B}-repair`, U, NOW),
         env.DB.prepare(
           `INSERT INTO ledger (id, bankroll_id, kind, ref_id, amount_cents, created_at)
-           SELECT ?1, ?2, 'deposit_initial', ?2, 100000, ?3
-            WHERE NOT EXISTS (SELECT 1 FROM ledger WHERE bankroll_id = ?2 AND kind = 'deposit_initial')`,
+           SELECT ?1, ?2, 'deposit_initial', 'init', 100000, ?3
+            WHERE EXISTS (SELECT 1 FROM bankrolls WHERE id = ?2)
+              AND NOT EXISTS (SELECT 1 FROM ledger
+                               WHERE bankroll_id = ?2 AND kind = 'deposit_initial')`,
         ).bind(`${B}-dep2`, B, NOW),
       ]);
     await ensure();
     await ensure();
     expect(await balance()).toBe(100000);
     expect(await ledgerSum()).toBe(100000);
+    // ...and no second balance was opened.
+    const n = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM bankrolls WHERE user_id = ?1 AND kind = 'main'`,
+    )
+      .bind(U)
+      .first<{ n: number }>();
+    expect(n?.n).toBe(1);
   });
 
-  it('a bankroll cannot be INSERTed with a non-zero opening balance', async () => {
+  it('a balance cannot be INSERTed with a non-zero opening balance', async () => {
     await expect(
       env.DB.prepare(
-        `INSERT INTO bankrolls (id, user_id, league, season, balance_cents, created_at, updated_at)
-         VALUES (?1, ?2, 'ncaaf', 2026, 5, ?3, ?3)`,
+        `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+         VALUES (?1, ?2, 'Side', 'custom', 5, ?3, ?3)`,
       )
         .bind(`${B}-x`, U, NOW)
         .run(),
     ).rejects.toThrow(/balance_cents may only be written by the ledger trigger/);
+  });
+
+  it('a user may hold only ONE main balance (partial unique index)', async () => {
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+         VALUES (?1, ?2, 'Main 2', 'main', 0, ?3, ?3)`,
+      )
+        .bind(`${B}-main2`, U, NOW)
+        .run(),
+    ).rejects.toThrow(/UNIQUE constraint failed/);
+    // ...but any number of `custom` side pots, which the index deliberately
+    // does not cover. (Nothing in v1 creates one; the schema models the list.)
+    await env.DB.prepare(
+      `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+       VALUES (?1, ?2, 'Bowls', 'custom', 0, ?3, ?3)`,
+    )
+      .bind(`${B}-side`, U, NOW)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+       VALUES (?1, ?2, 'Playoffs', 'custom', 0, ?3, ?3)`,
+    )
+      .bind(`${B}-side2`, U, NOW)
+      .run();
+    // A name is still unique per user, whatever the kind.
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+         VALUES (?1, ?2, 'Bowls', 'custom', 0, ?3, ?3)`,
+      )
+        .bind(`${B}-side3`, U, NOW)
+        .run(),
+    ).rejects.toThrow(/UNIQUE constraint failed/);
   });
 
   it('an overdraft aborts with "ledger: insufficient funds" and changes nothing', async () => {

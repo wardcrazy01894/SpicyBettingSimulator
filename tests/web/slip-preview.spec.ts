@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { ERROR_CODES } from '../../src/shared/errors.js';
-import { MAX_PARLAY_LEGS, MIN_STAKE_CENTS } from '../../src/shared/constants.js';
+import { MAX_PARLAY_LEGS, MIN_STAKE_CENTS, TEASER_PAYOUTS } from '../../src/shared/constants.js';
 import { ERROR_MESSAGES, messageForCode, messageForError } from '../../src/web/api/messages.js';
 import { buildPlaceBetRequest, computePreview } from '../../src/web/state/slip-preview.js';
-import type { LeagueSlip, SlipLeg } from '../../src/web/state/slip-reducer.js';
+import { DEFAULT_TEASER_POINTS_TENTHS } from '../../src/web/state/slip-reducer.js';
+import type { LeagueSlip, SlipLeg, SlipMode } from '../../src/web/state/slip-reducer.js';
 import type { Market, Side } from '../../src/shared/types.js';
 
 function leg(
@@ -30,9 +31,15 @@ function leg(
 function slip(
   legs: readonly SlipLeg[],
   stakeCents: number,
-  mode?: 'straight' | 'parlay',
+  mode?: SlipMode,
+  teaserPointsTenths = DEFAULT_TEASER_POINTS_TENTHS,
 ): LeagueSlip {
-  return { mode: mode ?? (legs.length > 1 ? 'parlay' : 'straight'), legs, stakeCents };
+  return {
+    mode: mode ?? (legs.length > 1 ? 'parlay' : 'straight'),
+    legs,
+    stakeCents,
+    teaserPointsTenths,
+  };
 }
 
 describe('computePreview', () => {
@@ -183,5 +190,90 @@ describe('the error-message table', () => {
   it('ignores an unrecognised code rather than trusting it', () => {
     const bogus = Object.assign(new Error('boom'), { code: 'NOT_A_REAL_CODE' });
     expect(messageForError(bogus)).toBe('boom');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Teasers (M5b). The slip prices these from the SERVER's card, echoed by
+// `GET /api/config`, never from its own bundled copy of `constants.ts`.
+// ---------------------------------------------------------------------------
+
+describe('computePreview — teasers', () => {
+  const teaserLeg = (id: string, market: Market = 'spread'): SlipLeg =>
+    leg(id, -110, market, market === 'total' ? 'over' : 'home');
+
+  it('prices from the card, NOT from the product of the legs', () => {
+    // Three -110 legs: as a PARLAY that is 6957c on 1000c (PLAN §5.4's shape);
+    // as a 6-point teaser it is the card's +150, i.e. 2500c. REPL-verified.
+    const legs = [teaserLeg('a'), teaserLeg('b'), teaserLeg('c')];
+    const parlay = computePreview('nfl', slip(legs, 1000, 'parlay'), 100_000, TEASER_PAYOUTS);
+    expect(parlay.payoutCents).toBe(6957);
+
+    const teaser = computePreview('nfl', slip(legs, 1000, 'teaser', 60), 100_000, TEASER_PAYOUTS);
+    expect(teaser.error).toBeNull();
+    expect(teaser.americanPrice).toBe(150);
+    expect(teaser.payoutCents).toBe(2500);
+    expect(teaser.toWinCents).toBe(1500);
+  });
+
+  it('follows the tier selector', () => {
+    const legs = [teaserLeg('a'), teaserLeg('b')];
+    // REPL-verified at 1000c: 6pt -120 -> 1833, 6.5pt -130 -> 1769, 7pt -140 -> 1714.
+    for (const [tenths, payout, american] of [
+      [60, 1833, -120],
+      [65, 1769, -130],
+      [70, 1714, -140],
+    ] as const) {
+      const preview = computePreview(
+        'nfl',
+        slip(legs, 1000, 'teaser', tenths),
+        100_000,
+        TEASER_PAYOUTS,
+      );
+      expect(preview.americanPrice).toBe(american);
+      expect(preview.payoutCents).toBe(payout);
+    }
+  });
+
+  it('says so rather than inventing a price when the server sent no card', () => {
+    const legs = [teaserLeg('a'), teaserLeg('b')];
+    const preview = computePreview('nfl', slip(legs, 1000, 'teaser', 60), 100_000, null);
+    expect(preview.americanPrice).toBeNull();
+    expect(preview.payoutCents).toBe(0);
+    expect(preview.error).not.toBeNull();
+  });
+
+  it('surfaces the moneyline rule as the slip-blocking error', () => {
+    const legs = [teaserLeg('a'), leg('b', 164, 'moneyline')];
+    const preview = computePreview('nfl', slip(legs, 1000, 'teaser', 60), 100_000, TEASER_PAYOUTS);
+    expect(preview.error).toMatch(/spread or a total/);
+    expect(preview.payoutCents).toBe(0);
+  });
+
+  it('still blocks on an insufficient balance', () => {
+    const legs = [teaserLeg('a'), teaserLeg('b')];
+    const preview = computePreview('nfl', slip(legs, 1000, 'teaser', 60), 500, TEASER_PAYOUTS);
+    expect(preview.error).toBe(ERROR_MESSAGES.INSUFFICIENT_FUNDS);
+  });
+});
+
+describe('buildPlaceBetRequest — teasers', () => {
+  it('sends the tier only on a teaser, and the BOOK line as `expected` either way', () => {
+    const legs = [leg('a', -110), leg('b', -110)];
+    const asTeaser = buildPlaceBetRequest('nfl', slip(legs, 1000, 'teaser', 65), false);
+    expect(asTeaser.betType).toBe('teaser');
+    expect(asTeaser.teaserPoints).toBe(65);
+    // The number the BOARD showed. Sending the teased one would make every
+    // teaser a false 409 LINE_CHANGED.
+    expect(asTeaser.legs[0]?.expected).toEqual({ americanPrice: -110, lineTenths: -35 });
+
+    const asParlay = buildPlaceBetRequest('nfl', slip(legs, 1000, 'parlay'), false);
+    expect('teaserPoints' in asParlay).toBe(false);
+  });
+
+  it('narrows a corrupt stored tier to a tier the server will accept', () => {
+    const legs = [leg('a', -110), leg('b', -110)];
+    const req = buildPlaceBetRequest('nfl', slip(legs, 1000, 'teaser', 61), false);
+    expect(req.teaserPoints).toBe(60);
   });
 });

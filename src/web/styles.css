@@ -98,6 +98,11 @@ img {
   text-align: right;
 }
 
+/* The leaderboard's RANKED column (equity). Weight only — never colour alone. */
+.num-strong {
+  font-weight: 600;
+}
+
 .tone-win {
   color: var(--win);
 }

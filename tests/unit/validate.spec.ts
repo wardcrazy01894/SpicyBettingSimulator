@@ -16,6 +16,7 @@ import {
   MAX_ABS_LINE_TENTHS,
   MAX_PARLAY_LEGS,
   MIN_STAKE_CENTS,
+  TEASER_POINTS_TENTHS,
 } from '../../src/shared/constants.js';
 
 // Compile-time pin: a validated bet IS a wire request (PLAN §11.4). If the two
@@ -188,7 +189,10 @@ describe('validatePlaceBet', () => {
   });
   it('rejects an unknown league or betType', () => {
     expect(fail(validatePlaceBet(straight({ league: 'nba' }))).field).toBe('league');
-    expect(fail(validatePlaceBet(straight({ betType: 'teaser' }))).field).toBe('betType');
+    expect(fail(validatePlaceBet(straight({ betType: 'round-robin' }))).field).toBe('betType');
+  });
+  it("accepts league 'mixed' on the wire (M5b: the server re-derives it anyway)", () => {
+    expect(ok(validatePlaceBet(straight({ league: 'mixed' }))).league).toBe('mixed');
   });
   it('straight must have exactly 1 leg', () => {
     expect(fail(validatePlaceBet(straight({ legs: [] }))).field).toBe('legs');
@@ -339,6 +343,99 @@ describe('validatePlaceBet', () => {
     expect(fail(validatePlaceBet(straight({ acceptLineChange: 'yes' }))).field).toBe(
       'acceptLineChange',
     );
+  });
+  it('accepts an optional bankrollId and rejects an empty or non-string one', () => {
+    expect(ok(validatePlaceBet(straight({ bankrollId: 'bk-1' }))).bankrollId).toBe('bk-1');
+    // Absent means "my main balance"; the KEY is absent, not undefined-valued.
+    expect('bankrollId' in ok(validatePlaceBet(straight()))).toBe(false);
+    expect(fail(validatePlaceBet(straight({ bankrollId: '' }))).field).toBe('bankrollId');
+    expect(fail(validatePlaceBet(straight({ bankrollId: 7 }))).field).toBe('bankrollId');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Teasers (M5b). PLAN.md §5.8.
+// ---------------------------------------------------------------------------
+
+describe('validatePlaceBet — teasers', () => {
+  const leg = (gameId: string, market = 'spread', side = 'home') => ({ gameId, market, side });
+  const teaser = (over: Record<string, unknown> = {}) => ({
+    league: 'nfl',
+    betType: 'teaser',
+    teaserPoints: 60,
+    stakeCents: 1000,
+    legs: [leg('g1'), leg('g2', 'total', 'over')],
+    ...over,
+  });
+
+  it('accepts a 2-leg 6-point teaser mixing a spread and a total', () => {
+    const v = ok(validatePlaceBet(teaser()));
+    expect(v.betType).toBe('teaser');
+    expect(v.teaserPoints).toBe(60);
+    expect(v.legs).toHaveLength(2);
+  });
+
+  it('accepts every tier on the card and nothing else', () => {
+    for (const points of TEASER_POINTS_TENTHS) {
+      expect(ok(validatePlaceBet(teaser({ teaserPoints: points }))).teaserPoints).toBe(points);
+    }
+    // 6 points expressed as POINTS rather than tenths is the obvious client bug,
+    // and it must be refused rather than silently teasing by 0.6 of a point.
+    for (const bad of [6, 6.5, 7, 0, 55, 75, '60', null, true]) {
+      expect(fail(validatePlaceBet(teaser({ teaserPoints: bad }))).field).toBe('teaserPoints');
+    }
+  });
+
+  it('requires teaserPoints on a teaser and forbids it on anything else', () => {
+    expect(fail(validatePlaceBet(teaser({ teaserPoints: undefined }))).field).toBe('teaserPoints');
+    expect(
+      fail(
+        validatePlaceBet({
+          league: 'nfl',
+          betType: 'parlay',
+          teaserPoints: 60,
+          stakeCents: 1000,
+          legs: [leg('g1'), leg('g2')],
+        }),
+      ).field,
+    ).toBe('teaserPoints');
+    expect(fail(validatePlaceBet(straightWithPoints())).field).toBe('teaserPoints');
+  });
+
+  function straightWithPoints(): Record<string, unknown> {
+    return {
+      league: 'nfl',
+      betType: 'straight',
+      teaserPoints: 70,
+      stakeCents: 1000,
+      legs: [leg('g1')],
+    };
+  }
+
+  it('rejects a moneyline leg, naming the offending leg’s market', () => {
+    const r = fail(validatePlaceBet(teaser({ legs: [leg('g1'), leg('g2', 'moneyline', 'away')] })));
+    expect(r.field).toBe('legs[1].market');
+    expect(r.message).toMatch(/spread or a total/);
+  });
+
+  it('requires 2..10 legs, like a parlay', () => {
+    expect(fail(validatePlaceBet(teaser({ legs: [leg('g1')] }))).field).toBe('legs');
+    expect(fail(validatePlaceBet(teaser({ legs: [] }))).field).toBe('legs');
+    const ten = Array.from({ length: MAX_PARLAY_LEGS }, (_, i) => leg(`g${String(i)}`));
+    expect(validatePlaceBet(teaser({ legs: ten })).ok).toBe(true);
+    expect(fail(validatePlaceBet(teaser({ legs: [...ten, leg('g-extra')] }))).field).toBe('legs');
+  });
+
+  it('still refuses two legs from the same game', () => {
+    expect(
+      fail(validatePlaceBet(teaser({ legs: [leg('g1'), leg('g1', 'total', 'over')] }))).field,
+    ).toBe('legs[1].gameId');
+  });
+
+  it('does NOT care which league the legs are in — cross-league teasers are legal', () => {
+    // The wire `league` is advisory; the server labels the bet from the games.
+    expect(validatePlaceBet(teaser({ league: 'mixed' })).ok).toBe(true);
+    expect(validatePlaceBet(teaser({ league: 'ncaaf' })).ok).toBe(true);
   });
 });
 

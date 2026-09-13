@@ -76,15 +76,30 @@ describe('groupBetsByWeek', () => {
     expect(groups.map((g) => g.bets[0]?.id)).toEqual(['w3', 'w2']);
   });
 
-  it('never mixes leagues or seasons even inside the same week', () => {
+  it('never mixes leagues inside the same week, and treats mixed as its own', () => {
     const kickoff = localMs(2026, 9, 12, 15);
     const groups = groupBetsByWeek([
       betView({ id: 'nfl', league: 'nfl', legs: [{ gameId: 'g1', kickoffAt: kickoff }] }),
       betView({ id: 'ncaaf', league: 'ncaaf', legs: [{ gameId: 'g2', kickoffAt: kickoff }] }),
-      betView({ id: 'old', season: 2025, legs: [{ gameId: 'g3', kickoffAt: kickoff }] }),
+      betView({ id: 'mixed', league: 'mixed', legs: [{ gameId: 'g3', kickoffAt: kickoff }] }),
     ]);
     expect(groups).toHaveLength(3);
     expect(new Set(groups.map((g) => g.key)).size).toBe(3);
+    expect(groups.map((g) => g.league).sort()).toEqual(['mixed', 'ncaaf', 'nfl']);
+  });
+
+  it('does NOT split a week by season — the product has no seasons', () => {
+    // The bucket is keyed on an absolute week anchor, so two bets in the same
+    // week could never have been a year apart anyway; carrying `bets.season`
+    // in the key only ever split a week that ESPN happened to label oddly.
+    const kickoff = localMs(2026, 9, 12, 15);
+    const groups = groupBetsByWeek([
+      betView({ id: 'a', season: 2026, legs: [{ gameId: 'g1', kickoffAt: kickoff }] }),
+      betView({ id: 'b', season: 2025, legs: [{ gameId: 'g2', kickoffAt: kickoff }] }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.bets).toHaveLength(2);
+    expect(groups[0]?.label).not.toMatch(/20\d\d/);
   });
 
   it('buckets a parlay by its EARLIEST leg', () => {
@@ -101,13 +116,25 @@ describe('groupBetsByWeek', () => {
     expect(groups).toHaveLength(1);
   });
 
-  it('labels the group with the league, season and the local date span', () => {
+  it('labels the group with the league and the local date span, with no year', () => {
     const groups = groupBetsByWeek([
       betView({ id: 'a', legs: [{ gameId: 'g1', kickoffAt: localMs(2026, 9, 10, 20) }] }),
       betView({ id: 'b', legs: [{ gameId: 'g2', kickoffAt: localMs(2026, 9, 14, 20) }] }),
     ]);
-    expect(groups[0]?.label).toContain('NFL 2026');
+    expect(groups[0]?.label).toContain('NFL');
     expect(groups[0]?.label).toContain('–');
+    expect(groups[0]?.label).not.toMatch(/20\d\d/);
+  });
+
+  it('labels a cross-league group as NFL + NCAAF', () => {
+    const groups = groupBetsByWeek([
+      betView({
+        id: 'mix',
+        league: 'mixed',
+        legs: [{ gameId: 'g1', kickoffAt: localMs(2026, 9, 10, 20) }],
+      }),
+    ]);
+    expect(groups[0]?.label).toContain('NFL + NCAAF');
   });
 
   it('returns nothing for no bets', () => {

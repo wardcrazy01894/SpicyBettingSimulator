@@ -1,13 +1,14 @@
 # SpicyBettingSimulator
 
-A fake-money sports-betting simulator for a small group of friends. Every season,
-for the NFL and FBS college football, each user gets a fake **$1,000** bankroll and
-places bets against **real** lines and **real** odds pulled from ESPN's public
-scoreboard feed (DraftKings prices). Straight bets and 2–10 leg parlays on
-moneylines, spreads and totals. The site grades bets automatically as games go
-final, keeps an auditable ledger of every cent, and ranks everyone on a
-leaderboard. **No real money is ever involved** — it's a "how would I have done"
-tracker, not a sportsbook.
+A fake-money sports-betting simulator for a small group of friends. Each user gets
+one fake **$1,000** account balance at signup — it covers both the NFL and FBS
+college football, and it never resets — and places bets against **real** lines and
+**real** odds pulled from ESPN's public scoreboard feed (DraftKings prices).
+Straight bets, 2–10 leg parlays (legs may mix leagues) and 6 / 6.5 / 7-point
+teasers on moneylines, spreads and totals. The site grades bets automatically as
+games go final, keeps an auditable ledger of every cent, and ranks everyone by
+**equity** — balance plus whatever is riding on open bets. **No real money is ever
+involved** — it's a "how would I have done" tracker, not a sportsbook.
 
 It runs entirely on the Cloudflare free tier: one Worker (Hono API + Cron
 Triggers + static assets) with a D1 SQLite database, and a React/TypeScript SPA.
