@@ -97,18 +97,20 @@ export class AppError extends Error {
 
   /** Canonical HTTP status for this error's code. */
   get status(): number {
-    throw new Error('not implemented: M2d');
+    return ERROR_STATUS[this.code];
   }
 
   /** Serialize to the wire envelope. */
   toBody(): ApiErrorBody {
-    throw new Error('not implemented: M2d');
+    return this.details === undefined
+      ? { error: { code: this.code, message: this.message } }
+      : { error: { code: this.code, message: this.message, details: this.details } };
   }
 }
 
 /** Narrowing helper used by the Hono error handler. */
-export function isAppError(_value: unknown): _value is AppError {
-  throw new Error('not implemented: M2d');
+export function isAppError(value: unknown): value is AppError {
+  return value instanceof AppError;
 }
 
 /**
@@ -118,6 +120,47 @@ export function isAppError(_value: unknown): _value is AppError {
  * INSUFFICIENT_FUNDS and `UNIQUE constraint failed: ledger...` becomes a
  * recognised already-settled signal. See PLAN.md §4.2 and §7.4.
  */
-export function fromThrown(_value: unknown): AppError {
-  throw new Error('not implemented: M2d');
+export function fromThrown(value: unknown): AppError {
+  if (isAppError(value)) return value;
+  // The two ledger BEFORE INSERT triggers raise DISTINCT messages on purpose:
+  // insufficient funds is a legitimate user outcome, an unknown bankroll is a
+  // bug and must surface as INTERNAL (PLAN.md §4.2). db.ts::isOverdraftError /
+  // isOrphanBankrollError use the same constants, so the two cannot drift.
+  if (thrownMentions(value, DB_MESSAGES.insufficientFunds)) {
+    return new AppError('INSUFFICIENT_FUNDS', 'Insufficient funds for this stake.');
+  }
+  // Deliberately generic: the original message may contain SQL or a stack.
+  return new AppError('INTERNAL', 'Something went wrong.');
+}
+
+/**
+ * The exact strings migrations/0001_init.sql raises. SQLite never echoes bound
+ * values into these messages, so a user-controlled string cannot forge them.
+ */
+export const DB_MESSAGES = {
+  insufficientFunds: ['ledger: insufficient funds', 'CHECK constraint failed: balance_cents >= 0'],
+  unknownBankroll: ['ledger: unknown bankroll_id'],
+  uniqueViolation: ['UNIQUE constraint failed'],
+} as const;
+
+/** True when the thrown value (or its `cause` chain) mentions any needle. */
+export function thrownMentions(value: unknown, needles: readonly string[]): boolean {
+  const text = collectMessages(value);
+  return needles.some((n) => text.includes(n));
+}
+
+/** Message text of a thrown value and its `cause` chain, joined. */
+function collectMessages(value: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = value;
+  for (let depth = 0; depth < 5 && cur !== undefined && cur !== null; depth += 1) {
+    if (cur instanceof Error) {
+      parts.push(cur.message);
+      cur = cur.cause;
+    } else {
+      parts.push(typeof cur === 'string' ? cur : '');
+      cur = undefined;
+    }
+  }
+  return parts.join(' | ');
 }

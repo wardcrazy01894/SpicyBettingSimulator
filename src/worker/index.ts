@@ -18,9 +18,14 @@
  *     app.route('/api/admin', adminRoutes());
  */
 
-import type { Hono } from 'hono';
+import { Hono } from 'hono';
+import { AppError } from '../shared/errors.js';
 import type { Env } from './env.js';
+import { nowMs } from './db.js';
+import { jobForCron, runJob } from './jobs.js';
+import { contextMiddleware, errorHandler } from './middleware.js';
 import type { AppContext } from './middleware.js';
+import { metaRoutes } from './routes/meta.js';
 
 /**
  * Build the app. A function rather than a module-level singleton so tests can
@@ -31,12 +36,31 @@ import type { AppContext } from './middleware.js';
  * Workers freezes `Date.now()` between I/O operations.
  */
 export function buildApp(): Hono<AppContext> {
-  throw new Error('not implemented: M1');
+  const app = new Hono<AppContext>();
+  app.onError(errorHandler());
+  app.use('*', contextMiddleware());
+  // TODO(M3): app.use('*', sessionMiddleware()); app.use('*', csrfMiddleware());
+
+  app.route('/api', metaRoutes());
+  // TODO(M3): app.route('/api/auth', authRoutes());
+  // TODO(M5): app.route('/api/games', gamesRoutes());
+  // TODO(M5): app.route('/api/bets', betsRoutes());
+  // TODO(M5): app.route('/api', bankrollRoutes());
+  // TODO(M5): app.route('/api/leaderboard', leaderboardRoutes());
+  // TODO(M4): app.route('/api/admin', adminRoutes());
+
+  // Anything under /api that no route claimed is OUR 404, never index.html.
+  app.notFound((c) => {
+    throw new AppError('NOT_FOUND', `No route for ${c.req.method} ${c.req.path}`);
+  });
+  return app;
 }
 
+const app = buildApp();
+
 const handler: ExportedHandler<Env> = {
-  fetch(_request, _env, _ctx): Promise<Response> {
-    throw new Error('not implemented: M1');
+  fetch(request, env, ctx): Promise<Response> {
+    return Promise.resolve(app.fetch(request, env, ctx));
   },
 
   /**
@@ -49,8 +73,20 @@ const handler: ExportedHandler<Env> = {
    * errors are recorded in `job_runs` rather than rethrown, so one bad job cannot
    * take the scheduled handler down.
    */
-  scheduled(_controller, _env, _ctx): Promise<void> {
-    throw new Error('not implemented: M1');
+  async scheduled(controller, env, _ctx): Promise<void> {
+    const job = jobForCron(controller.cron);
+    if (job === null) {
+      console.warn('[cron] no job for expression', controller.cron);
+      return;
+    }
+    try {
+      const run = await runJob(env, job, 'cron', nowMs());
+      console.warn('[cron]', job, run.status, run.error ?? '');
+    } catch (err) {
+      // runJob is specified to record errors rather than throw (PLAN.md §9);
+      // this is the last line of defence so the scheduled handler never dies.
+      console.error('[cron] job crashed outside withJobRun', job, err);
+    }
   },
 };
 

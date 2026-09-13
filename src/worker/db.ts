@@ -9,6 +9,7 @@
  *   3. Budget <= 40 statements per Worker invocation (see Spike S2).
  */
 
+import { DB_MESSAGES, thrownMentions } from '../shared/errors.js';
 import type { Env } from './env.js';
 
 /**
@@ -16,26 +17,41 @@ import type { Env } from './env.js';
  * `results[i].meta.changes` to learn whether a conditional write applied — that
  * is how every guard in this codebase reports success without a second read.
  */
-export function runBatch(
-  _db: D1Database,
-  _statements: readonly D1PreparedStatement[],
+export async function runBatch(
+  db: D1Database,
+  statements: readonly D1PreparedStatement[],
 ): Promise<readonly D1Result[]> {
-  throw new Error('not implemented: M1');
+  if (statements.length === 0) return [];
+  if (statements.length > MAX_BATCH_STATEMENTS) {
+    throw new Error(
+      `runBatch: ${String(statements.length)} statements exceeds budget ${String(MAX_BATCH_STATEMENTS)}`,
+    );
+  }
+  return db.batch([...statements]);
 }
 
+/**
+ * PLAN.md §1 / Spike S2: keep well under the documented 50-per-invocation
+ * figure. Enforced per runBatch() CALL; callers are responsible for issuing at
+ * most one such batch per invocation for anything near the limit.
+ */
+export const MAX_BATCH_STATEMENTS = 40;
+
 /** `results[index].meta.changes`, defaulting to 0. */
-export function changesAt(_results: readonly D1Result[], _index: number): number {
-  throw new Error('not implemented: M1');
+export function changesAt(results: readonly D1Result[], index: number): number {
+  const meta = results[index]?.meta as { changes?: unknown } | undefined;
+  return typeof meta?.changes === 'number' ? meta.changes : 0;
 }
 
 /** `SELECT` returning zero or one row. */
-export function queryOne<T>(_stmt: D1PreparedStatement): Promise<T | null> {
-  throw new Error('not implemented: M1');
+export async function queryOne<T>(stmt: D1PreparedStatement): Promise<T | null> {
+  return (await stmt.first<T>()) ?? null;
 }
 
 /** `SELECT` returning many rows. */
-export function queryAll<T>(_stmt: D1PreparedStatement): Promise<readonly T[]> {
-  throw new Error('not implemented: M1');
+export async function queryAll<T>(stmt: D1PreparedStatement): Promise<readonly T[]> {
+  const res = await stmt.all<T>();
+  return res.results;
 }
 
 /**
@@ -50,29 +66,33 @@ export function queryAll<T>(_stmt: D1PreparedStatement): Promise<readonly T[]> {
  * that and let it surface as `500 INTERNAL`. The two triggers raise distinct
  * messages precisely so this distinction is possible.
  */
-export function isOverdraftError(_err: unknown): boolean {
-  throw new Error('not implemented: M5');
+export function isOverdraftError(err: unknown): boolean {
+  return thrownMentions(err, DB_MESSAGES.insufficientFunds);
 }
 
 /**
  * True for the `ledger_bi_bankroll_exists` abort. Always an internal bug —
  * surface as `500 INTERNAL` and log loudly.
  */
-export function isOrphanBankrollError(_err: unknown): boolean {
-  throw new Error('not implemented: M5');
+export function isOrphanBankrollError(err: unknown): boolean {
+  return thrownMentions(err, DB_MESSAGES.unknownBankroll);
 }
 
 /**
  * True when the thrown value is a UNIQUE violation on the given index. Used to
  * recognise "this bet was already paid" without a read (PLAN.md §7.4).
  */
-export function isUniqueViolation(_err: unknown, _hint?: string): boolean {
-  throw new Error('not implemented: M5');
+// `hint` is matched as a plain substring of the SQLite message (e.g.
+// 'ledger.bankroll_id, ledger.kind, ledger.ref_id'); pass enough of the index's
+// column list to be unambiguous, not just one column name.
+export function isUniqueViolation(err: unknown, hint?: string): boolean {
+  if (!thrownMentions(err, DB_MESSAGES.uniqueViolation)) return false;
+  return hint === undefined ? true : thrownMentions(err, [hint]);
 }
 
 /** `crypto.randomUUID()`, wrapped so tests can inject a deterministic source. */
 export function newId(): string {
-  throw new Error('not implemented: M1');
+  return crypto.randomUUID();
 }
 
 /**
@@ -81,7 +101,7 @@ export function newId(): string {
  * want every guard in a batch to agree. Never derived from client input.
  */
 export function nowMs(): number {
-  throw new Error('not implemented: M1');
+  return Date.now();
 }
 
 /** Handy for tests: assert `SUM(ledger.amount_cents) === bankrolls.balance_cents`. */

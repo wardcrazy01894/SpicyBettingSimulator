@@ -3,8 +3,12 @@
  */
 
 import type { ErrorHandler, MiddlewareHandler } from 'hono';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { fromThrown } from '../shared/errors.js';
 import type { EpochMs, UserSummary } from '../shared/types.js';
 import type { Env, RuntimeConfig } from './env.js';
+import { nowMs } from './db.js';
+import { readConfig } from './env.js';
 
 export interface AppVariables {
   /** Captured ONCE per request; every guard in the request uses this value. */
@@ -21,7 +25,14 @@ export interface AppContext {
 
 /** Seeds `now` and `config`. Must be first. */
 export function contextMiddleware(): MiddlewareHandler<AppContext> {
-  throw new Error('not implemented: M1');
+  return async (c, next) => {
+    c.set('now', nowMs());
+    c.set('config', readConfig(c.env));
+    // M3's sessionMiddleware overwrites these; until then every request is anonymous.
+    c.set('user', null);
+    c.set('sessionToken', null);
+    await next();
+  };
 }
 
 /**
@@ -54,7 +65,14 @@ export function requireAdmin(): MiddlewareHandler<AppContext> {
 
 /** Turns any thrown value into the `{ error: { code, message } }` envelope. */
 export function errorHandler(): ErrorHandler<AppContext> {
-  throw new Error('not implemented: M1');
+  return (err, c) => {
+    const appErr = fromThrown(err);
+    if (appErr.code === 'INTERNAL') {
+      // The body never carries the original message or stack; the log does.
+      console.error('[api] unhandled error', c.req.method, c.req.path, err);
+    }
+    return c.json(appErr.toBody(), appErr.status as ContentfulStatusCode);
+  };
 }
 
 /** `cf-connecting-ip`, or null locally. */

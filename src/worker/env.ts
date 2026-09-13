@@ -46,6 +46,51 @@ export interface RuntimeConfig {
  * Parse and bounds-check `env`. Throws at startup on a misconfiguration rather
  * than silently defaulting, EXCEPT for optional secrets.
  */
-export function readConfig(_env: Env): RuntimeConfig {
-  throw new Error('not implemented: M1');
+export function readConfig(env: Env): RuntimeConfig {
+  return {
+    espnBaseUrl: requireUrl('ESPN_BASE_URL', env.ESPN_BASE_URL),
+    cookieSecure: requireBool('COOKIE_SECURE', env.COOKIE_SECURE),
+    refreshTargetsPerRun: requireInt('REFRESH_TARGETS_PER_RUN', env.REFRESH_TARGETS_PER_RUN, 1, 10),
+    settleChunk: requireInt('SETTLE_CHUNK', env.SETTLE_CHUNK, 1, 100),
+    appVersion: requireNonEmpty('APP_VERSION', env.APP_VERSION),
+    inviteRequired: typeof env.INVITE_CODE === 'string' && env.INVITE_CODE.length > 0,
+  };
+}
+
+function requireNonEmpty(name: string, raw: string | undefined): string {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new Error(`config: ${name} must be set`);
+  }
+  return raw.trim();
+}
+
+function requireUrl(name: string, raw: string | undefined): string {
+  const value = requireNonEmpty(name, raw);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`config: ${name} is not a URL`);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`config: ${name} must be http(s)`);
+  }
+  // Normalised without a trailing slash so callers can append paths.
+  return value.replace(/\/+$/, '');
+}
+
+function requireBool(name: string, raw: string | undefined): boolean {
+  const value = requireNonEmpty(name, raw).toLowerCase();
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`config: ${name} must be "true" or "false"`);
+}
+
+function requireInt(name: string, raw: string | undefined, min: number, max: number): number {
+  const value = requireNonEmpty(name, raw);
+  if (!/^\d+$/.test(value)) throw new Error(`config: ${name} must be an integer`);
+  const n = Number(value);
+  if (n < min || n > max)
+    throw new Error(`config: ${name} must be between ${String(min)} and ${String(max)}`);
+  return n;
 }

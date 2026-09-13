@@ -118,6 +118,7 @@ export default tseslint.config(
         crypto: 'readonly',
         TextEncoder: 'readonly',
         TextDecoder: 'readonly',
+        structuredClone: 'readonly',
       },
     },
   },
