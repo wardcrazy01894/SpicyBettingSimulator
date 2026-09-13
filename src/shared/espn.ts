@@ -315,13 +315,18 @@ function sideSnapshot(node: unknown): { readonly line: unknown; readonly odds: u
 /** A short, safe rendering of a raw feed value for a warning message. */
 function rawText(value: unknown): string {
   // JSON.stringify is typed as returning string but yields undefined for
-  // undefined/functions/symbols; guard those explicitly.
-  const text =
-    typeof value === 'string'
-      ? value
-      : value === undefined || typeof value === 'function' || typeof value === 'symbol'
-        ? typeof value
-        : JSON.stringify(value);
+  // undefined/functions/symbols/toJSON→undefined and THROWS on BigInt or
+  // cycles. This module never throws (PLAN §14.8), so fall back to typeof.
+  let text: string;
+  if (typeof value === 'string') {
+    text = value;
+  } else {
+    try {
+      text = (JSON.stringify(value) as string | undefined) ?? typeof value;
+    } catch {
+      text = typeof value;
+    }
+  }
   return text.length > 24 ? `${text.slice(0, 24)}…` : text;
 }
 
@@ -373,12 +378,19 @@ function parseTotalMarket(entry: unknown, notes: string[]): TotalMarket | null {
   const under = sideSnapshot(prop(total, 'under'));
   if (over === null || under === null) return null;
 
-  const tenths =
-    parseLineToTenths(over.line) ??
-    parseLineToTenths(under.line) ??
-    parseLineToTenths(prop(entry, 'overUnder'));
+  const overTenths = parseLineToTenths(over.line);
+  const underTenths = parseLineToTenths(under.line);
+  const tenths = overTenths ?? underTenths ?? parseLineToTenths(prop(entry, 'overUnder'));
   if (tenths === null) {
-    notes.push(`total: unusable line ${rawText(over.line)}`);
+    notes.push(
+      `total: unusable line ${rawText(over.line ?? under.line ?? prop(entry, 'overUnder'))}`,
+    );
+    return null;
+  }
+  // Same drift insurance as the spread: one `tenths` serves both sides, so a
+  // disagreeing pair would snapshot the over's number onto every under leg.
+  if (overTenths !== null && underTenths !== null && overTenths !== underTenths) {
+    notes.push(`total: sides disagree (over ${rawText(over.line)}, under ${rawText(under.line)})`);
     return null;
   }
   const overPrice = parseAmericanPrice(over.odds);
@@ -550,8 +562,12 @@ function parseLines(
   if (total === null && isObject(prop(entry, 'total'))) generic.push('total');
   if (moneyline === null && isObject(prop(entry, 'moneyline'))) generic.push('moneyline');
   if (notes.length > 0 || generic.length > 0) {
-    const detail = notes.length > 0 ? notes.join('; ') : `dropped unusable ${generic.join(', ')}`;
-    warnings?.push({ eventId, reason: `${provider}: ${detail}` });
+    // Both lists: a market dropped at the "one side missing" early return pushes
+    // no note, and must not be hidden by another market's diagnostic.
+    const parts = [...notes];
+    const silent = generic.filter((m) => !notes.some((n) => n.startsWith(`${m}:`)));
+    if (silent.length > 0) parts.push(`dropped unusable ${silent.join(', ')}`);
+    warnings?.push({ eventId, reason: `${provider}: ${parts.join('; ')}` });
   }
 
   if (spread === null && total === null && moneyline === null) return null;

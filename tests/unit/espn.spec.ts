@@ -920,6 +920,64 @@ describe('defensive behaviour', () => {
     expect(warnings[0]?.reason).toMatch(/total: unusable line o−50\.5/);
   });
 
+  it('drops a total whose over and under lines disagree', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      total: {
+        over: { close: { line: 'o50.5', odds: '-110' } },
+        under: { close: { line: 'u44.5', odds: '-110' } },
+      },
+    });
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(result?.lines).toBeNull();
+    expect(warnings[0]?.reason).toMatch(/total: sides disagree \(over o50\.5, under u44\.5\)/);
+  });
+
+  it("reports a silently-dropped market alongside another market's diagnostic", () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      pointSpread: {
+        home: { close: { line: '−3.5', odds: '-110' } },
+        away: { close: { line: '+3.5', odds: '-110' } },
+      },
+      moneyline: {},
+    });
+    parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.reason).toMatch(/spread: unusable home line −3\.5/);
+    expect(warnings[0]?.reason).toMatch(/dropped unusable moneyline/);
+  });
+
+  it('never throws on values JSON.stringify cannot serialise', () => {
+    const warnings: ParseWarning[] = [];
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      pointSpread: {
+        home: { close: { line: 10n, odds: '-110' } },
+        away: { close: { line: circular, odds: { toJSON: () => undefined } } },
+      },
+    });
+    expect(() => parseEvent(event, 'nfl', FETCHED_AT, warnings)).not.toThrow();
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('names the failing side when only the under/overUnder line is unusable', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      total: {
+        over: { close: { odds: '-110' } },
+        under: { close: { line: 'u−44.5', odds: '-110' } },
+      },
+    });
+    parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(warnings[0]?.reason).toMatch(/total: unusable line u−44\.5/);
+  });
+
   it('drops an out-of-range price and warns', () => {
     const warnings: ParseWarning[] = [];
     const event = baseEvent({
