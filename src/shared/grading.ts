@@ -41,6 +41,7 @@
 import { AppError } from './errors.js';
 import {
   EVEN_MONEY_UNIT,
+  PUSH_AMERICAN_PRICE,
   americanToPrice,
   payoutCents,
   priceFromLegs,
@@ -86,9 +87,6 @@ export interface BetOutcome {
    */
   readonly effectivePrice: Price;
 }
-
-/** Even money as an American integer. §7.4 writes this for a push/void. */
-const EVEN_MONEY_AMERICAN: AmericanPrice = 100;
 
 /**
  * A score we are willing to grade on. `null` (never parsed), a fraction, `NaN`,
@@ -287,7 +285,7 @@ export function effectiveAmericanPrice(outcome: BetOutcome): AmericanPrice {
   switch (outcome.status) {
     case 'push':
     case 'void':
-      return EVEN_MONEY_AMERICAN;
+      return PUSH_AMERICAN_PRICE;
     case 'won':
     case 'lost':
       return priceToAmerican(outcome.effectivePrice);
