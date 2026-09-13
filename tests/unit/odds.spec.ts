@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   EVEN_MONEY_UNIT,
   MAX_PAYOUT_CENTS,
+  PUSH_AMERICAN_PRICE,
   americanToPrice,
   exceedsPayoutCap,
   formatAmerican,
@@ -445,10 +446,12 @@ describe('MAX_PAYOUT_CENTS', () => {
     expect(payoutCents(100000, tenAt110)).toBe(64308161);
   });
 
-  it('the cap is compared in BigInt BEFORE any Number conversion', () => {
+  it('a payout past 2^53, or of Infinity magnitude, is rejected rather than truncated', () => {
     const price = priceFromLegs(Array<AmericanPrice>(10).fill(2000));
     // The true payout is 1667988097820100000¢ — past 2^53, so a `number` could
-    // not represent it. The throw proves no Number() happened first.
+    // not represent it. (That the comparison happens in BigInt is a property of
+    // the source, not something a test can observe: any value a double would
+    // lose is already far beyond the cap.)
     expect(exactPayout(100000, price)).toBe(1667988097820100000n);
     expect(exactPayout(100000, price)).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER));
     expectAppError(() => payoutCents(100000, price), 'PAYOUT_LIMIT_EXCEEDED');
@@ -457,6 +460,27 @@ describe('MAX_PAYOUT_CENTS', () => {
     expect(Number(absurd.num)).toBe(Number.POSITIVE_INFINITY);
     expectAppError(() => payoutCents(100, absurd), 'PAYOUT_LIMIT_EXCEEDED');
     expect(exceedsPayoutCap(100, absurd)).toBe(true);
+  });
+
+  it('priceToAmerican refuses an output beyond the schema CHECK instead of returning Infinity', () => {
+    // 10 legs at +100000: exact American is 101004512021025221012004501000000.
+    const huge = priceFromLegs(Array<AmericanPrice>(10).fill(100000));
+    expectAppError(() => priceToAmerican(huge), 'VALIDATION');
+    expectAppError(() => priceToAmerican({ num: 10n ** 400n, den: 1n }), 'VALIDATION');
+    // Exactly at the CHECK bound is still allowed: +100000000 <-> (1000002/1)... use the inverse.
+    expect(priceToAmerican({ num: 1_000_001n, den: 1n })).toBe(100_000_000);
+    expectAppError(() => priceToAmerican({ num: 1_000_002n, den: 1n }), 'VALIDATION');
+  });
+
+  it('PUSH_AMERICAN_PRICE is the literal settlement writes for an all-push bet', () => {
+    expect(PUSH_AMERICAN_PRICE).toBe(100);
+    expectAppError(() => priceToAmerican(EVEN_MONEY_UNIT), 'VALIDATION');
+    expect(Object.isFrozen(EVEN_MONEY_UNIT)).toBe(true);
+  });
+
+  it('formatDecimalOdds caps places at 20', () => {
+    expect(formatDecimalOdds(americanToPrice(-110), 20)).toBe('1.90909090909090909091');
+    expectAppError(() => formatDecimalOdds(americanToPrice(-110), 21), 'VALIDATION');
   });
 
   it('exceedsPayoutCap agrees with payoutCents but does not throw', () => {

@@ -37,7 +37,22 @@ import { AppError } from './errors.js';
 import type { AmericanPrice, Cents, Price } from './types.js';
 
 /** Decimal odds of 1.0 — the identity for parlay multiplication ("all legs pushed"). */
-export const EVEN_MONEY_UNIT: Price = { num: 1n, den: 1n };
+export const EVEN_MONEY_UNIT: Price = Object.freeze({ num: 1n, den: 1n });
+
+/**
+ * The American price SETTLEMENT WRITES for a bet whose every leg pushed or was
+ * voided (PLAN §7.4: `american_price = 100`, `payout = stake`). It is a literal,
+ * not `priceToAmerican(EVEN_MONEY_UNIT)` — that call THROWS, because even money
+ * has no American representation. M6 must use this constant.
+ */
+export const PUSH_AMERICAN_PRICE: AmericanPrice = 100;
+
+/**
+ * Largest |American| the schema accepts (`bets.american_price CHECK
+ * abs(...) <= 100000000`). `priceToAmerican` refuses to return anything larger,
+ * so a display price can never be bound as Infinity or a non-safe integer.
+ */
+const MAX_ABS_AMERICAN_OUTPUT = 100_000_000n;
 
 /**
  * Re-exported from constants.ts, which is the single home for anything the UI and
@@ -156,6 +171,12 @@ export function americanToPrice(american: AmericanPrice): Price {
  * @throws AppError('VALIDATION') for a price with no American equivalent, i.e.
  *   decimal odds <= 1.0. EVEN_MONEY_UNIT is the real-world case (every leg
  *   pushed) and the UI renders it as "—" (PLAN §5.4), never as a price.
+ *   SETTLEMENT (PLAN §7.4) must therefore NOT call this on the empty product of
+ *   surviving legs; it writes `PUSH_AMERICAN_PRICE` (100) directly.
+ * @throws AppError('VALIDATION') when |result| would exceed the schema's
+ *   `abs(american_price) <= 100000000` CHECK — such a price is only reachable
+ *   from a parlay that already exceeds MAX_PAYOUT_CENTS, and returning an
+ *   Infinity/non-safe `number` here would let a caller bind it into D1.
  */
 export function priceToAmerican(price: Price): AmericanPrice {
   const { num, den } = price;
@@ -165,9 +186,12 @@ export function priceToAmerican(price: Price): AmericanPrice {
       `Price ${num.toString()}/${den.toString()} has no American equivalent (decimal odds must exceed 1.0).`,
     );
   }
-  return num >= 2n * den
-    ? Number(roundHalfUp(100n * (num - den), den))
-    : -Number(roundHalfUp(100n * den, num - den));
+  const magnitude =
+    num >= 2n * den ? roundHalfUp(100n * (num - den), den) : roundHalfUp(100n * den, num - den);
+  if (magnitude > MAX_ABS_AMERICAN_OUTPUT) {
+    throw new AppError('VALIDATION', 'Price is too long to express as an American price.');
+  }
+  return num >= 2n * den ? Number(magnitude) : -Number(magnitude);
 }
 
 /** Product of leg prices. Empty input returns EVEN_MONEY_UNIT. */
@@ -205,17 +229,25 @@ export function payoutCents(stakeCents: Cents, price: Price): Cents {
   return Number(payout);
 }
 
-/** Non-throwing form, for pre-flight validation of a bet slip. */
+/**
+ * Cap check for pre-flight validation of a bet slip: returns true/false instead
+ * of throwing PAYOUT_LIMIT_EXCEEDED. It still throws VALIDATION for a stake or
+ * price that is not a legal input (negative, non-integer, degenerate price).
+ */
 export function exceedsPayoutCap(stakeCents: Cents, price: Price): boolean {
   return payoutCentsExact(stakeCents, price) > MAX_PAYOUT_CENTS_BIG;
 }
 
-/** `payoutCents - stakeCents`. */
+/** `payoutCents - stakeCents`. Non-negative for every price `americanToPrice` can produce (decimal > 1). */
 export function profitCents(stakeCents: Cents, price: Price): Cents {
   return payoutCents(stakeCents, price) - stakeCents;
 }
 
-/** Implied probability, `den/num`. Float, DISPLAY ONLY. */
+/**
+ * Implied probability, `den/num`. Float, DISPLAY ONLY. Pass a single MARKET
+ * price (from `americanToPrice`), never a parlay product — the BigInt→Number
+ * conversion is only meaningful on that bounded domain.
+ */
 export function impliedProbability(price: Price): number {
   return Number(price.den) / Number(price.num);
 }
@@ -237,11 +269,8 @@ export function marketHold(prices: readonly Price[]): number {
  * 10-leg -110 parlay -> "643.081618", not "643.081617").
  */
 export function formatDecimalOdds(price: Price, places = 3): string {
-  if (!Number.isSafeInteger(places) || places < 0) {
-    throw new AppError(
-      'VALIDATION',
-      `places must be a non-negative integer, got ${String(places)}.`,
-    );
+  if (!Number.isSafeInteger(places) || places < 0 || places > 20) {
+    throw new AppError('VALIDATION', `places must be an integer in 0..20, got ${String(places)}.`);
   }
   assertUsablePrice(price);
   const scale = 10n ** BigInt(places);
