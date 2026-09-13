@@ -1436,6 +1436,22 @@ describe('computeNextRunAt', () => {
     expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + 15 * MIN);
   });
 
+  it('a SCHEDULED game just past kickoff (ESPN slow to flip) stays live for a bounded grace', () => {
+    // 20 minutes past kickoff, still 'pre' in the feed: must NOT fall to +6h or
+    // settlement waits hours for a game that has genuinely started.
+    const late = makeSlate([spec({ status: 'pre', kickoffAt: T0 - 20 * MIN })], 'nfl', T0);
+    expect(computeNextRunAt(target, late, false, T0)).toBe(T0 + 15 * MIN);
+    // Inside the 4h grace: still live.
+    const edge = makeSlate([spec({ status: 'pre', kickoffAt: T0 - 4 * HOUR })], 'nfl', T0);
+    expect(computeNextRunAt(target, edge, false, T0)).toBe(T0 + 15 * MIN);
+    // Past the grace: a silently-postponed game drops to discovery.
+    const stale = makeSlate([spec({ status: 'pre', kickoffAt: T0 - 4 * HOUR - 1 })], 'nfl', T0);
+    expect(computeNextRunAt(target, stale, false, T0)).toBe(T0 + 6 * HOUR);
+    // No grace for postponed: 20 minutes past its nominal kickoff is discovery.
+    const post = makeSlate([spec({ status: 'postponed', kickoffAt: T0 - 20 * MIN })], 'nfl', T0);
+    expect(computeNextRunAt(target, post, false, T0)).toBe(T0 + 6 * HOUR);
+  });
+
   it('an IN_PROGRESS game is live no matter how long ago it kicked off', () => {
     // The in_progress arm has no horizon at all — a game in a weather delay is
     // still the thing we most need fresh scores for.

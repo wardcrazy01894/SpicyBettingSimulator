@@ -123,6 +123,8 @@ const REFRESH_DISCOVERY_MS = 6 * HOUR_MS;
 const REFRESH_DONE_MS = 24 * HOUR_MS;
 /** "kickoff within 3h" / "within 48h" — the two tier boundaries. */
 const LIVE_HORIZON_MS = 3 * HOUR_MS;
+/** How long a `scheduled` game past its kickoff still counts as live (see `within`). */
+const KICKOFF_GRACE_MS = 4 * 60 * 60 * 1000;
 const SOON_HORIZON_MS = 48 * HOUR_MS;
 /** Failure backoff: `min(15min * 2^consecutive_failures, 6h)`. */
 const BACKOFF_BASE_MS = REFRESH_LIVE_MS;
@@ -831,10 +833,19 @@ export function computeNextRunAt(
   const unfinished = games.filter((g) => !TERMINAL_STATUSES.has(g.status));
   if (unfinished.length === 0) return now + REFRESH_DONE_MS;
 
-  /** `kickoffAt` is ahead of `now` by no more than `horizon`. Clamped both ends. */
+  /**
+   * `kickoffAt` is ahead of `now` by no more than `horizon`. Clamped both ends —
+   * except that a still-`scheduled` game gets a post-kickoff grace: ESPN can
+   * take a few minutes to flip a game to `in_progress`, and a game that has
+   * genuinely started must stay on the 15-minute tier or settlement waits
+   * hours. The grace is bounded (KICKOFF_GRACE_MS) so a silently-postponed
+   * game still drops to the discovery tier eventually. `postponed`/`unknown`
+   * games get no grace.
+   */
   const within = (g: Game, horizon: number): boolean => {
     const ahead = g.kickoffAt - now;
-    return ahead >= 0 && ahead <= horizon;
+    const floor = g.status === 'scheduled' ? -KICKOFF_GRACE_MS : 0;
+    return ahead >= floor && ahead <= horizon;
   };
 
   const live = unfinished.some((g) => g.status === 'in_progress' || within(g, LIVE_HORIZON_MS));
