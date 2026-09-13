@@ -295,12 +295,33 @@ BEGIN
   SELECT RAISE(ABORT, 'ledger: insufficient funds');
 END;
 
--- The ONLY writer of bankrolls.balance_cents.
+-- The ONLY writer of bankrolls.balance_cents (enforced by the two
+-- bankrolls_b*_balance_guard triggers below, not just by convention).
 CREATE TRIGGER ledger_ai_apply AFTER INSERT ON ledger BEGIN
   UPDATE bankrolls
      SET balance_cents = balance_cents + NEW.amount_cents,
          updated_at    = NEW.created_at
    WHERE id = NEW.bankroll_id;
+END;
+
+-- balance_cents must ALWAYS equal SUM(ledger.amount_cents) for that bankroll.
+-- A direct `UPDATE bankrolls SET balance_cents = ...` (or an INSERT with a
+-- non-zero opening balance) that breaks the identity is rejected. The
+-- ledger_ai_apply write passes because it fires AFTER the ledger row exists,
+-- so the SUM already includes it. Updating other columns (updated_at) with an
+-- unchanged balance also passes, since the identity still holds.
+CREATE TRIGGER bankrolls_bu_balance_guard BEFORE UPDATE OF balance_cents ON bankrolls
+WHEN NEW.balance_cents <> (SELECT COALESCE(SUM(amount_cents), 0) FROM ledger
+                            WHERE bankroll_id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'bankrolls: balance_cents may only be written by the ledger trigger');
+END;
+
+CREATE TRIGGER bankrolls_bi_balance_guard BEFORE INSERT ON bankrolls
+WHEN NEW.balance_cents <> (SELECT COALESCE(SUM(amount_cents), 0) FROM ledger
+                            WHERE bankroll_id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'bankrolls: balance_cents may only be written by the ledger trigger');
 END;
 
 CREATE TRIGGER ledger_bu_block BEFORE UPDATE ON ledger BEGIN

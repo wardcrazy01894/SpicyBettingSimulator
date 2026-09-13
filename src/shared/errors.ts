@@ -122,18 +122,33 @@ export function isAppError(value: unknown): value is AppError {
  */
 export function fromThrown(value: unknown): AppError {
   if (isAppError(value)) return value;
-  const text = collectMessages(value);
   // The two ledger BEFORE INSERT triggers raise DISTINCT messages on purpose:
   // insufficient funds is a legitimate user outcome, an unknown bankroll is a
-  // bug and must surface as INTERNAL (PLAN.md §4.2).
-  if (
-    text.includes('ledger: insufficient funds') ||
-    text.includes('CHECK constraint failed: balance_cents >= 0')
-  ) {
+  // bug and must surface as INTERNAL (PLAN.md §4.2). db.ts::isOverdraftError /
+  // isOrphanBankrollError use the same constants, so the two cannot drift.
+  if (thrownMentions(value, DB_MESSAGES.insufficientFunds)) {
     return new AppError('INSUFFICIENT_FUNDS', 'Insufficient funds for this stake.');
   }
   // Deliberately generic: the original message may contain SQL or a stack.
   return new AppError('INTERNAL', 'Something went wrong.');
+}
+
+/**
+ * The exact strings migrations/0001_init.sql raises. SQLite never echoes bound
+ * values into these messages, so a user-controlled string cannot forge them.
+ */
+export const DB_MESSAGES = {
+  insufficientFunds: ['ledger: insufficient funds', 'CHECK constraint failed: balance_cents >= 0'],
+  unknownBankroll: ['ledger: unknown bankroll_id'],
+  ledgerAppendOnly: ['ledger is append-only'],
+  balanceGuard: ['bankrolls: balance_cents may only be written by the ledger trigger'],
+  uniqueViolation: ['UNIQUE constraint failed'],
+} as const;
+
+/** True when the thrown value (or its `cause` chain) mentions any needle. */
+export function thrownMentions(value: unknown, needles: readonly string[]): boolean {
+  const text = collectMessages(value);
+  return needles.some((n) => text.includes(n));
 }
 
 /** Message text of a thrown value and its `cause` chain, joined. */

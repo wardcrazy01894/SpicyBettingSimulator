@@ -26,7 +26,7 @@ describe('AppError', () => {
     });
   });
 
-  it('isAppError narrows correctly, including across a lost prototype', () => {
+  it('isAppError narrows on the class, not on shape', () => {
     expect(isAppError(new AppError('INTERNAL', 'x'))).toBe(true);
     expect(isAppError(new Error('x'))).toBe(false);
     expect(isAppError(null)).toBe(false);

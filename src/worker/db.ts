@@ -9,6 +9,7 @@
  *   3. Budget <= 40 statements per Worker invocation (see Spike S2).
  */
 
+import { DB_MESSAGES, thrownMentions } from '../shared/errors.js';
 import type { Env } from './env.js';
 
 /**
@@ -29,7 +30,11 @@ export async function runBatch(
   return db.batch([...statements]);
 }
 
-/** PLAN.md §1 / Spike S2: keep well under the documented 50-per-invocation figure. */
+/**
+ * PLAN.md §1 / Spike S2: keep well under the documented 50-per-invocation
+ * figure. Enforced per runBatch() CALL; callers are responsible for issuing at
+ * most one such batch per invocation for anything near the limit.
+ */
 export const MAX_BATCH_STATEMENTS = 40;
 
 /** `results[index].meta.changes`, defaulting to 0. */
@@ -61,24 +66,25 @@ export async function queryAll<T>(stmt: D1PreparedStatement): Promise<readonly T
  * that and let it surface as `500 INTERNAL`. The two triggers raise distinct
  * messages precisely so this distinction is possible.
  */
-export function isOverdraftError(_err: unknown): boolean {
-  throw new Error('not implemented: M5');
+export function isOverdraftError(err: unknown): boolean {
+  return thrownMentions(err, DB_MESSAGES.insufficientFunds);
 }
 
 /**
  * True for the `ledger_bi_bankroll_exists` abort. Always an internal bug —
  * surface as `500 INTERNAL` and log loudly.
  */
-export function isOrphanBankrollError(_err: unknown): boolean {
-  throw new Error('not implemented: M5');
+export function isOrphanBankrollError(err: unknown): boolean {
+  return thrownMentions(err, DB_MESSAGES.unknownBankroll);
 }
 
 /**
  * True when the thrown value is a UNIQUE violation on the given index. Used to
  * recognise "this bet was already paid" without a read (PLAN.md §7.4).
  */
-export function isUniqueViolation(_err: unknown, _hint?: string): boolean {
-  throw new Error('not implemented: M5');
+export function isUniqueViolation(err: unknown, hint?: string): boolean {
+  if (!thrownMentions(err, DB_MESSAGES.uniqueViolation)) return false;
+  return hint === undefined ? true : thrownMentions(err, [hint]);
 }
 
 /** `crypto.randomUUID()`, wrapped so tests can inject a deterministic source. */

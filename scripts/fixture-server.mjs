@@ -118,8 +118,15 @@ function shiftPayload(payload, weeks) {
             shortDetail: 'Scheduled',
           },
         };
-        for (const c of comp.competitors ?? []) c.score = '0';
+        for (const c of comp.competitors ?? []) {
+          c.score = '0';
+          delete c.winner;
+          delete c.linescores;
+        }
         comp.odds = [syntheticOdds(comp)];
+        // Real ESPN keeps event.status and competitions[0].status in lock-step;
+        // a parser that reads the event-level one must see the rewind too.
+        event.status = comp.status;
       }
     }
   }
@@ -147,6 +154,9 @@ function handle(req, res) {
   const shiftParam = url.searchParams.get('shift');
   const weeks = shiftParam === '0' ? 0 : weeksToShift(Date.now());
   const dateKey = url.searchParams.get('dates');
+  if (dateKey && !/^\d{8}$/.test(dateKey)) {
+    console.warn(`[fixtures] dates=${dateKey} is not a single YYYYMMDD; returning 0 events`);
+  }
   let body;
   try {
     body = filterByDate(shiftPayload(loadSample(league), weeks), dateKey);

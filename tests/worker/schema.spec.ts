@@ -114,12 +114,37 @@ describe('migration 0001', () => {
 describe('ledger invariants (DB-enforced)', () => {
   beforeEach(seedUserAndBankroll);
 
-  it('the AFTER INSERT trigger is the only writer of balance_cents', async () => {
+  it('a ledger insert moves the balance through the AFTER INSERT trigger', async () => {
     expect(await balance()).toBe(100000);
     expect(await ledgerSum()).toBe(100000);
     await ledgerInsert('INSERT', 'l-s1', B, -2500).run();
     expect(await balance()).toBe(97500);
     expect(await ledgerSum()).toBe(97500);
+  });
+
+  it('a direct UPDATE of balance_cents that breaks SUM(ledger) = balance is rejected', async () => {
+    await expect(
+      env.DB.prepare('UPDATE bankrolls SET balance_cents = 999999999 WHERE id = ?1').bind(B).run(),
+    ).rejects.toThrow(/balance_cents may only be written by the ledger trigger/);
+    expect(await balance()).toBe(100000);
+    // Writing the SAME value (identity preserved) and touching other columns is fine.
+    await env.DB.prepare(
+      'UPDATE bankrolls SET balance_cents = 100000, updated_at = 1 WHERE id = ?1',
+    )
+      .bind(B)
+      .run();
+    expect(await balance()).toBe(100000);
+  });
+
+  it('a bankroll cannot be INSERTed with a non-zero opening balance', async () => {
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO bankrolls (id, user_id, league, season, balance_cents, created_at, updated_at)
+         VALUES (?1, ?2, 'ncaaf', 2026, 5, ?3, ?3)`,
+      )
+        .bind(`${B}-x`, U, NOW)
+        .run(),
+    ).rejects.toThrow(/balance_cents may only be written by the ledger trigger/);
   });
 
   it('an overdraft aborts with "ledger: insufficient funds" and changes nothing', async () => {
@@ -158,6 +183,11 @@ describe('ledger invariants (DB-enforced)', () => {
       /ledger: unknown bankroll_id/,
     );
     await expect(ledgerInsert('INSERT OR IGNORE', 'l-ghost2', 'nope', 500).run()).rejects.toThrow(
+      /ledger: unknown bankroll_id/,
+    );
+    // NEGATIVE amount + OR REPLACE against an unknown bankroll must still be the
+    // orphan message, never "insufficient funds" (the WHEN clauses are exclusive).
+    await expect(ledgerInsert('INSERT OR REPLACE', 'l-ghost3', 'nope', -500).run()).rejects.toThrow(
       /ledger: unknown bankroll_id/,
     );
   });

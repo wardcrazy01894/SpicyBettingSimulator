@@ -13,7 +13,7 @@ function get(path: string): Promise<Response> {
 /** TDD contract for M1/M3/M5 routing and the asset/API boundary. */
 
 describe('routing', () => {
-  it('GET /api/health returns ok without touching D1', async () => {
+  it('GET /api/health returns ok with version, now and inviteRequired', async () => {
     const res = await get('/api/health');
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toMatch(/application\/json/);

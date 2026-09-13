@@ -1,7 +1,7 @@
 /** Public routes: /api/health, /api/config, /api/auth/kdf. No auth, no DB for health. */
 
 import { Hono } from 'hono';
-import type { ConfigResponse, HealthResponse } from '../../shared/api-types.js';
+import type { ConfigResponse, HealthResponse, KdfParamsResponse } from '../../shared/api-types.js';
 import {
   BET_CUTOFF_BUFFER_MS,
   CLIENT_KDF,
@@ -30,8 +30,8 @@ export function metaRoutes(): Hono<AppContext> {
 
   app.get('/config', async (c) => {
     const [nfl, ncaaf] = await Promise.all([
-      currentSeasonFor(c.env, 'nfl'),
-      currentSeasonFor(c.env, 'ncaaf'),
+      currentSeasonFor(c.env, 'nfl', c.var.now),
+      currentSeasonFor(c.env, 'ncaaf', c.var.now),
     ]);
     const body: ConfigResponse = {
       leagues: LEAGUES,
@@ -46,16 +46,19 @@ export function metaRoutes(): Hono<AppContext> {
   });
 
   // Public and user-independent by design: no enumeration oracle (PLAN.md §10.3).
-  app.get('/auth/kdf', (c) =>
-    c.json({
+  // Lives HERE, not in routes/auth.ts: meta routes are mounted first on '/api',
+  // so a second '/kdf' handler under '/api/auth' would be unreachable dead code.
+  app.get('/auth/kdf', (c) => {
+    const body: KdfParamsResponse = {
       version: KDF_VERSION,
       algorithm: CLIENT_KDF.algorithm,
       hash: CLIENT_KDF.hash,
       iterations: CLIENT_KDF.iterations,
       keyLengthBytes: CLIENT_KDF.keyLengthBytes,
       saltPrefix: CLIENT_KDF.saltPrefix,
-    }),
-  );
+    };
+    return c.json(body);
+  });
 
   return app;
 }
