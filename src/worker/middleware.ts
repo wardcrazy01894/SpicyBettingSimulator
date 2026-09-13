@@ -4,11 +4,13 @@
 
 import type { ErrorHandler, MiddlewareHandler } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { fromThrown } from '../shared/errors.js';
+import { CSRF_HEADER, CSRF_HEADER_VALUE } from '../shared/constants.js';
+import { AppError, fromThrown } from '../shared/errors.js';
 import type { EpochMs, UserSummary } from '../shared/types.js';
 import type { Env, RuntimeConfig } from './env.js';
 import { nowMs } from './db.js';
 import { readConfig } from './env.js';
+import { readSessionCookieHeader, resolveSession } from './session.js';
 
 export interface AppVariables {
   /** Captured ONCE per request; every guard in the request uses this value. */
@@ -42,17 +44,48 @@ export function contextMiddleware(): MiddlewareHandler<AppContext> {
  * request's own origin. Otherwise 403 CSRF_BLOCKED.
  */
 export function csrfMiddleware(): MiddlewareHandler<AppContext> {
-  throw new Error('not implemented: M3');
+  return async (c, next) => {
+    if (SAFE_METHODS.has(c.req.method)) {
+      await next();
+      return;
+    }
+    if (c.req.header(CSRF_HEADER) !== CSRF_HEADER_VALUE) {
+      throw new AppError('CSRF_BLOCKED', `Missing or invalid ${CSRF_HEADER} header.`);
+    }
+    // `Origin` is absent on same-origin non-CORS requests in some browsers, so
+    // it is checked only when present — the header above is the primary gate.
+    const origin = c.req.header('Origin');
+    if (origin !== undefined && origin !== new URL(c.req.url).origin) {
+      throw new AppError('CSRF_BLOCKED', 'Cross-origin request refused.');
+    }
+    await next();
+  };
 }
+
+/** GET/HEAD/OPTIONS are side-effect free and never carry the CSRF header. */
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Resolves the session cookie into `c.var.user`, or null. Does not reject. */
 export function sessionMiddleware(): MiddlewareHandler<AppContext> {
-  throw new Error('not implemented: M3');
+  return async (c, next) => {
+    const token = readSessionCookieHeader(c.req.raw.headers.get('cookie'));
+    if (token !== null) {
+      // Set even when it does not resolve, so POST /api/auth/logout can still
+      // delete the (expired) row the browser is holding.
+      c.set('sessionToken', token);
+      const resolved = await resolveSession(c.env, token, c.var.now);
+      if (resolved !== null) c.set('user', resolved.user);
+    }
+    await next();
+  };
 }
 
 /** Rejects with 401 UNAUTHENTICATED when there is no user. */
 export function requireAuth(): MiddlewareHandler<AppContext> {
-  throw new Error('not implemented: M3');
+  return async (c, next) => {
+    if (c.var.user === null) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
+    await next();
+  };
 }
 
 /**
@@ -60,7 +93,12 @@ export function requireAuth(): MiddlewareHandler<AppContext> {
  * invisible to a normal user.
  */
 export function requireAdmin(): MiddlewareHandler<AppContext> {
-  throw new Error('not implemented: M3');
+  return async (c, next) => {
+    if (c.var.user?.isAdmin !== true) {
+      throw new AppError('NOT_FOUND', `No route for ${c.req.method} ${c.req.path}`);
+    }
+    await next();
+  };
 }
 
 /** Turns any thrown value into the `{ error: { code, message } }` envelope. */
@@ -76,6 +114,7 @@ export function errorHandler(): ErrorHandler<AppContext> {
 }
 
 /** `cf-connecting-ip`, or null locally. */
-export function clientIp(_headers: Headers): string | null {
-  throw new Error('not implemented: M3');
+export function clientIp(headers: Headers): string | null {
+  const ip = headers.get('cf-connecting-ip');
+  return ip === null || ip.trim() === '' ? null : ip.trim();
 }

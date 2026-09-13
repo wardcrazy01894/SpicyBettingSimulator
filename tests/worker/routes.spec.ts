@@ -10,6 +10,9 @@ function get(path: string): Promise<Response> {
   return Promise.resolve(buildApp().request(`https://example.com${path}`, undefined, env));
 }
 
+/** The invite code bound in vitest.workers.config.ts. */
+const INVITE = 'test-invite';
+
 /** TDD contract for M1/M3/M5 routing and the asset/API boundary. */
 
 describe('routing', () => {
@@ -94,9 +97,79 @@ describe('routing', () => {
     });
   });
 
-  it.todo('every non-public /api route returns 401 UNAUTHENTICATED when anonymous');
-  it.todo('/api/admin/* returns 404 (not 403) for a non-admin');
-  it.todo('malformed JSON bodies return 400 MALFORMED_JSON');
+  it('every non-public /api route returns 401 UNAUTHENTICATED when anonymous', async () => {
+    // §11.1 is the whole public surface; everything else is behind a session.
+    const publicPaths = ['/api/health', '/api/config', '/api/auth/kdf'];
+    for (const path of publicPaths) {
+      expect((await get(path)).status, path).toBe(200);
+    }
+    // The non-public GETs that exist as of M3. M5 adds /api/games etc.
+    const privatePaths = ['/api/auth/me', '/api/admin/users'];
+    for (const path of privatePaths) {
+      const res = await get(path);
+      expect(res.status, path).toBe(401);
+      expect((await res.json<ApiErrorBody>()).error.code, path).toBe('UNAUTHENTICATED');
+    }
+    // ...and the non-public POSTs, which must clear CSRF before the auth check.
+    const res = await buildApp().request(
+      'https://example.com/api/auth/logout-all',
+      { method: 'POST', headers: { 'X-SBS-Client': '1' } },
+      env,
+    );
+    expect(res.status).toBe(401);
+    expect((await res.json<ApiErrorBody>()).error.code).toBe('UNAUTHENTICATED');
+  });
+
+  it('/api/admin/* returns 404 (not 403) for a non-admin', async () => {
+    // A fresh (non-first) user is never an admin.
+    await env.DB.prepare(
+      `INSERT INTO users (id, username, display_name, client_iterations, server_salt,
+                          server_iterations, password_hash, is_admin, created_at, updated_at)
+       VALUES ('u-seed', 'seeduser', 'Seed', 210000, X'00', 1000, X'00', 1, ?1, ?1)`,
+    )
+      .bind(Date.now())
+      .run();
+    const app = buildApp();
+    const signup = await app.request(
+      'https://example.com/api/auth/signup',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-SBS-Client': '1' },
+        body: JSON.stringify({ username: 'plainuser', dk: 'a'.repeat(64), inviteCode: INVITE }),
+      },
+      env,
+    );
+    expect(signup.status).toBe(201);
+    const cookie = /sbs_session=([^;]*)/.exec(signup.headers.get('set-cookie') ?? '')?.[0] ?? '';
+
+    for (const path of ['/api/admin/users', '/api/admin/definitely-not-a-route']) {
+      const res = await buildApp().request(
+        `https://example.com${path}`,
+        { headers: { cookie } },
+        env,
+      );
+      expect(res.status, path).toBe(404);
+      expect((await res.json<ApiErrorBody>()).error.code, path).toBe('NOT_FOUND');
+    }
+  });
+
+  it('malformed JSON bodies return 400 MALFORMED_JSON', async () => {
+    // A body that is absent or unparseable. (`null` and `[]` parse fine and are
+    // a VALIDATION failure instead, which is a different contract.)
+    for (const body of ['{ not json', '', '{"username":']) {
+      const res = await buildApp().request(
+        'https://example.com/api/auth/login',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'X-SBS-Client': '1' },
+          body,
+        },
+        env,
+      );
+      expect(res.status, body).toBe(400);
+      expect((await res.json<ApiErrorBody>()).error.code, body).toBe('MALFORMED_JSON');
+    }
+  });
 });
 
 describe('games board', () => {

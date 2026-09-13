@@ -32,6 +32,49 @@ beforeAll(async () => {
   await applyD1Migrations(env.DB, [...env.TEST_MIGRATIONS]);
 });
 
-// TODO(M3): export const DK_VECTORS = { alex: '…64 hex…', bob: '…' } — PRECOMPUTED
-//           in Node by scripts/admin-hash.mjs; never call deriveKey() in-pool.
+/**
+ * PRECOMPUTED browser-derived keys — the 64-hex `dk` a real browser would POST.
+ *
+ * DO NOT call `deriveKey()` (or any 210,000-iteration PBKDF2) inside the pool.
+ * These are the ONLY dks the worker project may use.
+ *
+ * MEASURED CORRECTION (2026-09-13, workerd 1.20260911.1 @ compatibility_date
+ * 2026-08-22): the "workerd caps PBKDF2 at 100,000 iterations and throws
+ * OperationError above it" line in CLAUDE.md / PLAN.md §10.2 is STALE — a
+ * 210,000-iteration deriveBits completes in-pool and returns the correct key.
+ * The rule above stands anyway, on the constraint that actually binds: the
+ * Workers FREE plan allows 10 ms of CPU per invocation, and a 210k PBKDF2 costs
+ * 25-100 ms. A test that derived a dk in-pool would be exercising something the
+ * deployed Worker can never do. The split KDF is unaffected.
+ *
+ * Generated with, one line per entry:
+ *
+ *     node scripts/admin-hash.mjs alex  correct-horse-battery-staple
+ *     node scripts/admin-hash.mjs bob   bobs-very-long-password
+ *     node scripts/admin-hash.mjs carol carols-reset-password-9
+ *     node scripts/admin-hash.mjs dave  daves-long-password-11
+ *
+ * ...taking the `dk:` line of each. The SAME values are pinned in
+ * tests/unit/kdf-parity.spec.ts against an independent WebCrypto reference
+ * implementation, so the browser, the admin script and these vectors cannot
+ * drift apart.
+ *
+ * The client salt is `SHA-256('SBS-v1|' + username)`, so a vector is only valid
+ * for the username it is named after: sign `alex` up with `DK_VECTORS.alex`.
+ */
+export const DK_VECTORS = {
+  alex: '18b3bfaa9da6d403de76795e3096767721acfeacdbbe0f0fc69e9d460ad8f346',
+  bob: 'c9d3c7d22fc7fe8f6cfde0ae0019c80be141e27611e1a0817c1d16f15e834253',
+  carol: 'f36aebc96da7999f209d7c52102da3f784338098f8764607e251febb2091a701',
+  dave: '0fa83955ee57563cae104768538f2565edf08c95d798977a47c657d63dd03850',
+} as const;
+
+/**
+ * A well-formed 64-hex key that is NOT any user's: `deriveKey('alex',
+ * 'Correct-horse-battery-staple')` — the same password with one letter
+ * capitalised. Use it for "wrong password" assertions so the failure is a real
+ * KDF mismatch and not a malformed-input rejection.
+ */
+export const WRONG_DK = '10290684da42e23a6f56a63c1a2caba7cef40dd59be2f35303c6b3f43305bdd1';
+
 // TODO(M4): stubEspn() from ./fixtures.ts; afterEach -> restore()
