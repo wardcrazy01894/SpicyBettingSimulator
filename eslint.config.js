@@ -13,6 +13,7 @@ export default tseslint.config(
       '.tsbuild/**',
       'node_modules/**',
       'docs/samples/**',
+      '.claude/**',
     ],
   },
 

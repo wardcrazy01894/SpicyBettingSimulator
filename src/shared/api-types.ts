@@ -5,8 +5,8 @@
  * single PR owned by the M2d track (PLAN.md §16).
  *
  * Every timestamp is epoch ms UTC. Every money value is integer cents. Lines are
- * integer tenths. Nothing here is ever a float except `roi` and `hold`, which are
- * display-only statistics.
+ * integer tenths. Nothing here is ever a float except `roi`, which is a
+ * display-only statistic.
  */
 
 import type {
@@ -15,7 +15,9 @@ import type {
   BetType,
   Cents,
   EpochMs,
+  GameStatus,
   League,
+  LedgerKind,
   LegGrade,
   LineTenths,
   Market,
@@ -94,8 +96,11 @@ export interface GameTeamView {
 
 export interface GameLinesView {
   readonly provider: string;
+  /** When the book's price last CHANGED (game_lines.captured_at). */
   readonly capturedAt: EpochMs;
-  /** True once the line is older than LINE_STALE_MS; such markets are not bettable. */
+  /** When we last CONFIRMED the line exists (game_lines.seen_at). Staleness keys off THIS. */
+  readonly seenAt: EpochMs;
+  /** True once `now - seenAt > LINE_STALE_MS`; such markets are not bettable. */
   readonly stale: boolean;
   readonly spread: {
     readonly homeTenths: LineTenths;
@@ -118,9 +123,11 @@ export interface GameCard {
   readonly id: string;
   readonly league: League;
   readonly season: number;
+  /** ESPN season type: 1 pre, 2 regular, 3 post. Needed to label "Week 1" vs "Wild Card". */
+  readonly seasonType: number;
   readonly week: number | null;
   readonly kickoffAt: EpochMs;
-  readonly status: string;
+  readonly status: GameStatus;
   readonly statusDetail: string | null;
   readonly period: number | null;
   readonly displayClock: string | null;
@@ -186,14 +193,17 @@ export interface BetLegView {
   readonly result: 'win' | 'loss' | 'push' | 'void' | null;
   /** Live projection for OPEN bets. Computed on read, never persisted. */
   readonly projected: LegGrade | null;
-  /** Current game state, for rendering "MIA 14 - 10 NE, Q3". */
+  /**
+   * Current game state, for rendering "MIA 14 - 10 NE, Q3". Never null:
+   * bet_legs.game_id is NOT NULL with ON DELETE RESTRICT, so the row exists.
+   */
   readonly game: {
-    readonly status: string;
+    readonly status: GameStatus;
     readonly statusDetail: string | null;
     readonly kickoffAt: EpochMs;
     readonly homeScore: number | null;
     readonly awayScore: number | null;
-  } | null;
+  };
 }
 
 export interface BetView {
@@ -237,8 +247,14 @@ export interface BetsResponse {
   readonly nextCursor: string | null;
 }
 
-/** `details` of a 409 LINE_CHANGED. */
-export interface LineChangedDetails {
+/**
+ * `details` of a 409 LINE_CHANGED. A `type` alias, NOT an interface: TS gives
+ * aliases an implicit index signature, which is what lets it be passed as
+ * `AppError`'s `Readonly<Record<string, unknown>>` details. An interface here
+ * fails to compile at the one call site that exists to use it.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- must be a type alias: see above
+export type LineChangedDetails = {
   readonly legs: readonly {
     readonly gameId: string;
     readonly market: Market;
@@ -252,7 +268,7 @@ export interface LineChangedDetails {
       readonly lineTenths: LineTenths | null;
     } | null;
   }[];
-}
+};
 
 // ---------------------------------------------------------------------------
 // bankroll / ledger / leaderboard
@@ -282,7 +298,7 @@ export interface BankrollResponse {
 
 export interface LedgerEntry {
   readonly id: string;
-  readonly kind: string;
+  readonly kind: LedgerKind;
   readonly betId: string | null;
   readonly amountCents: Cents;
   readonly createdAt: EpochMs;
@@ -334,6 +350,26 @@ export interface JobRunResponse {
 
 export interface JobRunsResponse {
   readonly runs: readonly JobRunView[];
+}
+
+/** Admin user list row. Unlike UserSummary it exposes the disabled flag. */
+export interface AdminUserView extends UserSummary {
+  readonly isDisabled: boolean;
+}
+
+export interface AdminUsersResponse {
+  readonly users: readonly AdminUserView[];
+}
+
+/** POST /api/admin/users/:id/password */
+export interface AdminSetPasswordRequest {
+  /** 64 lowercase hex chars, produced by scripts/admin-hash.mjs or the browser KDF. */
+  readonly dk: string;
+}
+
+/** POST /api/admin/users/:id/disabled */
+export interface AdminSetDisabledRequest {
+  readonly disabled: boolean;
 }
 
 export interface ReconcileResponse {
