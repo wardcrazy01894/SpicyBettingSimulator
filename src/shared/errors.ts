@@ -1,0 +1,123 @@
+/**
+ * The stable error-code vocabulary. Every non-2xx API response is
+ * `{ error: { code, message, details? } }` with `code` drawn from this list.
+ *
+ * Codes are part of the API contract: the UI switches on them to render a human
+ * message. Never repurpose a code; add a new one.
+ */
+
+export const ERROR_CODES = [
+  // 400
+  'VALIDATION',
+  'MALFORMED_JSON',
+  // 401 / 403
+  'UNAUTHENTICATED',
+  'INVALID_CREDENTIALS',
+  'BAD_INVITE_CODE',
+  'ACCOUNT_DISABLED',
+  'CSRF_BLOCKED',
+  // 404
+  'NOT_FOUND',
+  'GAME_NOT_FOUND',
+  'BET_NOT_FOUND',
+  // 409
+  'USERNAME_TAKEN',
+  'GAME_NOT_BETTABLE',
+  'BETTING_CLOSED',
+  'MARKET_UNAVAILABLE',
+  'LINE_CHANGED',
+  'INSUFFICIENT_FUNDS',
+  'MIXED_LEAGUE_PARLAY',
+  'MIXED_SEASON_PARLAY',
+  'DUPLICATE_GAME_IN_PARLAY',
+  'PAYOUT_LIMIT_EXCEEDED',
+  'BET_LOCKED',
+  'BET_NOT_PENDING',
+  'JOB_LOCKED',
+  // 429 / 5xx
+  'RATE_LIMITED',
+  'UPSTREAM_UNAVAILABLE',
+  'INTERNAL',
+] as const;
+
+export type ErrorCode = (typeof ERROR_CODES)[number];
+
+export interface ApiErrorBody {
+  readonly error: {
+    readonly code: ErrorCode;
+    readonly message: string;
+    readonly details?: Readonly<Record<string, unknown>>;
+  };
+}
+
+/** Canonical HTTP status for each code. Keeps route handlers from guessing. */
+export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
+  VALIDATION: 400,
+  MALFORMED_JSON: 400,
+  UNAUTHENTICATED: 401,
+  INVALID_CREDENTIALS: 401,
+  BAD_INVITE_CODE: 401,
+  ACCOUNT_DISABLED: 403,
+  CSRF_BLOCKED: 403,
+  NOT_FOUND: 404,
+  GAME_NOT_FOUND: 404,
+  BET_NOT_FOUND: 404,
+  USERNAME_TAKEN: 409,
+  GAME_NOT_BETTABLE: 409,
+  BETTING_CLOSED: 409,
+  MARKET_UNAVAILABLE: 409,
+  LINE_CHANGED: 409,
+  INSUFFICIENT_FUNDS: 409,
+  MIXED_LEAGUE_PARLAY: 409,
+  MIXED_SEASON_PARLAY: 409,
+  DUPLICATE_GAME_IN_PARLAY: 409,
+  PAYOUT_LIMIT_EXCEEDED: 409,
+  BET_LOCKED: 409,
+  BET_NOT_PENDING: 409,
+  JOB_LOCKED: 409,
+  RATE_LIMITED: 429,
+  UPSTREAM_UNAVAILABLE: 503,
+  INTERNAL: 500,
+};
+
+/**
+ * A domain error carrying an API code. Thrown by service functions and turned
+ * into a response by the Hono error handler.
+ */
+export class AppError extends Error {
+  readonly code: ErrorCode;
+  readonly details: Readonly<Record<string, unknown>> | undefined;
+
+  constructor(code: ErrorCode, message: string, details?: Readonly<Record<string, unknown>>) {
+    super(message);
+    this.name = 'AppError';
+    this.code = code;
+    this.details = details;
+  }
+
+  /** Canonical HTTP status for this error's code. */
+  get status(): number {
+    throw new Error('not implemented: M2d');
+  }
+
+  /** Serialize to the wire envelope. */
+  toBody(): ApiErrorBody {
+    throw new Error('not implemented: M2d');
+  }
+}
+
+/** Narrowing helper used by the Hono error handler. */
+export function isAppError(_value: unknown): _value is AppError {
+  throw new Error('not implemented: M2d');
+}
+
+/**
+ * Map an arbitrary thrown value (including D1 constraint failures, which arrive
+ * as plain `Error`s with the SQLite message in `.message`/`.cause`) onto an
+ * AppError. This is where `CHECK constraint failed: balance_cents >= 0` becomes
+ * INSUFFICIENT_FUNDS and `UNIQUE constraint failed: ledger...` becomes a
+ * recognised already-settled signal. See PLAN.md §4.2 and §7.4.
+ */
+export function fromThrown(_value: unknown): AppError {
+  throw new Error('not implemented: M2d');
+}

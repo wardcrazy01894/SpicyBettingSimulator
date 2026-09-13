@@ -1,0 +1,54 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "spicybetting",
+  "main": "src/worker/index.ts",
+  // Pinned to the newest date the workerd binary bundled with
+  // @cloudflare/vitest-pool-workers 0.22 supports (it refuses anything newer).
+  // Bump it together with that package, not with workers-types.
+  "compatibility_date": "2026-08-22",
+  "observability": { "enabled": true },
+
+  // Static assets: the built SPA. `run_worker_first` is an ALLOW-LIST — only
+  // /api/* reaches the Worker, so page loads cost zero Worker invocations and an
+  // unknown /api path returns our JSON 404 instead of index.html.
+  // `not_found_handling` gives SPA deep links (/bets, /leaderboard) index.html.
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "spicybetting",
+      // Filled in by `wrangler d1 create spicybetting` during M0. Not a secret,
+      // but it is a deployment identity — do not copy it between environments.
+      "database_id": "0b0c6714-4fa5-412c-85b9-1626df035f3d",
+      "migrations_dir": "migrations",
+    },
+  ],
+
+  // See PLAN.md §9.1. Three small jobs rather than one big one, because the
+  // free-plan CPU limit (10 ms) is per invocation.
+  "triggers": {
+    "crons": [
+      "*/15 * * * *", //   :00 :15 :30 :45  -> refresh (ESPN ingest)
+      "5-59/15 * * * *", // :05 :20 :35 :50  -> settle (grade + pay)
+      "30 8 * * *", //      08:30 UTC        -> maintenance (prune, auto-void)
+    ],
+  },
+
+  "vars": {
+    "ESPN_BASE_URL": "https://site.api.espn.com",
+    "COOKIE_SECURE": "true",
+    "REFRESH_TARGETS_PER_RUN": "2",
+    "SETTLE_CHUNK": "20",
+    "APP_VERSION": "0.1.0",
+  },
+
+  // Secrets (never in this file): INVITE_CODE, IP_HASH_SALT
+  //   wrangler secret put INVITE_CODE
+  //   wrangler secret put IP_HASH_SALT
+}

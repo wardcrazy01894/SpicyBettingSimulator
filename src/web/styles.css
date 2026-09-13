@@ -1,0 +1,68 @@
+/*
+ * Single stylesheet, mobile-first. No UI framework.
+ * Co-located *.module.css files may be added per component if this grows.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #0f1115;
+  --surface: #171a21;
+  --surface-2: #1f242d;
+  --border: #2a313c;
+  --text: #e8eaed;
+  --text-dim: #9aa3af;
+  --accent: #ff5a1f;
+  --win: #2ecc71;
+  --loss: #e74c3c;
+  --push: #f1c40f;
+
+  --radius: 10px;
+  --gap: 12px;
+  --tap: 44px; /* minimum tap target */
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  /* 16px minimum stops iOS from zooming when an input is focused. */
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Safe-area padding so the sticky slip bar clears the iPhone home indicator. */
+.app-shell {
+  min-height: 100%;
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
+}
+
+button {
+  font: inherit;
+  min-height: var(--tap);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+button[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+}
+
+button:disabled {
+  opacity: 0.45;
+}

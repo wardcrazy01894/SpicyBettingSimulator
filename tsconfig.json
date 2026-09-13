@@ -1,0 +1,12 @@
+{
+  "//": "Solution-style root config. Run `npm run typecheck` (tsc -b) to check everything.",
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.shared.json" },
+    { "path": "./tsconfig.worker.json" },
+    { "path": "./tsconfig.web.json" },
+    { "path": "./tsconfig.tests-unit.json" },
+    { "path": "./tsconfig.tests-worker.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}

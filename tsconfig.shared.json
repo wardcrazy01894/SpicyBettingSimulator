@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": [],
+    "outDir": "./.tsbuild/shared",
+    "tsBuildInfoFile": "./.tsbuild/shared.tsbuildinfo"
+  },
+  "include": ["src/shared/**/*.ts"]
+}

@@ -1,0 +1,17 @@
+# Copy to .dev.vars for local development. .dev.vars is gitignored — never commit it.
+
+# IMPORTANT: this override is what makes `npm run dev` use the local fixture
+# server (scripts/fixture-server.mjs on :8788) instead of the real ESPN API.
+# Without it, wrangler.jsonc's default (https://site.api.espn.com) wins and local
+# development hits production ESPN. Delete the line to test against real ESPN.
+ESPN_BASE_URL="http://127.0.0.1:8788"
+
+# Cookies: browsers treat http://localhost as a secure context, so "true" works
+# locally. Set "false" only if you are testing over a plain-http LAN address.
+COOKIE_SECURE="true"
+
+# Shared invite code required at signup. Leave unset to allow open signup locally.
+INVITE_CODE="local-dev-invite"
+
+# Salt used to hash client IPs before they are written to auth_throttle.
+IP_HASH_SALT="local-dev-ip-salt-change-me"
