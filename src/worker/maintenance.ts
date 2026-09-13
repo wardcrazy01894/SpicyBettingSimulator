@@ -42,6 +42,37 @@ export function pruneJobRuns(_env: Env, _keepPerJob: number): Promise<number> {
   throw new Error('not implemented: M6');
 }
 
+/**
+ * TODO(M6): implement the real pass. Every helper above throws
+ * `not implemented: M6`; this list is the order they must be wired in:
+ *
+ *   1. `autoVoidStuckGames`   postponed / missing for > VOID_AFTER_MS past
+ *                             `original_kickoff_at` -> `canceled`, so settle can
+ *                             void the legs and return the stakes.
+ *   2. `findStuckInProgressGames`  reported only, never auto-changed.
+ *   3. `pruneExpiredSessions`  `sessions.expires_at < now`.
+ *   4. `pruneAuthThrottle`     `auth_throttle.window_start` past its window.
+ *   5. `pruneJobRuns(env, 200)` — PRUNE `job_runs`, KEEPING THE NEWEST 200 PER
+ *      JOB. Until this exists `job_runs` grows without bound: three crons write
+ *      ~4 runs every 15 minutes plus every admin trigger, i.e. ~380 rows/day
+ *      forever, each carrying a JSON `stats` blob. Nothing deletes them today.
+ *      It is not urgent — the table is small and D1's free storage cap is 5 GB —
+ *      but it IS unbounded, and `GET /api/admin/jobs` (LIMIT 50 over
+ *      `idx_job_runs_recent`) is the only thing keeping the read cheap.
+ *
+ * M4 lands a CALLABLE NO-OP on purpose. `runJob('maintenance')` and the
+ * `30 8 * * *` cron must reach a function that returns, so the lease, the
+ * `job_runs` row and `POST /api/admin/jobs/maintenance` are all exercisable
+ * before M6 exists. Every helper above still throws `not implemented: M6`, so
+ * there is no way to mistake this for a working implementation: it does nothing
+ * and says so in its own stats.
+ */
 export function runMaintenance(_env: Env, _now: EpochMs): Promise<MaintenanceStats> {
-  throw new Error('not implemented: M6');
+  return Promise.resolve({
+    autoVoidedGames: [],
+    stuckGames: [],
+    sessionsPruned: 0,
+    throttleRowsPruned: 0,
+    jobRunsPruned: 0,
+  });
 }

@@ -11,13 +11,27 @@
  */
 
 import { Hono } from 'hono';
-import type { AdminUsersResponse } from '../../shared/api-types.js';
+import type {
+  AdminUsersResponse,
+  JobRunResponse,
+  JobRunsResponse,
+} from '../../shared/api-types.js';
+import { JOB_NAMES } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { validateDerivedKeyHex } from '../../shared/validate.js';
 import { listUsers, setDisabled, setPassword } from '../auth.js';
+import { recentRuns, runJob } from '../jobs.js';
+import type { JobName } from '../jobs.js';
 import { requireAdmin, requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
 import { readJson, validationError } from './auth.js';
+
+/** PLAN.md §11.6: `GET /api/admin/jobs` shows the last 50 runs. */
+const ADMIN_JOB_HISTORY = 50;
+
+function isJobName(value: string): value is JobName {
+  return (JOB_NAMES as readonly string[]).includes(value);
+}
 
 export function adminRoutes(): Hono<AppContext> {
   const app = new Hono<AppContext>();
@@ -60,8 +74,43 @@ export function adminRoutes(): Hono<AppContext> {
   // --- end users (M3) -----------------------------------------------------
 
   // --- jobs (M4) ----------------------------------------------------------
-  // TODO(M4): POST /jobs/:job  -> runJob(...) | 409 JOB_LOCKED
-  // TODO(M4): GET  /jobs       -> last 50 job_runs
+  // Runs the IDENTICAL function the cron handler runs, with trigger='admin' and
+  // the same lease, so "kick it manually" cannot diverge from "it ran on time"
+  // (PLAN.md §9.3). Inline, not `ctx.waitUntil`: waitUntil grants wall time, not
+  // CPU, so it would not help if S1 came back bad — `refreshTargetsPerRun`
+  // drops an admin run to one target instead.
+  // A job whose BODY threw still returns 200 with `run.status === 'error'` and
+  // the message in `run.error` — deliberately, and documented in PLAN.md §9.3.
+  // The HTTP status answers "did the trigger work", which it did: the lease was
+  // taken, the run was recorded, and the failure is now visible in
+  // GET /api/admin/jobs exactly as a failed CRON run would be. Mapping it to 500
+  // would throw away the run id and the stats. `settle` does this today until M6
+  // lands. The only non-200 here is 409 JOB_LOCKED (the lease is held).
+  app.post('/jobs/:job', async (c) => {
+    const name = c.req.param('job');
+    if (!isJobName(name)) {
+      throw new AppError('NOT_FOUND', `No route for ${c.req.method} ${c.req.path}`);
+    }
+    const run = await runJob(c.env, name, 'admin', c.var.now);
+    if (run.status === 'skipped') {
+      // The lease is held — by the cron, or by another admin hitting the button.
+      throw new AppError('JOB_LOCKED', `The ${name} job is already running.`, { job: name });
+    }
+    const body: JobRunResponse = { run };
+    return c.json(body, 200);
+  });
+
+  // `recentRuns` folds a rolling-24h `dayRowsWritten` into every run's `stats`
+  // (PLAN.md §8.6) — that is the number to check against D1's hard-enforced
+  // 100k-rows/day cap. `c.var.now` so the window agrees with the rest of the
+  // request.
+  app.get('/jobs', async (c) => {
+    const body: JobRunsResponse = {
+      runs: await recentRuns(c.env, ADMIN_JOB_HISTORY, c.var.now),
+    };
+    return c.json(body, 200);
+  });
+  // --- end jobs (M4) ------------------------------------------------------
 
   // --- bets (M6) ----------------------------------------------------------
   // TODO(M6): POST /bets/:id/retry-settlement -> clear settle_attempts/settle_error
