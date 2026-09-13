@@ -178,13 +178,23 @@ export function readSessionCookie(c: Context<{ Bindings: Env }>): string | null 
  * without a structural cast.
  */
 export function readSessionCookieHeader(header: string | null): string | null {
-  if (header === null) return null;
+  return readSessionCookieHeaders(header)[0] ?? null;
+}
+
+/**
+ * EVERY `sbs_session` value in the header, in order. A sibling-subdomain (or
+ * plain-http MITM) can inject a same-named cookie ahead of the real one; trying
+ * each candidate turns that from a silent logout into a no-op.
+ */
+export function readSessionCookieHeaders(header: string | null): readonly string[] {
+  if (header === null) return [];
+  const out: string[] = [];
   for (const part of header.split(';')) {
     const eq = part.indexOf('=');
     if (eq === -1) continue;
     if (part.slice(0, eq).trim() !== SESSION_COOKIE_NAME) continue;
     const value = part.slice(eq + 1).trim();
-    return value === '' ? null : value;
+    if (value !== '') out.push(value);
   }
-  return null;
+  return out;
 }

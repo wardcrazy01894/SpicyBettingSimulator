@@ -114,7 +114,14 @@ export async function sha256Hex(input: string | Uint8Array): Promise<string> {
   return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', data)));
 }
 
-/** Constant-time string compare, for INVITE_CODE. */
+/** Constant-time string compare, for INVITE_CODE.
+ *
+ * Length is compared with an early return, which leaks the LENGTH of the
+ * secret. For 32-byte hashes that is nothing; for the invite code it tells an
+ * attacker how long the code is — accepted knowingly (signup is throttled 10
+ * attempts / 15 min per IP and per username, and the code is a shared,
+ * rotatable secret).
+ */
 export function timingSafeEqualString(a: string, b: string): boolean {
   const enc = new TextEncoder();
   return timingSafeEqual(enc.encode(a), enc.encode(b));

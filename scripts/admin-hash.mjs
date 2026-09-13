@@ -52,9 +52,9 @@ function toHex(bytes) {
   return Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** SHA-256("SBS-v1|" + normalised username). Mirrors src/web/api/kdf.ts. */
+/** SHA-256("SBS-v1|" + normalised username). Mirrors src/web/api/kdf.ts, normalising HERE. */
 async function deriveClientSalt(username) {
-  const input = new TextEncoder().encode(CLIENT_KDF.saltPrefix + username);
+  const input = new TextEncoder().encode(CLIENT_KDF.saltPrefix + username.trim().toLowerCase());
   return new Uint8Array(await crypto.subtle.digest('SHA-256', input));
 }
 

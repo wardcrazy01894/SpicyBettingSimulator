@@ -10,7 +10,7 @@ import type { EpochMs, UserSummary } from '../shared/types.js';
 import type { Env, RuntimeConfig } from './env.js';
 import { nowMs } from './db.js';
 import { readConfig } from './env.js';
-import { readSessionCookieHeader, resolveSession } from './session.js';
+import { readSessionCookieHeaders, resolveSession } from './session.js';
 
 export interface AppVariables {
   /** Captured ONCE per request; every guard in the request uses this value. */
@@ -68,13 +68,17 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 /** Resolves the session cookie into `c.var.user`, or null. Does not reject. */
 export function sessionMiddleware(): MiddlewareHandler<AppContext> {
   return async (c, next) => {
-    const token = readSessionCookieHeader(c.req.raw.headers.get('cookie'));
-    if (token !== null) {
-      // Set even when it does not resolve, so POST /api/auth/logout can still
-      // delete the (expired) row the browser is holding.
-      c.set('sessionToken', token);
+    const candidates = readSessionCookieHeaders(c.req.raw.headers.get('cookie'));
+    // Set even when nothing resolves, so POST /api/auth/logout can still delete
+    // the (expired) row the browser is holding.
+    if (candidates[0] !== undefined) c.set('sessionToken', candidates[0]);
+    for (const token of candidates) {
       const resolved = await resolveSession(c.env, token, c.var.now);
-      if (resolved !== null) c.set('user', resolved.user);
+      if (resolved !== null) {
+        c.set('sessionToken', token);
+        c.set('user', resolved.user);
+        break;
+      }
     }
     await next();
   };

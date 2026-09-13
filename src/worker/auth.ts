@@ -249,18 +249,42 @@ export async function setDisabled(
   disabled: boolean,
   now: EpochMs,
 ): Promise<void> {
-  // Sessions are deliberately NOT deleted: `resolveSession` joins on
-  // `is_disabled = 0`, so they stop resolving immediately and start working
-  // again if the account is re-enabled.
+  // Disabling is also a containment tool ("this account is compromised"), so
+  // it EVICTS every live session in the same batch — re-enabling requires a
+  // fresh login. `resolveSession` additionally joins on `is_disabled = 0` as a
+  // belt-and-braces check.
+  //
+  // Last-admin guard: the row is not disabled if it is the only enabled admin,
+  // because `is_admin` is only ever written by the first-signup CASE — there
+  // is no promotion path, so locking out the last admin is unrecoverable
+  // without `wrangler d1 execute`. Reported as a distinct error.
   const results = await runBatch(env.DB, [
-    env.DB.prepare('UPDATE users SET is_disabled = ?2, updated_at = ?3 WHERE id = ?1').bind(
-      userId,
-      disabled ? 1 : 0,
-      now,
-    ),
+    env.DB.prepare(
+      `UPDATE users SET is_disabled = ?2, updated_at = ?3
+        WHERE id = ?1
+          AND (?2 = 0
+               OR is_admin = 0
+               OR (SELECT COUNT(*) FROM users WHERE is_admin = 1 AND is_disabled = 0) > 1)`,
+    ).bind(userId, disabled ? 1 : 0, now),
+    // Conditional on the UPDATE above having applied: if the last-admin guard
+    // refused it, is_disabled is still 0 and nothing is evicted.
+    ...(disabled
+      ? [
+          env.DB.prepare(
+            `DELETE FROM sessions WHERE user_id = ?1
+               AND EXISTS (SELECT 1 FROM users WHERE id = ?1 AND is_disabled = 1)`,
+          ).bind(userId),
+        ]
+      : []),
   ]);
   if (changesAt(results, 0) === 0) {
-    throw new AppError('NOT_FOUND', 'No such user.');
+    const exists = await queryOne<{ n: number }>(
+      env.DB.prepare('SELECT COUNT(*) AS n FROM users WHERE id = ?1').bind(userId),
+    );
+    if ((exists?.n ?? 0) === 0) throw new AppError('NOT_FOUND', 'No such user.');
+    throw new AppError('VALIDATION', 'Cannot disable the last enabled admin.', {
+      field: 'disabled',
+    });
   }
 }
 

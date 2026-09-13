@@ -109,7 +109,18 @@ export function authRoutes(): Hono<AppContext> {
  * would otherwise surface as 500 INTERNAL. PLAN.md §11 requires
  * 400 MALFORMED_JSON.
  */
-export async function readJson(c: { req: { json: () => Promise<unknown> } }): Promise<unknown> {
+export async function readJson(c: {
+  req: { json: () => Promise<unknown>; header: (name: string) => string | undefined };
+}): Promise<unknown> {
+  // PLAN §11: bodies are JSON. Enforcing the media type is defence in depth on
+  // top of the X-SBS-Client header (a cross-site text/plain form can't set
+  // either), and it stops a proxy from ever mis-parsing us.
+  const type = (c.req.header('content-type') ?? '').split(';')[0]?.trim().toLowerCase();
+  if (type !== 'application/json') {
+    throw new AppError('VALIDATION', 'Content-Type must be application/json.', {
+      field: 'content-type',
+    });
+  }
   try {
     return await c.req.json();
   } catch {

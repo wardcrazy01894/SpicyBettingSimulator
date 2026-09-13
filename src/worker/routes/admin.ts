@@ -48,7 +48,13 @@ export function adminRoutes(): Hono<AppContext> {
     if (typeof disabled !== 'boolean') {
       throw new AppError('VALIDATION', 'disabled must be a boolean', { field: 'disabled' });
     }
-    await setDisabled(c.env, c.req.param('id'), disabled, c.var.now);
+    const targetId = c.req.param('id');
+    if (disabled && c.var.user?.id === targetId) {
+      throw new AppError('VALIDATION', 'You cannot disable your own account.', {
+        field: 'disabled',
+      });
+    }
+    await setDisabled(c.env, targetId, disabled, c.var.now);
     return c.body(null, 204);
   });
   // --- end users (M3) -----------------------------------------------------

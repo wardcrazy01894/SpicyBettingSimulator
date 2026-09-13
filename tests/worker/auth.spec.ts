@@ -373,7 +373,7 @@ describe('login', () => {
     expect(me.status).toBe(401);
     expect((await me.json<ApiErrorBody>()).error.code).toBe('UNAUTHENTICATED');
 
-    // Re-enabling restores both.
+    // Re-enabling restores login; the evicted session stays dead (containment).
     expect(
       (
         await post(
@@ -384,7 +384,56 @@ describe('login', () => {
       ).status,
     ).toBe(204);
     expect((await login('bob', DK_VECTORS.bob)).status).toBe(200);
-    expect((await get('/api/auth/me', { cookie: bobCookie })).status).toBe(200);
+    expect((await get('/api/auth/me', { cookie: bobCookie })).status).toBe(401);
+  });
+
+  it('disabling evicts sessions: re-enabling does NOT resurrect the old cookie', async () => {
+    const admin = await register('alex');
+    const bob = await register('bob');
+    await post(`/api/admin/users/${bob.id}/disabled`, { disabled: true }, { cookie: admin.cookie });
+    await post(
+      `/api/admin/users/${bob.id}/disabled`,
+      { disabled: false },
+      { cookie: admin.cookie },
+    );
+    expect((await get('/api/auth/me', { cookie: bob.cookie })).status).toBe(401);
+    expect((await login('bob', DK_VECTORS.bob)).status).toBe(200);
+  });
+
+  it('an admin cannot disable themselves, and the last enabled admin cannot be disabled', async () => {
+    const admin = await register('alex');
+    const self = await post(
+      `/api/admin/users/${admin.id}/disabled`,
+      { disabled: true },
+      { cookie: admin.cookie },
+    );
+    expect(self.status).toBe(400);
+    expect((await self.json<ApiErrorBody>()).error.code).toBe('VALIDATION');
+    // Direct service call bypassing the self check: still refused for the last admin.
+    const { setDisabled } = await import('../../src/worker/auth.js');
+    await expect(setDisabled(env, admin.id, true, Date.now())).rejects.toMatchObject({
+      code: 'VALIDATION',
+    });
+    // Still enabled and still admin.
+    expect((await get('/api/admin/users', { cookie: admin.cookie })).status).toBe(200);
+  });
+
+  it('rejects a non-JSON content type with 400 VALIDATION', async () => {
+    const res = await post(
+      '/api/auth/signup',
+      JSON.stringify({ username: 'alex', dk: DK_VECTORS.alex, inviteCode: 'test-invite' }),
+      { headers: { 'content-type': 'text/plain' } },
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<ApiErrorBody>()).error.code).toBe('VALIDATION');
+    expect(await userRow('alex')).toBeNull();
+  });
+
+  it('a garbage sbs_session cookie ahead of the real one does not log the user out', async () => {
+    const alex = await register('alex');
+    const real = alex.cookie.split(';')[0] ?? '';
+    const res = await get('/api/auth/me', { cookie: `sbs_session=garbage; ${real}` });
+    expect(res.status).toBe(200);
   });
 
   it('a WRONG password on a disabled account still reports INVALID_CREDENTIALS (no oracle)', async () => {
