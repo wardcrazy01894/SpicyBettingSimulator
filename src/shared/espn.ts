@@ -322,7 +322,10 @@ function rawText(value: unknown): string {
     text = value;
   } else {
     try {
-      text = (JSON.stringify(value) as string | undefined) ?? typeof value;
+      // Typed unknown on purpose: the lib signature says string, reality says
+      // string | undefined.
+      const out: unknown = JSON.stringify(value);
+      text = typeof out === 'string' ? out : typeof value;
     } catch {
       text = typeof value;
     }
