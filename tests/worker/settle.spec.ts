@@ -4,16 +4,21 @@ import type { BetResponse, PlaceBetRequest, UserResponse } from '../../src/share
 import type { ApiErrorBody } from '../../src/shared/errors.js';
 import { INITIAL_BANKROLL_CENTS, MAX_SETTLE_ATTEMPTS } from '../../src/shared/constants.js';
 import { isAppError } from '../../src/shared/errors.js';
+import { parseScoreboard } from '../../src/shared/espn.js';
 import { gradeBet } from '../../src/shared/grading.js';
 import { americanToPrice, formatDecimalOdds } from '../../src/shared/odds.js';
 import { bankrollId } from '../../src/worker/bankroll.js';
 import { placeBet } from '../../src/worker/bets.js';
 import { isUniqueViolation } from '../../src/worker/db.js';
 import { buildApp } from '../../src/worker/index.js';
+import { upsertSlate } from '../../src/worker/ingest.js';
+import { runJob } from '../../src/worker/jobs.js';
+import type { ProviderSlate } from '../../src/worker/providers.js';
 import {
   SETTLE_BET_UPDATE_SQL,
   SETTLE_LEG_UPDATE_SQL,
   SETTLE_PAYOUT_INSERT_SQL,
+  SettleRunError,
   buildSettleBatch,
   deferBet,
   loadLegsForBets,
@@ -23,7 +28,9 @@ import {
   selectSettleableBets,
   settleOneBet,
 } from '../../src/worker/settle.js';
-import type { SettleableBet } from '../../src/worker/settle.js';
+import type { SettleStats, SettleableBet } from '../../src/worker/settle.js';
+import { buildScoreboard } from './fixtures.js';
+import type { EventSpec } from './fixtures.js';
 import { bankrollDrift, seedGameWithLine, seedLine, updateGame } from './seed.js';
 
 /**
@@ -146,6 +153,15 @@ async function touchGame(id: string, updatedAt: number): Promise<void> {
   await env.DB.prepare(`UPDATE games SET updated_at = ?2 WHERE id = ?1`).bind(id, updatedAt).run();
 }
 
+/** The two stamps §8.5 keeps apart: "we saw it again" vs "the data changed". */
+async function gameStamps(id: string): Promise<{ updated_at: number; last_seen_at: number }> {
+  const row = await env.DB.prepare(`SELECT updated_at, last_seen_at FROM games WHERE id = ?1`)
+    .bind(id)
+    .first<{ updated_at: number; last_seen_at: number }>();
+  if (row === null) throw new Error(`game ${id} should exist`);
+  return row;
+}
+
 function spreadLeg(gameId: string): PlaceBetRequest['legs'][number] {
   return { gameId, market: 'spread', side: 'home' };
 }
@@ -253,6 +269,63 @@ async function settleableBetOf(betId: string): Promise<SettleableBet> {
     stakeCents: row.stake_cents,
     betType: row.bet_type,
     legCount: row.leg_count,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Fault injection
+ * ------------------------------------------------------------------ */
+
+/**
+ * Make the next `count` `env.DB.batch()` calls reject, then behave normally.
+ * Returns the restore function; ALWAYS call it in a `finally`.
+ *
+ * Fault injection is the only way into `runSettle`'s catch block. Every guard in
+ * the settlement batch is a `WHERE`, so a bet that is already settled, or that
+ * lost the race, writes zero rows and throws nothing — the catch is reserved for
+ * a real D1 failure, which no amount of seeding can provoke.
+ */
+function breakNextBatches(count: number): () => void {
+  const real = env.DB.batch.bind(env.DB);
+  let left = count;
+  const patched = <T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> => {
+    if (left > 0) {
+      left -= 1;
+      return Promise.reject(new Error('D1_ERROR: connection lost while committing'));
+    }
+    return real<T>(statements);
+  };
+  (env.DB as { batch: D1Database['batch'] }).batch = patched;
+  return () => {
+    (env.DB as { batch: D1Database['batch'] }).batch = real;
+  };
+}
+
+/** `runSettle`, returning the stats whether or not it threw `SettleRunError`. */
+async function runSettleExpectingErrors(now: number, chunk: number): Promise<SettleStats> {
+  try {
+    await runSettle(env, now, chunk);
+  } catch (err) {
+    if (err instanceof SettleRunError) return err.stats;
+    throw err;
+  }
+  throw new Error('runSettle should have thrown SettleRunError');
+}
+
+/* ------------------------------------------------------------------ *
+ * Real M4 ingestion, for the tests that must not fake `games.updated_at`
+ * ------------------------------------------------------------------ */
+
+/** Parse a synthesised ESPN slate exactly the way the refresh job would. */
+function makeSlate(specs: readonly EventSpec[], fetchedAt: number): ProviderSlate {
+  const parsed = parseScoreboard(buildScoreboard(specs), 'nfl', fetchedAt);
+  return {
+    games: parsed.games,
+    lines: parsed.lines,
+    warnings: parsed.warnings,
+    fetchedAt,
+    season: parsed.season,
+    week: parsed.week,
   };
 }
 
@@ -642,7 +715,7 @@ describe('runSettle — deferred-bet reset (no permanent parking)', () => {
 
     await touchGame(gid, NOW + 1_000); // ESPN republished
 
-    expect(await resetDeferredBets(env, NOW + 2_000)).toBe(1);
+    expect((await resetDeferredBets(env)).reset).toBe(1);
     const bet = await betRow(betId);
     expect(bet.settle_attempts).toBe(0);
     expect(bet.settle_error).toBeNull();
@@ -655,7 +728,7 @@ describe('runSettle — deferred-bet reset (no permanent parking)', () => {
     await updateGame(env.DB, gid, { status: 'final' });
     await deferBet(env, betId, 'unusable score', NOW);
 
-    expect(await resetDeferredBets(env, NOW + 2_000)).toBe(0);
+    expect((await resetDeferredBets(env)).reset).toBe(0);
     expect((await betRow(betId)).settle_attempts).toBe(1);
   });
 
@@ -702,6 +775,28 @@ describe('runSettle — deferred-bet reset (no permanent parking)', () => {
     expect(bet.payout_cents).toBeNull();
   });
 
+  it('retry-settlement is 409 BET_NOT_PENDING once the bet has settled', async () => {
+    const gid = await seedScheduled(g(1));
+    const betId = await place(ADMIN.id, [spreadLeg(gid)], 2500);
+    await finalize(gid, 31, 17);
+    await runSettle(env, NOW + 1, 20);
+    expect((await betRow(betId)).status).toBe('won');
+
+    const res = await post(`/api/admin/bets/${betId}/retry-settlement`, undefined, ADMIN.cookie);
+    expect(res.status, await res.clone().text()).toBe(409);
+    expect((await res.json<ApiErrorBody>()).error.code).toBe('BET_NOT_PENDING');
+
+    // ...and the escape hatch touched nothing: it is a counter reset, not an
+    // un-settle. Re-queuing a paid bet would be a second payout waiting to
+    // happen, which is why the route refuses instead of clamping.
+    const bet = await betRow(betId);
+    expect(bet.status).toBe('won');
+    expect(bet.payout_cents).toBe(4772);
+    expect(bet.settle_attempts).toBe(0);
+    expect(await ledgerRows(betId, 'bet_payout')).toHaveLength(1);
+    await expectNoDrift();
+  });
+
   it('retry-settlement is 404 for an unknown bet and for a non-admin caller', async () => {
     const other = await register();
     const missing = await post('/api/admin/bets/nope/retry-settlement', undefined, ADMIN.cookie);
@@ -728,13 +823,113 @@ describe('runSettle — deferred-bet reset (no permanent parking)', () => {
     await touchGame(gid, NOW + 1_000);
 
     const before = await betRow(betId);
-    await resetDeferredBets(env, NOW + 2_000);
+    await resetDeferredBets(env);
     const after = await betRow(betId);
 
     expect(after.status).toBe(before.status);
     expect(after.payout_cents).toBe(before.payout_cents);
     expect(after.settle_run_id).toBe(before.settle_run_id);
     expect(await ledgerRows(betId)).toHaveLength(1);
+    await expectNoDrift();
+  });
+
+  it("the reset sweep's writes are counted in stats.rowsWritten", async () => {
+    const user = await register();
+    const gid = await seedScheduled(g(1));
+    const betId = await place(user.id, [spreadLeg(gid)], 2500);
+    await updateGame(env.DB, gid, { status: 'final' }); // final, unusable score
+    await deferBet(env, betId, 'unusable score', NOW);
+
+    // ESPN republishes the game as POSTPONED: `updated_at` advances, so the
+    // reset fires — but the bet then fails the selection query, so the reset is
+    // the ONLY thing this run writes. That isolation is the point: while
+    // `rowsWritten` summed only the per-bet work, this run reported zero rows
+    // written and `jobs.ts::dayRowsWritten` under-counted the settle job's share
+    // of the hard-enforced 100,000-rows-per-day cap by one sweep per run.
+    await updateGame(env.DB, gid, { status: 'postponed' });
+    await touchGame(gid, NOW + 1_000);
+
+    const stats = await runSettle(env, NOW + 2_000, 20);
+    expect(stats.reset).toBe(1);
+    expect(stats.selected).toBe(0);
+    expect(stats.settled).toBe(0);
+    expect(stats.deferred).toBe(0);
+    expect(stats.rowsWritten).toBeGreaterThan(0);
+    expect((await betRow(betId)).settle_attempts).toBe(0);
+
+    // A run that resets nothing writes nothing.
+    const quiet = await runSettle(env, NOW + 3_000, 20);
+    expect(quiet.reset).toBe(0);
+    expect(quiet.rowsWritten).toBe(0);
+  });
+
+  it('re-ingesting an IDENTICAL slate through M4 does NOT reset the counter, but a changed score does', async () => {
+    // The 96-attempt cap rests entirely on `games.updated_at` meaning "the data
+    // changed", never "we saw it again" (§8.5's L1 `CASE` vs its L3 touch). The
+    // other tests in this describe drive `updated_at` with a raw UPDATE, which
+    // would keep passing if ingestion started stamping it on every refresh — and
+    // then `resetDeferredBets` would zero every counter on every run, the cap
+    // would be unreachable and `stats.stuck[]` would never fire. So this one
+    // goes through the REAL `upsertSlate`.
+    const user = await register();
+    const eventId = `s${String(testIndex)}-ingest`;
+    const gid = `nfl:${eventId}`;
+    const base = {
+      eventId,
+      league: 'nfl',
+      kickoffAt: NOW + 2 * HOUR,
+      homeAbbr: 'SEA',
+      awayAbbr: 'NE',
+      // ESPN publishes no score at all for this game until the very last slate,
+      // which is what makes the bet undecidable and therefore deferrable. (A
+      // pre-game ESPN score is the STRING "0", so leaving this off would seed a
+      // real 0-0 and the bet would simply grade as a loss.)
+      omitScores: true,
+      odds: { spreadHome: -3.5, total: 45.5, mlHome: -198, mlAway: 164 },
+    } satisfies Omit<EventSpec, 'status'>;
+
+    await upsertSlate(env, makeSlate([{ ...base, status: 'pre' }], NOW), NOW);
+    const betId = await place(user.id, [spreadLeg(gid)], 2500);
+
+    // The game goes final with no score ESPN will admit to: undecidable.
+    const finalNoScore: EventSpec = { ...base, status: 'post' };
+    await upsertSlate(env, makeSlate([finalNoScore], NOW + 1), NOW + 1);
+
+    const deferredRun = await runSettle(env, NOW + 2, 20);
+    expect(deferredRun.deferred).toBe(1);
+    expect((await betRow(betId)).settle_attempts).toBe(1);
+
+    // Seven hours later ESPN serves the very same payload again. That is past
+    // GAME_SEEN_TOUCH_MS, so L3 really does WRITE the row (asserted below via
+    // `last_seen_at`) — and `updated_at` must stay put anyway.
+    const seenAgainAt = NOW + 2 + 7 * HOUR;
+    const before = await gameStamps(gid);
+    await upsertSlate(env, makeSlate([finalNoScore], seenAgainAt), seenAgainAt);
+    const after = await gameStamps(gid);
+    expect(after.last_seen_at).toBe(seenAgainAt); // the touch happened...
+    expect(after.updated_at).toBe(before.updated_at); // ...and changed nothing
+    expect((await resetDeferredBets(env)).reset).toBe(0);
+    expect((await betRow(betId)).settle_attempts).toBe(1);
+
+    // Now a REAL change — the score finally parses — and the bet gets a fresh
+    // 24-hour budget on the very next run.
+    const publishedAt = seenAgainAt + HOUR;
+    await upsertSlate(
+      env,
+      makeSlate(
+        [{ ...base, status: 'post', omitScores: false, homeScore: 31, awayScore: 17 }],
+        publishedAt,
+      ),
+      publishedAt,
+    );
+    expect((await gameStamps(gid)).updated_at).toBe(publishedAt);
+    expect((await resetDeferredBets(env)).reset).toBe(1);
+
+    const settledRun = await runSettle(env, publishedAt + 1, 20);
+    expect(settledRun.settled).toBe(1);
+    const bet = await betRow(betId);
+    expect(bet.status).toBe('won');
+    expect(bet.payout_cents).toBe(4772);
     await expectNoDrift();
   });
 });
@@ -1030,6 +1225,11 @@ describe('runSettle — idempotency', () => {
     expect(SETTLE_BET_UPDATE_SQL).toContain("status = 'pending'");
     expect(SETTLE_LEG_UPDATE_SQL).toContain('settle_run_id = ?');
     expect(SETTLE_PAYOUT_INSERT_SQL).toContain('NOT EXISTS');
+    // Layer 2 on the MONEY statement, not just on the leg updates. Without it a
+    // run that lost the conditional transition would still be free to insert the
+    // payout row on the strength of the `NOT EXISTS` alone, racing the winner
+    // into the ledger with its own `amount_cents`.
+    expect(SETTLE_PAYOUT_INSERT_SQL).toContain('settle_run_id = ?');
     expect(SETTLE_PAYOUT_INSERT_SQL).not.toMatch(/INSERT\s+OR\s+(IGNORE|REPLACE)/i);
 
     // 1 bet UPDATE + 10 leg UPDATEs + 1 ledger INSERT = 12, well under the
@@ -1216,6 +1416,148 @@ describe('runSettle — invariants', () => {
     expect(second.selected).toBe(1);
     expect(second.settled).toBe(1);
     for (const id of ids) expect((await betRow(id)).status).toBe('won');
+    await expectNoDrift();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * A bet whose batch FAILS
+ * ------------------------------------------------------------------ */
+
+describe('runSettle — a failing batch', () => {
+  it('increments settle_attempts, records settle_error, moves no money, and settles the next bet anyway', async () => {
+    const user = await register();
+    const doomedGame = await seedGameWithLine(env.DB, {
+      id: g('doomed'),
+      kickoffAt: NOW + HOUR, // strictly earlier: this bet is selected FIRST
+      lastSeenAt: NOW - 60_000,
+    });
+    const healthyGame = await seedScheduled(g('healthy'));
+    const doomed = await place(user.id, [spreadLeg(doomedGame)], 100);
+    const healthy = await place(user.id, [spreadLeg(healthyGame)], 100);
+    await finalize(doomedGame, 31, 17);
+    await finalize(healthyGame, 31, 17);
+
+    const restore = breakNextBatches(1);
+    let stats: SettleStats;
+    try {
+      stats = await runSettleExpectingErrors(NOW + 1, 20);
+    } finally {
+      restore();
+    }
+
+    expect(stats.selected).toBe(2);
+    expect(stats.errors.map((e) => e.betId)).toEqual([doomed]);
+    expect(stats.errors[0]?.error).toContain('connection lost');
+
+    // THE POINT: a throwing batch costs an attempt. Leave the counter alone and
+    // twenty such bets sit at the front of `ORDER BY settle_attempts ASC`
+    // forever, re-failing ahead of every healthy bet on every run — the
+    // head-of-line starvation the counter exists to prevent, through a
+    // different door.
+    const bad = await betRow(doomed);
+    expect(bad.settle_attempts).toBe(1);
+    expect(bad.settle_error).toContain('settle failed');
+    // ...and the batch rolled back as a unit, so the bet is still FULLY pending.
+    expect(bad.status).toBe('pending');
+    expect(bad.payout_cents).toBeNull();
+    expect(bad.settled_at).toBeNull();
+    expect(bad.settle_run_id).toBeNull();
+    expect((await legRows(doomed))[0]?.result).toBeNull();
+    expect(await ledgerRows(doomed, 'bet_payout')).toHaveLength(0);
+
+    // One bad bet must not abort the chunk.
+    expect(stats.settled).toBe(1);
+    expect((await betRow(healthy)).status).toBe('won');
+    expect(await ledgerRows(healthy, 'bet_payout')).toHaveLength(1);
+    await expectNoDrift();
+
+    // And the next run settles the bet that failed, now that D1 is healthy.
+    const next = await runSettle(env, NOW + 2, 20);
+    expect(next.settled).toBe(1);
+    expect((await betRow(doomed)).status).toBe('won');
+    expect((await betRow(doomed)).payout_cents).toBe(190);
+    await expectNoDrift();
+  });
+
+  it('runJob("settle") records a run with errors as `error`, with the stats intact', async () => {
+    const user = await register();
+    const doomedGame = await seedGameWithLine(env.DB, {
+      id: g('doomed'),
+      kickoffAt: NOW + HOUR,
+      lastSeenAt: NOW - 60_000,
+    });
+    const healthyGame = await seedScheduled(g('healthy'));
+    const doomed = await place(user.id, [spreadLeg(doomedGame)], 100);
+    const healthy = await place(user.id, [spreadLeg(healthyGame)], 100);
+    await finalize(doomedGame, 31, 17);
+    await finalize(healthyGame, 31, 17);
+
+    const restore = breakNextBatches(1);
+    let run;
+    try {
+      run = await runJob(env, 'settle', 'cron', NOW + 1);
+    } finally {
+      restore();
+    }
+
+    // A run that failed to settle bets it selected is NOT a green run.
+    // `GET /api/admin/jobs` is the first place an operator looks when money
+    // looks wrong, and `ok` there means "nothing to see here".
+    expect(run.status).toBe('error');
+    expect(run.error).toContain('1 of 2 selected bets failed');
+    expect(run.error).toContain(doomed);
+
+    // The message is only a summary; the stats still carry everything.
+    expect(run.stats?.['selected']).toBe(2);
+    expect(run.stats?.['settled']).toBe(1);
+    expect(run.stats?.['errors']).toHaveLength(1);
+    expect(run.stats?.['rowsWritten']).toBeTypeOf('number');
+
+    // ...and the healthy bet in the same chunk was still settled and paid: the
+    // error is raised AFTER the chunk, never instead of it.
+    expect((await betRow(healthy)).status).toBe('won');
+    expect(await ledgerRows(healthy, 'bet_payout')).toHaveLength(1);
+    expect((await betRow(doomed)).status).toBe('pending');
+    await expectNoDrift();
+  });
+
+  it('a bet re-opened after it was paid settles the row again but reports already-settled, not a second payment', async () => {
+    const user = await register();
+    const gid = await seedScheduled(g(1));
+    const betId = await place(user.id, [spreadLeg(gid)], 2500);
+    await finalize(gid, 31, 17);
+    await runSettle(env, NOW + 1, 20);
+    const paidBalance = await balance(user.id);
+
+    // An operator repairing a game row (or an M8 fix-up script) puts a PAID bet
+    // back to `pending`. The conditional transition then MATCHES on the next
+    // run — layer 1 does not save us — but the ledger row is already there, so
+    // the payout INSERT's `NOT EXISTS` writes nothing.
+    await env.DB.prepare(
+      `UPDATE bets
+          SET status = 'pending', payout_cents = NULL, settled_at = NULL,
+              settle_run_id = NULL, settle_attempts = 0
+        WHERE id = ?1`,
+    )
+      .bind(betId)
+      .run();
+
+    const stats = await runSettle(env, NOW + 2, 20);
+    expect(stats.selected).toBe(1);
+    // Reporting this as `settled` (and adding 4772 to `paidCents`) would show an
+    // operator a second payout in GET /api/admin/jobs that never happened.
+    expect(stats.settled).toBe(0);
+    expect(stats.paidCents).toBe(0);
+    expect(stats.skippedAlreadySettled).toBe(1);
+    expect(stats.errors).toEqual([]);
+
+    // The bet row is repaired — that is the useful half — and no money moved.
+    const bet = await betRow(betId);
+    expect(bet.status).toBe('won');
+    expect(bet.payout_cents).toBe(4772);
+    expect(await ledgerRows(betId, 'bet_payout')).toHaveLength(1);
+    expect(await balance(user.id)).toBe(paidBalance);
     await expectNoDrift();
   });
 });

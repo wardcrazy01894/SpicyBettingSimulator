@@ -150,6 +150,20 @@ function errorText(err: unknown): string {
 }
 
 /**
+ * The `stats` a thrown error carried, if any. Job-agnostic on purpose: this file
+ * knows nothing about settlement, only that a body MAY hang a plain stats object
+ * off its error. Anything else (including an array) yields null, and
+ * `encodeStats` still has the final say on whether it can be serialised.
+ */
+function carriedStats(err: unknown): Readonly<Record<string, unknown>> | null {
+  if (typeof err !== 'object' || err === null) return null;
+  const carried: unknown = (err as { stats?: unknown }).stats;
+  return typeof carried === 'object' && carried !== null && !Array.isArray(carried)
+    ? (carried as Record<string, unknown>)
+    : null;
+}
+
+/**
  * Acquire the lease, write a `job_runs` row, run `body`, finalize the row.
  * Always resolves — an error inside `body` OR in any of the three `job_runs`
  * writes is recorded/logged, never rethrown, so one bad job (or a D1 hiccup
@@ -158,6 +172,11 @@ function errorText(err: unknown): string {
  * `acquireLease` is the one call left unguarded on purpose: if the lock table
  * itself is unreachable there is nothing to run and nowhere to record it, and
  * the caller — `scheduled()` or the admin route — should see that.
+ *
+ * Body contract: throwing is how a job says "record me as `error`". A body that
+ * did real work before failing may hang a plain `stats` object off the thrown
+ * error and it is recorded alongside the message — that is how a settle run with
+ * a failed bet reports `error` AND its full per-bet stats.
  */
 export async function withJobRun(
   env: Env,
@@ -211,12 +230,18 @@ export async function withJobRun(
     console.error('[jobs] failed to record run start', job, runId, err);
   }
 
-  let stats: Readonly<Record<string, unknown>> | null = null;
+  let stats: Readonly<Record<string, unknown>> | null;
   let error: string | null = null;
   try {
     stats = await body();
   } catch (err) {
     error = errorText(err);
+    // A body that finished its work and THEN failed can attach what it did to
+    // the thrown error (settle.ts's `SettleRunError` does exactly that).
+    // Recording the failure must not also throw away the run's stats — they are
+    // the detail behind the one-line `error`, and `dayRowsWritten` sums
+    // `stats.rowsWritten` over failed runs too.
+    stats = carriedStats(err);
   }
 
   const finished: JobRun = {
@@ -294,9 +319,11 @@ export function runJob(
         return { ...stats };
       }
       case 'settle': {
-        // M6 owns settle.ts. Until it lands this throws and `withJobRun` records
-        // the run as `error` — which is the honest state, and is visible in
-        // GET /api/admin/jobs rather than silently succeeding.
+        // `runSettle` throws `SettleRunError` — carrying its stats — when any
+        // bet in the chunk failed, AFTER the chunk is finished. Letting it
+        // through is deliberate: `withJobRun` then records the run as `error`
+        // with the stats intact, so a run that failed to settle bets it selected
+        // is not shown as green in GET /api/admin/jobs.
         const stats = await runSettle(env, now, readConfig(env).settleChunk);
         return { ...stats };
       }

@@ -16,8 +16,26 @@
 
 import { VOID_AFTER_MS } from '../shared/constants.js';
 import type { EpochMs } from '../shared/types.js';
-import { changesAt } from './db.js';
+import { changesAt, rowsWrittenAt } from './db.js';
 import type { Env } from './env.js';
+
+/**
+ * One sweep's two numbers. They are NOT the same number and must not be
+ * conflated: `count` is `meta.changes` (rows the sweep actually changed, the
+ * figure a human reads in `GET /api/admin/jobs`), `rowsWritten` is
+ * `meta.rows_written` — the row PLUS every index entry the statement rewrote,
+ * which is the unit D1's hard-enforced 100,000-rows-per-day cap counts.
+ */
+export interface SweepResult {
+  readonly count: number;
+  readonly rowsWritten: number;
+}
+
+/** `autoVoidStuckGames`' report: the ids are the point, the rows are the budget. */
+export interface AutoVoidResult {
+  readonly gameIds: readonly string[];
+  readonly rowsWritten: number;
+}
 
 export interface MaintenanceStats {
   readonly autoVoidedGames: readonly string[];
@@ -25,6 +43,17 @@ export interface MaintenanceStats {
   readonly sessionsPruned: number;
   readonly throttleRowsPruned: number;
   readonly jobRunsPruned: number;
+  /**
+   * D1 `meta.rows_written` summed over every statement this job issued.
+   *
+   * Maintenance is NOT a read-only job: the auto-void UPDATE writes `status`,
+   * which is indexed, and the session/throttle/job_runs DELETEs remove hundreds
+   * of rows a week. Without this field `jobs.ts::dayRowsWritten` — which sums
+   * `stats.rowsWritten` across every job — counts all of it as zero, and the
+   * rolling 24 h total an operator checks against the cap is quietly wrong
+   * (PLAN.md §8.6).
+   */
+  readonly rowsWritten: number;
 }
 
 /** PLAN.md §7.5: `job_runs` keeps the newest 200 rows PER JOB. */
@@ -90,27 +119,38 @@ const AUTO_VOID_PREDICATE = `
  * between is not voided. No money is involved; the worst case of the race is a
  * report that names one id too many.
  */
-export async function autoVoidStuckGames(env: Env, now: EpochMs): Promise<readonly string[]> {
+export async function autoVoidStuckGames(env: Env, now: EpochMs): Promise<AutoVoidResult> {
   const found = await env.DB.prepare(
     `SELECT id FROM games WHERE ${AUTO_VOID_PREDICATE} ORDER BY original_kickoff_at LIMIT ?4`,
   )
     .bind(now, VOID_AFTER_MS, FEED_STALE_MS, AUTO_VOID_LIMIT)
     .all<{ id: string }>();
   const ids = found.results.map((row) => row.id);
-  if (ids.length === 0) return [];
+  if (ids.length === 0) return { gameIds: [], rowsWritten: 0 };
 
+  // `status_detail` is PLAN.md §7.5's literal string, per branch of the
+  // predicate. It was an integer-division day count; that told a reader nothing
+  // the timestamps do not already say, and — because SQLite's `/` on two
+  // INTEGERs truncates while on any REAL it does not — one non-integer column
+  // would have started rendering a float into a human-facing field. The
+  // `>7d`/`>2d` literals restate VOID_AFTER_MS and FEED_STALE_MS above; if
+  // either constant moves, this string moves with it.
+  //
+  // `SET status = 'canceled'` in the same statement does not disturb the CASE:
+  // SQLite evaluates every SET expression against the row's ORIGINAL values.
   const placeholders = ids.map((_id, i) => `?${String(i + 4)}`).join(', ');
-  await env.DB.prepare(
+  const res = await env.DB.prepare(
     `UPDATE games
         SET status        = 'canceled',
-            status_detail = 'auto-void: no result ' || ((?1 - original_kickoff_at) / 86400000)
-                            || 'd after kickoff',
+            status_detail = CASE WHEN status = 'postponed'
+                                 THEN 'auto-void: postponed >7d'
+                                 ELSE 'auto-void: not seen >2d' END,
             updated_at    = ?1
       WHERE id IN (${placeholders}) AND ${AUTO_VOID_PREDICATE}`,
   )
     .bind(now, VOID_AFTER_MS, FEED_STALE_MS, ...ids)
     .run();
-  return ids;
+  return { gameIds: ids, rowsWritten: rowsWrittenAt([res], 0) };
 }
 
 /**
@@ -129,9 +169,9 @@ export async function findStuckInProgressGames(env: Env, now: EpochMs): Promise<
   return res.results.map((row) => row.id);
 }
 
-export async function pruneExpiredSessions(env: Env, now: EpochMs): Promise<number> {
+export async function pruneExpiredSessions(env: Env, now: EpochMs): Promise<SweepResult> {
   const res = await env.DB.prepare(`DELETE FROM sessions WHERE expires_at < ?1`).bind(now).run();
-  return changesAt([res], 0);
+  return sweepResult(res);
 }
 
 /**
@@ -141,13 +181,13 @@ export async function pruneExpiredSessions(env: Env, now: EpochMs): Promise<numb
  * is still locking an account out would silently hand an attacker their attempts
  * back, and that is not a bug worth leaving reachable by a clock change.
  */
-export async function pruneAuthThrottle(env: Env, now: EpochMs): Promise<number> {
+export async function pruneAuthThrottle(env: Env, now: EpochMs): Promise<SweepResult> {
   const res = await env.DB.prepare(
     `DELETE FROM auth_throttle WHERE window_start < ?1 - ?2 AND locked_until <= ?1`,
   )
     .bind(now, THROTTLE_RETENTION_MS)
     .run();
-  return changesAt([res], 0);
+  return sweepResult(res);
 }
 
 /**
@@ -158,11 +198,18 @@ export async function pruneAuthThrottle(env: Env, now: EpochMs): Promise<number>
  * `ROW_NUMBER() OVER (PARTITION BY job ...)` rather than a per-job
  * `OFFSET`-subquery loop, so one statement covers every job — including a job
  * name that no longer exists in `JOB_NAMES`.
+ *
+ * `status <> 'running'` protects the row of the maintenance run doing the
+ * pruning, and any other job in flight: a `running` row is the ONLY evidence
+ * that a job died before it could finalize (`withJobRun` degrades to exactly
+ * that, deliberately), and the finalize UPDATE at the end of this very run would
+ * silently match 0 rows if the row had been deleted underneath it.
  */
-export async function pruneJobRuns(env: Env, keepPerJob: number): Promise<number> {
+export async function pruneJobRuns(env: Env, keepPerJob: number): Promise<SweepResult> {
   const res = await env.DB.prepare(
     `DELETE FROM job_runs
-      WHERE id IN (
+      WHERE status <> 'running'
+        AND id IN (
         SELECT id FROM (
           SELECT id, ROW_NUMBER() OVER (PARTITION BY job ORDER BY started_at DESC, rowid DESC) AS rn
             FROM job_runs
@@ -171,7 +218,12 @@ export async function pruneJobRuns(env: Env, keepPerJob: number): Promise<number
   )
     .bind(keepPerJob)
     .run();
-  return changesAt([res], 0);
+  return sweepResult(res);
+}
+
+/** `meta.changes` + `meta.rows_written` for a single-statement sweep. */
+function sweepResult(res: D1Result): SweepResult {
+  return { count: changesAt([res], 0), rowsWritten: rowsWrittenAt([res], 0) };
 }
 
 /**
@@ -179,14 +231,22 @@ export async function pruneJobRuns(env: Env, keepPerJob: number): Promise<number
  * and idempotent, so a crash between two of them costs nothing but a day.
  */
 export async function runMaintenance(env: Env, now: EpochMs): Promise<MaintenanceStats> {
-  const autoVoidedGames = await autoVoidStuckGames(env, now);
+  const autoVoid = await autoVoidStuckGames(env, now);
   const stuckGames = await findStuckInProgressGames(env, now);
-  const sessionsPruned = await pruneExpiredSessions(env, now);
-  const throttleRowsPruned = await pruneAuthThrottle(env, now);
-  const jobRunsPruned = await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB);
+  const sessions = await pruneExpiredSessions(env, now);
+  const throttle = await pruneAuthThrottle(env, now);
+  const jobRuns = await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB);
 
-  if (autoVoidedGames.length > 0) {
-    console.warn('[maintenance] auto-voided games', autoVoidedGames.join(', '));
+  if (autoVoid.gameIds.length > 0) {
+    console.warn('[maintenance] auto-voided games', autoVoid.gameIds.join(', '));
   }
-  return { autoVoidedGames, stuckGames, sessionsPruned, throttleRowsPruned, jobRunsPruned };
+  return {
+    autoVoidedGames: autoVoid.gameIds,
+    stuckGames,
+    sessionsPruned: sessions.count,
+    throttleRowsPruned: throttle.count,
+    jobRunsPruned: jobRuns.count,
+    rowsWritten:
+      autoVoid.rowsWritten + sessions.rowsWritten + throttle.rowsWritten + jobRuns.rowsWritten,
+  };
 }

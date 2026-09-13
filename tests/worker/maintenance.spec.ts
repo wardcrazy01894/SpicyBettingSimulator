@@ -96,10 +96,13 @@ describe('maintenance — auto-void', () => {
     });
 
     const voided = await autoVoidStuckGames(env, NOW);
-    expect(voided).toContain(id);
+    expect(voided.gameIds).toContain(id);
     const after = await statusOf(id);
     expect(after.status).toBe('canceled');
-    expect(after.detail).toContain('auto-void');
+    // PLAN.md §7.5's literal string for this branch. It used to be a computed
+    // day count, which said nothing the timestamps do not and was one non-integer
+    // column away from rendering a float into a human-facing field.
+    expect(after.detail).toBe('auto-void: postponed >7d');
   });
 
   it('a game postponed 2 days is left alone', async () => {
@@ -112,7 +115,7 @@ describe('maintenance — auto-void', () => {
       lastSeenAt: NOW - HOUR,
     });
 
-    expect(await autoVoidStuckGames(env, NOW)).not.toContain(id);
+    expect((await autoVoidStuckGames(env, NOW)).gameIds).not.toContain(id);
     expect((await statusOf(id)).status).toBe('postponed');
   });
 
@@ -126,8 +129,12 @@ describe('maintenance — auto-void', () => {
       lastSeenAt: NOW - 3 * DAY, // ESPN stopped publishing it
     });
 
-    expect(await autoVoidStuckGames(env, NOW)).toContain(id);
-    expect((await statusOf(id)).status).toBe('canceled');
+    expect((await autoVoidStuckGames(env, NOW)).gameIds).toContain(id);
+    const after = await statusOf(id);
+    expect(after.status).toBe('canceled');
+    // The OTHER §7.5 branch, and a different literal: a reader has to be able to
+    // tell "ESPN kept calling it postponed" from "ESPN stopped mentioning it".
+    expect(after.detail).toBe('auto-void: not seen >2d');
   });
 
   it('a still-published scheduled game past its kickoff is NOT auto-voided', async () => {
@@ -140,7 +147,7 @@ describe('maintenance — auto-void', () => {
       lastSeenAt: NOW - HOUR, // still in the feed: a human should look
     });
 
-    expect(await autoVoidStuckGames(env, NOW)).not.toContain(id);
+    expect((await autoVoidStuckGames(env, NOW)).gameIds).not.toContain(id);
     expect((await statusOf(id)).status).toBe('scheduled');
   });
 
@@ -170,7 +177,7 @@ describe('maintenance — auto-void', () => {
     });
 
     expect(await findStuckInProgressGames(env, NOW)).toContain(id);
-    expect(await autoVoidStuckGames(env, NOW)).not.toContain(id);
+    expect((await autoVoidStuckGames(env, NOW)).gameIds).not.toContain(id);
     expect((await statusOf(id)).status).toBe('in_progress');
   });
 
@@ -235,7 +242,7 @@ describe('maintenance — pruning', () => {
       ).bind(`live-${String(testIndex)}`, user.id, NOW, NOW + 30 * DAY),
     ]);
 
-    expect(await pruneExpiredSessions(env, NOW)).toBeGreaterThanOrEqual(1);
+    expect((await pruneExpiredSessions(env, NOW)).count).toBeGreaterThanOrEqual(1);
     const dead = await env.DB.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE id = ?1`)
       .bind(`dead-${String(testIndex)}`)
       .first<{ n: number }>();
@@ -262,7 +269,7 @@ describe('maintenance — pruning', () => {
       ).bind(NOW - 60_000),
     ]);
 
-    expect(await pruneAuthThrottle(env, NOW)).toBe(1);
+    expect((await pruneAuthThrottle(env, NOW)).count).toBe(1);
     const keys = await env.DB.prepare(`SELECT key FROM auth_throttle ORDER BY key`).all<{
       key: string;
     }>();
@@ -287,7 +294,7 @@ describe('maintenance — pruning', () => {
       .run();
 
     expect(JOB_RUNS_KEPT_PER_JOB).toBe(200);
-    expect(await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB)).toBe(5);
+    expect((await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB)).count).toBe(5);
 
     const counts = await env.DB.prepare(
       `SELECT job, COUNT(*) AS n FROM job_runs GROUP BY job ORDER BY job`,
@@ -308,10 +315,53 @@ describe('maintenance — pruning', () => {
     expect(newest?.n).toBe(1);
   });
 
+  it('never prunes a job_run that is still `running`, however old', async () => {
+    // A `running` row is the only evidence that a job died before it could
+    // finalize, and the finalize UPDATE of the maintenance run doing the
+    // pruning targets its OWN `running` row — deleting it would make the run
+    // that just did the work vanish from GET /api/admin/jobs.
+    await env.DB.prepare(
+      `WITH RECURSIVE c(v) AS (SELECT 0 UNION ALL SELECT v + 1 FROM c WHERE v < 204)
+       INSERT INTO job_runs (id, job, trigger, started_at, finished_at, status, stats, error)
+       SELECT 'k-' || v, 'maintenance', 'cron', ?1 + v, ?1 + v, 'ok', NULL, NULL FROM c`,
+    )
+      .bind(NOW - 500_000)
+      .run();
+    // The OLDEST row of all — first in line to be pruned — is still running.
+    await env.DB.prepare(
+      `INSERT INTO job_runs (id, job, trigger, started_at, finished_at, status, stats, error)
+         VALUES ('k-live', 'maintenance', 'cron', ?1, NULL, 'running', NULL, NULL)`,
+    )
+      .bind(NOW - 600_000)
+      .run();
+
+    // 206 rows, 200 kept: the 6 oldest FINISHED ones go, the running one stays.
+    expect((await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB)).count).toBe(5);
+    const live = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM job_runs WHERE id = 'k-live'`,
+    ).first<{ n: number }>();
+    expect(live?.n).toBe(1);
+  });
+
+  it('every sweep reports rows_written separately from its changed-row count', async () => {
+    await env.DB.prepare(
+      `INSERT INTO auth_throttle (key, window_start, fail_count, locked_until)
+         VALUES ('u:budget', ?1, 3, 0)`,
+    )
+      .bind(NOW - 2 * DAY)
+      .run();
+
+    const swept = await pruneAuthThrottle(env, NOW);
+    expect(swept.count).toBe(1);
+    // rows_written counts the row PLUS every index entry, so it is never LESS
+    // than `changes` — and it is the number the 100k/day cap actually counts.
+    expect(swept.rowsWritten).toBeGreaterThanOrEqual(swept.count);
+  });
+
   it('pruning is a no-op when there is nothing to prune', async () => {
-    expect(await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB)).toBe(0);
-    expect(await pruneExpiredSessions(env, 0)).toBe(0);
-    expect(await pruneAuthThrottle(env, 0)).toBe(0);
+    expect((await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB)).count).toBe(0);
+    expect((await pruneExpiredSessions(env, 0)).count).toBe(0);
+    expect((await pruneAuthThrottle(env, 0)).count).toBe(0);
   });
 });
 
@@ -347,6 +397,27 @@ describe('maintenance — the job', () => {
     expect((await statusOf(stuck)).status).toBe('in_progress');
   });
 
+  it('runMaintenance reports rowsWritten, so the auto-void UPDATE counts against the D1 budget', async () => {
+    await seedGame(env.DB, {
+      id: g('void'),
+      kickoffAt: NOW - 9 * DAY,
+      originalKickoffAt: NOW - 9 * DAY,
+      status: 'postponed',
+      lastSeenAt: NOW - HOUR,
+    });
+
+    const stats = await runMaintenance(env, NOW);
+    expect(stats.autoVoidedGames).toHaveLength(1);
+    // The auto-void UPDATE rewrites the `games` row and its indexes. Reporting
+    // zero here is how maintenance's share of the hard-enforced
+    // 100,000-rows-per-day cap used to go missing from `dayRowsWritten`.
+    expect(stats.rowsWritten).toBeGreaterThan(0);
+
+    const quiet = await runMaintenance(env, NOW + 1);
+    expect(quiet.autoVoidedGames).toEqual([]);
+    expect(quiet.rowsWritten).toBe(0);
+  });
+
   it('runJob("maintenance") records an ok run with stats', async () => {
     const run = await runJob(env, 'maintenance', 'cron', NOW);
     expect(run.status).toBe('ok');
@@ -354,5 +425,7 @@ describe('maintenance — the job', () => {
     expect(run.stats).not.toBeNull();
     expect(run.stats?.['autoVoidedGames']).toBeInstanceOf(Array);
     expect(run.stats?.['jobRunsPruned']).toBeTypeOf('number');
+    // `jobs.ts::dayRowsWritten` sums `stats.rowsWritten` across EVERY job.
+    expect(run.stats?.['rowsWritten']).toBeTypeOf('number');
   });
 });

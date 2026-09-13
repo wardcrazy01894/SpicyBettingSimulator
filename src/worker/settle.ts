@@ -26,6 +26,11 @@
  * of undecidable bets can never starve the queue. Those are the ONLY columns a
  * pending outcome writes, and they carry no money semantics.
  *
+ * A bet whose BATCH THROWS takes the same medicine: it is reported in
+ * `stats.errors` and its `settle_attempts` is incremented too, because a failing
+ * batch that left the counter alone would pin the bet at the head of the same
+ * `ORDER BY settle_attempts ASC` forever.
+ *
  * PRICE: `bets` stores no rational. The effective price is recomputed inside the
  * job from the SURVIVING (won) legs' `american_price` integers via
  * `priceFromLegs()`, and the resulting American integer is WRITTEN BACK to
@@ -71,7 +76,11 @@ export interface SettleStats {
   /** Bets the §7.1 selection query returned this run. */
   readonly selected: number;
   readonly settled: number;
-  /** Selected but undecidable; `settle_attempts` was incremented. */
+  /**
+   * Selected but GRADED `pending` (undecidable); `settle_attempts` was
+   * incremented. A bet whose batch threw also gets its counter incremented but
+   * is counted in `errors`, not here — the two are different failures.
+   */
   readonly deferred: number;
   /** Deferred bets whose leg games changed, handed a fresh attempt budget. */
   readonly reset: number;
@@ -85,8 +94,9 @@ export interface SettleStats {
   readonly skippedAlreadySettled: number;
   /**
    * D1 `meta.rows_written` summed over every statement this run issued — the
-   * unit the hard-enforced 100,000-rows-per-day cap counts, and the field
-   * `jobs.ts::dayRowsWritten` sums across jobs (PLAN.md §8.6).
+   * reset sweep included — which is the unit the hard-enforced
+   * 100,000-rows-per-day cap counts, and the field `jobs.ts::dayRowsWritten`
+   * sums across jobs (PLAN.md §8.6).
    */
   readonly rowsWritten: number;
   readonly errors: readonly { readonly betId: string; readonly error: string }[];
@@ -334,10 +344,23 @@ export async function deferBet(
   return rowsWrittenAt([res], 0);
 }
 
-/** §7.1's automatic reset. Returns how many bets got a fresh attempt budget. */
-export async function resetDeferredBets(env: Env, _now: EpochMs): Promise<number> {
+export interface ResetDeferredResult {
+  /** Bets handed a fresh attempt budget — `meta.changes`, the human-facing count. */
+  readonly reset: number;
+  /**
+   * `meta.rows_written` for the sweep. It is SEPARATE from `reset` because the
+   * sweep writes `settle_attempts`, which `idx_bets_pending` indexes, so the
+   * number the 100k/day cap counts exceeds the bets touched — and because
+   * omitting it from the run's `rowsWritten` would under-report the settle job's
+   * share of the budget to `jobs.ts::dayRowsWritten` (PLAN.md §8.6).
+   */
+  readonly rowsWritten: number;
+}
+
+/** §7.1's automatic reset. Takes no clock: the predicate compares two stored columns. */
+export async function resetDeferredBets(env: Env): Promise<ResetDeferredResult> {
   const res = await env.DB.prepare(RESET_DEFERRED_SQL).run();
-  return changesAt([res], 0);
+  return { reset: changesAt([res], 0), rowsWritten: rowsWrittenAt([res], 0) };
 }
 
 interface LegDbRow {
@@ -500,9 +523,19 @@ export interface SettleOneResult {
 /**
  * Settle exactly one bet in exactly one batch.
  *
- * `'already-settled'` covers both losing the conditional-UPDATE race (layer 1)
- * and the ledger UNIQUE firing (layer 3) — neither is an error, and neither
- * moved any money.
+ * `'already-settled'` covers all three ways this run can turn out not to be the
+ * one that paid: losing the conditional-UPDATE race (layer 1), the payout
+ * INSERT's `NOT EXISTS` finding the ledger row already there (layer 2), and the
+ * ledger UNIQUE firing (layer 3). None is an error, and none moved any money.
+ *
+ * Layer 2 is NOT redundant with layer 1. A bet whose row was pushed back to
+ * `pending` by hand — an operator repairing a game, `retry-settlement` after a
+ * manual edit — wins the conditional UPDATE on the next run even though its
+ * `bet_payout` row already exists. Statement 1 reporting `changes = 1` would
+ * then have this run claim the payout in `stats.settled`/`stats.paidCents` while
+ * the ledger, correctly, did nothing: the operator would read a second payment
+ * in `GET /api/admin/jobs` that never happened. So when the outcome owes money,
+ * the LAST statement's `changes` is what decides whether this run paid.
  */
 export async function settleOneBet(
   env: Env,
@@ -528,8 +561,18 @@ export async function settleOneBet(
 
   let rowsWritten = 0;
   for (let i = 0; i < results.length; i += 1) rowsWritten += rowsWrittenAt(results, i);
+
+  const transitioned = changesAt(results, 0) === 1;
+  // The payout INSERT is the LAST statement, and only present when money is
+  // owed. A bet that owes nothing (a loss) is settled by statement 1 alone.
+  //
+  // `> 0`, NOT `=== 1`: D1 reports `changes = 2` for this statement (measured),
+  // because the `ledger_ai_apply` AFTER INSERT trigger's `bankrolls` update is
+  // counted too. Zero still means "the `NOT EXISTS` blocked it", which is the
+  // only thing being asked.
+  const paidNow = outcome.payoutCents > 0 ? changesAt(results, results.length - 1) > 0 : true;
   return {
-    result: changesAt(results, 0) === 1 ? 'settled' : 'already-settled',
+    result: transitioned && paidNow ? 'settled' : 'already-settled',
     rowsWritten,
   };
 }
@@ -539,13 +582,46 @@ export async function settleOneBet(
  * ------------------------------------------------------------------ */
 
 /**
+ * Thrown by `runSettle` when one or more bets in the chunk failed — AFTER the
+ * whole chunk has been processed, so it never costs the healthy bets their
+ * settlement. It exists because `withJobRun` decides `job_runs.status` purely on
+ * whether the body threw: without it a run that failed to settle every bet it
+ * selected is recorded as `ok`, and `GET /api/admin/jobs` — the one place an
+ * operator looks when money looks wrong — shows a green run whose failures are
+ * buried in a nested `stats.errors` array.
+ *
+ * The message is a SUMMARY on purpose; `stats` carries the full per-bet detail
+ * and is what `withJobRun` records in `job_runs.stats`.
+ */
+export class SettleRunError extends Error {
+  readonly stats: SettleStats;
+
+  constructor(stats: SettleStats) {
+    const first = stats.errors[0];
+    super(
+      `settle: ${String(stats.errors.length)} of ${String(stats.selected)} selected bets failed` +
+        (first === undefined ? '' : ` (first ${first.betId}: ${first.error})`),
+    );
+    this.name = 'SettleRunError';
+    this.stats = stats;
+  }
+}
+
+/**
  * Entry point for the `settle` job. Chunked at `SETTLE_CHUNK` bets per run.
  *
- * Call shape per run: 1 reset + 1 select + 1 stuck report + 1 leg load + one
- * batch (or one deferral UPDATE) per bet.
+ * Call shape per run: 4 fixed D1 calls (reset + select + stuck report + leg
+ * load) plus one per selected bet — one batch, or one deferral UPDATE, or (for a
+ * bet whose batch threw) a failed batch followed by one deferral UPDATE. At the
+ * chunk of 20 that is **24** calls in the ordinary case and at most 44 if every
+ * bet in the chunk fails.
+ *
+ * THROWS `SettleRunError` when `stats.errors` is non-empty — after the chunk is
+ * finished, never during it. `runJob` lets it through so the run is recorded as
+ * `error` with the stats attached; see the class docblock.
  */
 export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<SettleStats> {
-  const reset = await resetDeferredBets(env, now);
+  const resetSweep = await resetDeferredBets(env);
   const bets = await selectSettleableBets(env, chunk, MAX_SETTLE_ATTEMPTS);
   const stuck = await selectStuckBetIds(env, MAX_SETTLE_ATTEMPTS);
 
@@ -568,7 +644,8 @@ export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<
   let voided = 0;
   let paidCents = 0;
   let skippedAlreadySettled = 0;
-  let rowsWritten = 0;
+  // The reset sweep's writes are part of THIS run's budget line (PLAN.md §8.6).
+  let rowsWritten = resetSweep.rowsWritten;
   const errors: { betId: string; error: string }[] = [];
 
   for (const bet of bets) {
@@ -608,16 +685,30 @@ export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<
     } catch (err) {
       // One bad bet must not abort the chunk: its batch rolled back as a unit,
       // so the bet is still fully `pending` and the next run retries it.
-      errors.push({ betId: bet.id, error: errorText(err) });
+      const text = errorText(err);
+      errors.push({ betId: bet.id, error: text });
       console.error('[settle] failed to settle bet', bet.id, err);
+      // ...and it must still COST AN ATTEMPT. A throwing batch leaves
+      // `settle_attempts` where it was, so twenty such bets stay pinned at the
+      // front of `ORDER BY settle_attempts ASC` and re-fail ahead of every
+      // healthy bet on every run, forever — exactly the head-of-line starvation
+      // the counter exists to prevent, entered through a different door. This
+      // is the same single no-money UPDATE the `pending` path writes.
+      try {
+        rowsWritten += await deferBet(env, bet.id, `settle failed: ${text}`, now);
+      } catch (deferErr) {
+        // If even the counter UPDATE fails the run is already reported via
+        // `errors`; do not let bookkeeping abort the rest of the chunk.
+        console.error('[settle] failed to record the settle failure', bet.id, deferErr);
+      }
     }
   }
 
-  return {
+  const stats: SettleStats = {
     selected: bets.length,
     settled,
     deferred,
-    reset,
+    reset: resetSweep.reset,
     stuck,
     won,
     lost,
@@ -628,6 +719,11 @@ export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<
     rowsWritten,
     errors,
   };
+
+  // Every bet the chunk could settle has been settled by now; only the run's
+  // RECORDED STATUS is still in play.
+  if (errors.length > 0) throw new SettleRunError(stats);
+  return stats;
 }
 
 /**
