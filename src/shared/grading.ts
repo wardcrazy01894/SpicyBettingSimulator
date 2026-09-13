@@ -54,12 +54,18 @@ import type {
   Cents,
   GameResult,
   LegGrade,
+  LegResult,
   Price,
 } from './types.js';
 
+/**
+ * A leg of a SETTLED bet. `grade` is a `LegResult`, never `'pending'`: a pending
+ * bet returns `legs: []`, so M6 can bind `grade` straight into
+ * `bet_legs.result` (whose CHECK forbids 'pending') without a cast.
+ */
 export interface GradedLeg {
   readonly legIndex: number;
-  readonly grade: LegGrade;
+  readonly grade: LegResult;
   /**
    * Derived from the leg's snapshot `americanPrice` via `americanToPrice()`.
    * Nothing persists a rational; see PLAN.md §5.2.
@@ -86,6 +92,11 @@ export interface BetOutcome {
    *   `pending` `EVEN_MONEY_UNIT`, and meaningless — nothing is written.
    */
   readonly effectivePrice: Price;
+  /**
+   * Only on a `pending` outcome: which leg blocked settlement and why, in the
+   * form M6 writes to `bets.settle_error` (§7.1). Absent on settled outcomes.
+   */
+  readonly pendingReason?: string;
 }
 
 /**
@@ -185,9 +196,30 @@ export function gradeMoneyline(sideScore: number, oppScore: number): 'win' | 'lo
   return 'push';
 }
 
-/** The single shared "nothing happened" outcome. Frozen shape, no writes. */
-function pendingOutcome(): BetOutcome {
-  return { status: 'pending', payoutCents: 0, legs: [], effectivePrice: EVEN_MONEY_UNIT };
+/** The single shared "nothing happened" outcome. No writes. */
+function pendingOutcome(pendingReason: string): BetOutcome {
+  return {
+    status: 'pending',
+    payoutCents: 0,
+    legs: [],
+    effectivePrice: EVEN_MONEY_UNIT,
+    pendingReason,
+  };
+}
+
+/** Why a leg is not yet decidable, for `settle_error`. */
+function pendingReasonFor(
+  legIndex: number,
+  leg: BetLegSnapshot,
+  game: GameResult | undefined,
+): string {
+  if (game === undefined) return `leg ${String(legIndex)}: game ${leg.gameId} not found`;
+  if (game.status !== 'final')
+    return `leg ${String(legIndex)}: game ${leg.gameId} is ${game.status}`;
+  if (!isGradeableScore(game.homeScore) || !isGradeableScore(game.awayScore)) {
+    return `leg ${String(legIndex)}: game ${leg.gameId} is final but its score is unusable`;
+  }
+  return `leg ${String(legIndex)}: malformed leg (${leg.market}/${leg.side}, line ${String(leg.lineTenths)})`;
 }
 
 /**
@@ -199,6 +231,16 @@ function pendingOutcome(): BetOutcome {
  *
  * `games` is keyed by `gameId`. A leg whose game is absent grades `pending`:
  * a missing row is exactly as unknowable as an unfinished one.
+ *
+ * M6 OBLIGATION — leg-count guard: §7.2's query is an INNER JOIN on `games`,
+ * so a leg whose game row is missing silently vanishes from `legs`, and this
+ * function would happily grade (and PAY) a 3-leg parlay as a 2-leg one.
+ * Settlement must assert `legs.length === bets.leg_count` before calling here
+ * and defer the bet otherwise.
+ *
+ * Never throws for a pending bet: grades are decided BEFORE any price is
+ * derived, so a leg the DB CHECK would never allow (|price| < 100) cannot abort
+ * a settle chunk while its game is still in progress.
  *
  * Order matters and is tested:
  *   1. ANY leg still 'pending'  -> the bet stays pending, nothing is written.
@@ -223,17 +265,26 @@ export function gradeBet(
     throw new AppError('VALIDATION', 'A bet must have at least one leg to grade.');
   }
 
-  const graded: GradedLeg[] = legs.map((leg, legIndex) => {
+  const grades: LegGrade[] = legs.map((leg) => {
     const game = games.get(leg.gameId);
-    return {
-      legIndex,
-      grade: game === undefined ? 'pending' : gradeLeg(leg, game),
-      price: americanToPrice(leg.americanPrice),
-    };
+    return game === undefined ? 'pending' : gradeLeg(leg, game);
   });
 
   // 1. Pending beats everything, INCLUDING a loss. See note 1 in the header.
-  if (graded.some((l) => l.grade === 'pending')) return pendingOutcome();
+  //    Decided before any price derivation so this path can never throw.
+  const firstPending = grades.findIndex((g) => g === 'pending');
+  if (firstPending >= 0) {
+    const leg = legs[firstPending];
+    if (leg === undefined) throw new AppError('INTERNAL', 'leg index out of range');
+    return pendingOutcome(pendingReasonFor(firstPending, leg, games.get(leg.gameId)));
+  }
+
+  const graded: GradedLeg[] = legs.map((leg, legIndex) => ({
+    legIndex,
+    // Narrowed: no 'pending' survives the check above.
+    grade: grades[legIndex] as LegResult,
+    price: americanToPrice(leg.americanPrice),
+  }));
 
   // 2. A losing leg beats every push, and is evaluated BEFORE push removal.
   if (graded.some((l) => l.grade === 'loss')) {

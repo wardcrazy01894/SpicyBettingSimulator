@@ -135,6 +135,8 @@ const PAYOUT_1000_BY_WINS: Readonly<Record<number, number>> = {
   1: 1909,
   2: 3644,
   3: 6957,
+  4: 13283,
+  5: 25359,
 };
 
 const ALL_GRADES: readonly LegGrade[] = ['win', 'loss', 'push', 'void', 'pending'];
@@ -544,6 +546,41 @@ describe('gradeBet — the §7.3 truth table, exhaustively', () => {
       }
     }
   }
+
+  it('all 3125 five-leg combinations match the §7.3 oracle (accumulated, asserted once)', () => {
+    const failures: string[] = [];
+    for (const a of ALL_GRADES)
+      for (const b of ALL_GRADES)
+        for (const c of ALL_GRADES)
+          for (const d of ALL_GRADES)
+            for (const e of ALL_GRADES) {
+              const grades: LegGrade[] = [a, b, c, d, e];
+              const { legs, games } = betFor(grades);
+              const outcome = gradeBet(1000, legs, games);
+              const status = expectedStatus(grades);
+              const wins = grades.filter((g) => g === 'win').length;
+              const payout =
+                status === 'pending' || status === 'lost' ? 0 : PAYOUT_1000_BY_WINS[wins];
+              if (outcome.status !== status || outcome.payoutCents !== payout) {
+                failures.push(
+                  `${grades.join(',')} -> ${outcome.status}/${String(outcome.payoutCents)}`,
+                );
+              }
+            }
+    expect(failures).toEqual([]);
+  });
+
+  it('a pending outcome names the blocking leg and never throws, even for an impossible price', () => {
+    const { legs, games } = betFor(['win', 'pending']);
+    const bad = legs.map((l, i) => (i === 0 ? { ...l, americanPrice: 0 } : l));
+    const outcome = gradeBet(1000, bad, games);
+    expect(outcome.status).toBe('pending');
+    expect(outcome.legs).toEqual([]);
+    expect(outcome.pendingReason).toMatch(/^leg 1: game .* is (scheduled|in_progress)/);
+    // A settled outcome carries no reason.
+    const settled = gradeBet(1000, legs, betFor(['win', 'win']).games);
+    expect(settled.pendingReason).toBeUndefined();
+  });
 
   it('a loss with pending legs is PENDING, not lost — pending is checked first', () => {
     // PLAN §7.3 orders the checks `pending` THEN `loss`, and §7.1 never even
