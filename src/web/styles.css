@@ -1,10 +1,16 @@
 /*
  * Single stylesheet, mobile-first. No UI framework.
- * Co-located *.module.css files may be added per component if this grows.
+ *
+ * Dark is the default palette; `prefers-color-scheme: light` swaps the tokens
+ * and nothing else, so every rule below is written once against the token names.
+ * Tap targets are >= 44px and every text input is >= 16px (below that iOS zooms
+ * the viewport on focus). Nothing may scroll horizontally at 390px: the only
+ * `overflow-x` in the file is on `.table-scroll`, which wraps the two real
+ * tables.
  */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: dark light;
 
   --bg: #0f1115;
   --surface: #171a21;
@@ -13,6 +19,7 @@
   --text: #e8eaed;
   --text-dim: #9aa3af;
   --accent: #ff5a1f;
+  --accent-text: #ffffff;
   --win: #2ecc71;
   --loss: #e74c3c;
   --push: #f1c40f;
@@ -21,6 +28,24 @@
   --gap: 12px;
   --tap: 44px; /* minimum tap target */
   --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --surface-2: #eceef2;
+    --border: #d3d7de;
+    --text: #16181d;
+    --text-dim: #5c6472;
+    --accent: #d8410b;
+    --accent-text: #ffffff;
+    --win: #128c47;
+    --loss: #c0271a;
+    --push: #9a7508;
+  }
 }
 
 * {
@@ -41,28 +66,1060 @@ body {
   /* 16px minimum stops iOS from zooming when an input is focused. */
   font-size: 16px;
   -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
 }
 
-/* Safe-area padding so the sticky slip bar clears the iPhone home indicator. */
-.app-shell {
-  min-height: 100%;
-  padding-bottom: calc(72px + env(safe-area-inset-bottom));
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 650;
 }
 
-button {
+ul,
+ol,
+dl,
+dd {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+img {
+  max-width: 100%;
+}
+
+.muted {
+  color: var(--text-dim);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tone-win {
+  color: var(--win);
+}
+.tone-loss {
+  color: var(--loss);
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+button,
+.btn {
   font: inherit;
   min-height: var(--tap);
+  padding: 0 14px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text);
+  cursor: pointer;
 }
 
-button[aria-pressed='true'] {
+button[aria-pressed='true'],
+button[aria-selected='true'] {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
 }
 
 button:disabled {
   opacity: 0.45;
+  cursor: default;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 650;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+/* ------------------------------------------------------------------ shell */
+
+.app-shell {
+  min-height: 100%;
+  /* Room for the sticky slip bar plus the iPhone home indicator. */
+  padding-bottom: calc(84px + env(safe-area-inset-bottom));
+}
+
+.boot {
+  display: grid;
+  place-items: center;
+  min-height: 60vh;
+  padding: var(--gap);
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 10px max(12px, env(safe-area-inset-left)) 10px max(12px, env(safe-area-inset-right));
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-title {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+.bankroll {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+}
+
+.bankroll-balance {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.bankroll-equity,
+.bankroll-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.nav-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nav-tab {
+  flex: 1 0 auto;
+  min-height: var(--tap);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.nav-tab-active {
+  color: var(--text);
+  background: var(--surface-2);
+  font-weight: 650;
+}
+
+.app-main,
+.page {
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.app-main {
+  padding: 0;
+}
+
+.page-title {
+  font-size: 20px;
+}
+
+.section-title {
+  font-size: 16px;
+  margin-top: 6px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.page-note {
+  font-size: 13px;
+  margin: 0;
+}
+
+.page-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* -------------------------------------------------------------- segmented */
+
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.segment {
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 0 12px;
+  font-size: 15px;
+}
+
+/* ------------------------------------------------------------ week picker */
+
+.week-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.week-label {
+  font-size: 13px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.week-select {
+  font: inherit;
+  min-height: var(--tap);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 0 8px;
+}
+
+/* -------------------------------------------------------------- game card */
+
+.day-group,
+.bet-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.day-heading {
+  font-size: 14px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-top: 6px;
+}
+
+.game-card,
+.bet-card,
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card-title {
+  font-size: 15px;
+}
+
+.game-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.game-time {
+  font-weight: 650;
+  color: var(--text);
+}
+
+.game-countdown {
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.game-noline {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.game-teams {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.team-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.team-row-winner {
+  font-weight: 700;
+}
+
+.team-logo {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  object-fit: contain;
+}
+
+.team-logo-empty {
+  display: inline-block;
+  border-radius: 50%;
+  background: var(--surface-2);
+}
+
+.team-rank {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.team-abbr {
+  font-weight: 650;
+  min-width: 3.2em;
+}
+
+.team-name {
+  color: var(--text-dim);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-score {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+/* ----------------------------------------------------------- market grid */
+
+.market-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.market-head {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-align: center;
+}
+
+.market-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px;
+  line-height: 1.15;
+}
+
+.market-line {
+  font-size: 14px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.market-price {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------- bet cards */
+
+.bet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.bet-type {
+  font-weight: 650;
+}
+
+.bet-price {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.bet-head .muted {
+  margin-left: auto;
+}
+
+.bet-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bet-leg {
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+
+.bet-leg-main,
+.bet-leg-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bet-leg-pick {
+  font-weight: 650;
+}
+
+.bet-leg-price {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.bet-leg-sub {
+  font-size: 12px;
+}
+
+.bet-leg-sub .muted {
+  margin-left: auto;
+}
+
+.bet-money {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.bet-money dt,
+.stat-grid dt {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.bet-money dd,
+.stat-grid dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.bet-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.bet-actions,
+.row-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------------ chips */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.chip-win {
+  color: var(--win);
+  border-color: color-mix(in srgb, var(--win) 45%, transparent);
+}
+.chip-loss {
+  color: var(--loss);
+  border-color: color-mix(in srgb, var(--loss) 45%, transparent);
+}
+.chip-push {
+  color: var(--push);
+  border-color: color-mix(in srgb, var(--push) 45%, transparent);
+}
+.chip-pending,
+.chip-quiet {
+  color: var(--text-dim);
+}
+
+/* ------------------------------------------------------------- slip sheet */
+
+.slip-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-top: 1px solid var(--border);
+}
+
+.slip-bar-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 650;
+}
+
+.slip-bar-price,
+.slip-bar-towin {
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgb(0 0 0 / 55%);
+}
+
+.sheet {
+  width: 100%;
+  max-width: 520px;
+  max-height: 92vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: var(--gap) var(--gap) calc(var(--gap) + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sheet-title {
+  font-size: 17px;
+}
+
+.sheet-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sheet-actions .btn-primary {
+  flex: 1;
+}
+
+.slip-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.slip-leg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+}
+
+.slip-leg-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.slip-leg-pick {
+  font-weight: 650;
+}
+
+.slip-leg-market {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.slip-leg-price {
+  font-variant-numeric: tabular-nums;
+}
+
+.slip-summary {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slip-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.slip-summary-row dt {
+  color: var(--text-dim);
+}
+
+.slip-summary-row dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.slip-summary-total {
+  font-weight: 750;
+  font-size: 17px;
+}
+
+.slip-decimal {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.slip-balance,
+.slip-problem,
+.stake-problem,
+.field-problem {
+  margin: 0;
+  font-size: 13px;
+}
+
+.slip-problem,
+.stake-problem,
+.field-problem {
+  color: var(--loss);
+}
+
+.line-change-list {
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+.line-change-old {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+
+.line-change-new {
+  font-weight: 700;
+}
+
+/* ------------------------------------------------------------------ stake */
+
+.stake {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stake-label,
+.field-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stake-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 0 10px;
+  min-height: var(--tap);
+}
+
+.stake-currency {
+  color: var(--text-dim);
+}
+
+.stake-input,
+.field-input {
+  font: inherit;
+  font-size: 16px; /* never below 16px: iOS zooms on focus otherwise */
+  min-height: var(--tap);
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.stake-input:focus,
+.field-input:focus {
+  outline: none;
+}
+
+.stake-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip-btn {
+  flex: 1 0 auto;
+  min-width: 62px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ forms */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-input {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 0 10px;
+}
+
+.auth {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 24px var(--gap) calc(24px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.auth-title {
+  font-size: 22px;
+  color: var(--accent);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auth-note {
+  font-size: 12px;
+}
+
+/* ----------------------------------------------------------------- tables */
+
+.table-scroll {
+  /* The ONLY horizontal scroll in the app: the two data tables. */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.table th,
+.table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.table th {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.row-me {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  font-weight: 650;
+}
+
+/* ----------------------------------------------------------------- ledger */
+
+.ledger {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+}
+
+.ledger-main {
+  grid-column: 1;
+}
+
+.ledger-kind {
+  font-weight: 650;
+}
+
+.ledger-row .muted {
+  grid-column: 1;
+  font-size: 12px;
+}
+
+.ledger-row .num {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  font-weight: 700;
+}
+
+/* ------------------------------------------------------------------ admin */
+
+.admin-users {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-user {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-user-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-user-name {
+  font-weight: 650;
+}
+
+.admin-reset {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.admin-reset .field {
+  flex: 1 1 200px;
+}
+
+.stats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  max-width: 42ch;
+  white-space: normal;
+}
+
+.stats-key {
+  color: var(--text-dim);
+}
+
+.stats-value {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------- banners, empty, spinner */
+
+.banner {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.banner-error {
+  border-color: color-mix(in srgb, var(--loss) 55%, var(--border));
+}
+
+.banner-warn {
+  border-color: color-mix(in srgb, var(--push) 55%, var(--border));
+}
+
+.banner-text {
+  margin: 0;
+}
+
+.banner-code {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+
+.empty {
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.empty-title {
+  margin: 0 0 4px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.empty-hint {
+  margin: 0;
+  font-size: 14px;
+}
+
+.spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.spinner-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner-dot {
+    animation: none;
+  }
+}
+
+/* -------------------------------------------------------------- wide screens */
+
+@media (min-width: 720px) {
+  .app-shell {
+    padding-bottom: 24px;
+  }
+
+  .app-header,
+  .nav-tabs,
+  .page {
+    max-width: 860px;
+    margin-inline: auto;
+  }
+
+  .nav-tab {
+    flex: 0 0 auto;
+  }
+
+  .slip-bar {
+    left: auto;
+    right: 16px;
+    bottom: 16px;
+    width: 320px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .sheet-backdrop {
+    align-items: center;
+  }
+
+  .sheet {
+    border-radius: var(--radius);
+    max-height: 86vh;
+  }
 }

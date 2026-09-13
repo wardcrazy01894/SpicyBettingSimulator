@@ -7,6 +7,7 @@
     { "path": "./tsconfig.web.json" },
     { "path": "./tsconfig.tests-unit.json" },
     { "path": "./tsconfig.tests-worker.json" },
+    { "path": "./tsconfig.tests-web.json" },
     { "path": "./tsconfig.node.json" }
   ]
 }
