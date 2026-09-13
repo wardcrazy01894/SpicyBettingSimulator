@@ -13,12 +13,49 @@
  * `tests/unit/kdf-parity.spec.ts` pins that with a fixed vector.
  */
 
-/** `SHA-256(saltPrefix + username.toLowerCase())`. */
-export function deriveClientSalt(_username: string): Promise<Uint8Array> {
-  throw new Error('not implemented: M3');
+import { CLIENT_KDF } from '../../shared/constants.js';
+
+/**
+ * The username exactly as the server will store it. `validateUsername()` in
+ * src/shared/validate.ts trims and lowercases, so the salt must do the same or a
+ * user who types " Alex " would derive a key against a salt the server never
+ * sees again.
+ */
+function normaliseUsername(username: string): string {
+  return username.trim().toLowerCase();
+}
+
+/**
+ * `SHA-256(saltPrefix + username.toLowerCase())`.
+ *
+ * The `<ArrayBuffer>` argument is not decoration: since TS 5.7 `Uint8Array` is
+ * generic over its backing buffer and only the non-shared form satisfies
+ * `BufferSource`, which is what `crypto.subtle.deriveBits` wants for `salt`.
+ */
+export async function deriveClientSalt(username: string): Promise<Uint8Array<ArrayBuffer>> {
+  const input = new TextEncoder().encode(CLIENT_KDF.saltPrefix + normaliseUsername(username));
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', input));
 }
 
 /** `PBKDF2-SHA256(password, clientSalt, iterations, 32B)` as 64 lowercase hex chars. */
-export function deriveKey(_username: string, _password: string): Promise<string> {
-  throw new Error('not implemented: M3');
+export async function deriveKey(username: string, password: string): Promise<string> {
+  const salt = await deriveClientSalt(username);
+  const material = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: CLIENT_KDF.algorithm,
+      hash: CLIENT_KDF.hash,
+      salt,
+      iterations: CLIENT_KDF.iterations,
+    },
+    material,
+    CLIENT_KDF.keyLengthBytes * 8,
+  );
+  return Array.from(new Uint8Array(bits), (b) => b.toString(16).padStart(2, '0')).join('');
 }

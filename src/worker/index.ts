@@ -23,8 +23,15 @@ import { AppError } from '../shared/errors.js';
 import type { Env } from './env.js';
 import { nowMs } from './db.js';
 import { jobForCron, runJob } from './jobs.js';
-import { contextMiddleware, errorHandler } from './middleware.js';
+import {
+  contextMiddleware,
+  csrfMiddleware,
+  errorHandler,
+  sessionMiddleware,
+} from './middleware.js';
 import type { AppContext } from './middleware.js';
+import { adminRoutes } from './routes/admin.js';
+import { authRoutes } from './routes/auth.js';
 import { metaRoutes } from './routes/meta.js';
 
 /**
@@ -39,15 +46,16 @@ export function buildApp(): Hono<AppContext> {
   const app = new Hono<AppContext>();
   app.onError(errorHandler());
   app.use('*', contextMiddleware());
-  // TODO(M3): app.use('*', sessionMiddleware()); app.use('*', csrfMiddleware());
+  app.use('*', sessionMiddleware());
+  app.use('*', csrfMiddleware());
 
   app.route('/api', metaRoutes());
-  // TODO(M3): app.route('/api/auth', authRoutes());
+  app.route('/api/auth', authRoutes());
   // TODO(M5): app.route('/api/games', gamesRoutes());
   // TODO(M5): app.route('/api/bets', betsRoutes());
   // TODO(M5): app.route('/api', bankrollRoutes());
   // TODO(M5): app.route('/api/leaderboard', leaderboardRoutes());
-  // TODO(M4): app.route('/api/admin', adminRoutes());
+  app.route('/api/admin', adminRoutes());
 
   // Anything under /api that no route claimed is OUR 404, never index.html.
   app.notFound((c) => {

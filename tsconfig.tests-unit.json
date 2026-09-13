@@ -7,5 +7,6 @@
     "tsBuildInfoFile": "./.tsbuild/tests-unit.tsbuildinfo"
   },
   "include": ["tests/unit/**/*.ts"],
-  "references": [{ "path": "./tsconfig.shared.json" }]
+  "//": "tsconfig.web.json is referenced for tests/unit/kdf-parity.spec.ts: the client KDF lives in src/web/api/kdf.ts but is pure WebCrypto, so it runs (and must be pinned) in the node project. PLAN.md §13.",
+  "references": [{ "path": "./tsconfig.shared.json" }, { "path": "./tsconfig.web.json" }]
 }
