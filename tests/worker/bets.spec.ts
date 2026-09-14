@@ -536,6 +536,18 @@ describe('placeBet — lines', () => {
     expect(await errorCode(stale)).toBe('MARKET_UNAVAILABLE');
   });
 
+  it('judges the tier at seen_at, not now: a line confirmed >48 h out keeps its 18 h window as kickoff nears', async () => {
+    // Kickoff is 47 h away NOW (inside the hourly tier), but the line was
+    // confirmed 4 h ago, when the game was 51 h out (discovery tier → 18 h).
+    // Keyed off `now` the window would be 3 h and this 4 h-old line refused;
+    // keyed off `seen_at` it is fresh. PLAN §8.5's monotonicity property.
+    const alex = await register();
+    await seedGame(env.DB, { id: g(1), kickoffAt: NOW + 47 * HOUR });
+    await seedLine(env.DB, fullLine(g(1), NOW - 4 * HOUR));
+    const res = await post('/api/bets', straight(g(1)), alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(201);
+  });
+
   it('409 LINE_CHANGED when `expected` disagrees, with details.legs[].current', async () => {
     const alex = await register();
     await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });

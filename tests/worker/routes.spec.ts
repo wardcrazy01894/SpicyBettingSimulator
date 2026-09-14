@@ -302,6 +302,20 @@ describe('games board', () => {
     expect(stale?.bettable).toBe(false);
   });
 
+  it('the board judges the tier at seen_at too (game 47 h out, line seen 4 h ago is fresh)', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const now = Date.now();
+    await seedGame(env.DB, { id: gid('crossed'), season, kickoffAt: now + 47 * HOUR });
+    await seedLine(env.DB, fullLine(gid('crossed'), now - 4 * HOUR));
+    const board = await (
+      await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
+    ).json<GamesResponse>();
+    const game = board.games.find((g) => g.id === gid('crossed'));
+    expect(game?.lines?.stale).toBe(false);
+    expect(game?.bettable).toBe(true);
+  });
+
   it('bettable is false when the line is stale', async () => {
     const alex = await register('alex');
     const { gid, season } = scope();
