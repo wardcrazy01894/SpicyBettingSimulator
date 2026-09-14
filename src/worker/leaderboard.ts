@@ -40,6 +40,16 @@
  * counts under `all` and under neither single league. A mixed bet is not an NFL
  * bet; splitting one across two records would double-count its stake in the ROI
  * denominator.
+ *
+ * WHO IS ON THE BOARD: enabled, non-deleted accounts only (`users.is_disabled = 0
+ * AND users.deleted_at IS NULL`). The board is the scoreboard of people who are
+ * PLAYING; a throwaway test account or a disabled one is neither competing nor
+ * able to respond to being beaten, and leaving it ranked was the whole bug this
+ * filter fixes. It is a JOIN condition on the row-producing query, so the
+ * excluded user's bets never reach an accumulator either — their stakes and ROI
+ * do not leak into anybody else's numbers. Nothing is deleted and no money moves:
+ * re-enabling an account puts it straight back on the board with the same
+ * balance. The admin list (`GET /api/admin/users`) still shows everyone.
  */
 
 import type { BettingRecord, LeaderboardResponse, LeaderboardRow } from '../shared/api-types.js';
@@ -181,7 +191,7 @@ export async function leaderboardFor(
         `SELECT bk.user_id AS user_id, u.username AS username, u.display_name AS display_name,
                 bk.balance_cents AS balance_cents
            FROM bankrolls bk JOIN users u ON u.id = bk.user_id
-          WHERE bk.kind = 'main'`,
+          WHERE bk.kind = 'main' AND u.is_disabled = 0 AND u.deleted_at IS NULL`,
       ),
     ),
     queryAll<StatRow>(

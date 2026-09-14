@@ -21,7 +21,7 @@ import type {
 import { JOB_NAMES, MAX_PAYOUT_CENTS } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { validateDerivedKeyHex } from '../../shared/validate.js';
-import { listUsers, setDisabled, setPassword } from '../auth.js';
+import { deleteUser, listUsers, setDisabled, setPassword } from '../auth.js';
 import { reconcileBankrolls } from '../db.js';
 import { retrySettlement } from '../settle.js';
 import { adminAdjust } from '../bankroll.js';
@@ -75,6 +75,38 @@ export function adminRoutes(): Hono<AppContext> {
       });
     }
     await setDisabled(c.env, targetId, disabled, c.var.now);
+    return c.body(null, 204);
+  });
+
+  /**
+   * `DELETE /api/admin/users/:id` — SOFT delete. 204 either way.
+   *
+   * The account is disabled, stamped `deleted_at`, renamed to
+   * `deleted_<12 hex of its id>` (which frees the old username for whoever wants
+   * it next), given the display name 'Deleted user', and has every session row
+   * removed — all in ONE batch, with the guards as WHERE clauses (`auth.ts`
+   * `deleteUser`). It cannot log in afterwards and it is off the leaderboard.
+   *
+   * SETTLED BETS AND THE LEDGER STAY. They have to: the ledger is append-only by
+   * DDL (`ledger_bd_block`) and `bankrolls`/`ledger` are `ON DELETE RESTRICT`, so
+   * a hard delete would mean destroying the money history that
+   * `POST /api/admin/reconcile` is built to check. Nothing here writes a ledger
+   * row or a balance.
+   *
+   * Refusals: 400 for yourself (below) and for the last enabled admin, 404 for an
+   * unknown id, 409 ACCOUNT_HAS_PENDING_BETS while the account holds open bets —
+   * that stake is already out of its balance and its payout would be credited to
+   * an account nobody can reach, so the operator cancels or settles first.
+   * Deleting an already-deleted account is a 204 no-op, not an error.
+   */
+  app.delete('/users/:id', async (c) => {
+    const targetId = c.req.param('id');
+    // Same shape as the self-disable guard above, and for the same reason: an
+    // admin who deletes themselves has no way back in.
+    if (c.var.user?.id === targetId) {
+      throw new AppError('VALIDATION', 'You cannot delete your own account.', { field: 'id' });
+    }
+    await deleteUser(c.env, targetId, c.var.now);
     return c.body(null, 204);
   });
   // --- end users (M3) -----------------------------------------------------

@@ -48,6 +48,8 @@ export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   PAYOUT_LIMIT_EXCEEDED: 'That would pay out more than the $1,000,000 cap. Lower the stake.',
   BET_LOCKED: 'Too late — a game in this bet has already kicked off.',
   BET_NOT_PENDING: 'That bet has already been settled or cancelled.',
+  ACCOUNT_HAS_PENDING_BETS:
+    'That account still has open bets — cancel or settle them first, then delete it.',
   JOB_LOCKED: 'That job is already running. Give it a minute.',
 
   RATE_LIMITED: 'Too many attempts. Wait 15 minutes and try again.',

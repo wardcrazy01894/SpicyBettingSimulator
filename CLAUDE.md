@@ -169,6 +169,24 @@ the one failure mode the whole checklist has.
    describing production. Comment-only edits to `0001` are fine (they change no
    DDL). The pre-deploy window in which the M5b contract change was folded into
    `0001` is closed and is history, not precedent. PLAN.md §16.1.
+   - `0002_users_deleted_at.sql` is the first of those new files. PLAN.md §16.2.
+   - A new migration is a deploy step. The Deploy workflow
+     (`.github/workflows/deploy.yml`) applies pending migrations automatically on
+     every merge to `main`, before it deploys. For a MANUAL deploy the order is
+     yours to get right: **`npm run db:migrate:remote` FIRST, then
+     `npm run deploy`** — code that names a column the remote database does not
+     have 500s every request that touches it. Add the new file to the table in
+     docs/OPERATIONS.md either way.
+   - `readD1Migrations('./migrations')` in `vitest.workers.config.ts` hands the
+     worker pool EVERY file in order, so tests already run against the composed
+     schema; a `schema.spec.ts` assertion for the new column is the cheap proof
+     that it composes on top of 0001.
+   - **Deleting a user is a SOFT delete and there is no other kind.**
+     `bankrolls.user_id` / `ledger.bankroll_id` are `ON DELETE RESTRICT` and
+     `ledger_bd_block` refuses `DELETE FROM ledger`, so a hard delete cannot be
+     written without destroying money history. `users.deleted_at` + a rename is the
+     delete. The tombstone username is `deleted_<hex>`, and `validateUsername`
+     rejects that prefix at signup so nobody can squat one. PLAN.md §10.5.
 10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE` and
     `IP_HASH_SALT`; there is no ESPN key.
 11. **Docs are part of the change.** Any PR that changes behaviour updates
@@ -239,7 +257,8 @@ src/web/      React SPA: pages/, components/, state/ (contexts + pure reducers),
               hooks/ (useResource, usePages, useFocusTrap, useNow), lib/ (pure,
               DOM-free helpers), api/ (client, kdf, error copy)
 migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
-              every change is a new numbered 000N_*.sql (rule 9)
+              every change is a new numbered 000N_*.sql (rule 9) — 0002 adds
+              users.deleted_at
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES

@@ -1,6 +1,10 @@
 import { env } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { AdminUsersResponse, UserResponse } from '../../src/shared/api-types.js';
+import type {
+  AdminUsersResponse,
+  LeaderboardResponse,
+  UserResponse,
+} from '../../src/shared/api-types.js';
 import type { ApiErrorBody } from '../../src/shared/errors.js';
 import type { Env as WorkerEnv } from '../../src/worker/env.js';
 import {
@@ -21,7 +25,14 @@ import {
 } from '../../src/worker/crypto.js';
 import { buildApp } from '../../src/worker/index.js';
 import { DK_VECTORS, WRONG_DK } from './setup.js';
-import { wipeAccounts } from './seed.js';
+import {
+  balanceOf,
+  bankrollDrift,
+  ledgerSum,
+  mainBankrollId,
+  seedSettledBet,
+  wipeAccounts,
+} from './seed.js';
 
 /**
  * TDD contract for M3.
@@ -73,6 +84,13 @@ function get(path: string, opts: Opts = {}): Promise<Response> {
   if (opts.cookie !== undefined) headers['cookie'] = opts.cookie;
   if (opts.ip !== undefined) headers['cf-connecting-ip'] = opts.ip;
   return send(path, { method: 'GET', headers }, opts);
+}
+
+/** A state-changing DELETE; carries the CSRF header like every POST here. */
+function del(path: string, opts: Opts = {}): Promise<Response> {
+  const headers: Record<string, string> = { 'X-SBS-Client': '1', ...opts.headers };
+  if (opts.cookie !== undefined) headers['cookie'] = opts.cookie;
+  return send(path, { method: 'DELETE', headers }, opts);
 }
 
 /** The raw session token out of a Set-Cookie header. */
@@ -134,10 +152,20 @@ interface UserRow {
   readonly is_disabled: number;
   readonly created_at: number;
   readonly updated_at: number;
+  /** Migration 0002 — NULL for a live account. */
+  readonly deleted_at: number | null;
 }
 
 function userRow(username: string): Promise<UserRow | null> {
   return env.DB.prepare('SELECT * FROM users WHERE username = ?1').bind(username).first<UserRow>();
+}
+
+/** How many ledger rows one bankroll holds — the append-only table's length. */
+async function ledgerRowCount(bankrollId: string): Promise<number> {
+  const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM ledger WHERE bankroll_id = ?1')
+    .bind(bankrollId)
+    .first<{ n: number }>();
+  return row?.n ?? -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -793,5 +821,265 @@ describe('admin user routes (PLAN §11.6)', () => {
     );
     expect(res.status).toBe(404);
     expect((await login('bob', DK_VECTORS.bob)).status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/admin/users/:id — soft delete (migration 0002, PLAN §10.5/§11.6)
+// ---------------------------------------------------------------------------
+
+/** The whole `users` row for an id, deleted ones included. */
+function userRowById(id: string): Promise<UserRow | null> {
+  return env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(id).first<UserRow>();
+}
+
+async function adminUsers(cookie: string): Promise<AdminUsersResponse['users']> {
+  const res = await get('/api/admin/users', { cookie });
+  expect(res.status).toBe(200);
+  return (await res.json<AdminUsersResponse>()).users;
+}
+
+async function sessionCount(userId: string): Promise<number> {
+  const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?1')
+    .bind(userId)
+    .first<{ n: number }>();
+  return row?.n ?? -1;
+}
+
+describe('DELETE /api/admin/users/:id (soft delete)', () => {
+  it('disables, stamps, renames, blanks the display name and evicts every session', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    expect(await sessionCount(bob.id)).toBe(1);
+
+    const res = await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie });
+    expect(res.status, await res.clone().text()).toBe(204);
+
+    const row = await userRowById(bob.id);
+    expect(row?.is_disabled).toBe(1);
+    expect(row?.deleted_at).toBeGreaterThan(1_700_000_000_000);
+    expect(row?.display_name).toBe('Deleted user');
+    // `deleted_` + the first 12 hex of the uuid = 20 chars, inside the 3..24 CHECK.
+    expect(row?.username).toMatch(/^deleted_[0-9a-f]{12}$/);
+    expect(row?.username).toBe(`deleted_${bob.id.replace(/-/g, '').slice(0, 12)}`);
+    expect(row?.username.length).toBeLessThanOrEqual(24);
+
+    // Sessions are gone, and the cookie bob is holding is dead.
+    expect(await sessionCount(bob.id)).toBe(0);
+    expect((await get('/api/auth/me', { cookie: bob.cookie })).status).toBe(401);
+  });
+
+  it('moves no money: the ledger is untouched and SUM(ledger) === balance', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    const bkId = await mainBankrollId(env.DB, bob.id);
+    await seedSettledBet(env.DB, {
+      id: `del-settled-${bob.id}`,
+      userId: bob.id,
+      status: 'won',
+      stakeCents: 5_000,
+      payoutCents: 9_545,
+    });
+    const before = {
+      rows: await ledgerRowCount(bkId),
+      sum: await ledgerSum(env.DB, bkId),
+      balance: await balanceOf(env.DB, bkId),
+    };
+
+    expect((await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie })).status).toBe(204);
+
+    expect(await ledgerRowCount(bkId)).toBe(before.rows);
+    expect(await ledgerSum(env.DB, bkId)).toBe(before.sum);
+    expect(await balanceOf(env.DB, bkId)).toBe(before.balance);
+    expect(await ledgerSum(env.DB, bkId)).toBe(await balanceOf(env.DB, bkId));
+    expect(await bankrollDrift(env.DB)).toEqual([]);
+    // The settled bet stays: history is append-only by design (PLAN §4.1).
+    const bets = await env.DB.prepare('SELECT COUNT(*) AS n FROM bets WHERE user_id = ?1')
+      .bind(bob.id)
+      .first<{ n: number }>();
+    expect(bets?.n).toBe(1);
+  });
+
+  it('kills login under the old name AND the new one, with no enumeration oracle', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    expect((await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie })).status).toBe(204);
+
+    // Old username: nobody by that name any more.
+    const old = await login('bob', DK_VECTORS.bob);
+    expect(old.status).toBe(401);
+    expect((await old.json<ApiErrorBody>()).error.code).toBe('INVALID_CREDENTIALS');
+
+    // NEW username with the CORRECT key: still INVALID_CREDENTIALS, NOT
+    // ACCOUNT_DISABLED — otherwise the response would confirm the password.
+    const renamed = (await userRowById(bob.id))?.username ?? '';
+    const under = await login(renamed, DK_VECTORS.bob);
+    expect(under.status).toBe(401);
+    expect((await under.json<ApiErrorBody>()).error.code).toBe('INVALID_CREDENTIALS');
+  });
+
+  it('frees the old username for somebody else to register', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    expect((await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie })).status).toBe(204);
+
+    const again = await signup('bob');
+    expect(again.status, await again.clone().text()).toBe(201);
+    const fresh = await again.json<UserResponse>();
+    expect(fresh.user.username).toBe('bob');
+    expect(fresh.user.id).not.toBe(bob.id);
+    // ...and the new bob can log in with bob's key while the old row stays dead.
+    expect((await login('bob', DK_VECTORS.bob)).status).toBe(200);
+  });
+
+  it('hides the deleted account from the leaderboard but keeps it in the admin list', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+
+    const before = await get('/api/leaderboard', { cookie: alex.cookie });
+    expect(before.status).toBe(200);
+    expect((await before.json<LeaderboardResponse>()).rows.map((r) => r.username)).toEqual([
+      'alex',
+      'bob',
+    ]);
+
+    expect((await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie })).status).toBe(204);
+
+    const after = await get('/api/leaderboard', { cookie: alex.cookie });
+    const rows = (await after.json<LeaderboardResponse>()).rows;
+    expect(rows.map((r) => r.username)).toEqual(['alex']);
+    expect(rows[0]?.rank).toBe(1);
+
+    const listed = await adminUsers(alex.cookie);
+    const deleted = listed.find((u) => u.id === bob.id);
+    expect(deleted?.isDeleted).toBe(true);
+    expect(deleted?.isDisabled).toBe(true);
+    expect(deleted?.deletedAt).toBeGreaterThan(1_700_000_000_000);
+    expect(listed.find((u) => u.id === alex.id)).toMatchObject({
+      isDeleted: false,
+      deletedAt: null,
+    });
+  });
+
+  it('refuses to delete your own account (400)', async () => {
+    const alex = await register('alex');
+    await register('bob');
+    const res = await del(`/api/admin/users/${alex.id}`, { cookie: alex.cookie });
+    expect(res.status).toBe(400);
+    expect((await res.json<ApiErrorBody>()).error.code).toBe('VALIDATION');
+    expect((await userRowById(alex.id))?.deleted_at).toBeNull();
+  });
+
+  it('refuses to delete an admin while only one enabled admin remains (400)', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    // There is no promotion route (PLAN §10.5: `is_admin` is only ever written by
+    // the first-signup CASE), so the second admin is made directly. bob is then
+    // disabled, which leaves alex as the ONLY enabled admin — and makes bob the
+    // only account that could ever be re-enabled to recover from losing alex.
+    await env.DB.prepare('UPDATE users SET is_admin = 1, is_disabled = 1 WHERE id = ?1')
+      .bind(bob.id)
+      .run();
+
+    const res = await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie });
+    expect(res.status).toBe(400);
+    const body = await res.json<ApiErrorBody>();
+    expect(body.error.code).toBe('VALIDATION');
+    expect(body.error.message).toContain('last enabled admin');
+    expect((await userRowById(bob.id))?.deleted_at).toBeNull();
+    expect((await userRowById(bob.id))?.username).toBe('bob');
+  });
+
+  it('deletes an admin once a SECOND enabled admin exists', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    await env.DB.prepare('UPDATE users SET is_admin = 1 WHERE id = ?1').bind(bob.id).run();
+    const res = await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie });
+    expect(res.status, await res.clone().text()).toBe(204);
+  });
+
+  it('refuses while the account holds PENDING bets (409), and changes nothing', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    await seedSettledBet(env.DB, {
+      id: `del-pending-${bob.id}`,
+      userId: bob.id,
+      status: 'pending',
+      stakeCents: 2_500,
+    });
+
+    const res = await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie });
+    expect(res.status).toBe(409);
+    const body = await res.json<ApiErrorBody>();
+    expect(body.error.code).toBe('ACCOUNT_HAS_PENDING_BETS');
+    expect(body.error.message).toContain('cancel or settle');
+    const row = await userRowById(bob.id);
+    expect(row?.deleted_at).toBeNull();
+    expect(row?.username).toBe('bob');
+    expect(row?.is_disabled).toBe(0);
+    expect(await sessionCount(bob.id)).toBe(1);
+
+    // Settle it by hand and the delete goes through — the guard is about OPEN
+    // money, not about having ever placed a bet.
+    await env.DB.prepare(
+      `UPDATE bets SET status = 'lost', payout_cents = 0, settled_at = ?2 WHERE id = ?1`,
+    )
+      .bind(`del-pending-${bob.id}`, Date.now())
+      .run();
+    expect((await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie })).status).toBe(204);
+  });
+
+  it('404s an unknown id, and a second delete is an idempotent 204', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+
+    const missing = await del('/api/admin/users/no-such-id', { cookie: alex.cookie });
+    expect(missing.status).toBe(404);
+    expect((await missing.json<ApiErrorBody>()).error.code).toBe('NOT_FOUND');
+
+    expect((await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie })).status).toBe(204);
+    const stamp = (await userRowById(bob.id))?.deleted_at;
+    expect((await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie })).status).toBe(204);
+    // The second call is a no-op: it does NOT re-stamp or re-rename.
+    expect((await userRowById(bob.id))?.deleted_at).toBe(stamp);
+  });
+
+  it('is invisible to a non-admin (404) and rejects an anonymous caller (401)', async () => {
+    await register('alex');
+    const bob = await register('bob');
+    const carol = await register('carol');
+
+    const asBob = await del(`/api/admin/users/${carol.id}`, { cookie: bob.cookie });
+    expect(asBob.status).toBe(404);
+    expect((await asBob.json<ApiErrorBody>()).error.code).toBe('NOT_FOUND');
+
+    const anon = await del(`/api/admin/users/${carol.id}`);
+    expect(anon.status).toBe(401);
+    expect((await anon.json<ApiErrorBody>()).error.code).toBe('UNAUTHENTICATED');
+
+    // Neither attempt touched carol.
+    expect((await userRowById(carol.id))?.deleted_at).toBeNull();
+    expect((await login('carol', DK_VECTORS.carol)).status).toBe(200);
+  });
+
+  it('refuses to disable or reset the password of a deleted account (404)', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    expect((await del(`/api/admin/users/${bob.id}`, { cookie: alex.cookie })).status).toBe(204);
+
+    const toggled = await post(
+      `/api/admin/users/${bob.id}/disabled`,
+      { disabled: false },
+      { cookie: alex.cookie },
+    );
+    expect(toggled.status).toBe(404);
+    expect((await userRowById(bob.id))?.is_disabled).toBe(1);
+
+    const reset = await post(
+      `/api/admin/users/${bob.id}/password`,
+      { dk: DK_VECTORS.dave },
+      { cookie: alex.cookie },
+    );
+    expect(reset.status).toBe(404);
   });
 });

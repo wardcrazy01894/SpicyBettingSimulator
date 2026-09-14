@@ -95,13 +95,17 @@ export async function resolveSession(
   const id = await sha256Hex(token);
   // `is_disabled = 0` is part of the JOIN, which is what makes "disabling an
   // account kills its live sessions" true without deleting any rows (PLAN §10.5).
+  // `deleted_at IS NULL` is belt-and-braces on the same idea: `deleteUser` sets
+  // is_disabled = 1 AND deletes every session row in its batch, so a deleted
+  // account is already unreachable twice over — this is the third lock, so that a
+  // future path which clears `is_disabled` cannot resurrect a deleted session.
   const row = await queryOne<SessionJoinRow>(
     env.DB.prepare(
       `SELECT s.id, s.user_id, s.created_at, s.expires_at, s.last_seen_at,
               u.username, u.display_name, u.is_admin, u.created_at AS user_created_at
          FROM sessions s
          JOIN users u ON u.id = s.user_id
-        WHERE s.id = ?1 AND s.expires_at > ?2 AND u.is_disabled = 0`,
+        WHERE s.id = ?1 AND s.expires_at > ?2 AND u.is_disabled = 0 AND u.deleted_at IS NULL`,
     ).bind(id, now),
   );
   if (row === null) return null;

@@ -352,6 +352,16 @@ export function postAdminUserDisabled(userId: string, disabled: boolean): Promis
   return apiVoid('POST', `/api/admin/users/${encodeURIComponent(userId)}/disabled`, body);
 }
 
+/**
+ * SOFT-delete an account: disabled, renamed `deleted_<hex>` (which frees the old
+ * username), display name 'Deleted user', sessions killed, off the leaderboard.
+ * Settled bets and the ledger are kept — the ledger is append-only by design.
+ * 409 ACCOUNT_HAS_PENDING_BETS while the account still holds open bets.
+ */
+export function deleteAdminUser(userId: string): Promise<void> {
+  return apiVoid('DELETE', `/api/admin/users/${encodeURIComponent(userId)}`);
+}
+
 /** Credit or debit a user's main balance. Either sign; an overdraft is a 409. */
 export function postAdminUserAdjust(
   userId: string,

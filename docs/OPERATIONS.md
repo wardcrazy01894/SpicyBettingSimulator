@@ -52,6 +52,33 @@ database that does not exist. Comment-only edits are fine. (History, so the rule
 re-derived: before the first remote deploy `0001` WAS the live schema and was revised in place;
 that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's own header.)
 
+Applied migrations, newest last:
+
+| File                        | What                                                  | Applied remotely |
+| --------------------------- | ----------------------------------------------------- | ---------------- |
+| `0001_init.sql`             | the whole schema                                      | 2026-09-14       |
+| `0002_users_deleted_at.sql` | `users.deleted_at INTEGER NULL` — account soft delete | _pending_        |
+
+**Deploying the soft-delete change (0002) — run the migration FIRST:**
+
+```bash
+npx wrangler d1 migrations apply spicybetting --remote   # adds users.deleted_at
+npm run deploy
+```
+
+Order matters in that direction only: the new Worker's `SELECT`s and `UPDATE`s name
+`deleted_at`, so deploying the code first would 500 every auth and admin request until the column
+exists. The reverse is harmless — `0002` is a nullable `ADD COLUMN`, which the currently deployed
+Worker neither reads nor writes, so the migration can go out minutes or days ahead of the code.
+Confirm it landed:
+
+```bash
+npx wrangler d1 execute spicybetting --remote --command "SELECT name FROM pragma_table_info('users') WHERE name = 'deleted_at'"
+```
+
+Rollback note: there is no `DROP COLUMN` step and none is wanted. Rolling the Worker back to a
+previous sha leaves the column in place and unused.
+
 ## Accounts
 
 - The FIRST signup becomes admin. Signup needs the invite code.
@@ -59,6 +86,21 @@ that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's
 - Reset a password from the CLI: `node scripts/admin-hash.mjs <username> <new-password>` prints a
   `wrangler d1 execute` statement to run with `--remote`.
 - Adjust a balance: `POST /api/admin/users/:id/adjust {amountCents, memo}` (ledger row; cannot overdraft).
+- **Delete an account** (the Delete button on `/admin`, or
+  `DELETE /api/admin/users/:id`): a SOFT delete. The account is disabled, stamped
+  `users.deleted_at`, renamed to `deleted_<12 hex of its id>`, given the display name
+  `Deleted user`, and has all its sessions dropped — one atomic batch. Afterwards it cannot log
+  in (plain `401 INVALID_CREDENTIALS`, no "this account is disabled" tell), it is **off the
+  leaderboard**, and its old username is free for someone else to register. It still appears in
+  the admin user list with a `deleted` chip.
+  - **No money moves.** Settled bets and every ledger row stay: the ledger is append-only by DDL
+    and `bankrolls`/`ledger` are `ON DELETE RESTRICT`, so a hard delete would destroy the history
+    `npm run db:reconcile` checks. Reconcile gives the same answer before and after.
+  - **Refused with `409 ACCOUNT_HAS_PENDING_BETS` while the account has open bets** — cancel or
+    settle them first, otherwise a payout would land in an account nobody can reach. Also refused
+    for your own account and for the last enabled admin (`400`).
+  - Disabling alone is enough to get someone off the leaderboard; delete is for when you also want
+    the username back.
 
 ## Data feed
 

@@ -470,9 +470,20 @@ export interface JobRunsResponse {
   readonly runs: readonly JobRunView[];
 }
 
-/** Admin user list row. Unlike UserSummary it exposes the disabled flag. */
+/**
+ * Admin user list row. Unlike UserSummary it exposes the disabled flag, and
+ * (additively, migration 0002) the soft-delete stamp.
+ *
+ * The admin list is the ONE surface that still shows deleted accounts: they are
+ * gone from the leaderboard and cannot log in, but an operator has to be able to
+ * see that the row exists and why a username is now `deleted_<hex>`.
+ */
 export interface AdminUserView extends UserSummary {
   readonly isDisabled: boolean;
+  /** Epoch ms of the soft delete, or `null` for a live account. */
+  readonly deletedAt: EpochMs | null;
+  /** `deletedAt !== null`, precomputed so the UI never compares timestamps. */
+  readonly isDeleted: boolean;
 }
 
 export interface AdminUsersResponse {
