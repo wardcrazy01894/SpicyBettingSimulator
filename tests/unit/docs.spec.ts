@@ -828,6 +828,71 @@ describe('claims the docs make about the repo', () => {
     }
   });
 
+  /**
+   * The `sharp` override (PLAN §15, OPERATIONS "Dependencies") exists only
+   * because the vitest pool's miniflare pins a vulnerable sharp exactly. The
+   * day a pool bump ships a miniflare that wants the patched version on its
+   * own, the override must go in that same PR — and Dependabot will never say
+   * so, because it only proposes bumps. This does: it fails the Dependabot
+   * pool-bump PR itself until the override is deleted, and fails the reverse
+   * (override deleted while miniflare still wants the vulnerable version).
+   */
+  it("the sharp override exists exactly while the pool's miniflare needs it", () => {
+    // Read by path, not require.resolve: the pool's package.json is behind an
+    // `exports` map. The pool's miniflare is nested when npm cannot hoist it
+    // and hoisted otherwise; whichever copy is found must be the version the
+    // pool declares, or this test is looking at the wrong miniflare.
+    const poolDir = join(ROOT, 'node_modules', '@cloudflare', 'vitest-pool-workers');
+    const pool = JSON.parse(readFileSync(join(poolDir, 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>;
+    };
+    const nested = join(poolDir, 'node_modules', 'miniflare', 'package.json');
+    const miniflare = JSON.parse(
+      readFileSync(
+        existsSync(nested) ? nested : join(ROOT, 'node_modules', 'miniflare', 'package.json'),
+        'utf8',
+      ),
+    ) as { version: string; dependencies?: Record<string, string> };
+    expect(miniflare.version, 'not the miniflare the pool declares').toBe(
+      pool.dependencies['miniflare'],
+    );
+    const wanted = /\d+\.\d+\.\d+/.exec(miniflare.dependencies?.['sharp'] ?? '')?.[0];
+    expect(
+      wanted,
+      `miniflare ${miniflare.version} declares no sharp in dependencies — if sharp is gone ` +
+        `for good, delete the overrides entry (PLAN §15); if it moved to optional/peer ` +
+        `dependencies, widen this lookup.`,
+    ).toBeDefined();
+    const cmp = (a: string, b: string): number => {
+      const [a1, a2, a3] = a.split('.').map(Number);
+      const [b1, b2, b3] = b.split('.').map(Number);
+      return (a1 ?? 0) - (b1 ?? 0) || (a2 ?? 0) - (b2 ?? 0) || (a3 ?? 0) - (b3 ?? 0);
+    };
+    const PATCHED = '0.35.4';
+    const pkg = JSON.parse(read('package.json')) as {
+      overrides?: { '@cloudflare/vitest-pool-workers'?: { miniflare?: { sharp?: string } } };
+    };
+    const overrideRaw = pkg.overrides?.['@cloudflare/vitest-pool-workers']?.miniflare?.sharp;
+    // Parsed the same way as miniflare's spec, so a caret range compares sanely.
+    const override = overrideRaw === undefined ? undefined : /\d+\.\d+\.\d+/.exec(overrideRaw)?.[0];
+    if (cmp(wanted ?? '0.0.0', PATCHED) >= 0) {
+      expect(
+        override,
+        `The vitest pool's miniflare ${miniflare.version} now wants sharp ${String(wanted)} on ` +
+          `its own, so the package.json overrides entry for sharp is dead weight and could ` +
+          `silently pin a future requirement — delete it in this PR (PLAN §15, OPERATIONS ` +
+          `"Dependencies").`,
+      ).toBeUndefined();
+    } else {
+      expect(
+        override !== undefined && cmp(override, PATCHED) >= 0,
+        `The vitest pool's miniflare ${miniflare.version} still wants sharp ${String(wanted)} ` +
+          `(< ${PATCHED}, GHSA-rgj7-g3m4-5g8c); package.json must keep the scoped override ` +
+          `at >= ${PATCHED} or the Dependabot alert reopens.`,
+      ).toBe(true);
+    }
+  });
+
   it('CLAUDE.md carries rule 11 (docs ship with the change)', () => {
     expect(
       /^11\. \*\*Docs are part of the change/m.test(CLAUDE),

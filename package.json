@@ -67,5 +67,12 @@
     "esbuild@0.28.1": true,
     "workerd@1.20260815.1": true,
     "workerd@1.20260911.1": true
+  },
+  "overrides": {
+    "@cloudflare/vitest-pool-workers": {
+      "miniflare": {
+        "sharp": "0.35.4"
+      }
+    }
   }
 }
