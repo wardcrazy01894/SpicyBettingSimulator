@@ -23,66 +23,80 @@ import {
   lineChangeIsAcceptable,
 } from './slip-preview.js';
 import {
+  SLIP_STORAGE_KEY,
   emptySlipState,
   legKey,
   parseStoredSlip,
   serialiseSlip,
   slipReducer,
-  slipStorageKey,
+  staleSlipKeys,
 } from './slip-reducer.js';
 import { useSession } from './session.js';
 import type { BetSlipApi } from './bet-slip.js';
-import type { LeagueSlip, SlipLeg, SlipMode } from './slip-reducer.js';
+import type { Slip, SlipLeg, SlipMode } from './slip-reducer.js';
 import type { LineChangedDetails, PlaceBetRequest } from '../../shared/api-types.js';
 import type { Cents, League, Market, Side } from '../../shared/types.js';
-import { LEAGUES } from '../../shared/types.js';
 
-const DEFAULT_LEAGUE: League = 'nfl';
+/** Which league TAB the board opens on. Never a property of the slip. */
+const DEFAULT_BOARD_LEAGUE: League = 'nfl';
 
 /** localStorage throws in private-mode Safari and when storage is full; never fatal. */
-function readStored(league: League): LeagueSlip | null {
+function readStored(): Slip | null {
   try {
-    return parseStoredSlip(localStorage.getItem(slipStorageKey(league)), league);
+    return parseStoredSlip(localStorage.getItem(SLIP_STORAGE_KEY));
   } catch {
     return null;
   }
 }
 
-function writeStored(league: League, slip: LeagueSlip): void {
+function writeStored(slip: Slip): void {
   try {
-    localStorage.setItem(slipStorageKey(league), serialiseSlip(slip));
+    localStorage.setItem(SLIP_STORAGE_KEY, serialiseSlip(slip));
   } catch {
     /* ignore — the slip is a convenience, not state of record */
+  }
+}
+
+/**
+ * Delete the abandoned per-league entries. The v2 schema kept TWO slips and the
+ * v3 model has one, so there is no honest migration — two drafts can disagree
+ * about mode, stake and even hold the same game twice. Dropping them beats
+ * leaving dead JSON in every user's browser for good.
+ */
+function dropStaleStored(): void {
+  try {
+    for (const key of staleSlipKeys()) localStorage.removeItem(key);
+  } catch {
+    /* ignore */
   }
 }
 
 export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
   const config = useConfig();
   const session = useSession();
-  const [state, dispatch] = useReducer(slipReducer, DEFAULT_LEAGUE, emptySlipState);
+  const [state, dispatch] = useReducer(slipReducer, DEFAULT_BOARD_LEAGUE, emptySlipState);
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [lastError, setLastError] = useState<unknown>(null);
   const [lineChange, setLineChange] = useState<LineChangedDetails | null>(null);
 
-  // Rehydrate every league's slip once, on mount.
+  // Rehydrate the one slip on mount, and sweep away the old per-league entries.
   useEffect(() => {
-    for (const league of LEAGUES) {
-      const stored = readStored(league);
-      if (stored !== null) dispatch({ type: 'HYDRATE', league, slip: stored });
-    }
+    const stored = readStored();
+    if (stored !== null) dispatch({ type: 'HYDRATE', slip: stored });
+    dropStaleStored();
   }, []);
 
-  const league = state.active;
-  const slip = state.byLeague[league];
+  const boardLeague = state.board;
+  const slip = state.slip;
   const editingBetId = state.editingBetId;
 
-  // Persist whatever the active league's slip currently is — EXCEPT while an
-  // edit is borrowing the slot. Writing the edit's legs there would overwrite
-  // the draft the edit displaced, which `END_EDIT` is about to restore.
+  // Persist the slip — EXCEPT while an edit has taken it over. Writing the
+  // edit's legs there would overwrite the draft the edit displaced, which
+  // `END_EDIT` is about to restore.
   useEffect(() => {
-    if (editingBetId === null) writeStored(league, slip);
-  }, [league, slip, editingBetId]);
+    if (editingBetId === null) writeStored(slip);
+  }, [slip, editingBetId]);
 
   // ONE account balance, whatever league tab is showing (M5b). Anonymous
   // visitors have none; asking on /login collects a 401 and fires the client's
@@ -91,8 +105,8 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
   const mainBalance = balances.data?.balances.find((b) => b.kind === 'main') ?? null;
   const availableCents = mainBalance?.balanceCents ?? null;
 
-  const setLeague = useCallback((next: League) => {
-    dispatch({ type: 'SET_LEAGUE', league: next });
+  const setBoardLeague = useCallback((next: League) => {
+    dispatch({ type: 'SET_BOARD', league: next });
   }, []);
 
   const maxLegs = config.maxParlayLegs;
@@ -140,14 +154,13 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
 
   const teaserPayouts = config.teaserPayouts;
   const preview = useMemo(
-    () => computePreview(league, slip, availableCents, teaserPayouts),
-    [league, slip, availableCents, teaserPayouts],
+    () => computePreview(slip, availableCents, teaserPayouts),
+    [slip, availableCents, teaserPayouts],
   );
 
   const startEdit = useCallback(
     (
       betId: string,
-      betLeague: League,
       mode: SlipMode,
       legs: readonly SlipLeg[],
       stakeCents: Cents,
@@ -158,7 +171,6 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
       dispatch({
         type: 'START_EDIT',
         betId,
-        league: betLeague,
         mode,
         legs,
         stakeCents,
@@ -185,8 +197,8 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
         if (editingBetId === null) await postBet(body);
         else await putBet(editingBetId, body);
         setLineChange(null);
-        // An edit hands the league's slot back to the draft it displaced; a
-        // plain placement just empties it.
+        // An edit hands the slip back to the draft it displaced; a plain
+        // placement just empties it.
         dispatch(editingBetId === null ? { type: 'CLEAR' } : { type: 'END_EDIT' });
         setOpen(false);
         // A placement moves money and creates a bet; the board's `bettable`
@@ -207,10 +219,7 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
     [editingBetId],
   );
 
-  const submit = useCallback(
-    () => send(buildPlaceBetRequest(league, slip, false)),
-    [send, league, slip],
-  );
+  const submit = useCallback(() => send(buildPlaceBetRequest(slip, false)), [send, slip]);
 
   const acceptLineChange = useCallback(async (): Promise<void> => {
     if (lineChange === null) return;
@@ -219,21 +228,21 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
     // `expected`. Resubmitting the stale `expected` with acceptLineChange:true
     // booked a price the sheet had never shown.
     const repriced = applyLineChange(slip, lineChange);
-    dispatch({ type: 'SET_LEGS', league, legs: repriced.legs });
-    await send(buildPlaceBetRequest(league, repriced, true));
-  }, [send, league, slip, lineChange]);
+    dispatch({ type: 'SET_LEGS', legs: repriced.legs });
+    await send(buildPlaceBetRequest(repriced, true));
+  }, [send, slip, lineChange]);
 
   const notice = state.notice;
   const canAcceptLineChange = lineChange !== null && lineChangeIsAcceptable(lineChange);
 
   const value = useMemo<BetSlipApi>(
     () => ({
-      league,
+      boardLeague,
       mode: slip.mode,
       legs: slip.legs,
       stakeCents: slip.stakeCents,
       teaserPointsTenths: slip.teaserPointsTenths,
-      setLeague,
+      setBoardLeague,
       toggleLeg,
       removeLeg,
       clear,
@@ -258,9 +267,9 @@ export function BetSlipProvider(props: { children: ReactNode }): ReactElement {
       acceptLineChange,
     }),
     [
-      league,
+      boardLeague,
       slip,
-      setLeague,
+      setBoardLeague,
       toggleLeg,
       removeLeg,
       clear,

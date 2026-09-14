@@ -1,6 +1,15 @@
 /**
  * The bet slip's pure reducer, its storage key and its (de)serialisation.
  *
+ * ONE SLIP, NOT ONE PER LEAGUE (M5b). The slip used to be a
+ * `Record<League, LeagueSlip>` with the league tab selecting which one you were
+ * looking at, because a bet belonged to exactly one `(league, season)` bankroll
+ * and a cross-league parlay was a 409. Neither is true any more: there is one
+ * account balance, and the server derives `bets.league` from the legs
+ * (`'mixed'` when they span both). So there is ONE draft, legs may come from
+ * either league, and **the league tabs move the BOARD only** — they never touch
+ * the slip. Teasing Michigan and the Steelers together is the point.
+ *
  * Pure and DOM-free so `tests/web/slip-reducer.spec.ts` can exercise it in the
  * node vitest project; `BetSlipProvider` owns the `localStorage` side effects.
  */
@@ -10,6 +19,7 @@ import type { AmericanPrice, League, LineTenths, Market, Side } from '../../shar
 
 export interface SlipLeg {
   readonly gameId: string;
+  /** The leg's OWN league. A slip may hold legs from both. */
   readonly league: League;
   readonly market: Market;
   readonly side: Side;
@@ -29,7 +39,7 @@ export interface SlipLeg {
 
 export type SlipMode = 'straight' | 'parlay' | 'teaser';
 
-export interface LeagueSlip {
+export interface Slip {
   readonly mode: SlipMode;
   readonly legs: readonly SlipLeg[];
   readonly stakeCents: number;
@@ -41,23 +51,21 @@ export interface LeagueSlip {
   readonly teaserPointsTenths: number;
 }
 
-/** The draft slip that `START_EDIT` displaced, kept so `END_EDIT` can put it back. */
-export interface EditBackup {
-  readonly league: League;
-  readonly slip: LeagueSlip;
-}
-
 export interface SlipState {
-  readonly active: League;
-  readonly byLeague: Readonly<Record<League, LeagueSlip>>;
+  /**
+   * Which league the BOARD is showing. A view setting, NOT a property of the
+   * slip: changing it must never add, remove or hide a leg.
+   */
+  readonly board: League;
+  readonly slip: Slip;
   /** Set while editing an existing bet; `submit` then PUTs instead of POSTing. */
   readonly editingBetId: string | null;
   /**
-   * Editing a bet used to OVERWRITE whatever the user was building. The edit now
-   * borrows the league's slot and this holds the displaced draft; ending the
+   * Editing a bet would otherwise OVERWRITE whatever the user was building. The
+   * edit takes over the one slip and this holds the displaced draft; ending the
    * edit — cancelled or submitted — restores it. Nothing the user typed is lost.
    */
-  readonly editBackup: EditBackup | null;
+  readonly editBackup: Slip | null;
   /**
    * One line of transient feedback for an action that deliberately did nothing,
    * e.g. tapping a price when the parlay is already at `maxParlayLegs`. Cleared
@@ -67,7 +75,8 @@ export interface SlipState {
 }
 
 export type SlipAction =
-  | { readonly type: 'SET_LEAGUE'; readonly league: League }
+  /** Move the BOARD to another league. The slip is untouched. */
+  | { readonly type: 'SET_BOARD'; readonly league: League }
   | { readonly type: 'TOGGLE_LEG'; readonly leg: SlipLeg; readonly maxLegs: number }
   | {
       readonly type: 'REMOVE_LEG';
@@ -79,12 +88,11 @@ export type SlipAction =
   | { readonly type: 'SET_TEASER_POINTS'; readonly pointsTenths: number }
   | { readonly type: 'SET_STAKE'; readonly stakeCents: number }
   /** Re-price the legs in place, e.g. after accepting a 409 LINE_CHANGED. */
-  | { readonly type: 'SET_LEGS'; readonly league: League; readonly legs: readonly SlipLeg[] }
+  | { readonly type: 'SET_LEGS'; readonly legs: readonly SlipLeg[] }
   | { readonly type: 'CLEAR' }
   | {
       readonly type: 'START_EDIT';
       readonly betId: string;
-      readonly league: League;
       readonly mode: SlipMode;
       readonly legs: readonly SlipLeg[];
       readonly stakeCents: number;
@@ -94,24 +102,20 @@ export type SlipAction =
   /** Leave edit mode (cancelled OR submitted) and restore the displaced draft. */
   | { readonly type: 'END_EDIT' }
   | { readonly type: 'DISMISS_NOTICE' }
-  | { readonly type: 'HYDRATE'; readonly league: League; readonly slip: LeagueSlip };
+  | { readonly type: 'HYDRATE'; readonly slip: Slip };
 
 /** The default tier, in tenths: 6 points. Mirrors TEASER_POINTS_TENTHS[0]. */
 export const DEFAULT_TEASER_POINTS_TENTHS = 60;
 
-export const EMPTY_SLIP: LeagueSlip = {
+export const EMPTY_SLIP: Slip = {
   mode: 'straight',
   legs: [],
   stakeCents: 0,
   teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
 };
 
-export function emptySlipState(active: League): SlipState {
-  const byLeague = Object.fromEntries(LEAGUES.map((l) => [l, EMPTY_SLIP])) as Record<
-    League,
-    LeagueSlip
-  >;
-  return { active, byLeague, editingBetId: null, editBackup: null, notice: null };
+export function emptySlipState(board: League): SlipState {
+  return { board, slip: EMPTY_SLIP, editingBetId: null, editBackup: null, notice: null };
 }
 
 /** The copy shown when a tap is refused because the parlay is full. */
@@ -124,13 +128,19 @@ export function legKey(leg: Pick<SlipLeg, 'gameId' | 'market' | 'side'>): string
 }
 
 /**
- * `localStorage` key. Per league, so switching tabs does not lose the other slip.
+ * `localStorage` key. ONE slot, not one per league.
  *
- * v2 because `SlipLeg` gained `homeAbbr`/`awayAbbr`; a v1 entry has no way to
- * relabel a leg after the line moves, so it is abandoned rather than migrated.
+ * v3 because the shape changed from per-league to a single cross-league draft.
+ * A v2 entry cannot be migrated honestly — there were two of them and they may
+ * hold conflicting modes, stakes and same-game picks — so `staleSlipKeys()`
+ * lists the old keys for the provider to delete rather than leaving two dead
+ * entries in every user's browser forever.
  */
-export function slipStorageKey(league: League): string {
-  return `sbs.slip.v2.${league}`;
+export const SLIP_STORAGE_KEY = 'sbs.slip.v3';
+
+/** The abandoned per-league v1/v2 keys, for one-time cleanup on hydrate. */
+export function staleSlipKeys(): readonly string[] {
+  return LEAGUES.flatMap((league) => [`sbs.slip.v1.${league}`, `sbs.slip.v2.${league}`]);
 }
 
 /**
@@ -149,8 +159,8 @@ function modeFor(legs: readonly SlipLeg[], current: SlipMode): SlipMode {
 }
 
 /** Every structural write also clears the transient notice. */
-function withSlip(state: SlipState, league: League, slip: LeagueSlip): SlipState {
-  return { ...state, notice: null, byLeague: { ...state.byLeague, [league]: slip } };
+function withSlip(state: SlipState, slip: Slip): SlipState {
+  return { ...state, notice: null, slip };
 }
 
 /** Put the displaced draft back and leave edit mode. A no-op when not editing. */
@@ -159,32 +169,24 @@ function endEdit(state: SlipState): SlipState {
   if (backup === null) {
     return state.editingBetId === null ? state : { ...state, editingBetId: null, notice: null };
   }
-  return {
-    ...state,
-    byLeague: { ...state.byLeague, [backup.league]: backup.slip },
-    editingBetId: null,
-    editBackup: null,
-    notice: null,
-  };
+  return { ...state, slip: backup, editingBetId: null, editBackup: null, notice: null };
 }
 
 export function slipReducer(state: SlipState, action: SlipAction): SlipState {
   switch (action.type) {
-    case 'SET_LEAGUE':
-      return state.active === action.league
+    case 'SET_BOARD':
+      // Deliberately touches NOTHING but `board`. Switching tabs to find a
+      // college game to add to an NFL slip is the whole cross-league flow.
+      return state.board === action.league
         ? state
-        : { ...state, active: action.league, notice: null };
+        : { ...state, board: action.league, notice: null };
 
     case 'TOGGLE_LEG': {
-      const league = action.leg.league;
-      const slip = state.byLeague[league];
+      const { slip } = state;
       const key = legKey(action.leg);
       if (slip.legs.some((l) => legKey(l) === key)) {
         const legs = slip.legs.filter((l) => legKey(l) !== key);
-        return {
-          ...withSlip(state, league, { ...slip, legs, mode: modeFor(legs, slip.mode) }),
-          active: league,
-        };
+        return withSlip(state, { ...slip, legs, mode: modeFor(legs, slip.mode) });
       }
       // A parlay may never carry two legs on the same game (correlated-parlay
       // guard; the DB also has UNIQUE(bet_id, game_id)), so picking a second
@@ -193,73 +195,58 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
       if (others.length >= action.maxLegs) {
         // Full. Change NOTHING — no new arrays, no re-render churn — and say so
         // out loud; this used to be a silent no-op that looked like a dead tap.
-        return { ...state, active: league, notice: parlayFullNotice(action.maxLegs) };
+        return { ...state, notice: parlayFullNotice(action.maxLegs) };
       }
       const legs = [...others, action.leg];
-      return {
-        ...withSlip(state, league, { ...slip, legs, mode: modeFor(legs, slip.mode) }),
-        active: league,
-      };
+      return withSlip(state, { ...slip, legs, mode: modeFor(legs, slip.mode) });
     }
 
     case 'REMOVE_LEG': {
-      const slip = state.byLeague[state.active];
+      const { slip } = state;
       const key = legKey(action);
       const legs = slip.legs.filter((l) => legKey(l) !== key);
-      return withSlip(state, state.active, { ...slip, legs, mode: modeFor(legs, slip.mode) });
+      return withSlip(state, { ...slip, legs, mode: modeFor(legs, slip.mode) });
     }
 
     case 'SET_MODE': {
-      const slip = state.byLeague[state.active];
+      const { slip } = state;
       // A multi below two legs is not a bet anyone can place, and persisting one
       // resurrected an unsubmittable slip on the next reload.
       const mode = action.mode !== 'straight' && slip.legs.length < 2 ? 'straight' : action.mode;
-      return withSlip(state, state.active, { ...slip, mode });
+      return withSlip(state, { ...slip, mode });
     }
 
-    case 'SET_TEASER_POINTS': {
-      const slip = state.byLeague[state.active];
-      return withSlip(state, state.active, { ...slip, teaserPointsTenths: action.pointsTenths });
-    }
+    case 'SET_TEASER_POINTS':
+      return withSlip(state, { ...state.slip, teaserPointsTenths: action.pointsTenths });
 
-    case 'SET_STAKE': {
-      const slip = state.byLeague[state.active];
-      return withSlip(state, state.active, { ...slip, stakeCents: action.stakeCents });
-    }
+    case 'SET_STAKE':
+      return withSlip(state, { ...state.slip, stakeCents: action.stakeCents });
 
-    case 'SET_LEGS': {
-      const slip = state.byLeague[action.league];
-      return withSlip(state, action.league, {
-        ...slip,
+    case 'SET_LEGS':
+      return withSlip(state, {
+        ...state.slip,
         legs: action.legs,
-        mode: modeFor(action.legs, slip.mode),
+        mode: modeFor(action.legs, state.slip.mode),
       });
-    }
 
     case 'CLEAR':
-      return {
-        ...withSlip(state, state.active, EMPTY_SLIP),
-        editingBetId: null,
-        editBackup: null,
-      };
+      return { ...withSlip(state, EMPTY_SLIP), editingBetId: null, editBackup: null };
 
     case 'START_EDIT': {
       // Starting a second edit ends the first one first, so the backup always
       // holds the user's own draft rather than another bet's legs.
       const base = endEdit(state);
       return {
-        ...withSlip(base, action.league, {
-          mode: action.mode,
+        ...withSlip(base, {
+          mode: modeFor(action.legs, action.mode),
           legs: action.legs,
           stakeCents: action.stakeCents,
           // A non-teaser edit keeps whatever tier the displaced draft had, so
           // cancelling the edit restores a slip that looks exactly as it did.
-          teaserPointsTenths:
-            action.teaserPointsTenths ?? base.byLeague[action.league].teaserPointsTenths,
+          teaserPointsTenths: action.teaserPointsTenths ?? base.slip.teaserPointsTenths,
         }),
-        active: action.league,
         editingBetId: action.betId,
-        editBackup: { league: action.league, slip: base.byLeague[action.league] },
+        editBackup: base.slip,
       };
     }
 
@@ -270,7 +257,7 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
       return state.notice === null ? state : { ...state, notice: null };
 
     case 'HYDRATE':
-      return withSlip(state, action.league, action.slip);
+      return withSlip(state, action.slip);
   }
 }
 
@@ -285,11 +272,32 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function parseLeg(raw: unknown, league: League): SlipLeg | null {
+function isLeague(v: unknown): v is League {
+  return typeof v === 'string' && (LEAGUES as readonly string[]).includes(v);
+}
+
+/**
+ * A persisted leg. `league` is now PART OF THE ENTRY rather than supplied by the
+ * caller: with one shared slot there is no per-league key to re-stamp it from,
+ * and a leg whose league were guessed would send an NFL game to the CFB board.
+ * An entry without a legal one is corrupt and the whole slip is abandoned.
+ */
+function parseLeg(raw: unknown): SlipLeg | null {
   if (!isRecord(raw)) return null;
-  const { gameId, market, side, lineTenths, americanPrice, label, kickoffAt, homeAbbr, awayAbbr } =
-    raw;
+  const {
+    gameId,
+    league,
+    market,
+    side,
+    lineTenths,
+    americanPrice,
+    label,
+    kickoffAt,
+    homeAbbr,
+    awayAbbr,
+  } = raw;
   if (typeof gameId !== 'string' || gameId === '') return null;
+  if (!isLeague(league)) return null;
   if (typeof homeAbbr !== 'string' || typeof awayAbbr !== 'string') return null;
   if (typeof market !== 'string' || !(MARKETS as readonly string[]).includes(market)) return null;
   if (typeof side !== 'string' || !(SIDES as readonly string[]).includes(side)) return null;
@@ -317,11 +325,11 @@ function parseLeg(raw: unknown, league: League): SlipLeg | null {
 }
 
 /**
- * Parse a persisted slip. Anything malformed (an old schema, a hand-edited
+ * Parse the persisted slip. Anything malformed (an old schema, a hand-edited
  * value) yields `null` and the caller starts empty — a corrupt localStorage
  * entry must never be able to crash the board.
  */
-export function parseStoredSlip(raw: string | null, league: League): LeagueSlip | null {
+export function parseStoredSlip(raw: string | null): Slip | null {
   if (raw === null) return null;
   let parsed: unknown;
   try {
@@ -337,8 +345,8 @@ export function parseStoredSlip(raw: string | null, league: League): LeagueSlip 
   if (mode !== 'straight' && mode !== 'parlay' && mode !== 'teaser') return null;
   if (typeof stake !== 'number' || !Number.isSafeInteger(stake) || stake < 0) return null;
   if (!Array.isArray(rawLegs)) return null;
-  // A v2 entry (pre-teaser) has no tier at all; that is not corruption, so it
-  // takes the default rather than throwing the whole slip away.
+  // An entry written before teasers existed has no tier at all; that is not
+  // corruption, so it takes the default rather than losing the whole slip.
   const teaserPointsTenths =
     points === undefined
       ? DEFAULT_TEASER_POINTS_TENTHS
@@ -347,9 +355,15 @@ export function parseStoredSlip(raw: string | null, league: League): LeagueSlip 
         : null;
   if (teaserPointsTenths === null) return null;
   const legs: SlipLeg[] = [];
+  const seen = new Set<string>();
   for (const rawLeg of rawLegs) {
-    const leg = parseLeg(rawLeg, league);
+    const leg = parseLeg(rawLeg);
     if (leg === null) return null;
+    // The no-two-legs-from-one-game rule is a slip INVARIANT, so a hand-edited
+    // entry that breaks it is corrupt rather than something to submit and have
+    // the server reject.
+    if (seen.has(leg.gameId)) return null;
+    seen.add(leg.gameId);
     legs.push(leg);
   }
   // Normalise on the way IN, not just on the way out: a slip persisted as a
@@ -359,13 +373,14 @@ export function parseStoredSlip(raw: string | null, league: League): LeagueSlip 
   return { mode: modeFor(legs, mode), legs, stakeCents: stake, teaserPointsTenths };
 }
 
-export function serialiseSlip(slip: LeagueSlip): string {
+export function serialiseSlip(slip: Slip): string {
   return JSON.stringify({
     mode: slip.mode,
     stakeCents: slip.stakeCents,
     teaserPointsTenths: slip.teaserPointsTenths,
     legs: slip.legs.map((l) => ({
       gameId: l.gameId,
+      league: l.league,
       market: l.market,
       side: l.side,
       lineTenths: l.lineTenths,

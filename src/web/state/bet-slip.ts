@@ -23,8 +23,13 @@ export interface BetSlipState {
 }
 
 export interface BetSlipApi extends BetSlipState {
-  readonly league: League;
-  readonly setLeague: (league: League) => void;
+  /**
+   * Which league the BOARD is showing. NOT a property of the slip: there is ONE
+   * cross-league slip (M5b), and switching tabs to find a college game to add to
+   * an NFL slip must never disturb it.
+   */
+  readonly boardLeague: League;
+  readonly setBoardLeague: (league: League) => void;
   readonly toggleLeg: (leg: SlipLeg) => void;
   readonly removeLeg: (gameId: string, market: Market, side: Side) => void;
   readonly clear: () => void;
@@ -54,7 +59,6 @@ export interface BetSlipApi extends BetSlipState {
   readonly editingBetId: string | null;
   readonly startEdit: (
     betId: string,
-    league: League,
     mode: SlipMode,
     legs: readonly SlipLeg[],
     stakeCents: Cents,

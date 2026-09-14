@@ -27,16 +27,9 @@ import { gameIdsToRefresh, refreshSlipLegs } from '../state/edit-bet.js';
 import { formatAmerican } from '../../shared/odds.js';
 import { formatCents } from '../../shared/validate.js';
 import type { BetView, GameCard } from '../../shared/api-types.js';
-import type { League } from '../../shared/types.js';
 
 export interface BetCardProps {
   readonly bet: BetView;
-}
-
-/** Which league TAB an edit of this bet borrows. See the note at the call site. */
-function editLeagueFor(bet: BetView): League {
-  if (bet.league !== 'mixed') return bet.league;
-  return bet.legs[0]?.league ?? 'nfl';
 }
 
 export function BetCard(props: BetCardProps): ReactElement {
@@ -80,12 +73,10 @@ export function BetCard(props: BetCardProps): ReactElement {
         if (refreshed.unrefreshed.length > 0) {
           setNote('One of these markets is no longer posted — that leg still shows its old price.');
         }
+        // No league argument: there is ONE cross-league slip, so a mixed bet
+        // loads into it exactly as a single-league one does.
         slip.startEdit(
           bet.id,
-          // A cross-league bet has no single league; the slip is per-league, so
-          // it borrows the FIRST leg's slot. The server does not read this field
-          // for scope any more, so nothing depends on the choice but the tab.
-          editLeagueFor(bet),
           bet.betType,
           refreshed.legs,
           bet.stakeCents,

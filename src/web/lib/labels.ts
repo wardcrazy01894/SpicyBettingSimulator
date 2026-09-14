@@ -35,6 +35,17 @@ export const BET_LEAGUE_LABEL: Readonly<Record<BetLeague, string>> = {
   mixed: 'NFL + NCAAF',
 };
 
+/**
+ * The SHORT badge shown on each leg of a cross-league slip, where the label sits
+ * beside a pick and has to stay out of the way. "CFB" rather than "NCAAF"
+ * because it is three characters and is what the product owner calls it; the
+ * long form stays for headings, where the room exists.
+ */
+export const LEAGUE_BADGE: Readonly<Record<League, string>> = {
+  nfl: 'NFL',
+  ncaaf: 'CFB',
+};
+
 export const MARKET_LABEL: Readonly<Record<Market, string>> = {
   moneyline: 'Moneyline',
   spread: 'Spread',

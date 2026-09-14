@@ -8,6 +8,10 @@
  * TEASER MODE shows each leg as "book line → teased line" and prices the whole
  * slip from `config.teaserPayouts`, which the SERVER echoes. The legs' own
  * prices are hidden there because they are not what the bet pays.
+ *
+ * ONE SLIP, CROSS-LEAGUE (M5b). Legs may come from either league tab, so each
+ * carries an NFL / CFB badge — the tab you happen to be on no longer tells you
+ * where a pick came from.
  */
 import { useCallback, useRef } from 'react';
 import type { ReactElement } from 'react';
@@ -19,7 +23,7 @@ import { StakeInput } from './StakeInput.js';
 import { useFocusTrap } from '../hooks/useFocusTrap.js';
 import { formatAmerican, teasedLineTenths } from '../../shared/odds.js';
 import { formatCents, formatLineTenths } from '../../shared/validate.js';
-import { MARKET_LABEL, teaserPointsLabel } from '../lib/labels.js';
+import { LEAGUE_BADGE, MARKET_LABEL, teaserPointsLabel } from '../lib/labels.js';
 import { useBetSlip } from '../state/bet-slip.js';
 import { useConfig } from '../state/config.js';
 import type { SlipLeg, SlipMode } from '../state/slip-reducer.js';
@@ -56,7 +60,7 @@ export function BetSlip(): ReactElement {
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // `setOpen` ONLY. The context object is re-memoised on every slip change — a
-  // keystroke in the stake box produces a new `LeagueSlip` and a new preview —
+  // keystroke in the stake box produces a new `Slip` and a new preview —
   // so a `close` that depended on the whole context was a new function on every
   // keystroke, which re-armed the focus trap and threw focus back to the Close
   // button. `setOpen` is a `useState` setter and is stable for the app's life.
@@ -127,6 +131,14 @@ export function BetSlip(): ReactElement {
             {slip.legs.map((leg) => (
               <li className="slip-leg" key={`${leg.gameId}|${leg.market}|${leg.side}`}>
                 <div className="slip-leg-main">
+                  {/*
+                   * The slip is ONE cross-league draft (M5b), so which league a
+                   * leg came from is no longer implied by the tab you are on and
+                   * has to be said on the leg itself.
+                   */}
+                  <span className="chip chip-quiet slip-leg-league">
+                    {LEAGUE_BADGE[leg.league]}
+                  </span>
                   <span className="slip-leg-pick">{leg.label}</span>
                   <span className="slip-leg-market">{MARKET_LABEL[leg.market]}</span>
                 </div>

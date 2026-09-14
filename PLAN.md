@@ -1825,11 +1825,11 @@ with codes enumerated in `src/shared/errors.ts`. All state-changing routes requi
 
 ### 11.1 Public
 
-| Method | Path            | Response                                                                                                                                                                                                                                                                                                                                             |
-| ------ | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/health`   | `200 {ok, version, now, inviteRequired}` — no DB access                                                                                                                                                                                                                                                                                              |
-| GET    | `/api/config`   | `200 {leagues, currentSeason:{nfl,ncaaf}, minStakeCents, maxParlayLegs, cutoffBufferMs, initialBankrollCents, maxPayoutCents}` — these field names match `ConfigResponse` in `src/shared/api-types.ts` exactly; `maxPayoutCents` exists because the bet slip calls `exceedsPayoutCap()` for pre-flight (§5.2b) and must not disagree with the server |
-| GET    | `/api/auth/kdf` | `200 {version, algorithm, hash, iterations, keyLengthBytes, saltPrefix}`                                                                                                                                                                                                                                                                             |
+| Method | Path            | Response                                                                                                                                                                                                                                                                                                                                                                          |
+| ------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/health`   | `200 {ok, version, now, inviteRequired}` — no DB access                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/api/config`   | `200 {leagues, currentSeason:{nfl,ncaaf}, minStakeCents, maxParlayLegs, cutoffBufferMs, initialBankrollCents, maxPayoutCents, teaserPoints, teaserPayouts}` — these field names match `ConfigResponse` in `src/shared/api-types.ts` exactly; `maxPayoutCents` exists because the bet slip calls `exceedsPayoutCap()` for pre-flight (§5.2b) and must not disagree with the server |
+| GET    | `/api/auth/kdf` | `200 {version, algorithm, hash, iterations, keyLengthBytes, saltPrefix}`                                                                                                                                                                                                                                                                                                          |
 
 ### 11.2 Auth
 
@@ -2126,11 +2126,34 @@ Three contexts, each a `useReducer`; no Redux, no react-query.
   `X-SBS-Client: 1`, `credentials: 'same-origin'`, parses the error envelope into a
   typed `ApiError`, and on `401` dispatches `SESSION_EXPIRED`, which bounces to
   `/login`.
-- **BetSlipContext** — `{ mode, legs: SlipLeg[], stakeCents }`. Persisted to
-  `localStorage` keyed by league so a refresh doesn't lose the slip. Validation
-  mirrors `src/shared/validate.ts` (the _same_ pure functions the Worker uses) so the
-  UI can grey out an invalid slip before submitting — the server still re-validates,
-  the client copy is purely for UX.
+- **BetSlipContext** — `{ mode, legs: SlipLeg[], stakeCents, teaserPointsTenths }`,
+  plus `boardLeague`. **ONE CROSS-LEAGUE SLIP (M5b).** It used to be a
+  `Record<League, Slip>` with the league tab selecting which draft you were
+  looking at, because a bet belonged to exactly one `(league, season)` bankroll
+  and a cross-league parlay was a 409. Neither is true now, and the product owner
+  asked for the flow directly: "tease Michigan and the Steelers together". So:
+
+  - there is ONE draft, and a leg carries its own `league`;
+  - **the league tabs move the BOARD only** (`SET_BOARD`) — switching tabs to go
+    find a college game must never add, remove, hide or reorder a leg, which the
+    reducer spec pins by IDENTITY (`moved.slip` is the same object);
+  - every existing slip rule is unchanged: no two legs from one game, 2+ legs is
+    a multi (parlay unless the user picked teaser), teaser mode refuses
+    moneylines, the MAX chip is the whole balance, the payout cap is pre-flighted;
+  - each leg shows an NFL / CFB badge, and the collapsed bar shows `NFL + CFB`,
+    because the tab you are on no longer tells you where a pick came from;
+  - `buildPlaceBetRequest` derives the advisory `league` from the legs
+    (`'mixed'` when they span both), which is the same value the server derives
+    and stores.
+
+  Persisted to `localStorage` under ONE key, `sbs.slip.v3`. There is no honest
+  migration from v2 — there were two drafts and they can disagree about mode,
+  stake and even hold the same game twice — so the provider deletes the old
+  per-league keys on first hydrate instead of leaving dead JSON behind forever.
+  Validation mirrors `src/shared/validate.ts` (the _same_ pure functions the
+  Worker uses) so the UI can grey out an invalid slip before submitting — the
+  server still re-validates, the client copy is purely for UX.
+
 - **Data fetching** — `useResource<T>(key, fetcher)` in `src/web/hooks/useResource.ts`:
   a ~60-line hook with in-memory cache, `refetch()`, stale-while-revalidate and an
   `invalidate(keyPrefix)` used after a successful bet mutation. Deliberately not a
@@ -2978,7 +3001,9 @@ Where an answer reversed an earlier default, the reversal is called out.
 3. **No per-league bankrolls — ONE account balance.** Opened at signup, never
    rolled over, shared across NFL and CFB. `league` is therefore a property of
    the LEG, cross-league parlays and teasers are legal, and a bet spanning both
-   is labelled `'mixed'`. §4.4, §11.4. (M5b.)
+   is labelled `'mixed'`. §4.4, §11.4. **This reaches the UI as ONE cross-league
+   bet slip** — "tease Michigan and the Steelers together" — with the league tabs
+   moving only the board. §12.2. (M5b.)
 4. **A push is a refund.** A pushed straight bet is refunded as if it never
    happened and is excluded from record and ROI on both sides of the fraction; a
    parlay or teaser drops the pushed leg and is re-priced from the survivors;

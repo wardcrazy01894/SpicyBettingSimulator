@@ -23,9 +23,9 @@ import {
 import { validatePlaceBet } from '../../shared/validate.js';
 import { messageForCode } from '../api/messages.js';
 import { pickLabel } from '../lib/labels.js';
-import type { LeagueSlip } from './slip-reducer.js';
+import type { Slip, SlipLeg } from './slip-reducer.js';
 import type { LineChangedDetails, PlaceBetRequest } from '../../shared/api-types.js';
-import type { AmericanPrice, Cents, League, Price } from '../../shared/types.js';
+import type { AmericanPrice, BetLeague, Cents, Price } from '../../shared/types.js';
 
 export interface SlipPreview {
   /** null when there are no legs, or the parlay is too long to express. */
@@ -38,14 +38,30 @@ export interface SlipPreview {
   readonly error: string | null;
 }
 
-/** The wire body for the current slip. `expected` is the §11.4 optimistic check. */
-export function buildPlaceBetRequest(
-  league: League,
-  slip: LeagueSlip,
-  acceptLineChange: boolean,
-): PlaceBetRequest {
+/**
+ * The league LABEL for a slip: the legs' one league, or `'mixed'` when they span
+ * both. Mirrors the server's `betLeagueOf` so the advisory field the client
+ * sends is the same value the server will derive and store.
+ *
+ * An empty slip reports `'nfl'` purely so the body is a legal shape; a slip with
+ * no legs fails `validatePlaceBet` on `legs` long before `league` matters.
+ */
+export function slipLeague(legs: readonly SlipLeg[]): BetLeague {
+  const first = legs[0]?.league;
+  if (first === undefined) return 'nfl';
+  return legs.every((leg) => leg.league === first) ? first : 'mixed';
+}
+
+/**
+ * The wire body for the current slip. `expected` is the §11.4 optimistic check.
+ *
+ * `league` is ADVISORY (PLAN.md §11.4): the server derives the bet's league from
+ * the legs' own game rows and never compares it. It is sent anyway, correctly
+ * computed, so a reader of the request log sees what the client believed.
+ */
+export function buildPlaceBetRequest(slip: Slip, acceptLineChange: boolean): PlaceBetRequest {
   return {
-    league,
+    league: slipLeague(slip.legs),
     betType: slip.mode,
     stakeCents: slip.stakeCents,
     acceptLineChange,
@@ -80,7 +96,7 @@ function asTeaserPoints(tenths: number): 60 | 65 | 70 {
  * server cannot disagree. A cell the server did not send yields `null`, which
  * renders as "—" rather than as a number this client invented.
  */
-function slipPrice(slip: LeagueSlip, card: TeaserCard | null): Price | null {
+function slipPrice(slip: Slip, card: TeaserCard | null): Price | null {
   if (slip.mode !== 'teaser') return priceFromLegs(slip.legs.map((leg) => leg.americanPrice));
   const american = card?.[slip.teaserPointsTenths]?.[slip.legs.length];
   if (american === undefined) return null;
@@ -109,8 +125,7 @@ function displayAmerican(price: Price | null): AmericanPrice | null {
 }
 
 export function computePreview(
-  league: League,
-  slip: LeagueSlip,
+  slip: Slip,
   availableCents: Cents | null,
   teaserPayouts: TeaserCard | null = null,
 ): SlipPreview {
@@ -128,7 +143,7 @@ export function computePreview(
   const decimalOdds = price === null ? null : formatDecimalOdds(price);
   const americanPrice = displayAmerican(price);
 
-  const validation = validatePlaceBet(buildPlaceBetRequest(league, slip, false));
+  const validation = validatePlaceBet(buildPlaceBetRequest(slip, false));
   if (!validation.ok) {
     return { americanPrice, decimalOdds, toWinCents: 0, payoutCents: 0, error: validation.message };
   }
@@ -192,7 +207,7 @@ export function lineChangeIsAcceptable(details: LineChangedDetails): boolean {
  * preview the user is looking at — and the resubmitted `expected` is then the
  * value the server itself reported.
  */
-export function applyLineChange(slip: LeagueSlip, details: LineChangedDetails): LeagueSlip {
+export function applyLineChange(slip: Slip, details: LineChangedDetails): Slip {
   const byKey = new Map(
     details.legs.map((leg) => [`${leg.gameId}|${leg.market}|${leg.side}`, leg.current]),
   );

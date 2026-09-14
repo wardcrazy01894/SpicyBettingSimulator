@@ -30,7 +30,9 @@ export function GamesPage(): ReactElement {
   const slip = useBetSlip();
   const [week, setWeek] = useState<number | null>(null);
 
-  const league = slip.league;
+  // The board's league. Changing it moves the BOARD only — the slip is one
+  // cross-league draft and keeps every leg (M5b).
+  const league = slip.boardLeague;
   const season = config.currentSeason[league];
   const board = useGames(league, season, week);
   const now = useNow();
@@ -49,7 +51,7 @@ export function GamesPage(): ReactElement {
           leagues={config.leagues}
           onChange={(next) => {
             setWeek(null);
-            slip.setLeague(next);
+            slip.setBoardLeague(next);
           }}
         />
         <WeekPicker week={week ?? board.data?.week ?? null} weeks={weeks} onChange={setWeek} />
