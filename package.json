@@ -33,6 +33,7 @@
     "db:console:local": "wrangler d1 execute spicybetting --local --command",
     "db:reconcile": "node scripts/reconcile.mjs",
     "admin:hash": "node scripts/admin-hash.mjs",
+    "icons": "node scripts/icons.mjs",
     "deploy": "npm run build:web && wrangler deploy",
     "cf-typegen": "wrangler types"
   },
