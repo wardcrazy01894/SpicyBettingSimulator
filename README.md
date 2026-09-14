@@ -79,6 +79,16 @@ npm run typecheck && npm run lint && npm run format:check && npm test && npm run
 constant, an error code, a route, a table, the teaser card. Docs ship in the same
 PR as the behaviour change; see `.github/pull_request_template.md`.
 
+## Icons
+
+`public/favicon.svg` is the site icon and the only file you edit. The PNG and
+ICO copies next to it (tab icon, iOS home-screen icon, manifest icons) are
+generated from it and committed, so after changing the SVG run:
+
+```bash
+npm run icons
+```
+
 ## Deploy
 
 Live at https://spicybetting.wardcrazy01894.workers.dev (Cloudflare free plan). Full runbook:
