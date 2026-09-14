@@ -21,6 +21,7 @@ import {
   setUnauthenticatedHandler,
 } from '../api/client.js';
 import { deriveKey } from '../api/kdf.js';
+import { diagnostics, setBeaconEnabled } from '../diagnostics.js';
 import { clearCache } from '../hooks/useResource.js';
 import { SessionContext } from './session.js';
 import type { SessionApi, SessionState } from './session.js';
@@ -59,6 +60,14 @@ export function SessionProvider(props: { children: ReactNode }): ReactElement {
       ac.abort();
     };
   }, []);
+
+  // The diagnostics log follows the session: cleared the moment it ends, so a
+  // shared browser cannot carry one person's activity into the next person's
+  // public bug report; the crash beacon only fires while signed in.
+  useEffect(() => {
+    if (state.status === 'anon') diagnostics.clear();
+    setBeaconEnabled(state.status === 'authed');
+  }, [state.status]);
 
   // Any 401 anywhere expires the session exactly once.
   useEffect(() => {

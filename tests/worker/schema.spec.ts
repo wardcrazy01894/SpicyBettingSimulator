@@ -159,6 +159,7 @@ describe('migration 0001', () => {
       'issue_number',
       'issue_url',
       'error',
+      'diagnostics',
     ]);
     const byName = new Map(cols.results.map((c) => [c.name, c]));
     expect(byName.get('created_at')).toMatchObject({ type: 'INTEGER', notnull: 1 });
@@ -170,6 +171,18 @@ describe('migration 0001', () => {
       'idx_bug_reports_created',
       'idx_bug_reports_user_created',
     ]);
+  });
+
+  it('0006 added nullable bug_reports.diagnostics TEXT', async () => {
+    const cols = await env.DB.prepare('PRAGMA table_info(bug_reports)').all<{
+      name: string;
+      type: string;
+      notnull: number;
+    }>();
+    expect(cols.results.find((c) => c.name === 'diagnostics')).toMatchObject({
+      type: 'TEXT',
+      notnull: 0,
+    });
   });
 
   it('bug_reports.user_id must reference an existing user', async () => {

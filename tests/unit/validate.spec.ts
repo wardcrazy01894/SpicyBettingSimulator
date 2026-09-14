@@ -16,6 +16,7 @@ import type { PlaceBetInput } from '../../src/shared/validate.js';
 import type { PlaceBetRequest } from '../../src/shared/api-types.js';
 import {
   BUG_REPORT_DESCRIPTION_MAX,
+  BUG_REPORT_DIAGNOSTICS_MAX,
   BUG_REPORT_PAGE_MAX,
   BUG_REPORT_TITLE_MAX,
   MAX_ABS_LINE_TENTHS,
@@ -559,7 +560,7 @@ describe('validateBugReport', () => {
 
   it('accepts a title + description and normalises a missing page to null', () => {
     const r = validateBugReport(ok);
-    expect(r).toEqual({ ok: true, value: { ...ok, page: null } });
+    expect(r).toEqual({ ok: true, value: { ...ok, page: null, diagnostics: null } });
   });
 
   it('trims and keeps a path-shaped page', () => {
@@ -570,7 +571,7 @@ describe('validateBugReport', () => {
     });
     expect(r).toEqual({
       ok: true,
-      value: { title: 't i t l e', description: ok.description, page: '/bets' },
+      value: { title: 't i t l e', description: ok.description, page: '/bets', diagnostics: null },
     });
   });
 
@@ -609,6 +610,29 @@ describe('validateBugReport', () => {
     const r = validateBugReport(body);
     expect(r.ok).toBe(false);
     if (!r.ok && field !== undefined) expect(r.field).toBe(field);
+  });
+
+  it('accepts, trims and bounds an optional diagnostics block', () => {
+    expect(validateBugReport({ ...ok })).toMatchObject({ ok: true, value: { diagnostics: null } });
+    expect(validateBugReport({ ...ok, diagnostics: '  ' })).toMatchObject({
+      ok: true,
+      value: { diagnostics: null },
+    });
+    expect(
+      validateBugReport({ ...ok, diagnostics: ' app 0.1.0\nGET /api/games 200 ' }),
+    ).toMatchObject({
+      ok: true,
+      value: { diagnostics: 'app 0.1.0\nGET /api/games 200' },
+    });
+    const tooLong = validateBugReport({
+      ...ok,
+      diagnostics: 'x'.repeat(BUG_REPORT_DIAGNOSTICS_MAX + 1),
+    });
+    expect(tooLong).toMatchObject({ ok: false, field: 'diagnostics' });
+    expect(validateBugReport({ ...ok, diagnostics: 7 })).toMatchObject({
+      ok: false,
+      field: 'diagnostics',
+    });
   });
 
   it('accepts the exact maximum lengths', () => {

@@ -64,8 +64,8 @@ export async function createBugReport(
   // D1 serialises writes.
   const inserted = await env.DB.prepare(
     `INSERT INTO bug_reports
-       (id, user_id, title, description, page, user_agent, app_version, created_at)
-     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+       (id, user_id, title, description, page, user_agent, app_version, created_at, diagnostics)
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?11
      WHERE (SELECT COUNT(*) FROM bug_reports
              WHERE user_id = ?2 AND created_at > ?8 - ?9) < ?10`,
   )
@@ -80,6 +80,7 @@ export async function createBugReport(
       now,
       BUG_REPORT_WINDOW_MS,
       BUG_REPORTS_PER_WINDOW,
+      input.diagnostics,
     )
     .run();
   if (inserted.meta.changes === 0) {
@@ -174,6 +175,7 @@ interface BugReportRow {
   readonly title: string;
   readonly description: string;
   readonly page: string | null;
+  readonly diagnostics: string | null;
   readonly app_version: string;
   readonly created_at: number;
   readonly issue_number: number | null;
@@ -187,8 +189,8 @@ interface BugReportRow {
  */
 export async function listBugReports(env: Env): Promise<AdminBugReportsResponse> {
   const rows = await env.DB.prepare(
-    `SELECT b.id, b.user_id, u.username, b.title, b.description, b.page, b.app_version,
-            b.created_at, b.issue_number, b.issue_url, b.error
+    `SELECT b.id, b.user_id, u.username, b.title, b.description, b.page, b.diagnostics,
+            b.app_version, b.created_at, b.issue_number, b.issue_url, b.error
        FROM bug_reports b JOIN users u ON u.id = b.user_id
       ORDER BY b.created_at DESC, b.rowid DESC
       LIMIT ?1`,
@@ -202,6 +204,7 @@ export async function listBugReports(env: Env): Promise<AdminBugReportsResponse>
     title: r.title,
     description: r.description,
     page: r.page,
+    diagnostics: r.diagnostics,
     appVersion: r.app_version,
     createdAt: r.created_at,
     issueNumber: r.issue_number,
