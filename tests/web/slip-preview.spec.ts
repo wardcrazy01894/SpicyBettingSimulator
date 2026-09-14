@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { ERROR_CODES } from '../../src/shared/errors.js';
-import { MAX_PARLAY_LEGS, MIN_STAKE_CENTS, TEASER_PAYOUTS } from '../../src/shared/constants.js';
+import {
+  MAX_PARLAY_LEGS,
+  MIN_STAKE_CENTS,
+  TEASER_PAYOUTS,
+  TEASER_POINTS_TENTHS,
+} from '../../src/shared/constants.js';
 import { ERROR_MESSAGES, messageForCode, messageForError } from '../../src/web/api/messages.js';
 import {
   buildPlaceBetRequest,
@@ -322,9 +327,24 @@ describe('buildPlaceBetRequest — teasers', () => {
     expect('teaserPoints' in asParlay).toBe(false);
   });
 
-  it('narrows a corrupt stored tier to a tier the server will accept', () => {
+  it('sends the stored tier untouched — the SERVER decides what is on the card', () => {
+    // A client-side narrowing here once turned every non-classic tier into a
+    // silent 6-point bet. An off-card value must reach the server and be
+    // refused there (400 TEASER_INVALID), never be "fixed" into a different bet.
     const legs = [leg('a', -110), leg('b', -110)];
     const req = buildPlaceBetRequest(slip(legs, 1000, 'teaser', 61), false);
-    expect(req.teaserPoints).toBe(60);
+    expect(req.teaserPoints).toBe(61);
+  });
+});
+
+describe('buildPlaceBetRequest — teaser tier', () => {
+  it('sends every tier on the card exactly as stored (no client-side narrowing)', () => {
+    for (const tenths of TEASER_POINTS_TENTHS) {
+      const body = buildPlaceBetRequest(
+        slip([leg('g1', -110), leg('g2', -110, 'total', 'over')], 500, 'teaser', tenths),
+        false,
+      );
+      expect(body.teaserPoints).toBe(tenths);
+    }
   });
 });

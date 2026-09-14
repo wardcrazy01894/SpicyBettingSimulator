@@ -29,6 +29,21 @@ migrations must be **expand-only and backward-compatible** with the currently de
 nullable columns/tables now; drop or rename in a later deploy once no live code reads the old shape),
 and a rollback leaves the newer schema in place, which the expand-only rule makes safe.
 
+The one exception so far is `0005_bets_teaser_tiers.sql`, which recreates `bets`, `bet_legs` and
+`ledger` with every row copied across (SQLite cannot alter a CHECK; PLAN §16.2 has the proof that no
+gentler route exists on D1). It is still backward-compatible in the sense that matters: the new CHECK
+accepts everything the old Worker writes, so rolling the code back after it is safe. **If
+`npm run db:reconcile -- --remote` reports drift after a rebuild-style migration, do not hand-fix —
+restore the database** with D1 Time Travel, which keeps 30 days of point-in-time history on every
+plan:
+
+```bash
+npx wrangler d1 time-travel info spicybetting                         # current bookmark
+npx wrangler d1 time-travel restore spicybetting --timestamp <ISO>     # or --bookmark <id>
+```
+
+Restore to just before the Deploy run's "Apply migrations" step, then fix the migration and re-run.
+
 **A red Deploy run past the "Deploy the Worker" step means the new version IS live** (only the smoke
 check failed). Roll back manually if the site is actually broken; the workflow does not auto-revert.
 

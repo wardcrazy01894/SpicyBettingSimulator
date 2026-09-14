@@ -15,9 +15,10 @@
 // decimal = (1 - HOLD) / p(t)^n. SIGMA and HOLD are fitted to the one fully
 // published card (Bovada, 6 / 6.5 / 7 / 8 / 9 points × 2-10 legs), and those
 // 45 published cells are used VERBATIM — the model only fills the tiers the
-// book does not print. It reproduces DraftKings' specialty prices it was not
-// fitted to (10-pt 3-leg -120 and 13-pt 4-leg -140, both "ties lose" at DK)
-// to within a few cents, which is the sanity check that it extrapolates.
+// book does not print. Sanity check on tiers it was not fitted to: DraftKings'
+// "ties lose" specialty teasers are 10-pt 3-leg -120 and 13-pt 4-leg -140; the
+// model gives -150 and -200, i.e. WORSE for the bettor, which is the right side
+// to err on because this card keeps push protection at every tier.
 //
 // Prices are rounded the way a card is printed: to 5 under +/-200, to 25 up to
 // +1000, to 100 up to +3000, to 500 above. Every value round-trips through
@@ -90,7 +91,7 @@ export function card() {
 }
 
 const fmt = (a) => (a > 0 ? `+${a}` : `−${-a}`); // unicode minus, as PLAN prints it
-const label = (tenths) => (tenths % 10 === 0 ? `${tenths / 10}` : `${tenths / 10}`);
+const label = (tenths) => `${tenths / 10}`;
 const c = card();
 const mode = process.argv[2];
 if (mode === '--json') {

@@ -45,7 +45,8 @@ export const MAX_PARLAY_LEGS = 10;
 // ---------------------------------------------------------------------------
 
 /**
- * The point tiers we offer, in TENTHS of a point: 6, 6.5 and 7.
+ * The point tiers we offer, in TENTHS of a point: every whole point from 3 to
+ * 14, plus 6.5.
  *
  * Tenths because 6.5 has no integer representation in points, and because every
  * other line quantity in this system is already tenths (PLAN.md §3.1) — mixing

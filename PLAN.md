@@ -307,8 +307,9 @@ replaces_bet_id, replaced_by_bet_id, created_at, updated_at`.
   EARLIEST-KICKOFF leg. Neither selects a balance any more (`bankroll_id` does),
   so neither constrains what a bet may contain — they drive the stats filters and
   the UI, and nothing else.
-- `bet_type ∈ {straight, parlay, teaser}`; `teaser_points_tenths ∈ {60, 65, 70}`
-  is the teaser tier in TENTHS of a point, and
+- `bet_type ∈ {straight, parlay, teaser}`; `teaser_points_tenths` is the teaser
+  tier in TENTHS of a point — one of `TEASER_POINTS_TENTHS` (30 … 140), with
+  the schema allowing any integer multiple of 5 in that range since 0005 — and
   `CHECK ((bet_type = 'teaser') = (teaser_points_tenths IS NOT NULL))` makes the
   type and the tier the same fact. The leg-count CHECKs are written against
   `'straight'` (`bet_type <> 'straight' OR leg_count = 1` and its mirror) rather
@@ -3600,7 +3601,12 @@ deleted_at INTEGER NULL`, for the soft delete (§3.2 / §10.5 / §11.6). One nul
   from 0001's DDL with the one CHECK widened to an integer multiple of 5 in
   [30, 140], copy back — ledger last and BEFORE its five triggers are
   recreated, so `ledger_ai_apply` cannot re-apply history to `balance_cents` —
-  then indexes, triggers, drop temps. One batch, atomic.
+  then indexes, triggers, drop temps. Locally wrangler runs the file as one
+  `db.batch()`; remotely it posts the whole file to D1's query endpoint in one
+  request, which 0001 (also multi-statement, with triggers) went through fine —
+  but that is D1's transactional guarantee, not one this repo can test, which
+  is why the post-deploy `npm run db:reconcile -- --remote` is not optional and
+  docs/OPERATIONS.md names Time Travel as the way back.
   `tests/worker/migration-0005.spec.ts` seeds a full money history through the
   real triggers, re-runs the file, and asserts every row and balance is
   byte-identical, `SUM(ledger) = balance_cents` holds, every trigger and index
