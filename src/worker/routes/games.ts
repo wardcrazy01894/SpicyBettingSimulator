@@ -54,6 +54,8 @@ interface BoardRow {
   away_logo: string | null;
   away_rank: number | null;
   away_score: number | null;
+  home_conference_id: string | null;
+  away_conference_id: string | null;
   provider: string | null;
   spread_home_tenths: number | null;
   spread_home_price: number | null;
@@ -79,6 +81,7 @@ const BOARD_COLUMNS = `g.id, g.league, g.season, g.season_type, g.week, g.kickof
        g.status, g.status_detail, g.period, g.display_clock, g.neutral_site,
        g.home_team_id, g.home_abbr, g.home_name, g.home_logo, g.home_rank, g.home_score,
        g.away_team_id, g.away_abbr, g.away_name, g.away_logo, g.away_rank, g.away_score,
+       g.home_conference_id, g.away_conference_id,
        l.provider, l.spread_home_tenths, l.spread_home_price, l.spread_away_tenths,
        l.spread_away_price, l.total_tenths, l.total_over_price, l.total_under_price,
        l.ml_home_price, l.ml_away_price, l.captured_at, l.seen_at`;
@@ -173,6 +176,7 @@ export function toGameCard(row: BoardRow, now: EpochMs): GameCard {
       name: row.home_name,
       logo: row.home_logo,
       rank: row.home_rank,
+      conferenceId: row.home_conference_id,
       score: row.home_score,
     },
     away: {
@@ -181,6 +185,7 @@ export function toGameCard(row: BoardRow, now: EpochMs): GameCard {
       name: row.away_name,
       logo: row.away_logo,
       rank: row.away_rank,
+      conferenceId: row.away_conference_id,
       score: row.away_score,
     },
     lockAt,

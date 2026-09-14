@@ -233,3 +233,24 @@ export const MAX_ABS_AMERICAN_PRICE = 100_000;
 /** Board query defaults. */
 export const BOARD_LOOKBACK_MS = 12 * 60 * 60 * 1000;
 export const BOARD_MAX_GAMES = 300;
+
+/**
+ * FBS conferences by ESPN `team.conferenceId`, for the CFB board filter
+ * (PLAN.md §12.1). Ids confirmed against docs/samples/espn-cfb-scoreboard.json
+ * (every member listed there sits under its id). A game whose teams carry an
+ * id NOT in this list is an FCS opponent; the filter groups those under
+ * "Other". Order is display order.
+ */
+export const CFB_CONFERENCES: readonly { readonly id: string; readonly name: string }[] = [
+  { id: '8', name: 'SEC' },
+  { id: '5', name: 'Big Ten' },
+  { id: '4', name: 'Big 12' },
+  { id: '1', name: 'ACC' },
+  { id: '18', name: 'Independents' },
+  { id: '151', name: 'American' },
+  { id: '17', name: 'Mountain West' },
+  { id: '37', name: 'Sun Belt' },
+  { id: '15', name: 'MAC' },
+  { id: '12', name: 'Conference USA' },
+  { id: '9', name: 'Pac-12' },
+];

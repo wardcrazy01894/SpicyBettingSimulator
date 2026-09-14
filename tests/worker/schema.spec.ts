@@ -129,6 +129,18 @@ describe('migration 0001', () => {
     expect(row?.deleted_at).toBeNull();
   });
 
+  it('0004 added nullable home/away_conference_id TEXT to games', async () => {
+    const cols = await env.DB.prepare('PRAGMA table_info(games)').all<{
+      name: string;
+      type: string;
+      notnull: number;
+    }>();
+    for (const name of ['home_conference_id', 'away_conference_id']) {
+      const col = cols.results.find((c) => c.name === name);
+      expect(col, name).toMatchObject({ type: 'TEXT', notnull: 0 });
+    }
+  });
+
   it('seeds the three job_locks rows', async () => {
     const rows = await env.DB.prepare('SELECT name FROM job_locks ORDER BY name').all<{
       name: string;

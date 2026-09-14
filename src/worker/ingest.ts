@@ -460,6 +460,7 @@ const GAMES_INDEXED_NEW = `(excluded.status, excluded.kickoff_at,
 const GAMES_LIVE_OLD = `(period, display_clock,
    COALESCE(home_score, -1), COALESCE(away_score, -1),
    COALESCE(home_rank, -1), COALESCE(away_rank, -1),
+   COALESCE(home_conference_id, ''), COALESCE(away_conference_id, ''),
    COALESCE(home_logo, ''), COALESCE(away_logo, ''),
    name, short_name, home_name, away_name)`;
 
@@ -472,6 +473,7 @@ const GAMES_LIVE_NEW = `(?, ?,
    COALESCE(COALESCE(?, home_score), -1), COALESCE(COALESCE(?, away_score), -1),
    COALESCE(?, -1), COALESCE(?, -1),
    COALESCE(?, ''), COALESCE(?, ''),
+   COALESCE(?, ''), COALESCE(?, ''),
    ?, ?, ?, ?)`;
 
 const GAME_UPSERT_SQL = `
@@ -481,8 +483,9 @@ INSERT INTO games (
   period, display_clock, neutral_site,
   home_team_id, home_abbr, home_name, home_logo, home_rank, home_score,
   away_team_id, away_abbr, away_name, away_logo, away_rank, away_score,
+  home_conference_id, away_conference_id,
   first_seen_at, last_seen_at, updated_at
-) VALUES (?, 'espn', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, 'espn', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   kickoff_at    = excluded.kickoff_at,
   status        = excluded.status,
@@ -523,6 +526,8 @@ UPDATE games SET
   status_detail = ?,
   home_rank     = ?,
   away_rank     = ?,
+  home_conference_id = ?,
+  away_conference_id = ?,
   home_logo     = ?,
   away_logo     = ?,
   name          = ?,
@@ -610,6 +615,8 @@ function gameStatement(env: Env, game: Game, now: EpochMs): D1PreparedStatement 
     game.away.logo,
     game.away.rank,
     game.away.score,
+    game.home.conferenceId,
+    game.away.conferenceId,
     now, // first_seen_at
     now, // last_seen_at
     now, // updated_at
@@ -617,7 +624,7 @@ function gameStatement(env: Env, game: Game, now: EpochMs): D1PreparedStatement 
 }
 
 /**
- * The 12 values of `GAMES_LIVE_NEW`, in its exact column order. Built once and
+ * The 14 values of `GAMES_LIVE_NEW`, in its exact column order. Built once and
  * spliced into the bind list three times (the `updated_at` CASE, the `WHERE`
  * compare, and nothing else) so the SQL and the bindings cannot drift.
  */
@@ -629,6 +636,8 @@ function liveTupleArgs(game: Game): readonly unknown[] {
     game.away.score,
     game.home.rank,
     game.away.rank,
+    game.home.conferenceId,
+    game.away.conferenceId,
     game.home.logo,
     game.away.logo,
     game.name,
@@ -650,6 +659,8 @@ function gameLiveStatement(env: Env, game: Game, now: EpochMs): D1PreparedStatem
     game.statusDetail,
     game.home.rank,
     game.away.rank,
+    game.home.conferenceId,
+    game.away.conferenceId,
     game.home.logo,
     game.away.logo,
     game.name,
