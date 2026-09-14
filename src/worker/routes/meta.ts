@@ -26,6 +26,7 @@ export function metaRoutes(): Hono<AppContext> {
       version: c.var.config.appVersion,
       now: c.var.now,
       inviteRequired: c.var.config.inviteRequired,
+      bugReportsEnabled: c.var.config.github !== null,
     };
     return c.json(body);
   });

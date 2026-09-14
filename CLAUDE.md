@@ -169,7 +169,8 @@ the one failure mode the whole checklist has.
    describing production. Comment-only edits to `0001` are fine (they change no
    DDL). The pre-deploy window in which the M5b contract change was folded into
    `0001` is closed and is history, not precedent. PLAN.md §16.1.
-   - `0002_users_deleted_at.sql` is the first of those new files. PLAN.md §16.2.
+   - `0002_users_deleted_at.sql` is the first of those new files, and
+     `0003_bug_reports.sql` (the `bug_reports` table) the second. PLAN.md §16.2.
    - A new migration is a deploy step. The Deploy workflow
      (`.github/workflows/deploy.yml`) applies pending migrations automatically on
      every merge to `main`, before it deploys. For a MANUAL deploy the order is
@@ -187,8 +188,10 @@ the one failure mode the whole checklist has.
      written without destroying money history. `users.deleted_at` + a rename is the
      delete. The tombstone username is `deleted_<hex>`, and `validateUsername`
      rejects that prefix at signup so nobody can squat one. PLAN.md §10.5.
-10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE` and
-    `IP_HASH_SALT`; there is no ESPN key.
+10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE`, `IP_HASH_SALT`
+    and `GITHUB_TOKEN` (a fine-grained PAT with Issues: read+write on this ONE
+    repo, for the in-app bug report form — optional; the feature is off without
+    it); there is no ESPN key.
 11. **Docs are part of the change.** Any PR that changes behaviour updates
     `PLAN.md` / `CLAUDE.md` / `README.md` / `docs/OPERATIONS.md` **in the same
     PR** — not in a follow-up,
@@ -261,7 +264,7 @@ public/       static files vite copies into dist/client as-is: the site icon
               `npm run icons`) and site.webmanifest
 migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               every change is a new numbered 000N_*.sql (rule 9) — 0002 adds
-              users.deleted_at
+              users.deleted_at, 0003 adds bug_reports
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES
@@ -308,6 +311,7 @@ checks — is `docs/OPERATIONS.md`; this is the short version.
 wrangler d1 migrations apply spicybetting --remote
 wrangler secret put INVITE_CODE
 wrangler secret put IP_HASH_SALT
+wrangler secret put GITHUB_TOKEN   # turns on in-app bug reports (PLAN.md §11.7)
 wrangler tail                      # live logs
 npm run db:reconcile -- --remote   # assert SUM(ledger) === balance for every bankroll
 ```
@@ -315,6 +319,8 @@ npm run db:reconcile -- --remote   # assert SUM(ledger) === balance for every ba
 Jobs can be kicked manually as an admin: `POST /api/admin/jobs/{refresh|settle|maintenance}`.
 `GET /api/admin/jobs` shows the last 50 runs with stats, parser warnings and
 auto-void decisions — check it first when something looks wrong.
+`GET /api/admin/bugs` (and the Bug reports section of `/admin`) lists what users
+filed through "Report a bug", including reports GitHub refused.
 
 ## Git identity
 

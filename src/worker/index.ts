@@ -16,6 +16,7 @@
  *     app.route('/api', bankrollRoutes());
  *     app.route('/api/leaderboard', leaderboardRoutes());
  *     app.route('/api/admin', adminRoutes());
+ *     app.route('/api/bugs', bugsRoutes());
  */
 
 import { Hono } from 'hono';
@@ -34,6 +35,7 @@ import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
 import { bankrollRoutes } from './routes/bankroll.js';
 import { betsRoutes } from './routes/bets.js';
+import { bugsRoutes } from './routes/bugs.js';
 import { gamesRoutes } from './routes/games.js';
 import { leaderboardRoutes } from './routes/leaderboard.js';
 import { metaRoutes } from './routes/meta.js';
@@ -60,6 +62,7 @@ export function buildApp(): Hono<AppContext> {
   app.route('/api', bankrollRoutes());
   app.route('/api/leaderboard', leaderboardRoutes());
   app.route('/api/admin', adminRoutes());
+  app.route('/api/bugs', bugsRoutes());
 
   // Anything under /api that no route claimed is OUR 404, never index.html.
   app.notFound((c) => {
