@@ -3221,18 +3221,34 @@ Two things follow from the deploy having happened:
 passes; CI green on a throwaway PR.
 
 **Toolchain pinning — read before "upgrading" anything.** The versions in
-`package.json` are not "whatever was newest on npm today"; three of them are
+`package.json` are not "whatever was newest on npm today"; four of them are
 constrained:
 
 | Package                | Pinned    | Why not latest                                                                                                                                                                                                                |
 | ---------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `vitest`               | `^4.1.11` | `@cloudflare/vitest-pool-workers@0.22.0` declares `peerDependencies: { vitest: "^4.1.0" }`. Vitest **5.0.0** exists but is not supported by the pool. Bumping vitest without the pool breaks the whole `worker` test project. |
+| `@vitest/*`            | `^4.1.11` | `@vitest/coverage-v8` declares `peerDependencies: { vitest: "4.1.11" }` — an EXACT version — so it bumps in the same PR as `vitest` and never past it. Ignored alongside `vitest` for that reason.                            |
 | `typescript`           | `~5.9.3`  | `typescript-eslint@8.70` declares `typescript: ">=4.8.4 <6.1.0"`. TypeScript **7.0.2** (the Go port) exists but is outside that range, so `npm run lint` would fail.                                                          |
 | `@vitejs/plugin-react` | `^5.2.0`  | 5.2.0 is the first v5 that accepts `vite@^8`. v6 accepts vite 8 too but pulls in extra optional peers (`oxc-transform-react`, `@rolldown/plugin-babel`) we do not need.                                                       |
 
 `vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.131` are current and unconstrained.
 If a dependency bump is proposed, check these three first — and note Alex's
 standing rule that dependency-bump PRs also get an adversarial review.
+`.github/dependabot.yml` proposes the bumps (weekly, Monday 06:00 ET): minor and
+patch bumps arrive as ONE grouped PR, majors one PR each, GitHub Actions as one
+PR, and `wrangler` + `@cloudflare/*` as one PR so the two toolchain constraints
+are reviewed side by side: `compatibility_date` in `wrangler.jsonc` is pinned to
+the newest date the workerd bundled with `@cloudflare/vitest-pool-workers`
+supports (the pool ships its own nested wrangler, so the top-level `wrangler`'s
+workerd is allowed to differ and does today), and the pool pins the `vitest`
+major through its peerDependencies. The three ceilings above are `ignore`
+entries there — `vitest` and `@vitest/*` (`@vitest/coverage-v8` peers on an
+EXACT vitest version, so the two must bump together), `typescript` at
+`>=6.1.0` (the real edge of typescript-eslint's range; 6.0.x is not ignored),
+and `@vitejs/plugin-react` majors — and `tests/unit/docs.spec.ts` asserts that
+this table and that file name the same packages, so lifting a ceiling means
+editing both. Dependabot security updates are enabled on the repo as well; note
+that `ignore` filters those too.
 
 **`tsconfig` layout.** SEVEN projects wired as a `tsc -b` solution, not one
 config: `shared` (lib ES2023, `types: []`), `worker` (Workers types), `web`

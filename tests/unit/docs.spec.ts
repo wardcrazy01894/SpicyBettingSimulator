@@ -765,6 +765,36 @@ describe('claims the docs make about the repo', () => {
     expect(bytes.readUInt32BE(20)).toBe(size);
   });
 
+  /**
+   * The dependency ceilings live in two places by necessity — PLAN §15's
+   * "Why not latest" table says WHY, `.github/dependabot.yml`'s `ignore` list
+   * makes Dependabot stop proposing them — and the PLAN sentence under the
+   * table promises they name the same packages. This is that promise, in BOTH
+   * directions, against the TABLE (not the whole chapter, which mentions
+   * `wrangler` and `vite` in passing and would let an undocumented ignore in).
+   */
+  it('dependabot.yml ignores exactly the packages PLAN §15 pins, and vice versa', () => {
+    const dependabot = read('.github/dependabot.yml');
+    const ignored = [...dependabot.matchAll(/^\s+- dependency-name: '?([^'\n]+?)'?$/gm)].map(
+      (m) => m[1] ?? '',
+    );
+    expect(ignored.length, 'dependabot.yml has no ignore entries').toBeGreaterThan(0);
+
+    const m15 = section(PLAN, '15');
+    const tableStart = m15.indexOf('| Package');
+    expect(tableStart, 'PLAN §15 lost its "Why not latest" table').toBeGreaterThan(-1);
+    const table = m15.slice(tableStart).split('\n\n')[0] ?? '';
+    const pinned = [...table.matchAll(/^\| `([^`]+)`/gm)].map((m) => m[1] ?? '');
+    expect(pinned.length).toBeGreaterThan(0);
+
+    expect(
+      [...ignored].sort(),
+      'dependabot.yml `ignore` and the packages in PLAN §15\'s "Why not latest" table differ. ' +
+        'Every ignore needs a table row saying why, and every row needs an ignore so Dependabot ' +
+        'stops proposing the bump the table says we cannot take.',
+    ).toEqual([...pinned].sort());
+  });
+
   it('CLAUDE.md carries rule 11 (docs ship with the change)', () => {
     expect(
       /^11\. \*\*Docs are part of the change/m.test(CLAUDE),
