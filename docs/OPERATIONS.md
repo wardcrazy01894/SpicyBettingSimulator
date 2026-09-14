@@ -221,7 +221,10 @@ bump lands, ask npm what the pool's miniflare wants on its own —
 that is ≥ 0.35.4, delete the override in the same PR (`npm ls sharp` shows
 "overridden" while it is in effect, which is the proxy, not the answer). If a
 future miniflare ever wants sharp 0.36+, the override would silently pin it
-back to 0.35.4 — another reason to remove it at the first opportunity.
+back to 0.35.4 — another reason to remove it at the first opportunity. You will
+not have to remember: `tests/unit/docs.spec.ts` reads what the pool's miniflare
+wants and FAILS CI on the pool-bump PR until the override is deleted (and fails
+the reverse, if the override goes while the pin is still vulnerable).
 
 Security-only updates are enabled separately in the repo settings. They arrive as their own
 ungrouped PRs, outside `open-pull-requests-limit`, and the `ignore` rules apply to them too: a

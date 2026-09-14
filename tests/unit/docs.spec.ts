@@ -23,6 +23,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -810,6 +811,51 @@ describe('claims the docs make about the repo', () => {
       expect(
         OPERATIONS.includes(`\`${file}\``),
         `migrations/${file} is not in docs/OPERATIONS.md's "Applied migrations" table.`,
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * The `sharp` override (PLAN §15, OPERATIONS "Dependencies") exists only
+   * because the vitest pool's miniflare pins a vulnerable sharp exactly. The
+   * day a pool bump ships a miniflare that wants the patched version on its
+   * own, the override must go in that same PR — and Dependabot will never say
+   * so, because it only proposes bumps. This does: it fails the Dependabot
+   * pool-bump PR itself until the override is deleted, and fails the reverse
+   * (override deleted while miniflare still wants the vulnerable version).
+   */
+  it("the sharp override exists exactly while the pool's miniflare needs it", () => {
+    const require = createRequire(import.meta.url);
+    const poolDir = dirname(require.resolve('@cloudflare/vitest-pool-workers/package.json'));
+    const miniflare = JSON.parse(
+      readFileSync(require.resolve('miniflare/package.json', { paths: [poolDir] }), 'utf8'),
+    ) as { version: string; dependencies?: Record<string, string> };
+    const wanted = /\d+\.\d+\.\d+/.exec(miniflare.dependencies?.['sharp'] ?? '')?.[0];
+    expect(wanted, `miniflare ${miniflare.version} declares no sharp dependency`).toBeDefined();
+    const cmp = (a: string, b: string): number => {
+      const [a1, a2, a3] = a.split('.').map(Number);
+      const [b1, b2, b3] = b.split('.').map(Number);
+      return (a1 ?? 0) - (b1 ?? 0) || (a2 ?? 0) - (b2 ?? 0) || (a3 ?? 0) - (b3 ?? 0);
+    };
+    const PATCHED = '0.35.4';
+    const pkg = JSON.parse(read('package.json')) as {
+      overrides?: { '@cloudflare/vitest-pool-workers'?: { miniflare?: { sharp?: string } } };
+    };
+    const override = pkg.overrides?.['@cloudflare/vitest-pool-workers']?.miniflare?.sharp;
+    if (cmp(wanted ?? '0.0.0', PATCHED) >= 0) {
+      expect(
+        override,
+        `The vitest pool's miniflare ${miniflare.version} now wants sharp ${String(wanted)} on ` +
+          `its own, so the package.json overrides entry for sharp is dead weight and could ` +
+          `silently pin a future requirement — delete it in this PR (PLAN §15, OPERATIONS ` +
+          `"Dependencies").`,
+      ).toBeUndefined();
+    } else {
+      expect(
+        override !== undefined && cmp(override, PATCHED) >= 0,
+        `The vitest pool's miniflare ${miniflare.version} still wants sharp ${String(wanted)} ` +
+          `(< ${PATCHED}, GHSA-rgj7-g3m4-5g8c); package.json must keep the scoped override ` +
+          `at >= ${PATCHED} or the Dependabot alert reopens.`,
       ).toBe(true);
     }
   });
