@@ -2129,7 +2129,7 @@ describe('placeBet — teasers', () => {
 
   it('each tier moves the line by its own number of points', async () => {
     const alex = await register();
-    for (const [i, tier] of [60, 65, 70].entries()) {
+    for (const [i, tier] of [30, 60, 65, 70, 140].entries()) {
       const a = await seedGameWithLine(env.DB, {
         id: g(`a${String(i)}`),
         kickoffAt: NOW + 2 * HOUR,
@@ -2140,7 +2140,7 @@ describe('placeBet — teasers', () => {
       });
       const res = await post(
         '/api/bets',
-        teaser([a, b], { teaserPoints: tier as 60 | 65 | 70, stakeCents: 100 }),
+        teaser([a, b], { teaserPoints: tier, stakeCents: 100 }),
         alex.cookie,
       );
       expect(res.status, await res.clone().text()).toBe(201);

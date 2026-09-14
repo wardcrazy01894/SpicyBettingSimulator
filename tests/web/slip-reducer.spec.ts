@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { TEASER_POINTS_TENTHS } from '../../src/shared/constants.js';
 
 import {
   DEFAULT_TEASER_POINTS_TENTHS,
@@ -254,10 +255,12 @@ describe('persistence', () => {
     expect(parseStoredSlip('{"mode":"round-robin","legs":[],"stakeCents":0}')).toBeNull();
     expect(parseStoredSlip('{"mode":"straight","legs":[],"stakeCents":-1}')).toBeNull();
     expect(parseStoredSlip('{"mode":"straight","legs":[{"gameId":""}],"stakeCents":0}')).toBeNull();
-    // A tier that is not on the card is corruption, not an old entry.
+    // A tier that is not on the card is NOT corruption of the draft: the legs
+    // and stake survive and the tier takes the default (a card can shrink).
     expect(
-      parseStoredSlip('{"mode":"straight","legs":[],"stakeCents":0,"teaserPointsTenths":61}'),
-    ).toBeNull();
+      parseStoredSlip('{"mode":"straight","legs":[],"stakeCents":0,"teaserPointsTenths":61}')
+        ?.teaserPointsTenths,
+    ).toBe(DEFAULT_TEASER_POINTS_TENTHS);
   });
 
   it("'teaser' is a legal stored mode now, and a v2 entry without a tier gets the default", () => {
@@ -267,7 +270,7 @@ describe('persistence', () => {
     expect(legacy?.teaserPointsTenths).toBe(DEFAULT_TEASER_POINTS_TENTHS);
     expect(legacy?.stakeCents).toBe(250);
     // ...and every tier on the card round-trips.
-    for (const tenths of [60, 65, 70]) {
+    for (const tenths of TEASER_POINTS_TENTHS) {
       const raw = serialiseSlip({
         mode: 'teaser',
         legs: [leg('g1'), leg('g2', 'total', 'over')],
@@ -278,6 +281,12 @@ describe('persistence', () => {
       expect(parsed?.mode).toBe('teaser');
       expect(parsed?.teaserPointsTenths).toBe(tenths);
     }
+    // A tier that is not on the card keeps the draft and takes the default.
+    const offCard = parseStoredSlip(
+      '{"mode":"teaser","legs":[],"stakeCents":250,"teaserPointsTenths":95}',
+    );
+    expect(offCard?.teaserPointsTenths).toBe(DEFAULT_TEASER_POINTS_TENTHS);
+    expect(offCard?.stakeCents).toBe(250);
     // A ONE-leg "teaser" is not placeable and is normalised back to a straight,
     // exactly as a one-leg "parlay" already was.
     const single = serialiseSlip({

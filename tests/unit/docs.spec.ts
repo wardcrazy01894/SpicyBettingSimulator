@@ -365,8 +365,15 @@ describe('TEASER_PAYOUTS vs PLAN.md §5.8', () => {
    * integers and compared cell for cell — a card that is right in the code and
    * wrong in the plan is how somebody hand-prices a teaser at the wrong tier.
    */
+  const card = section(PLAN, '5.8');
+  /** The header row `| legs | 3 pt | 4 pt | … |` names the tiers, in TENTHS. */
+  const headerTiers = (/^\|\s*legs\s*\|([^\n]*)\|\s*$/m.exec(card)?.[1] ?? '')
+    .split('|')
+    .map((cell) => cell.trim())
+    .filter((cell) => cell !== '')
+    .map((cell) => Number(cell.replace(/\s*pt$/, '')) * 10);
   const rows = new Map<number, readonly number[]>(
-    [...section(PLAN, '5.8').matchAll(/^\|\s*(\d{1,2})\s*\|([^\n]*)\|\s*$/gm)]
+    [...card.matchAll(/^\|\s*(\d{1,2})\s*\|([^\n]*)\|\s*$/gm)]
       .map(([, legs, rest]): [number, readonly number[]] => [
         Number(legs),
         (rest ?? '')
@@ -375,8 +382,12 @@ describe('TEASER_PAYOUTS vs PLAN.md §5.8', () => {
           .filter((cell) => cell !== '')
           .map((cell) => Number(cell.replace('−', '-').replace('+', ''))),
       ])
-      .filter(([legs, cells]) => legs >= 2 && legs <= 10 && cells.length === 3),
+      .filter(([legs, cells]) => legs >= 2 && legs <= 10 && cells.length === headerTiers.length),
   );
+
+  it('the header names exactly TEASER_POINTS_TENTHS, in order', () => {
+    expect(headerTiers).toEqual([...TEASER_POINTS_TENTHS]);
+  });
 
   it('renders all nine leg counts', () => {
     expect(
@@ -388,10 +399,10 @@ describe('TEASER_PAYOUTS vs PLAN.md §5.8', () => {
 
   it('matches constants.ts cell for cell', () => {
     const mismatches: string[] = [];
-    // Column order in the table is 6 pt, 6.5 pt, 7 pt == tenths 60, 65, 70.
-    const tiers = [60, 65, 70] as const;
+    // Column order in the table is the header's, which the test above pins to
+    // TEASER_POINTS_TENTHS.
     for (const [legs, cells] of rows) {
-      tiers.forEach((tier, column) => {
+      TEASER_POINTS_TENTHS.forEach((tier, column) => {
         const code = TEASER_PAYOUTS[tier][legs as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10];
         const doc = cells[column];
         if (doc !== code) {

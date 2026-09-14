@@ -14,6 +14,7 @@
  * node vitest project; `BetSlipProvider` owns the `localStorage` side effects.
  */
 
+import { isTeaserPoints } from '../../shared/constants.js';
 import { LEAGUES } from '../../shared/types.js';
 import type { AmericanPrice, League, LineTenths, Market, Side } from '../../shared/types.js';
 
@@ -345,15 +346,11 @@ export function parseStoredSlip(raw: string | null): Slip | null {
   if (mode !== 'straight' && mode !== 'parlay' && mode !== 'teaser') return null;
   if (typeof stake !== 'number' || !Number.isSafeInteger(stake) || stake < 0) return null;
   if (!Array.isArray(rawLegs)) return null;
-  // An entry written before teasers existed has no tier at all; that is not
-  // corruption, so it takes the default rather than losing the whole slip.
-  const teaserPointsTenths =
-    points === undefined
-      ? DEFAULT_TEASER_POINTS_TENTHS
-      : points === 60 || points === 65 || points === 70
-        ? points
-        : null;
-  if (teaserPointsTenths === null) return null;
+  // An entry written before teasers existed has no tier at all, and a tier
+  // that is no longer on the card (or never was) is not corruption either: the
+  // legs and stake are still the person's draft, so either case takes the
+  // default rather than losing the whole slip.
+  const teaserPointsTenths = isTeaserPoints(points) ? points : DEFAULT_TEASER_POINTS_TENTHS;
   const legs: SlipLeg[] = [];
   const seen = new Set<string>();
   for (const rawLeg of rawLegs) {

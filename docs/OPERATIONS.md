@@ -29,6 +29,21 @@ migrations must be **expand-only and backward-compatible** with the currently de
 nullable columns/tables now; drop or rename in a later deploy once no live code reads the old shape),
 and a rollback leaves the newer schema in place, which the expand-only rule makes safe.
 
+The one exception so far is `0005_bets_teaser_tiers.sql`, which recreates `bets`, `bet_legs` and
+`ledger` with every row copied across (SQLite cannot alter a CHECK; PLAN §16.2 has the proof that no
+gentler route exists on D1). It is still backward-compatible in the sense that matters: the new CHECK
+accepts everything the old Worker writes, so rolling the code back after it is safe. **If
+`npm run db:reconcile -- --remote` reports drift after a rebuild-style migration, do not hand-fix —
+restore the database** with D1 Time Travel — point-in-time history that Cloudflare keeps for **7
+days on the free plan** (30 on Workers Paid), so do it the same week:
+
+```bash
+npx wrangler d1 time-travel info spicybetting                         # current bookmark
+npx wrangler d1 time-travel restore spicybetting --timestamp <ISO>     # or --bookmark <id>
+```
+
+Restore to just before the Deploy run's "Apply migrations" step, then fix the migration and re-run.
+
 **A red Deploy run past the "Deploy the Worker" step means the new version IS live** (only the smoke
 check failed). Roll back manually if the site is actually broken; the workflow does not auto-revert.
 
@@ -64,13 +79,14 @@ that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's
 
 Applied migrations, newest last:
 
-| File                               | What                                                                    | Applied remotely                           |
-| ---------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------ |
-| `0001_init.sql`                    | the whole schema                                                        | 2026-09-14                                 |
-| `0002_users_deleted_at.sql`        | `users.deleted_at INTEGER NULL` — account soft delete                   | on merge to `main`, by the Deploy workflow |
-| `0003_bug_reports.sql`             | `bug_reports` table + 2 indexes — in-app bug reports                    | on merge to `main`, by the Deploy workflow |
-| `0004_games_conference.sql`        | `games.home/away_conference_id TEXT NULL` — CFB board filter            | on merge to `main`, by the Deploy workflow |
-| `0006_bug_reports_diagnostics.sql` | `bug_reports.diagnostics TEXT NULL` — the browser log a report attaches | on merge to `main`, by the Deploy workflow |
+| File                               | What                                                                                       | Applied remotely                                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `0001_init.sql`                    | the whole schema                                                                           | 2026-09-14                                                                                     |
+| `0002_users_deleted_at.sql`        | `users.deleted_at INTEGER NULL` — account soft delete                                      | on merge to `main`, by the Deploy workflow                                                     |
+| `0003_bug_reports.sql`             | `bug_reports` table + 2 indexes — in-app bug reports                                       | on merge to `main`, by the Deploy workflow                                                     |
+| `0004_games_conference.sql`        | `games.home/away_conference_id TEXT NULL` — CFB board filter                               | on merge to `main`, by the Deploy workflow                                                     |
+| `0005_bets_teaser_tiers.sql`       | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied) to widen the teaser CHECK to 3–14 pt | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards |
+| `0006_bug_reports_diagnostics.sql` | `bug_reports.diagnostics TEXT NULL` — the browser log a report attaches                    | on merge to `main`, by the Deploy workflow                                                     |
 
 (0003, 0004, 0005 and 0006 were written on parallel branches and numbered by reservation; wrangler
 applies whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)

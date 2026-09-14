@@ -58,8 +58,10 @@ To seed some games, sign up (first user becomes admin) and hit
    matches). Tapping a price adds a leg to the bet slip — there is ONE slip and
    it spans both leagues, so the tabs move the board and never your picks.
 3. **Choose a shape**: one leg is a straight bet; two or more is a parlay, or a
-   teaser if you switch mode and pick 6 / 6.5 / 7 points. Teaser legs must be
-   spreads or totals.
+   teaser if you switch mode and pick how many points to move every line —
+   anywhere from 3 to 14 (plus 6.5). More points, worse price; a push still
+   reduces rather than loses at every tier. Teaser legs must be spreads or
+   totals.
 4. **Stake and place.** The server prices the bet from its own current lines —
    the client never sends a price. If a line moved since you tapped it you get a
    "the line changed" confirm rather than a silent fill.
