@@ -36,8 +36,8 @@ export function bugsRoutes(): Hono<AppContext> {
   return app;
 }
 
-/** Trimmed, bounded, and NULL when absent or blank. */
-function readUserAgent(raw: string | undefined): string | null {
+/** Trimmed, bounded, and NULL when absent or blank. Exported for its test. */
+export function readUserAgent(raw: string | undefined): string | null {
   const trimmed = raw?.trim() ?? '';
   if (trimmed === '') return null;
   // Slice by code point, not UTF-16 unit, so a surrogate pair is never halved.

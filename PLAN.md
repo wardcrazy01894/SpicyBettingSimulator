@@ -2456,7 +2456,10 @@ is about one bet's status and says the opposite thing, and `VALIDATION` is a 400
 
 The in-app "Report a bug" form (`/account`). The person types a title and a
 description; the client adds the SPA path they are on (`page`, path + query,
-never the origin). The SERVER adds everything else — reporter username, app
+never the origin). `page` is optional on the wire and derived rather than typed,
+so if the validator refuses it (a 200+ char query string, say) the client files
+the report WITHOUT it instead of disabling Send over something the person
+cannot fix. The SERVER adds everything else — reporter username, app
 version, request time, `User-Agent` — so a report can never claim to be from
 someone else or from a version that was not running (rule 8, applied to
 provenance instead of prices).
@@ -2488,11 +2491,15 @@ Every request-supplied string in the BODY — description, page, and the
 `User-Agent` header, which is attacker-controlled — lands inside the fence or
 inside an inline-code table cell, so a `#123` or an `@mention` is rendered as
 text, not as GitHub markup. The fence is neutralised (` ``` ` → `` ` ` ` ``) so
-a description cannot close it, and cells swap backticks for apostrophes so
-nothing can close a code span (`validateBugReport` also refuses backticks in
-`page`). The TITLE is the one string filed raw: GitHub renders issue titles as
-plain text everywhere, so it needs no escaping. `User-Agent` is cut at
-`BUG_REPORT_USER_AGENT_MAX` (300) before it is stored or filed.
+a description cannot close it. Cells are made escape-FREE rather than escaped:
+backtick → `'`, backslash → `∖` (U+2216), pipe → `¦` (U+00A6), newline → space,
+so a cell holds nothing any table or code-span parser treats as syntax and there
+is no renderer variant to reason about — a lossy but visible transform, in the
+issue body only (the `bug_reports` row keeps the raw value).
+`validateBugReport` also refuses backticks in `page`. The TITLE is the one
+string filed raw: GitHub renders issue titles as plain text everywhere, so it
+needs no escaping. `User-Agent` is trimmed, NULL when blank, and cut at
+`BUG_REPORT_USER_AGENT_MAX` (300) code points before it is stored or filed.
 
 **Configuration** (`src/worker/env.ts`): vars `GITHUB_REPO` (`owner/name`,
 validated as two GitHub-legal slugs so it can be interpolated into a URL path)
