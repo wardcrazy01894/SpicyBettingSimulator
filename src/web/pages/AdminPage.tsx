@@ -90,6 +90,12 @@ function BugReportList(props: { readonly reports: readonly BugReportView[] }): R
           </p>
           {r.error !== null && <p className="field-problem">GitHub: {r.error}</p>}
           {r.issueUrl === null && <pre className="bug-text">{r.description}</pre>}
+          {r.diagnostics !== null && (
+            <details className="bug-diagnostics">
+              <summary className="muted">Diagnostics</summary>
+              <pre className="bug-text">{r.diagnostics}</pre>
+            </details>
+          )}
         </li>
       ))}
     </ul>

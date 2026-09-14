@@ -11,7 +11,12 @@ const META = {
 describe('formatBugIssue', () => {
   it('prefixes the title and applies the fixed labels', () => {
     const issue = formatBugIssue(
-      { title: 'Slip will not close', description: 'x'.repeat(10), page: '/bets' },
+      {
+        title: 'Slip will not close',
+        description: 'x'.repeat(10),
+        page: '/bets',
+        diagnostics: null,
+      },
       META,
     );
     expect(issue.title).toBe(`${BUG_ISSUE_TITLE_PREFIX}Slip will not close`);
@@ -25,6 +30,7 @@ describe('formatBugIssue', () => {
         title: 't',
         description: 'Tapped Place bet and nothing happened.',
         page: '/games?league=nfl',
+        diagnostics: null,
       },
       META,
     );
@@ -38,7 +44,12 @@ describe('formatBugIssue', () => {
 
   it('neutralises a closing fence inside the description', () => {
     const issue = formatBugIssue(
-      { title: 't', description: 'before\n```\n@octocat #1 <script>\n```\nafter', page: null },
+      {
+        title: 't',
+        description: 'before\n```\n@octocat #1 <script>\n```\nafter',
+        page: null,
+        diagnostics: null,
+      },
       META,
     );
     // Exactly one opening and one closing fence: ours.
@@ -48,7 +59,7 @@ describe('formatBugIssue', () => {
 
   it('renders a missing page and user agent as a bare dash, and swaps pipes and backslashes', () => {
     const issue = formatBugIssue(
-      { title: 't', description: 'y'.repeat(10), page: null },
+      { title: 't', description: 'y'.repeat(10), page: null, diagnostics: null },
       { ...META, userAgent: 'a|b\\|c\\\\d' },
     );
     expect(issue.body).toContain('| Page | — |');
@@ -64,7 +75,7 @@ describe('formatBugIssue', () => {
   it('puts the user agent in a code span and swaps its backticks, so it cannot become markup', () => {
     // The User-Agent header is attacker-controlled: a curl caller can send anything.
     const issue = formatBugIssue(
-      { title: 't', description: 'y'.repeat(10), page: null },
+      { title: 't', description: 'y'.repeat(10), page: null, diagnostics: null },
       { ...META, userAgent: 'x` cc @someone see #1 [pay](https://evil.example) `y' },
     );
     expect(issue.body).toContain(
@@ -77,10 +88,29 @@ describe('formatBugIssue', () => {
 
   it('swaps backticks in page and username the same way', () => {
     const issue = formatBugIssue(
-      { title: 't', description: 'y'.repeat(10), page: '/bets`@x`y' },
+      { title: 't', description: 'y'.repeat(10), page: '/bets`@x`y', diagnostics: null },
       { ...META, username: 'al`ex' },
     );
     expect(issue.body).toContain("| Page | `/bets'@x'y` |");
     expect(issue.body).toContain("| Reported by | `al'ex` |");
+  });
+});
+
+describe('formatBugIssue — diagnostics', () => {
+  it('fences the diagnostics block and neutralises a closing fence inside it', () => {
+    const issue = formatBugIssue(
+      { title: 't', description: 'd'.repeat(10), page: null, diagnostics: 'app 0.1.0\n```\n@x #1' },
+      META,
+    );
+    expect(issue.body).toContain('## Diagnostics\n\n```text\napp 0.1.0\n` ` `\n@x #1\n```');
+    expect(issue.body.match(/^```/gm)).toHaveLength(4);
+  });
+
+  it('says when none were attached', () => {
+    const issue = formatBugIssue(
+      { title: 't', description: 'd'.repeat(10), page: null, diagnostics: null },
+      META,
+    );
+    expect(issue.body).toContain('_No diagnostics were attached._');
   });
 });

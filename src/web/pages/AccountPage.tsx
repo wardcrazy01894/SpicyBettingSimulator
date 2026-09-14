@@ -11,7 +11,6 @@
 import { useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { BugReportSheet } from '../components/BugReportSheet.js';
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
 import { LedgerList } from '../components/LedgerList.js';
 import { LoadMore } from '../components/LoadMore.js';
@@ -20,6 +19,7 @@ import { getLedger } from '../api/client.js';
 import { LEDGER_PAGE_SIZE, useBalances, useHealth, useLedger } from '../hooks/useApi.js';
 import { usePages } from '../hooks/usePages.js';
 import { formatRoi } from '../lib/labels.js';
+import { useBugReport } from '../state/bug-report.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
 import type { BankrollView, LedgerEntry } from '../../shared/api-types.js';
@@ -72,7 +72,7 @@ export function AccountPage(): ReactElement {
   // is worse than no form.
   const health = useHealth();
   const bugReportsEnabled = health.data?.bugReportsEnabled === true;
-  const [reporting, setReporting] = useState(false);
+  const bugs = useBugReport();
 
   // The main balance's history. `null` asks the server for its default, which is
   // the main balance — so the first render needs no round-trip to find an id.
@@ -140,26 +140,15 @@ export function AccountPage(): ReactElement {
         <>
           <h3 className="section-title">Something broken?</h3>
           <p className="muted page-note">
-            Reports go straight to the project's public issue tracker with your username, the page
-            you were on, the app version and your browser.
+            The "Report a bug" button in the header works on every page. Reports go straight to the
+            project's public issue tracker with your username, the page you were on, the app
+            version, your browser and a log of recent errors and requests.
           </p>
           <div className="row-actions">
-            <button
-              type="button"
-              className="btn btn-quiet"
-              onClick={() => {
-                setReporting(true);
-              }}
-            >
+            <button type="button" className="btn btn-quiet" onClick={bugs.open}>
               Report a bug
             </button>
           </div>
-          <BugReportSheet
-            open={reporting}
-            onClose={() => {
-              setReporting(false);
-            }}
-          />
         </>
       )}
 

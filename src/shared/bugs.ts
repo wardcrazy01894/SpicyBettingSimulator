@@ -74,7 +74,14 @@ export function formatBugIssue(input: BugReportInput, meta: BugIssueMeta): BugIs
     `| Reported at | ${new Date(meta.reportedAt).toISOString()} |`,
     `| User agent | ${cell(meta.userAgent)} |`,
     '',
-    '_Filed automatically from the in-app "Report a bug" form._',
+    '## Diagnostics',
+    '',
+    ...(input.diagnostics === null
+      ? ['_No diagnostics were attached._']
+      : ['```text', fence(input.diagnostics), '```']),
+    '',
+    '_Filed automatically from the in-app "Report a bug" form. The diagnostics block is the ' +
+      "browser's own log of recent errors, API calls and page changes; see PLAN.md §11.7._",
   ].join('\n');
   return {
     title: `${BUG_ISSUE_TITLE_PREFIX}${input.title}`,

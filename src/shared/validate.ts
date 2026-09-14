@@ -7,6 +7,7 @@
 import {
   BUG_REPORT_DESCRIPTION_MAX,
   BUG_REPORT_DESCRIPTION_MIN,
+  BUG_REPORT_DIAGNOSTICS_MAX,
   BUG_REPORT_PAGE_MAX,
   BUG_REPORT_TITLE_MAX,
   BUG_REPORT_TITLE_MIN,
@@ -69,6 +70,8 @@ export interface BugReportInput {
   readonly description: string;
   /** The SPA path the reporter was on (`/bets`), or null. Never a full URL. */
   readonly page: string | null;
+  /** The browser's diagnostics log, already rendered to text; null when absent. */
+  readonly diagnostics: string | null;
 }
 
 const MARKETS: readonly Market[] = ['moneyline', 'spread', 'total'];
@@ -468,5 +471,20 @@ export function validateBugReport(body: unknown): ValidationResult<BugReportInpu
     }
   }
 
-  return good({ title, description, page });
+  let diagnostics: string | null = null;
+  if (raw.diagnostics !== undefined && raw.diagnostics !== null) {
+    if (typeof raw.diagnostics !== 'string') {
+      return bad('diagnostics must be a string.', 'diagnostics');
+    }
+    const trimmed = raw.diagnostics.trim();
+    if (trimmed.length > BUG_REPORT_DIAGNOSTICS_MAX) {
+      return bad(
+        `diagnostics must be at most ${String(BUG_REPORT_DIAGNOSTICS_MAX)} characters.`,
+        'diagnostics',
+      );
+    }
+    if (trimmed !== '') diagnostics = trimmed;
+  }
+
+  return good({ title, description, page, diagnostics });
 }

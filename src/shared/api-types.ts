@@ -526,6 +526,18 @@ export interface BugReportRequest {
   readonly description: string;
   /** The SPA path the reporter was on, e.g. `/bets`. Optional. */
   readonly page?: string | null;
+  /**
+   * The browser's diagnostics log rendered to text (src/web/lib/diagnostics.ts):
+   * recent uncaught errors, console errors, API calls with status and timing,
+   * route changes, viewport, app version. Optional; at most
+   * `BUG_REPORT_DIAGNOSTICS_MAX` chars.
+   */
+  readonly diagnostics?: string | null;
+}
+
+/** POST /api/bugs/client-errors — the uncaught-error beacon. Logged, not stored. */
+export interface ClientErrorBeaconRequest {
+  readonly diagnostics: string;
 }
 
 /** 201 from POST /api/bugs: the GitHub issue that was filed. */
@@ -543,6 +555,7 @@ export interface BugReportView {
   readonly title: string;
   readonly description: string;
   readonly page: string | null;
+  readonly diagnostics: string | null;
   readonly appVersion: string;
   readonly createdAt: EpochMs;
   /** Null when filing on GitHub failed; `error` then says why. */
