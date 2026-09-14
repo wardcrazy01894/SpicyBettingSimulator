@@ -17,6 +17,7 @@ import {
   LINE_STALE_MS,
   MAX_PAYOUT_CENTS,
   MIN_STAKE_CENTS,
+  TEASER_POINTS_TENTHS,
 } from '../../src/shared/constants.js';
 import { buildApp } from '../../src/worker/index.js';
 import { fullLine, seedGame, seedGameWithLine, seedLine, seedSettledBet } from './seed.js';
@@ -110,7 +111,9 @@ describe('routing', () => {
     expect(body.currentSeason).toEqual({ nfl: null, ncaaf: null });
     // M5b: the teaser card is echoed in full so the slip prices a teaser from
     // server truth rather than from its own bundled copy of constants.ts.
-    expect(body.teaserPoints).toEqual([60, 65, 70]);
+    expect(body.teaserPoints).toEqual([...TEASER_POINTS_TENTHS]);
+    expect(body.teaserPayouts[30]?.[10]).toBe(12500);
+    expect(body.teaserPayouts[140]?.[2]).toBe(-600);
     expect(body.teaserPayouts[60]?.[3]).toBe(150);
     expect(body.teaserPayouts[65]?.[2]).toBe(-130);
     expect(body.teaserPayouts[70]?.[10]).toBe(1500);

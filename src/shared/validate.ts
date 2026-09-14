@@ -297,7 +297,7 @@ function validateTeaserPoints(
  * Validate a bet request body. Checks, in order:
  *   - stakeCents is a safe integer >= MIN_STAKE_CENTS
  *   - betType 'straight' => exactly 1 leg; 'parlay'/'teaser' => 2..MAX_PARLAY_LEGS
- *   - teaserPoints is present iff betType is 'teaser', and is 60/65/70
+ *   - teaserPoints is present iff betType is 'teaser', and is one of TEASER_POINTS_TENTHS
  *   - a teaser's legs are spread or total only — a moneyline has no line to move
  *   - each leg's market/side combination is coherent
  *     (total <=> over/under; moneyline/spread <=> home/away)

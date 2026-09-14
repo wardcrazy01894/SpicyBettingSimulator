@@ -757,13 +757,18 @@ describe('teaserPrice — the fixed card', () => {
     expect(teaserPrice(70, 10)).toBe(1500);
   });
 
-  it('more points is always a worse price at the same leg count', () => {
+  it('more points is always a worse price at the same leg count, across all 13 tiers', () => {
     for (let legs = 2; legs <= MAX_PARLAY_LEGS; legs += 1) {
-      const six = payoutCents(100_000, americanToPrice(teaserPrice(60, legs)));
-      const sixHalf = payoutCents(100_000, americanToPrice(teaserPrice(65, legs)));
-      const seven = payoutCents(100_000, americanToPrice(teaserPrice(70, legs)));
-      expect(six).toBeGreaterThan(sixHalf);
-      expect(sixHalf).toBeGreaterThan(seven);
+      for (let i = 1; i < TEASER_POINTS_TENTHS.length; i += 1) {
+        const fewer = TEASER_POINTS_TENTHS[i - 1] ?? 0;
+        const more = TEASER_POINTS_TENTHS[i] ?? 0;
+        const a = payoutCents(100_000, americanToPrice(teaserPrice(fewer, legs)));
+        const b = payoutCents(100_000, americanToPrice(teaserPrice(more, legs)));
+        expect(
+          a,
+          `${String(legs)} legs: ${String(fewer)} vs ${String(more)} tenths`,
+        ).toBeGreaterThan(b);
+      }
     }
   });
 
@@ -789,11 +794,20 @@ describe('teaserPrice — the fixed card', () => {
   });
 
   it('the worst cell at the full bankroll is far under MAX_PAYOUT_CENTS', () => {
-    // REPL-verified: 10 legs, 6 points, +2500, 100,000c stake -> 2,600,000c.
-    const worst = payoutCents(100_000, americanToPrice(teaserPrice(60, 10)));
-    expect(worst).toBe(2_600_000);
+    // Script-verified (scripts/teaser-card.mjs): 10 legs, 3 points, +12500,
+    // 100,000c stake -> 12,600,000c — and it IS the worst cell, checked here
+    // over the whole card rather than assumed.
+    let worst = 0;
+    for (const points of TEASER_POINTS_TENTHS) {
+      for (let legs = 2; legs <= MAX_PARLAY_LEGS; legs += 1) {
+        const payout = payoutCents(100_000, americanToPrice(teaserPrice(points, legs)));
+        expect(exceedsPayoutCap(100_000, americanToPrice(teaserPrice(points, legs)))).toBe(false);
+        if (payout > worst) worst = payout;
+      }
+    }
+    expect(worst).toBe(12_600_000);
+    expect(worst).toBe(payoutCents(100_000, americanToPrice(teaserPrice(30, 10))));
     expect(worst).toBeLessThan(MAX_PAYOUT_CENTS);
-    expect(exceedsPayoutCap(100_000, americanToPrice(teaserPrice(60, 10)))).toBe(false);
   });
 
   it('rejects a tier that is not on the card, including points-not-tenths', () => {

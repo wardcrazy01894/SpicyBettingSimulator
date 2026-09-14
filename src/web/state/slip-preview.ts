@@ -66,7 +66,10 @@ export function buildPlaceBetRequest(slip: Slip, acceptLineChange: boolean): Pla
     stakeCents: slip.stakeCents,
     acceptLineChange,
     // Tenths, and only on a teaser — the server rejects it on anything else.
-    ...(slip.mode === 'teaser' ? { teaserPoints: asTeaserPoints(slip.teaserPointsTenths) } : {}),
+    // Sent AS STORED: the server is the authority on which tiers exist
+    // (`isTeaserPoints`), and a client-side narrowing here once silently
+    // turned every non-classic tier into a 6-point bet.
+    ...(slip.mode === 'teaser' ? { teaserPoints: slip.teaserPointsTenths } : {}),
     legs: slip.legs.map((leg) => ({
       gameId: leg.gameId,
       market: leg.market,
@@ -81,11 +84,6 @@ export function buildPlaceBetRequest(slip: Slip, acceptLineChange: boolean): Pla
       },
     })),
   };
-}
-
-/** Narrow a stored tenths value to the wire union. Falls back to 6 points. */
-function asTeaserPoints(tenths: number): 60 | 65 | 70 {
-  return tenths === 65 || tenths === 70 ? tenths : 60;
 }
 
 /**

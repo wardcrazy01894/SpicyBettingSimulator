@@ -19,7 +19,7 @@ import type { ErrorCode } from '../../shared/errors.js';
 export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   VALIDATION: "That doesn't look right — check the highlighted field and try again.",
   MALFORMED_JSON: 'The app sent something the server could not read. Please reload.',
-  TEASER_INVALID: 'That teaser is not one we offer — pick 6, 6.5 or 7 points.',
+  TEASER_INVALID: 'That teaser is not one we offer — pick a tier from 3 to 14 points.',
 
   UNAUTHENTICATED: 'Your session expired. Please sign in again.',
   INVALID_CREDENTIALS: 'Wrong username or password.',
