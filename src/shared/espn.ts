@@ -446,6 +446,7 @@ function parseTeam(competitor: unknown): GameTeam | null {
     name,
     logo: asString(prop(team, 'logo')),
     rank: parseRank(prop(competitor, 'curatedRank')),
+    conferenceId: asIdString(prop(team, 'conferenceId')),
     score: parseScore(prop(competitor, 'score')),
   };
 }

@@ -226,6 +226,12 @@ describe('ERROR_CODES vs PLAN.md §11', () => {
     'KDF_VERSION',
     'CLIENT_KDF',
     'REFRESH_TARGETS_PER_RUN',
+    // §11.7 bug reports: two vars, a secret and a limit.
+    'GITHUB_REPO',
+    'GITHUB_API_BASE_URL',
+    'GITHUB_TOKEN',
+    'BUG_REPORTS_PER_WINDOW',
+    'BUG_REPORT_USER_AGENT_MAX',
   ]);
   /** Suffixes that make a token a quantity, never a wire code. */
   const QUANTITY = /_(CENTS|MS|TENTHS|LEGS|BYTES|ITERATIONS|ATTEMPTS|GAMES|GROUP)$/;
@@ -788,6 +794,24 @@ describe('claims the docs make about the repo', () => {
         'Every ignore needs a table row saying why, and every row needs an ignore so Dependabot ' +
         'stops proposing the bump the table says we cannot take.',
     ).toEqual([...pinned].sort());
+  });
+
+  /**
+   * The runbook's "Applied migrations" table is the operator's record of what
+   * the live database has. A migration file nobody added to it is exactly the
+   * one somebody will be surprised by at 2am.
+   */
+  it('every file in migrations/ is in the docs/OPERATIONS.md migrations table', () => {
+    const files = readdirSync(join(ROOT, 'migrations'))
+      .filter((name) => name.endsWith('.sql'))
+      .sort();
+    expect(files.length).toBeGreaterThan(1);
+    for (const file of files) {
+      expect(
+        OPERATIONS.includes(`\`${file}\``),
+        `migrations/${file} is not in docs/OPERATIONS.md's "Applied migrations" table.`,
+      ).toBe(true);
+    }
   });
 
   it('CLAUDE.md carries rule 11 (docs ship with the change)', () => {

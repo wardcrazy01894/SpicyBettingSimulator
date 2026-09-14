@@ -5,6 +5,11 @@
  */
 
 import {
+  BUG_REPORT_DESCRIPTION_MAX,
+  BUG_REPORT_DESCRIPTION_MIN,
+  BUG_REPORT_PAGE_MAX,
+  BUG_REPORT_TITLE_MAX,
+  BUG_REPORT_TITLE_MIN,
   MAX_ABS_AMERICAN_PRICE,
   MAX_ABS_LINE_TENTHS,
   MAX_PARLAY_LEGS,
@@ -19,7 +24,7 @@ import {
   isTeaserPoints,
 } from './constants.js';
 import type { TeaserPointsTenths } from './constants.js';
-import type { PlaceBetLegRequest, PlaceBetRequest } from './api-types.js';
+import type { BugReportRequest, PlaceBetLegRequest, PlaceBetRequest } from './api-types.js';
 import { LEAGUES } from './types.js';
 import type {
   AmericanPrice,
@@ -56,6 +61,14 @@ export interface SignupInput {
 export interface LoginInput {
   readonly username: string;
   readonly dk: string;
+}
+
+/** The validated bug report: trimmed, bounded, `page` normalised to `null`. */
+export interface BugReportInput {
+  readonly title: string;
+  readonly description: string;
+  /** The SPA path the reporter was on (`/bets`), or null. Never a full URL. */
+  readonly page: string | null;
 }
 
 const MARKETS: readonly Market[] = ['moneyline', 'spread', 'total'];
@@ -398,4 +411,62 @@ export function formatLineTenths(tenths: LineTenths, signed: boolean): string {
   const tenth = abs % 10;
   const whole = (abs - tenth) / 10;
   return `${sign}${String(whole)}${tenth === 0 ? '' : `.${String(tenth)}`}`;
+}
+
+/**
+ * `POST /api/bugs` body. Whitespace is trimmed before the length checks so a
+ * title of spaces cannot pass. `page` is optional and must look like an SPA
+ * path — it is echoed into a GitHub issue, so a full URL or anything with a
+ * newline is refused rather than sanitised.
+ */
+export function validateBugReport(body: unknown): ValidationResult<BugReportInput> {
+  if (!isRecord(body)) return bad('Body must be a JSON object.');
+  const raw: Partial<BugReportRequest> = body;
+
+  if (typeof raw.title !== 'string') return bad('title is required.', 'title');
+  const title = raw.title.trim();
+  if (title.length < BUG_REPORT_TITLE_MIN) {
+    return bad(`title must be at least ${String(BUG_REPORT_TITLE_MIN)} characters.`, 'title');
+  }
+  if (title.length > BUG_REPORT_TITLE_MAX) {
+    return bad(`title must be at most ${String(BUG_REPORT_TITLE_MAX)} characters.`, 'title');
+  }
+  if (/[\r\n]/.test(title)) return bad('title must be a single line.', 'title');
+
+  if (typeof raw.description !== 'string') {
+    return bad('description is required.', 'description');
+  }
+  const description = raw.description.trim();
+  if (description.length < BUG_REPORT_DESCRIPTION_MIN) {
+    return bad(
+      `description must be at least ${String(BUG_REPORT_DESCRIPTION_MIN)} characters.`,
+      'description',
+    );
+  }
+  if (description.length > BUG_REPORT_DESCRIPTION_MAX) {
+    return bad(
+      `description must be at most ${String(BUG_REPORT_DESCRIPTION_MAX)} characters.`,
+      'description',
+    );
+  }
+
+  let page: string | null = null;
+  if (raw.page !== undefined && raw.page !== null) {
+    if (typeof raw.page !== 'string') return bad('page must be a string.', 'page');
+    const trimmed = raw.page.trim();
+    if (trimmed !== '') {
+      if (!trimmed.startsWith('/') || trimmed.startsWith('//')) {
+        return bad('page must be a path starting with /.', 'page');
+      }
+      if (trimmed.length > BUG_REPORT_PAGE_MAX) {
+        return bad(`page must be at most ${String(BUG_REPORT_PAGE_MAX)} characters.`, 'page');
+      }
+      if (/[\s`]/.test(trimmed)) {
+        return bad('page must not contain whitespace or backticks.', 'page');
+      }
+      page = trimmed;
+    }
+  }
+
+  return good({ title, description, page });
 }
