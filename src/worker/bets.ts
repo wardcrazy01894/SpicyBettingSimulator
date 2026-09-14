@@ -55,11 +55,11 @@ import type {
 } from '../shared/types.js';
 import {
   BET_CUTOFF_BUFFER_MS,
-  LINE_STALE_MS,
   MAX_ABS_AMERICAN_PRICE,
   MIN_ABS_AMERICAN_PRICE,
 } from '../shared/constants.js';
 import { AppError } from '../shared/errors.js';
+import { lineStaleAfterMs } from './ingest.js';
 import { projectLeg } from '../shared/grading.js';
 import {
   PUSH_AMERICAN_PRICE,
@@ -488,7 +488,8 @@ async function loadLines(env: Env, gameIds: readonly string[]): Promise<Map<stri
 /**
  * Read the current line for each requested leg and build the immutable snapshot.
  * Rejects a market that is absent or whose `seen_at` (NOT `captured_at`) is older
- * than LINE_STALE_MS, and compares against `expected` when supplied.
+ * than the game's staleness window (`lineStaleAfterMs`), and compares against
+ * `expected` when supplied.
  * `line_captured_at` on the snapshot copies `game_lines.captured_at`, i.e. when
  * the book's price last actually changed.
  *
@@ -531,7 +532,7 @@ export async function resolveLegSnapshots(
       });
     }
     const line = lines.get(leg.gameId);
-    if (line === undefined || now - line.seen_at > LINE_STALE_MS) {
+    if (line === undefined || now - line.seen_at > lineStaleAfterMs(game.kickoff_at, now)) {
       throw new AppError('MARKET_UNAVAILABLE', `No current line for ${leg.gameId}.`, {
         gameId: leg.gameId,
         market: leg.market,

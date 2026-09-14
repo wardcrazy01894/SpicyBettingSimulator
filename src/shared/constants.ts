@@ -131,6 +131,16 @@ export const BET_CUTOFF_BUFFER_MS = 60_000;
 export const LINE_STALE_MS = 3 * 60 * 60 * 1000;
 
 /**
+ * The staleness window is `max(LINE_STALE_MS, LINE_STALE_MULTIPLIER × the
+ * game's expected refresh cadence)` — see `lineStaleAfterMs` in
+ * src/worker/ingest.ts. A game days from kickoff is only refreshed every 6 h
+ * (PLAN.md §8.4), so a flat 3 h window declared its line stale for half of
+ * every day, for no reason: the window exists to notice a BROKEN ingest, not to
+ * police line movement, and this is fake money. Three cycles missed is broken.
+ */
+export const LINE_STALE_MULTIPLIER = 3;
+
+/**
  * WRITE-BUDGET LEVERS (PLAN.md §8.6). D1 free tier allows 100,000 rows written
  * per UTC day and since 2026-09-01 it is HARD-ENFORCED: past the cap, D1 returns
  * errors, which would block bet placement and settlement, not just staleness.
