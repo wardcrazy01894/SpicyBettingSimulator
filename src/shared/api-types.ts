@@ -36,6 +36,8 @@ export interface HealthResponse {
   readonly version: string;
   readonly now: EpochMs;
   readonly inviteRequired: boolean;
+  /** False when `GITHUB_TOKEN` is unset; the UI then hides "Report a bug". */
+  readonly bugReportsEnabled: boolean;
 }
 
 export interface ConfigResponse {
@@ -107,6 +109,8 @@ export interface GameTeamView {
   readonly name: string;
   readonly logo: string | null;
   readonly rank: number | null;
+  /** ESPN conference id, see `CFB_CONFERENCES`; null for the NFL. */
+  readonly conferenceId: string | null;
   readonly score: number | null;
 }
 
@@ -508,4 +512,43 @@ export interface ReconcileResponse {
     readonly balanceCents: Cents;
     readonly ledgerSumCents: Cents;
   }[];
+}
+
+// ---------------------------------------------------------------------------
+// §11.7 bug reports
+// ---------------------------------------------------------------------------
+
+/** POST /api/bugs */
+export interface BugReportRequest {
+  readonly title: string;
+  readonly description: string;
+  /** The SPA path the reporter was on, e.g. `/bets`. Optional. */
+  readonly page?: string | null;
+}
+
+/** 201 from POST /api/bugs: the GitHub issue that was filed. */
+export interface BugReportResponse {
+  readonly id: string;
+  readonly issueNumber: number;
+  readonly issueUrl: string;
+}
+
+/** One `bug_reports` row, as `GET /api/admin/bugs` lists them. */
+export interface BugReportView {
+  readonly id: string;
+  readonly userId: string;
+  readonly username: string;
+  readonly title: string;
+  readonly description: string;
+  readonly page: string | null;
+  readonly appVersion: string;
+  readonly createdAt: EpochMs;
+  /** Null when filing on GitHub failed; `error` then says why. */
+  readonly issueNumber: number | null;
+  readonly issueUrl: string | null;
+  readonly error: string | null;
+}
+
+export interface AdminBugReportsResponse {
+  readonly reports: readonly BugReportView[];
 }

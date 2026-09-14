@@ -78,6 +78,8 @@ export interface GameTeam {
   readonly logo: string | null;
   /** CFB AP/curated rank, 1-25; null when unranked or not applicable. */
   readonly rank: number | null;
+  /** ESPN `team.conferenceId` (e.g. "8" = SEC); null for the NFL. */
+  readonly conferenceId: string | null;
   readonly score: number | null;
 }
 

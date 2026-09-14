@@ -15,3 +15,9 @@ INVITE_CODE="local-dev-invite"
 
 # Salt used to hash client IPs before they are written to auth_throttle.
 IP_HASH_SALT="local-dev-ip-salt-change-me"
+
+# In-app bug reports file GitHub issues. Leave GITHUB_TOKEN unset locally and the
+# "Report a bug" form is hidden; set a fine-grained PAT (Issues: read+write on
+# ONE repo) to exercise it against a scratch repo — never the real one from dev.
+# GITHUB_TOKEN="github_pat_..."
+# GITHUB_REPO="you/scratch-repo"

@@ -27,6 +27,10 @@ export default defineProject({
           REFRESH_TARGETS_PER_RUN: '2',
           SETTLE_CHUNK: '20',
           APP_VERSION: 'test',
+          // Fetches to this host are stubbed per spec file (tests/worker/bugs.spec.ts).
+          GITHUB_REPO: 'wardcrazy01894/SpicyBettingSimulator',
+          GITHUB_API_BASE_URL: 'https://github.test',
+          GITHUB_TOKEN: 'test-github-token',
         },
       },
     }),

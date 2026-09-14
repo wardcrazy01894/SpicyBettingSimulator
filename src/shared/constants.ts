@@ -233,3 +233,42 @@ export const MAX_ABS_AMERICAN_PRICE = 100_000;
 /** Board query defaults. */
 export const BOARD_LOOKBACK_MS = 12 * 60 * 60 * 1000;
 export const BOARD_MAX_GAMES = 300;
+
+/**
+ * FBS conferences by ESPN `team.conferenceId`, for the CFB board filter
+ * (PLAN.md §12.1). Ids are as ESPN reports them, confirmed against
+ * docs/samples/espn-cfb-scoreboard.json (the 17 Big Ten teams sit under 5, the
+ * 16 SEC teams under 8, and so on). ESPN occasionally files an FCS opponent
+ * under an FBS id (the sample has North Dakota State under 17 and Sacramento
+ * State under 15), so the filter's "Other" bucket — any id not in this list —
+ * is best-effort, not a guarantee of FCS. Order is display order.
+ */
+export const CFB_CONFERENCES: readonly { readonly id: string; readonly name: string }[] = [
+  { id: '8', name: 'SEC' },
+  { id: '5', name: 'Big Ten' },
+  { id: '4', name: 'Big 12' },
+  { id: '1', name: 'ACC' },
+  { id: '18', name: 'Independents' },
+  { id: '151', name: 'American' },
+  { id: '17', name: 'Mountain West' },
+  { id: '37', name: 'Sun Belt' },
+  { id: '15', name: 'MAC' },
+  { id: '12', name: 'Conference USA' },
+  { id: '9', name: 'Pac-12' },
+];
+
+/**
+ * Bug reports (PLAN.md §11.7). A report is stored in `bug_reports` and filed as
+ * a GitHub issue. The limits bound what one signed-in user can push into the
+ * issue tracker: a title, a description, the page they were on, and at most
+ * `BUG_REPORTS_PER_WINDOW` reports per `BUG_REPORT_WINDOW_MS`.
+ */
+export const BUG_REPORT_TITLE_MIN = 3;
+export const BUG_REPORT_TITLE_MAX = 120;
+export const BUG_REPORT_DESCRIPTION_MIN = 10;
+export const BUG_REPORT_DESCRIPTION_MAX = 4_000;
+export const BUG_REPORT_PAGE_MAX = 200;
+/** The request's User-Agent is stored and filed too; anything past this is cut. */
+export const BUG_REPORT_USER_AGENT_MAX = 300;
+export const BUG_REPORTS_PER_WINDOW = 5;
+export const BUG_REPORT_WINDOW_MS = 60 * 60 * 1000;
