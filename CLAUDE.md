@@ -267,7 +267,7 @@ public/       static files vite copies into dist/client as-is: the site icon
 migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               every change is a new numbered 000N_*.sql (rule 9) — 0002 adds
               users.deleted_at, 0003 adds bug_reports, 0004 adds
-              games.home/away_conference_id
+              games.home/away_conference_id, 0006 adds bug_reports.diagnostics
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES

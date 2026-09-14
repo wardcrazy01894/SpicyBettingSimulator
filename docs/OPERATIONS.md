@@ -72,8 +72,8 @@ Applied migrations, newest last:
 | `0004_games_conference.sql`        | `games.home/away_conference_id TEXT NULL` — CFB board filter            | on merge to `main`, by the Deploy workflow |
 | `0006_bug_reports_diagnostics.sql` | `bug_reports.diagnostics TEXT NULL` — the browser log a report attaches | on merge to `main`, by the Deploy workflow |
 
-(0003 and 0004 were written on parallel branches and numbered by reservation; wrangler applies
-whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)
+(0003, 0004, 0005 and 0006 were written on parallel branches and numbered by reservation; wrangler
+applies whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)
 
 **You do not normally run a migration by hand.** `.github/workflows/deploy.yml` runs
 `wrangler d1 migrations apply --remote` on every push to `main`, BEFORE `wrangler deploy` — so
@@ -155,8 +155,9 @@ npx wrangler tail --search '[client-error]'          # only browser crashes
 ```
 
 Diagnosing a user's problem: ask them to press "Report a bug" (any page) — the issue carries
-their diagnostics log — or find their `[api]` / `[client-error]` lines by `user=<name>`. Nothing in
-any log line is a secret: no bodies, no tokens, no query strings.
+their diagnostics log — or find their `[api]` / `[client-error]` lines by `user=<name>`. No log line
+carries a request or response body, a token or a password; `[client-error]` does carry the browser's
+page path + query string and uuid-redacted API paths, which is the point of it.
 
 ## Bug reports
 

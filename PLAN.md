@@ -2497,10 +2497,16 @@ provenance instead of prices).
 
 **The beacon.** An uncaught error or unhandled rejection also POSTs the
 current diagnostics (≤ 2,000 chars) to `/api/bugs/client-errors`, at most once
-per 30 s, fire-and-forget. The Worker logs it as one `[client-error]
-user=<name> …` line and stores nothing, so a browser crash is visible in
-`wrangler tail` / Workers Logs even when nobody files a report
-(docs/OPERATIONS.md "Logs").
+per 30 s and only while a session is live, fire-and-forget. The Worker logs it
+as one `[client-error] user=<name> …` line and stores nothing, so a browser
+crash is visible in `wrangler tail` / Workers Logs even when nobody files a
+report (docs/OPERATIONS.md "Logs"). There is no server-side rate limit: the
+client throttle is bypassable with `curl`, and a signed-in account looping the
+beacon spends Worker invocations against the free plan's daily budget exactly
+as looping `GET /api/games` would — the same exposure every authenticated route
+has, answered the same way (disable the account). API paths in the log have
+uuids collapsed to `:id`; the log is cleared when the session ends, so a shared
+browser cannot carry one person's activity into another's public issue.
 
 **Row first, issue second.** `createBugReport` (`src/worker/bugs.ts`) INSERTs
 into `bug_reports` and only then POSTs to GitHub's Issues API

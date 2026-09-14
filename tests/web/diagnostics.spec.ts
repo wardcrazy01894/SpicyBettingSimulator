@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DIAGNOSTICS_MAX_EVENTS,
   DIAGNOSTICS_MAX_EVENT_CHARS,
+  DIAGNOSTICS_MAX_HEAD_FIELD_CHARS,
   DiagnosticsLog,
   describeThrown,
   renderDiagnostics,
@@ -91,6 +92,20 @@ describe('renderDiagnostics', () => {
     expect(text).not.toContain('GET /api/games 200 000ms');
   });
 
+  it('never exceeds maxChars, whatever the head contains', () => {
+    const log = new DiagnosticsLog(() => 0);
+    for (let n = 0; n < 5; n += 1) log.record('api', `GET /api/games 200 ${String(n)}ms`);
+    const huge = { ...ENV, userAgent: 'U'.repeat(9000), page: `/games?${'q=1&'.repeat(500)}` };
+    for (const max of [8000, 2000, 400, 120]) {
+      const text = renderDiagnostics(huge, log.list(), max);
+      expect(text.length, `max ${String(max)}`).toBeLessThanOrEqual(max);
+    }
+    // The head fields are cut at DIAGNOSTICS_MAX_HEAD_FIELD_CHARS, not dropped.
+    const text = renderDiagnostics(huge, log.list(), 8000);
+    expect(text).toContain(`ua ${'U'.repeat(DIAGNOSTICS_MAX_HEAD_FIELD_CHARS)}…`);
+    expect(text).toContain('GET /api/games 200 4ms');
+  });
+
   it('marks offline', () => {
     expect(renderDiagnostics({ ...ENV, online: false }, [], 8000)).toContain('OFFLINE');
   });
@@ -103,9 +118,41 @@ describe('describeThrown', () => {
     expect(describeThrown(err)).toBe('TypeError: bad (at doThing (app.js:10:5))');
   });
 
+  it('never throws, even for a value that cannot be stringified', () => {
+    const hostile = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(hostile, 'x', {
+      enumerable: true,
+      get: () => {
+        throw new Error('getter');
+      },
+    });
+    expect(describeThrown(hostile)).toBe('[unprintable value]');
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+    expect(describeThrown(circular)).toBe('[object Object]');
+  });
+
+  it('clear() empties the log', () => {
+    const log = new DiagnosticsLog(() => 1);
+    log.record('route', '/admin');
+    log.clear();
+    expect(log.list()).toEqual([]);
+  });
+
   it('passes strings through and JSON-encodes the rest', () => {
     expect(describeThrown('plain')).toBe('plain');
     expect(describeThrown({ code: 7 })).toBe('{"code":7}');
     expect(describeThrown(undefined)).toBe('undefined');
+  });
+});
+
+describe('redactPath', () => {
+  it('collapses uuid path segments to :id and leaves everything else', async () => {
+    const { redactPath } = await import('../../src/web/diagnostics.js');
+    expect(redactPath('/api/bets/3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b')).toBe('/api/bets/:id');
+    expect(redactPath('/api/admin/users/3F2A1B4C-5D6E-4F70-8A9B-0C1D2E3F4A5B/adjust')).toBe(
+      '/api/admin/users/:id/adjust',
+    );
+    expect(redactPath('/api/games')).toBe('/api/games');
   });
 });

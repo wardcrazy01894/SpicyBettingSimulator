@@ -27,6 +27,8 @@ export interface DiagnosticEvent {
 export const DIAGNOSTICS_MAX_EVENTS = 60;
 /** One event's text is cut here so a single stack trace cannot fill the log. */
 export const DIAGNOSTICS_MAX_EVENT_CHARS = 600;
+/** The user agent and page lines in the head are cut here for the same reason. */
+export const DIAGNOSTICS_MAX_HEAD_FIELD_CHARS = 300;
 
 export interface DiagnosticsEnvironment {
   readonly appVersion: string | null;
@@ -77,21 +79,30 @@ function clock(at: number): string {
  * The text block a bug report attaches. Environment first, then the events
  * oldest → newest with a UTC clock, so a reader can line it up with the
  * report's own timestamp. Bounded by `maxChars` from the OLD end: the last
- * events are the ones that matter.
+ * events are the ones that matter. The result is NEVER longer than `maxChars`
+ * whatever the inputs — the head's free-text fields are cut, and the whole is
+ * sliced as a last resort — because a report the validator refuses for its
+ * diagnostics is a report nobody can file.
  */
 export function renderDiagnostics(
   env: DiagnosticsEnvironment,
   events: readonly DiagnosticEvent[],
   maxChars: number,
 ): string {
+  const field = (value: string | null): string =>
+    value === null
+      ? '?'
+      : value.length > DIAGNOSTICS_MAX_HEAD_FIELD_CHARS
+        ? `${value.slice(0, DIAGNOSTICS_MAX_HEAD_FIELD_CHARS)}…`
+        : value;
   const head = [
-    `app ${env.appVersion ?? '?'} · ${env.language ?? '?'} · ${
+    `app ${field(env.appVersion)} · ${field(env.language)} · ${
       env.viewport === null
         ? 'viewport ?'
         : `${String(env.viewport.width)}×${String(env.viewport.height)}`
     } · ${env.online === null ? 'online ?' : env.online ? 'online' : 'OFFLINE'}`,
-    `page ${env.page ?? '?'}`,
-    `ua ${env.userAgent ?? '?'}`,
+    `page ${field(env.page)}`,
+    `ua ${field(env.userAgent)}`,
     '',
     events.length === 0 ? '(no events recorded)' : `${String(events.length)} events, oldest first:`,
   ].join('\n');
@@ -110,7 +121,7 @@ export function renderDiagnostics(
     }
     body = [`… ${String(lines.length - kept.length)} earlier events cut`, ...kept].join('\n');
   }
-  return `${head}\n${body}`;
+  return `${head}\n${body}`.slice(0, maxChars);
 }
 
 /** One line for an error-ish value: name, message, first stack frame. */
@@ -126,8 +137,14 @@ export function describeThrown(value: unknown): string {
   try {
     // `JSON.stringify(undefined)` is undefined despite the declared return type.
     const json: unknown = JSON.stringify(value);
-    return typeof json === 'string' ? json : String(value);
+    if (typeof json === 'string') return json;
   } catch {
+    // fall through: circular, or a throwing getter
+  }
+  try {
     return String(value);
+  } catch {
+    // A null-prototype object with a throwing getter cannot even be stringified.
+    return '[unprintable value]';
   }
 }

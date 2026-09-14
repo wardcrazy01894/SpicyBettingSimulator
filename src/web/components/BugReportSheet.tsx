@@ -7,7 +7,7 @@
  * uses, so the Send button is only enabled for a request the server will take
  * — the server still re-validates (CLAUDE.md rule 8).
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ReactElement, SyntheticEvent } from 'react';
 import { useLocation } from 'react-router-dom';
 
@@ -48,6 +48,9 @@ export function BugReportSheet(props: {
     onClose();
   }, [onClose]);
   useFocusTrap(dialogRef, open, close);
+
+  // The preview is rendered once per opening, not on every keystroke.
+  const preview = useMemo(() => (open ? diagnosticsText(BUG_REPORT_DIAGNOSTICS_MAX) : ''), [open]);
 
   if (!open) return <></>;
 
@@ -174,7 +177,7 @@ export function BugReportSheet(props: {
             <p className="muted slip-hint">Page: {page}</p>
             <details className="bug-diagnostics">
               <summary className="muted">What gets attached</summary>
-              <pre className="bug-text">{diagnosticsText(BUG_REPORT_DIAGNOSTICS_MAX)}</pre>
+              <pre className="bug-text">{preview}</pre>
             </details>
 
             {problem !== null && <p className="field-problem">{problem}</p>}

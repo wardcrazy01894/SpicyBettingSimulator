@@ -14,7 +14,7 @@
  */
 
 import { CSRF_HEADER, CSRF_HEADER_VALUE } from '../../shared/constants.js';
-import { diagnostics, setAppVersion } from '../diagnostics.js';
+import { diagnostics, redactPath, setAppVersion } from '../diagnostics.js';
 import { ERROR_STATUS } from '../../shared/errors.js';
 import type { ErrorCode } from '../../shared/errors.js';
 import type {
@@ -117,9 +117,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
   // Every call is recorded for the bug-report diagnostics log: method, path
-  // (no query string), status, error code, duration. Never the body.
+  // (no query string, uuids collapsed to `:id`), status, error code, duration.
+  // Never the body.
   const started = Date.now();
-  const logged = path.split('?')[0] ?? path;
+  const logged = redactPath(path.split('?')[0] ?? path);
   let response: Response;
   try {
     response = await fetch(path, {
@@ -136,7 +137,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
 
   if (response.status === NO_CONTENT) {
-    if (!response.ok) throw parseErrorEnvelope(null, response.status);
+    diagnostics.record('api', `${method} ${logged} 204 ${String(Date.now() - started)}ms`);
     return undefined as T;
   }
 
