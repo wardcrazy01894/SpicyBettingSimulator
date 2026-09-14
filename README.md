@@ -68,9 +68,11 @@ To seed some games, sign up (first user becomes admin) and hit
 6. **Watch it grade.** Scores are ingested every 15 minutes and bets settle 5
    minutes after that, automatically. `/account` has the full ledger;
    `/leaderboard` ranks everyone by equity.
-7. **Something broken?** `/account` → "Report a bug" files a GitHub issue in
-   this repo with your username, the page and the app version attached. (Only
-   shown when the admin has set `GITHUB_TOKEN`; see `docs/OPERATIONS.md`.)
+7. **Something broken?** "Report a bug" in the header (any page) files a
+   GitHub issue in this repo with your username, the page, the app version,
+   your browser and a log of recent errors and requests attached — the form
+   shows exactly what before you send. (Only shown when the admin has set
+   `GITHUB_TOKEN`; see `docs/OPERATIONS.md`.)
 
 ## Before you open a PR
 

@@ -64,15 +64,16 @@ that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's
 
 Applied migrations, newest last:
 
-| File                        | What                                                         | Applied remotely                           |
-| --------------------------- | ------------------------------------------------------------ | ------------------------------------------ |
-| `0001_init.sql`             | the whole schema                                             | 2026-09-14                                 |
-| `0002_users_deleted_at.sql` | `users.deleted_at INTEGER NULL` — account soft delete        | on merge to `main`, by the Deploy workflow |
-| `0003_bug_reports.sql`      | `bug_reports` table + 2 indexes — in-app bug reports         | on merge to `main`, by the Deploy workflow |
-| `0004_games_conference.sql` | `games.home/away_conference_id TEXT NULL` — CFB board filter | on merge to `main`, by the Deploy workflow |
+| File                               | What                                                                    | Applied remotely                           |
+| ---------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------ |
+| `0001_init.sql`                    | the whole schema                                                        | 2026-09-14                                 |
+| `0002_users_deleted_at.sql`        | `users.deleted_at INTEGER NULL` — account soft delete                   | on merge to `main`, by the Deploy workflow |
+| `0003_bug_reports.sql`             | `bug_reports` table + 2 indexes — in-app bug reports                    | on merge to `main`, by the Deploy workflow |
+| `0004_games_conference.sql`        | `games.home/away_conference_id TEXT NULL` — CFB board filter            | on merge to `main`, by the Deploy workflow |
+| `0006_bug_reports_diagnostics.sql` | `bug_reports.diagnostics TEXT NULL` — the browser log a report attaches | on merge to `main`, by the Deploy workflow |
 
-(0003 and 0004 were written on parallel branches and numbered by reservation; wrangler applies
-whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)
+(0003, 0004, 0005 and 0006 were written on parallel branches and numbered by reservation; wrangler
+applies whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)
 
 **You do not normally run a migration by hand.** `.github/workflows/deploy.yml` runs
 `wrangler d1 migrations apply --remote` on every push to `main`, BEFORE `wrangler deploy` — so
@@ -132,11 +133,39 @@ previous sha leaves the column in place and unused.
   - Disabling alone is enough to get someone off the leaderboard; delete is for when you also want
     the username back.
 
+## Logs
+
+Two places, same lines: `npx wrangler tail` streams them live; the Cloudflare dashboard → Workers &
+Pages → `spicybetting` → Logs keeps them (Workers Logs, `observability.enabled` in wrangler.jsonc;
+the free plan retains a few days). Every line is prefixed so you can filter:
+
+| Prefix                  | Written by                     | When                                                                                                                                             |
+| ----------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `[api]`                 | `requestLogMiddleware`         | any request with status ≥ 400 (with the error code, e.g. `409 LINE_CHANGED`) or slower than 1 s. Format: `METHOD path status CODE user=name ms`. |
+| `[api] unhandled error` | `errorHandler`                 | a 500 — the only time a stack trace is logged                                                                                                    |
+| `[client-error]`        | `POST /api/bugs/client-errors` | a browser hit an uncaught error; the line is that browser's diagnostics log (last errors, API calls, routes), at most one per 30 s per user      |
+| `[cron]`                | the scheduled handler          | every job run: name, status, error                                                                                                               |
+| `[bugs]`                | bug filing                     | GitHub refused a report, or the row could not be marked filed                                                                                    |
+| `[config]`              | `readConfig`                   | `GITHUB_TOKEN` set but a var is missing — bug reports OFF                                                                                        |
+
+```bash
+npx wrangler tail --format pretty                    # everything, live
+npx wrangler tail --search '[api]'                   # only failures and slow requests
+npx wrangler tail --search '[client-error]'          # only browser crashes
+```
+
+Diagnosing a user's problem: ask them to press "Report a bug" (any page) — the issue carries
+their diagnostics log — or find their `[api]` / `[client-error]` lines by `user=<name>`. No log line
+carries a request or response body, a token or a password; `[client-error]` does carry the browser's
+page path + query string and uuid-redacted API paths, which is the point of it.
+
 ## Bug reports
 
-Users file bugs from `/account` → "Report a bug". Each one is a `bug_reports` row AND a GitHub
-issue in this repo, labelled `bug` + `user-report`, titled `[user report] …`, with the reporter's
-username, page, app version, time and browser in the body (PLAN §11.7). Five per user per hour.
+Users file bugs from the "Report a bug" button in the header (every page) or from `/account`. Each
+one is a `bug_reports` row AND a GitHub issue in this repo, labelled `bug` + `user-report`, titled
+`[user report] …`, with the reporter's username, page, app version, time, browser and the browser's
+diagnostics log (recent errors, API calls with status, page changes) in the body (PLAN §11.7). Five
+per user per hour.
 
 - **GitHub said no** (token expired/revoked, GitHub down): the reporter saw a 503, but the row is
   kept. `/admin` → Bug reports shows it with `not filed` and the GitHub error; the description is

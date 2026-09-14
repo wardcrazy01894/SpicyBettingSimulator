@@ -270,5 +270,13 @@ export const BUG_REPORT_DESCRIPTION_MAX = 4_000;
 export const BUG_REPORT_PAGE_MAX = 200;
 /** The request's User-Agent is stored and filed too; anything past this is cut. */
 export const BUG_REPORT_USER_AGENT_MAX = 300;
+/**
+ * The browser's diagnostics log (recent errors, API calls, routes — see
+ * src/web/lib/diagnostics.ts) rides along with a report. The client renders it
+ * to fit; the server refuses anything longer.
+ */
+export const BUG_REPORT_DIAGNOSTICS_MAX = 8_000;
+/** The uncaught-error beacon (`POST /api/bugs/client-errors`) carries at most this. */
+export const CLIENT_ERROR_BEACON_MAX = 2_000;
 export const BUG_REPORTS_PER_WINDOW = 5;
 export const BUG_REPORT_WINDOW_MS = 60 * 60 * 1000;

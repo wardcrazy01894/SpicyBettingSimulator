@@ -14,6 +14,7 @@
  */
 
 import { CSRF_HEADER, CSRF_HEADER_VALUE } from '../../shared/constants.js';
+import { diagnostics, redactPath, setAppVersion } from '../diagnostics.js';
 import { ERROR_STATUS } from '../../shared/errors.js';
 import type { ErrorCode } from '../../shared/errors.js';
 import type {
@@ -115,6 +116,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (method !== 'GET') headers[CSRF_HEADER] = CSRF_HEADER_VALUE;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
+  // Every call is recorded for the bug-report diagnostics log: method, path
+  // (no query string, uuids collapsed to `:id`), status, error code, duration.
+  // Never the body.
+  const started = Date.now();
+  const logged = redactPath(path.split('?')[0] ?? path);
   let response: Response;
   try {
     response = await fetch(path, {
@@ -124,13 +130,14 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   } catch (cause) {
+    diagnostics.record('api', `${method} ${logged} NETWORK-FAIL ${String(Date.now() - started)}ms`);
     throw new ApiError('UPSTREAM_UNAVAILABLE', 0, 'Network request failed', {
       cause: String(cause),
     });
   }
 
   if (response.status === NO_CONTENT) {
-    if (!response.ok) throw parseErrorEnvelope(null, response.status);
+    diagnostics.record('api', `${method} ${logged} 204 ${String(Date.now() - started)}ms`);
     return undefined as T;
   }
 
@@ -146,9 +153,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
   if (!response.ok) {
     const error = parseErrorEnvelope(parsed, response.status);
+    diagnostics.record(
+      'api',
+      `${method} ${logged} ${String(response.status)} ${error.code} ${String(Date.now() - started)}ms`,
+    );
     if (response.status === 401) onUnauthenticated?.();
     throw error;
   }
+  diagnostics.record(
+    'api',
+    `${method} ${logged} ${String(response.status)} ${String(Date.now() - started)}ms`,
+  );
   return parsed as T;
 }
 
@@ -192,8 +207,11 @@ function query(params: Readonly<Record<string, string | number | null | undefine
 // §11.1 public
 // ---------------------------------------------------------------------------
 
-export function getHealth(): Promise<HealthResponse> {
-  return apiGet<HealthResponse>('/api/health');
+export async function getHealth(): Promise<HealthResponse> {
+  const health = await apiGet<HealthResponse>('/api/health');
+  // The one place the client learns which build it is talking to.
+  setAppVersion(health.version);
+  return health;
 }
 
 export function getConfig(): Promise<ConfigResponse> {

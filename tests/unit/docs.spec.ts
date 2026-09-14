@@ -232,6 +232,9 @@ describe('ERROR_CODES vs PLAN.md §11', () => {
     'GITHUB_TOKEN',
     'BUG_REPORTS_PER_WINDOW',
     'BUG_REPORT_USER_AGENT_MAX',
+    'BUG_REPORT_DIAGNOSTICS_MAX',
+    'CLIENT_ERROR_BEACON_MAX',
+    'SLOW_REQUEST_MS',
   ]);
   /** Suffixes that make a token a quantity, never a wire code. */
   const QUANTITY = /_(CENTS|MS|TENTHS|LEGS|BYTES|ITERATIONS|ATTEMPTS|GAMES|GROUP)$/;
