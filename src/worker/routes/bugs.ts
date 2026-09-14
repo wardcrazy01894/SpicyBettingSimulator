@@ -27,11 +27,19 @@ export function bugsRoutes(): Hono<AppContext> {
     const body: BugReportResponse = await createBugReport(c.env, c.var.config, {
       user,
       input: parsed.value,
-      userAgent: c.req.header('user-agent')?.slice(0, BUG_REPORT_USER_AGENT_MAX) ?? null,
+      userAgent: readUserAgent(c.req.header('user-agent')),
       now: c.var.now,
     });
     return c.json(body, 201);
   });
 
   return app;
+}
+
+/** Trimmed, bounded, and NULL when absent or blank. */
+function readUserAgent(raw: string | undefined): string | null {
+  const trimmed = raw?.trim() ?? '';
+  if (trimmed === '') return null;
+  // Slice by code point, not UTF-16 unit, so a surrogate pair is never halved.
+  return [...trimmed].slice(0, BUG_REPORT_USER_AGENT_MAX).join('');
 }

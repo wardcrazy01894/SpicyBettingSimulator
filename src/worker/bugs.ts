@@ -113,9 +113,16 @@ export async function createBugReport(
     );
   }
 
-  await env.DB.prepare('UPDATE bug_reports SET issue_number = ?2, issue_url = ?3 WHERE id = ?1')
+  const recorded = await env.DB.prepare(
+    'UPDATE bug_reports SET issue_number = ?2, issue_url = ?3 WHERE id = ?1',
+  )
     .bind(id, filed.number, filed.url)
     .run();
+  if (recorded.meta.changes !== 1) {
+    // The issue exists but the row will show as "not filed" with no error —
+    // the one state the admin list cannot explain on its own, so say so here.
+    console.error('[bugs] issue filed but row not updated', id, filed.url);
+  }
   return { id, issueNumber: filed.number, issueUrl: filed.url };
 }
 

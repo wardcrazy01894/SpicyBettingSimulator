@@ -334,6 +334,27 @@ describe('POST /api/bugs', () => {
     expect(github.calls[0]?.body.body).not.toContain('U'.repeat(BUG_REPORT_USER_AGENT_MAX + 1));
   });
 
+  it('stores a blank User-Agent as NULL and never halves a surrogate pair', async () => {
+    const me = await register();
+    const blank = await (
+      await post(GOOD, me.cookie, { 'user-agent': '   ' })
+    ).json<BugReportResponse>();
+    const blankRow = await env.DB.prepare('SELECT user_agent FROM bug_reports WHERE id = ?1')
+      .bind(blank.id)
+      .first<{ user_agent: string | null }>();
+    expect(blankRow?.user_agent).toBeNull();
+
+    // 299 ASCII chars then an astral emoji: a UTF-16 slice at 300 would cut the pair.
+    const ua = `${'a'.repeat(BUG_REPORT_USER_AGENT_MAX - 1)}😀zzz`;
+    const filed = await (
+      await post(GOOD, me.cookie, { 'user-agent': ua })
+    ).json<BugReportResponse>();
+    const row = await env.DB.prepare('SELECT user_agent FROM bug_reports WHERE id = ?1')
+      .bind(filed.id)
+      .first<{ user_agent: string }>();
+    expect(row?.user_agent).toBe(`${'a'.repeat(BUG_REPORT_USER_AGENT_MAX - 1)}😀`);
+  });
+
   it('refuses a non-https issue URL from GitHub', async () => {
     const me = await register();
     github.respond = () =>

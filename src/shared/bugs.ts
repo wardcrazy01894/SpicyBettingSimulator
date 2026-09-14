@@ -37,17 +37,21 @@ function fence(text: string): string {
 }
 
 /**
- * A table cell rendered as an inline code span: no pipes, no newlines, and no
- * backticks (a backtick would close the span and let what follows render as
- * markup — a mention, an issue reference, a link). Backslash cannot escape a
- * backtick inside a code span, so it is swapped for an apostrophe. A missing
- * value is a plain dash, outside any span.
+ * A table cell rendered as an inline code span, made ESCAPE-FREE rather than
+ * escaped: a backtick would close the span (and let a mention, an issue
+ * reference or a link render), a pipe would split the row, a backslash is what
+ * an escape-unaware table parser could trip on, and a newline ends the table.
+ * Each is swapped for a look-alike — apostrophe, broken bar, set-minus, space
+ * — so the cell contains nothing any markdown renderer treats as syntax, and
+ * there is no "which renderer variant" to reason about. A missing value is a
+ * plain dash, outside any span.
  */
 function cell(text: string | null): string {
   if (text === null || text === '') return '—';
   const safe = text
     .replace(/`/g, "'")
-    .replace(/\|/g, '\\|')
+    .replace(/\\/g, '∖')
+    .replace(/\|/g, '¦')
     .replace(/[\r\n]+/g, ' ');
   return `\`${safe}\``;
 }

@@ -48,18 +48,21 @@ export function BugReportSheet(props: {
 
   // The page is captured at SUBMIT, not at open, and is the SPA path only —
   // never the origin, never a hash (there is nothing in one, but a report
-  // should not be the place we find out).
+  // should not be the place we find out). It is OPTIONAL server-side, and it is
+  // derived rather than typed, so a page the validator refuses (a 200+ char
+  // query string, say) must not wedge the form: the report goes without it.
   const page = `${location.pathname}${location.search}`;
-  const draft = validateBugReport({ title, description, page });
-  // Only surface a title/description message once the person has typed
-  // something in that field — an empty form is not yet "wrong". A `page`
-  // problem is not theirs to fix, so it is shown at once rather than leaving a
-  // silently disabled Send button.
+  const withPage = validateBugReport({ title, description, page });
+  const draft =
+    !withPage.ok && withPage.field === 'page'
+      ? validateBugReport({ title, description, page: null })
+      : withPage;
+  // Only surface a message once the person has typed something in that field —
+  // an empty form is not yet "wrong".
   const problem =
     !draft.ok &&
     ((draft.field === 'title' && title !== '') ||
-      (draft.field === 'description' && description !== '') ||
-      draft.field === 'page')
+      (draft.field === 'description' && description !== ''))
       ? draft.message
       : null;
 
@@ -129,7 +132,8 @@ export function BugReportSheet(props: {
           <form className="bug-form" onSubmit={onSubmit}>
             <p className="muted slip-hint">
               What were you doing, what did you expect, and what happened instead? Your username,
-              the page you are on and the app version are attached automatically.
+              the page you are on, the app version and your browser are attached automatically, and
+              the report is filed as a public GitHub issue.
             </p>
             <label className="field">
               <span className="field-label">What went wrong</span>

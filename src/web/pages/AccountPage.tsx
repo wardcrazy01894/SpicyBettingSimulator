@@ -140,8 +140,8 @@ export function AccountPage(): ReactElement {
         <>
           <h3 className="section-title">Something broken?</h3>
           <p className="muted page-note">
-            Reports go straight to the project's issue tracker with your username and the page you
-            were on.
+            Reports go straight to the project's public issue tracker with your username, the page
+            you were on, the app version and your browser.
           </p>
           <div className="row-actions">
             <button

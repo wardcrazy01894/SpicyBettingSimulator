@@ -46,13 +46,19 @@ describe('formatBugIssue', () => {
     expect(issue.body).toContain('` ` `');
   });
 
-  it('renders a missing page and user agent as a bare dash, and escapes pipes in cells', () => {
+  it('renders a missing page and user agent as a bare dash, and swaps pipes and backslashes', () => {
     const issue = formatBugIssue(
       { title: 't', description: 'y'.repeat(10), page: null },
-      { ...META, userAgent: 'a|b' },
+      { ...META, userAgent: 'a|b\\|c\\\\d' },
     );
     expect(issue.body).toContain('| Page | — |');
-    expect(issue.body).toContain('| User agent | `a\\|b` |');
+    expect(issue.body).toContain('| User agent | `a¦b∖¦c∖∖d` |');
+    // The context table has no character a table or code-span parser escapes on.
+    const table = issue.body.slice(issue.body.indexOf('## Context'));
+    expect(table).not.toMatch(/\\/);
+    for (const line of table.split('\n').filter((l) => l.startsWith('| '))) {
+      expect(line.split('|')).toHaveLength(4); // "| a | b |" -> ['', ' a ', ' b ', '']
+    }
   });
 
   it('puts the user agent in a code span and swaps its backticks, so it cannot become markup', () => {
