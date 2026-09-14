@@ -46,9 +46,14 @@
     "REFRESH_TARGETS_PER_RUN": "2",
     "SETTLE_CHUNK": "20",
     "APP_VERSION": "0.1.0",
+    // Where the in-app "Report a bug" form files issues (PLAN.md §11.7). The
+    // feature is OFF until the GITHUB_TOKEN secret is set.
+    "GITHUB_REPO": "wardcrazy01894/SpicyBettingSimulator",
+    "GITHUB_API_BASE_URL": "https://api.github.com",
   },
 
-  // Secrets (never in this file): INVITE_CODE, IP_HASH_SALT
+  // Secrets (never in this file): INVITE_CODE, IP_HASH_SALT, GITHUB_TOKEN
   //   wrangler secret put INVITE_CODE
   //   wrangler secret put IP_HASH_SALT
+  //   wrangler secret put GITHUB_TOKEN   # fine-grained PAT, Issues: read+write on GITHUB_REPO only
 }

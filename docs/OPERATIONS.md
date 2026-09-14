@@ -37,10 +37,20 @@ check failed). Roll back manually if the site is actually broken; the workflow d
 ```bash
 printf '%s' 'new-code'  | npx wrangler secret put INVITE_CODE    # shared signup code (one code for everyone)
 printf '%s' "$(openssl rand -hex 24)" | npx wrangler secret put IP_HASH_SALT   # rotating this resets IP throttle keys only
+printf '%s' 'github_pat_…' | npx wrangler secret put GITHUB_TOKEN   # in-app bug reports → GitHub issues (optional)
 ```
 
-`GET /api/health` reports `inviteRequired: true` once `INVITE_CODE` is set. The values currently in
-use are in the (gitignored) `.env.deploy.local` on the deploying machine.
+`GET /api/health` reports `inviteRequired: true` once `INVITE_CODE` is set, and
+`bugReportsEnabled: true` once `GITHUB_TOKEN` is. The values currently in use are in the
+(gitignored) `.env.deploy.local` on the deploying machine.
+
+**`GITHUB_TOKEN`** is a GitHub _fine-grained_ personal access token (Settings → Developer settings
+→ Personal access tokens → Fine-grained), owned by `wardcrazy01894`, with **Repository access:
+only `SpicyBettingSimulator`** and **Permissions: Issues → Read and write**, nothing else. Set an
+expiry and put the renewal date in your calendar: when it lapses `POST /api/bugs` starts returning
+`503`, the account page still shows the button (health only knows the secret is _set_), and the
+reports pile up on `GET /api/admin/bugs` with `error: "GitHub responded 401"`. Rotate with the same
+`secret put`. Never use a classic token or the `gh` CLI's OAuth token here — both are account-wide.
 
 ## Schema changes
 
@@ -58,6 +68,7 @@ Applied migrations, newest last:
 | --------------------------- | ------------------------------------------------------------ | ------------------------------------------ |
 | `0001_init.sql`             | the whole schema                                             | 2026-09-14                                 |
 | `0002_users_deleted_at.sql` | `users.deleted_at INTEGER NULL` — account soft delete        | on merge to `main`, by the Deploy workflow |
+| `0003_bug_reports.sql`      | `bug_reports` table + 2 indexes — in-app bug reports         | on merge to `main`, by the Deploy workflow |
 | `0004_games_conference.sql` | `games.home/away_conference_id TEXT NULL` — CFB board filter | on merge to `main`, by the Deploy workflow |
 
 **You do not normally run a migration by hand.** `.github/workflows/deploy.yml` runs
@@ -117,6 +128,30 @@ previous sha leaves the column in place and unused.
 
   - Disabling alone is enough to get someone off the leaderboard; delete is for when you also want
     the username back.
+
+## Bug reports
+
+Users file bugs from `/account` → "Report a bug". Each one is a `bug_reports` row AND a GitHub
+issue in this repo, labelled `bug` + `user-report`, titled `[user report] …`, with the reporter's
+username, page, app version, time and browser in the body (PLAN §11.7). Five per user per hour.
+
+- **GitHub said no** (token expired/revoked, GitHub down): the reporter saw a 503, but the row is
+  kept. `/admin` → Bug reports shows it with `not filed` and the GitHub error; the description is
+  printed in full so you can open the issue by hand. Fix the token (see Secrets) — nothing retries
+  on its own.
+- **Feature off**: unset `GITHUB_TOKEN` (`npx wrangler secret delete GITHUB_TOKEN`) and the button
+  disappears on the next page load; the route returns 503 to anyone who still has the form open.
+- **Spam**: it is signed-in users only and rate-limited in the INSERT itself, PER ACCOUNT — so the
+  ceiling is five issues an hour per account, times however many accounts the invite code has let
+  in. Disable the account (`/admin` → Users) and, if it was a leaked invite code, rotate the code.
+- **Ordering on first setup**: `secret put GITHUB_TOKEN` is safe to run before or after the deploy
+  that ships the `GITHUB_REPO` var — with the token set and the var missing, the Worker logs
+  `[config] GITHUB_TOKEN is set but bug reports are OFF` on every request and keeps serving. Check
+  `wrangler tail` if the button never appears.
+
+```bash
+npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user_id, title, issue_number, error FROM bug_reports ORDER BY created_at DESC LIMIT 20"
+```
 
 ## Data feed
 

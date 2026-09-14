@@ -376,6 +376,13 @@ kickoff_at_snapshot, home_abbr, away_abbr, result, graded_at`.
 **`job_runs`** — `id, job, trigger ('cron'|'admin'), started_at, finished_at,
 status, stats (JSON TEXT), error`. Bounded by the maintenance job.
 
+**`bug_reports`** (migration `0003_bug_reports.sql`) — `id, user_id → users
+(RESTRICT), title, description, page, user_agent, app_version, created_at,
+issue_number, issue_url, error`. One row per `POST /api/bugs`, written BEFORE
+the GitHub issue is filed so a GitHub outage loses nothing; `issue_number` /
+`issue_url` are set on success, `error` on failure. The `(user_id, created_at)`
+index is the rate-limit guard. §11.7.
+
 **`ingest_targets`** — the ingestion work queue. §8.4.
 `id PRIMARY KEY` (`"<league>:<kind>:<key>"`), `league`, `kind ('week'|'date')`,
 `key`, `window_start_at`, `window_end_at`, `priority`, `next_run_at`,
@@ -2147,7 +2154,7 @@ and never removed, only added.
 
 | Method | Path            | Response                                                                                                                                                                                                                                                                                                                                                                          |
 | ------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/health`   | `200 {ok, version, now, inviteRequired}` — no DB access                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/api/health`   | `200 {ok, version, now, inviteRequired, bugReportsEnabled}` — no DB access; `bugReportsEnabled` is whether `GITHUB_TOKEN` is set (§11.7)                                                                                                                                                                                                                                          |
 | GET    | `/api/config`   | `200 {leagues, currentSeason:{nfl,ncaaf}, minStakeCents, maxParlayLegs, cutoffBufferMs, initialBankrollCents, maxPayoutCents, teaserPoints, teaserPayouts}` — these field names match `ConfigResponse` in `src/shared/api-types.ts` exactly; `maxPayoutCents` exists because the bet slip calls `exceedsPayoutCap()` for pre-flight (§5.2b) and must not disagree with the server |
 | GET    | `/api/auth/kdf` | `200 {version, algorithm, hash, iterations, keyLengthBytes, saltPrefix}`                                                                                                                                                                                                                                                                                                          |
 
@@ -2421,6 +2428,7 @@ to sum, and `/all-time` is now literally the unfiltered board.)
 | POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check. `404` for a deleted account.    |
 | POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                                                |
 | POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                                                       |
+| GET    | `/api/admin/bugs`                      | last 50 `bug_reports`, newest first — `{reports: BugReportView[]}`, INCLUDING the ones GitHub refused (`issueNumber: null`, `error` set), which is the reason the list exists (§11.7)                         |
 
 Non-admins get `404` on `/api/admin/*` (not `403`), so the surface is invisible.
 Anonymous callers get `401`, like every other private route.
@@ -2452,6 +2460,77 @@ is a NEW code in `src/shared/errors.ts` (409) rather than a reused one — `BET_
 is about one bet's status and says the opposite thing, and `VALIDATION` is a 400.
 
 ---
+
+### 11.7 Bug reports
+
+| Method | Path        | Response                                                                                                                                             |
+| ------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/bugs` | `{title, description, page?}` → `201 {id, issueNumber, issueUrl}`; `400 VALIDATION`, `429 RATE_LIMITED`, `503 UPSTREAM_UNAVAILABLE`. Signed-in only. |
+
+The in-app "Report a bug" form (`/account`). The person types a title and a
+description; the client adds the SPA path they are on (`page`, path + query,
+never the origin). `page` is optional on the wire and derived rather than typed,
+so if the validator refuses it (a 200+ char query string, say) the client files
+the report WITHOUT it instead of disabling Send over something the person
+cannot fix. The SERVER adds everything else — reporter username, app
+version, request time, `User-Agent` — so a report can never claim to be from
+someone else or from a version that was not running (rule 8, applied to
+provenance instead of prices).
+
+**Row first, issue second.** `createBugReport` (`src/worker/bugs.ts`) INSERTs
+into `bug_reports` and only then POSTs to GitHub's Issues API
+(`GITHUB_API_BASE_URL/repos/GITHUB_REPO/issues`, bearer `GITHUB_TOKEN`, 8 s
+timeout). If GitHub fails for any reason the row is kept with `error` set and the
+caller gets `503 UPSTREAM_UNAVAILABLE` with `details.reportId`; the report is
+then visible on `GET /api/admin/bugs` for an admin to file by hand. Nothing
+retries automatically — the volume is a few reports a season and a retry loop
+against a revoked token would only spend subrequests. (The flip side: if the
+8 s timeout fires on a request GitHub actually completed, a client retry files
+a duplicate and spends a second rate-limit slot. Accepted at this volume.)
+
+**Rate limit: `BUG_REPORTS_PER_WINDOW` (5) per `BUG_REPORT_WINDOW_MS` (1 h) per
+user**, enforced INSIDE the INSERT
+(`WHERE (SELECT COUNT(*) FROM bug_reports WHERE user_id = ? AND created_at > ? - window) < 5`),
+so there is no read-then-write and two concurrent requests cannot both slip
+under the bar (rule 5). `meta.changes === 0` is the `429`. Failed filings count
+too — they are rows — which is deliberate: a broken token should not turn into an
+unbounded write stream.
+
+**What GitHub sees** is built by the pure `formatBugIssue` in
+`src/shared/bugs.ts` (unit-tested): title `[user report] <title>`, labels
+`bug` + `user-report`, and a body with the description in a fenced `text` block
+and a context table (reporter, page, version, time as ISO-8601 UTC, user agent).
+Every request-supplied string in the BODY — description, page, and the
+`User-Agent` header, which is attacker-controlled — lands inside the fence or
+inside an inline-code table cell, so a `#123` or an `@mention` is rendered as
+text, not as GitHub markup. The fence is neutralised (` ``` ` → `` ` ` ` ``) so
+a description cannot close it. Cells are made escape-FREE rather than escaped:
+backtick → `'`, backslash → `∖` (U+2216), pipe → `¦` (U+00A6), newline → space,
+so a cell holds nothing any table or code-span parser treats as syntax and there
+is no renderer variant to reason about — a lossy but visible transform, in the
+issue body only (the `bug_reports` row keeps the raw value).
+`validateBugReport` also refuses backticks in `page`. The TITLE is the one
+string filed raw: GitHub renders issue titles as plain text everywhere, so it
+needs no escaping. `User-Agent` is trimmed, NULL when blank, and cut at
+`BUG_REPORT_USER_AGENT_MAX` (300) code points before it is stored or filed.
+
+**Configuration** (`src/worker/env.ts`): vars `GITHUB_REPO` (`owner/name`,
+validated as two GitHub-legal slugs so it can be interpolated into a URL path)
+and `GITHUB_API_BASE_URL` (`https://api.github.com`; a stub host in tests), and
+the secret `GITHUB_TOKEN` — a fine-grained PAT with **Issues: read and write on
+that one repository and nothing else**. With the token unset the feature is OFF:
+`/api/health` reports `bugReportsEnabled: false`, the account page hides the
+button, and `POST /api/bugs` is `503`. The same OFF state applies when the token
+IS set but either var is missing or malformed — `readConfig` runs on every
+request, so that case logs and degrades rather than 500ing the whole app (which
+is what would otherwise happen if the secret were put before the deploy that
+ships the vars). No new error code: the four outcomes map onto codes that
+already mean exactly those things.
+
+Limits are in `constants.ts`: title 3–120 chars, description 10–4,000, page ≤
+200 and path-shaped (must start with a single `/`, no whitespace).
+`validateBugReport` runs in both the browser (to enable the Send button) and the
+Worker (as the gate).
 
 ## 12. Frontend design
 
@@ -3187,7 +3266,7 @@ constrained:
 | `@vitejs/plugin-react` | `^5.2.0`  | 5.2.0 is the first v5 that accepts `vite@^8`. v6 accepts vite 8 too but pulls in extra optional peers (`oxc-transform-react`, `@rolldown/plugin-babel`) we do not need.                                                       |
 
 `vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.131` are current and unconstrained.
-If a dependency bump is proposed, check these three first — and note Alex's
+If a dependency bump is proposed, check these four first — and note Alex's
 standing rule that dependency-bump PRs also get an adversarial review.
 `.github/dependabot.yml` proposes the bumps (weekly, Monday 06:00 ET): minor and
 patch bumps arrive as ONE grouped PR, majors one PR each, GitHub Actions as one
@@ -3462,6 +3541,16 @@ deleted_at INTEGER NULL`, for the soft delete (§3.2 / §10.5 / §11.6). One nul
 - **`errors.ts`** — `ACCOUNT_HAS_PENDING_BETS` (409) added, under the same rule as
   M5b's additions: a code is never repurposed or removed, so an existing 409 could
   not be borrowed for a meaning it does not have.
+- **`migrations/0003_bug_reports.sql`** — the `bug_reports` table and its two
+  indexes, for the in-app bug report → GitHub issue feature (§3.2 / §11.7). A new
+  table, nothing in 0001 or 0002 touched. Applied by the Deploy workflow on merge.
+- **`api-types.ts`** — `HealthResponse.bugReportsEnabled`; new `BugReportRequest`,
+  `BugReportResponse`, `BugReportView`, `AdminBugReportsResponse`. All additive.
+- **`env.ts`** — vars `GITHUB_REPO`, `GITHUB_API_BASE_URL`; secret `GITHUB_TOKEN`
+  (optional; feature off without it). `RuntimeConfig.github` is the parsed form.
+- **`constants.ts`** — `BUG_REPORT_*` limits and `BUG_REPORTS_PER_WINDOW` /
+  `BUG_REPORT_WINDOW_MS`. No error code added: `VALIDATION`, `RATE_LIMITED` and
+  `UPSTREAM_UNAVAILABLE` already mean exactly the three failures.
 - **`migrations/0004_games_conference.sql`** — `games.home_conference_id` /
   `away_conference_id TEXT NULL`, for the CFB board's conference filter (§3.2 /
   §8.3 / §12.1). Two nullable `ADD COLUMN`s; the parser, the ingest live update
