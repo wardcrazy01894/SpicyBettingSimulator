@@ -14,7 +14,13 @@ npm run deploy                                           # vite build + wrangler
 curl -s https://spicybetting.wardcrazy01894.workers.dev/api/health
 ```
 
-Every merge to `main` is NOT auto-deployed; deploy is a manual step (above). Rollback = `git checkout <previous sha> && npm run deploy`.
+**Automatic deploys:** `.github/workflows/deploy.yml` runs on every push to `main` (and via
+"Run workflow"): `npm ci` → build the SPA → `wrangler d1 migrations apply --remote` → `wrangler deploy`
+→ health check. It needs two repo secrets — `CLOUDFLARE_API_TOKEN` (dashboard: My Profile → API Tokens →
+"Edit Cloudflare Workers" template, plus Account → D1 → Edit) and `CLOUDFLARE_ACCOUNT_ID`
+(`npx wrangler whoami`) — set with `gh secret set <NAME>`. Until they exist the workflow fails at the
+first wrangler step and the manual deploy above is the path. Rollback = `git checkout <previous sha> &&
+npm run deploy` (or re-run the workflow on the previous commit).
 
 ## Secrets (set once; rotate with the same command)
 
