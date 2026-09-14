@@ -6,13 +6,9 @@
  */
 
 import { Hono } from 'hono';
+import { lineStaleAfterMs } from '../../shared/time.js';
 import type { GameCard, GameLinesView, GamesResponse } from '../../shared/api-types.js';
-import {
-  BOARD_LOOKBACK_MS,
-  BOARD_MAX_GAMES,
-  INGEST_WINDOW_MS,
-  LINE_STALE_MS,
-} from '../../shared/constants.js';
+import { BOARD_LOOKBACK_MS, BOARD_MAX_GAMES, INGEST_WINDOW_MS } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { lockAtFor } from '../../shared/time.js';
 import type { BetLeague, EpochMs, GameStatus, League } from '../../shared/types.js';
@@ -208,8 +204,10 @@ function toLinesView(row: BoardRow, now: EpochMs): GameLinesView | null {
     capturedAt: row.captured_at,
     seenAt: row.seen_at,
     // Staleness keys off seen_at (last confirmation), never captured_at (last
-    // price change) — see the schema comment on game_lines.
-    stale: now - row.seen_at > LINE_STALE_MS,
+    // price change) — see the schema comment on game_lines — and the window
+    // scales with how often THIS game was being refreshed when last seen
+    // (lineStaleAfterMs), so it agrees with placement at any later instant.
+    stale: now - row.seen_at > lineStaleAfterMs(row.kickoff_at, row.seen_at),
     spread:
       row.spread_home_tenths !== null &&
       row.spread_home_price !== null &&

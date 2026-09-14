@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BET_CUTOFF_BUFFER_MS } from '../../src/shared/constants.js';
+import { BET_CUTOFF_BUFFER_MS, LINE_STALE_MS } from '../../src/shared/constants.js';
 import {
   ET_TIME_ZONE,
   MS_PER_DAY,
@@ -9,6 +9,11 @@ import {
   etDayBounds,
   lockAtFor,
   parseIsoToEpochMs,
+  expectedRefreshMs,
+  lineStaleAfterMs,
+  REFRESH_DISCOVERY_MS,
+  REFRESH_LIVE_MS,
+  REFRESH_SOON_MS,
 } from '../../src/shared/time.js';
 
 /** TDD contract for src/shared/time.ts (M2c). See also Spike S4. */
@@ -213,5 +218,53 @@ describe('lockAtFor', () => {
     const kickoff = at('2026-09-13T17:00Z');
     expect(lockAtFor(kickoff)).toBe(kickoff - BET_CUTOFF_BUFFER_MS);
     expect(kickoff - lockAtFor(kickoff)).toBe(60_000);
+  });
+});
+
+describe('expectedRefreshMs / lineStaleAfterMs (PLAN §8.4 / §8.5)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const T = Date.UTC(2026, 8, 14, 12, 0, 0);
+
+  it('expectedRefreshMs follows the three tiers by distance to kickoff', () => {
+    expect(expectedRefreshMs(T + 1 * HOUR, T)).toBe(REFRESH_LIVE_MS);
+    expect(expectedRefreshMs(T + 3 * HOUR, T)).toBe(REFRESH_LIVE_MS);
+    expect(expectedRefreshMs(T + 3 * HOUR + 1, T)).toBe(REFRESH_SOON_MS);
+    expect(expectedRefreshMs(T + 48 * HOUR, T)).toBe(REFRESH_SOON_MS);
+    expect(expectedRefreshMs(T + 48 * HOUR + 1, T)).toBe(REFRESH_DISCOVERY_MS);
+    expect(expectedRefreshMs(T + 5 * 24 * HOUR, T)).toBe(REFRESH_DISCOVERY_MS);
+    // A scheduled game already past kickoff sits in the live tier.
+    expect(expectedRefreshMs(T - HOUR, T)).toBe(REFRESH_LIVE_MS);
+  });
+
+  it('the window is 3 cycles at the tier when the line was SEEN, floored at 3 h', () => {
+    // Seen inside 3 h: 3 × 15 min = 45 min, floored to 3 h.
+    expect(lineStaleAfterMs(T + HOUR, T)).toBe(LINE_STALE_MS);
+    // Seen inside 48 h: 3 × 1 h = 3 h.
+    expect(lineStaleAfterMs(T + 24 * HOUR, T)).toBe(LINE_STALE_MS);
+    expect(lineStaleAfterMs(T + 48 * HOUR, T)).toBe(LINE_STALE_MS);
+    // Seen further out: 3 × 6 h = 18 h.
+    expect(lineStaleAfterMs(T + 49 * HOUR, T)).toBe(18 * HOUR);
+    expect(lineStaleAfterMs(T + 72 * HOUR, T)).toBe(18 * HOUR);
+  });
+
+  it('is monotone: a line fresh now cannot go stale just because kickoff got closer', () => {
+    // Seen 60 h before kickoff (discovery tier → 18 h window). Ten hours later
+    // the game is 50 h out; two hours after that it crosses the 48 h boundary.
+    // The window was fixed at confirmation, so the line is fresh throughout
+    // and stale only once 18 h have passed.
+    const kickoff = T + 60 * HOUR;
+    const seenAt = T;
+    const window = lineStaleAfterMs(kickoff, seenAt);
+    expect(window).toBe(18 * HOUR);
+    for (const later of [10 * HOUR, 12 * HOUR + 1, 17 * HOUR]) {
+      expect(later > window).toBe(false);
+    }
+    expect(18 * HOUR + 1 > window).toBe(true);
+  });
+
+  it('never shortens the old flat window', () => {
+    for (const ahead of [-2 * HOUR, 0, HOUR, 3 * HOUR, 30 * HOUR, 48 * HOUR, 200 * HOUR]) {
+      expect(lineStaleAfterMs(T + ahead, T)).toBeGreaterThanOrEqual(LINE_STALE_MS);
+    }
   });
 });

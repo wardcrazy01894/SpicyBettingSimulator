@@ -53,7 +53,16 @@ import {
   LINE_SEEN_TOUCH_MS,
   RESERVED_DISCOVERY_SLOTS,
 } from '../shared/constants.js';
-import { etDateKeyRange, etDayBounds } from '../shared/time.js';
+import {
+  LIVE_HORIZON_MS,
+  REFRESH_DISCOVERY_MS,
+  REFRESH_DONE_MS,
+  REFRESH_LIVE_MS,
+  REFRESH_SOON_MS,
+  SOON_HORIZON_MS,
+  etDateKeyRange,
+  etDayBounds,
+} from '../shared/time.js';
 import { LEAGUES } from '../shared/types.js';
 import type { EpochMs, Game, GameLines, League } from '../shared/types.js';
 import { changesAt, MAX_BATCH_STATEMENTS, rowsWrittenAt, rowsWrittenOf, runBatch } from './db.js';
@@ -116,16 +125,10 @@ const MIN_MS = 60_000;
 const HOUR_MS = 60 * MIN_MS;
 const DAY_MS = 24 * HOUR_MS;
 
-/** Reschedule tiers (PLAN.md §8.4). */
-const REFRESH_LIVE_MS = 15 * MIN_MS;
-const REFRESH_SOON_MS = 60 * MIN_MS;
-const REFRESH_DISCOVERY_MS = 6 * HOUR_MS;
-const REFRESH_DONE_MS = 24 * HOUR_MS;
-/** "kickoff within 3h" / "within 48h" — the two tier boundaries. */
-const LIVE_HORIZON_MS = 3 * HOUR_MS;
-/** How long a `scheduled` game past its kickoff still counts as live (see `within`). */
+/** Reschedule tiers live in src/shared/time.ts (PLAN.md §8.4) alongside the
+ * staleness window that is derived from them; `KICKOFF_GRACE_MS` is only
+ * meaningful to the planner and stays here. */
 const KICKOFF_GRACE_MS = 4 * 60 * 60 * 1000;
-const SOON_HORIZON_MS = 48 * HOUR_MS;
 /** Failure backoff: `min(15min * 2^consecutive_failures, 6h)`. */
 const BACKOFF_BASE_MS = REFRESH_LIVE_MS;
 const BACKOFF_CAP_MS = REFRESH_DISCOVERY_MS;

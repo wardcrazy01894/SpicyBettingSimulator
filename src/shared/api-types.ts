@@ -120,7 +120,12 @@ export interface GameLinesView {
   readonly capturedAt: EpochMs;
   /** When we last CONFIRMED the line exists (game_lines.seen_at). Staleness keys off THIS. */
   readonly seenAt: EpochMs;
-  /** True once `now - seenAt > LINE_STALE_MS`; such markets are not bettable. */
+  /**
+   * True once the line has gone unconfirmed for longer than its staleness
+   * window: 3 refresh cycles at the tier that applied when it was last seen,
+   * never under `LINE_STALE_MS` (3 h) — 3 h if seen inside 48 h of kickoff,
+   * 18 h if further out (`lineStaleAfterMs`). Such markets are not bettable.
+   */
   readonly stale: boolean;
   readonly spread: {
     readonly homeTenths: LineTenths;

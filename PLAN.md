@@ -165,18 +165,18 @@ section explains the _why_.
   reasons about them, and `tests/unit/docs.spec.ts` fails if the two ever disagree.
   Change the constant and this table in the same PR.
 
-| Constant                 | Value           | Meaning                                                                                   |
-| ------------------------ | --------------- | ----------------------------------------------------------------------------------------- |
-| `INITIAL_BANKROLL_CENTS` | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                             |
-| `MIN_STAKE_CENTS`        | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                         |
-| `MAX_PAYOUT_CENTS`       | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                      |
-| `BET_CUTOFF_BUFFER_MS`   | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                    |
-| `LINE_STALE_MS`          | `10_800_000`    | 3 h since `game_lines.seen_at` → not bettable (§8.5)                                      |
-| `SESSION_TTL_MS`         | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                      |
-| `MAX_SETTLE_ATTEMPTS`    | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                           |
-| `VOID_AFTER_MS`          | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                   |
-| `MAX_PARLAY_LEGS`        | `10`            | also `CHECK(leg_count BETWEEN 1 AND 10)` on `bets`; the teaser card stops here too (§5.8) |
-| `MIN_TEASER_LEGS`        | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                             |
+| Constant                 | Value           | Meaning                                                                                                                                                                               |
+| ------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INITIAL_BANKROLL_CENTS` | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                         |
+| `MIN_STAKE_CENTS`        | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                     |
+| `MAX_PAYOUT_CENTS`       | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                  |
+| `BET_CUTOFF_BUFFER_MS`   | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                |
+| `LINE_STALE_MS`          | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5) |
+| `SESSION_TTL_MS`         | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                  |
+| `MAX_SETTLE_ATTEMPTS`    | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                                                                                                                       |
+| `VOID_AFTER_MS`          | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                               |
+| `MAX_PARLAY_LEGS`        | `10`            | also `CHECK(leg_count BETWEEN 1 AND 10)` on `bets`; the teaser card stops here too (§5.8)                                                                                             |
+| `MIN_TEASER_LEGS`        | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                         |
 
 `TEASER_POINTS_TENTHS = [30, 40, 50, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140]`
 — the 3-to-14-point tiers (plus 6.5), in TENTHS, matching every other line
@@ -1681,7 +1681,25 @@ rows at all**.
 only when older than `GAME_SEEN_TOUCH_MS` (6 h) and `game_lines.seen_at` only when
 older than `LINE_SEEN_TOUCH_MS` (45 min). Worst case that is 4 and 32 writes per
 game per day instead of 96, and staleness is still detected within 45 minutes
-against a 3-hour `LINE_STALE_MS`.
+against a 3-hour `LINE_STALE_MS` floor.
+
+**The staleness window scales with the refresh tier.** A line is stale once
+`now - seen_at` exceeds `lineStaleAfterMs(kickoff, seen_at)` =
+`max(LINE_STALE_MS, LINE_STALE_MULTIPLIER (3) × expectedRefreshMs(kickoff, seen_at))`
+(both in `src/shared/time.ts`, next to the refresh tiers they read): 3 h for a
+line confirmed inside 48 h of kickoff (cadence hourly or faster, so 3 h
+unconfirmed means ingestion is broken), **18 h** for one confirmed further out
+(cadence 6 h). A flat 3 h window declared every far-off game's line stale for
+half of each early-week day — three of every six hours — and hid the whole
+Saturday slate on a Monday. The window exists to catch a broken ingest, not to
+police line movement; with fake money, a stale-by-an-hour price is nobody's
+loss. The tier is judged at `seen_at`, NOT at `now`, so the window is fixed
+the moment a line is confirmed and is monotone in wall-clock time: a line that
+is fresh cannot flip to stale merely because the game crossed the 48 h boundary
+since. That is also what lets `toLinesView` (board) and `resolveLegSnapshots`
+(placement, `bets.ts`) — which evaluate at different instants — agree: for a
+given row they compute the same window, so the board never offers a price the
+server then refuses as `MARKET_UNAVAILABLE`.
 
 Other upsert rules:
 
@@ -1722,8 +1740,9 @@ delete or null the row. The last known line stays; `seen_at` simply stops
 advancing. Bettability is decided by `games.status` + `kickoff_at`, not by line
 presence, so a vanished line changes nothing about an in-flight game. For a
 _still-scheduled_ game whose line the book pulled, `seen_at` goes stale and the
-board hides that market once `now - seen_at > LINE_STALE_MS (3 h)` — rendering an
-explicit "line unavailable" state rather than a silently missing button.
+board hides that market once `now - seen_at > lineStaleAfterMs(kickoff, seen_at)`
+(3 h if confirmed inside 48 h of kickoff, 18 h if further out — see L3 above) — rendering an explicit
+"line unavailable" state rather than a silently missing button.
 
 ### 8.6 Request and write budget
 
@@ -2223,7 +2242,7 @@ GameCard = {
     provider: string,
     capturedAt: number,           // when the BOOK's price last CHANGED
     seenAt: number,               // when we last CONFIRMED the line exists
-    stale: boolean,               // now - seenAt > LINE_STALE_MS
+    stale: boolean,               // now - seenAt > lineStaleAfterMs(kickoff, seenAt)
     spread: null | { homeTenths, homePrice, awayTenths, awayPrice },
     total:  null | { tenths, overPrice, underPrice },
     moneyline: null | { homePrice, awayPrice }
@@ -2493,7 +2512,7 @@ is about one bet's status and says the opposite thing, and `VALIDATION` is a 400
 | POST   | `/api/bugs/client-errors` | `{diagnostics}` → `204`. The uncaught-error beacon: logged as one `[client-error]` line, never stored. Signed-in only; ≤ `CLIENT_ERROR_BEACON_MAX` (2,000) chars.  |
 
 The in-app "Report a bug" form, reachable from the header button on EVERY
-page (and from `/account`); the open/close state lives in `AppShell` above the
+page; the open/close state lives in `AppShell` above the
 router (`state/bug-report.tsx`). The person types a title and a description;
 the client adds the SPA path they are on (`page`, path + query, never the
 origin) and the **diagnostics log**: the browser's own record of the last 60

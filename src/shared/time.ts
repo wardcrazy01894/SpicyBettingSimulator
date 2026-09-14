@@ -12,7 +12,7 @@
  * DST-correct for free. Nothing here hard-codes -4 or -5 hours.
  */
 
-import { BET_CUTOFF_BUFFER_MS } from './constants.js';
+import { BET_CUTOFF_BUFFER_MS, LINE_STALE_MS, LINE_STALE_MULTIPLIER } from './constants.js';
 import type { EpochMs } from './types.js';
 
 export const ET_TIME_ZONE = 'America/New_York';
@@ -153,4 +153,54 @@ export function parseIsoToEpochMs(iso: unknown): EpochMs | null {
 /** `kickoffAt - BET_CUTOFF_BUFFER_MS`. The single definition of "locked". */
 export function lockAtFor(kickoffAt: EpochMs): EpochMs {
   return kickoffAt - BET_CUTOFF_BUFFER_MS;
+}
+
+/* ------------------------------------------------------------------ *
+ * Refresh tiers (PLAN.md §8.4) and the line staleness window (§8.5)
+ * ------------------------------------------------------------------ */
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+/** How often a target is refreshed while a game in it is live or about to be. */
+export const REFRESH_LIVE_MS = 15 * MINUTE_MS;
+/** …while a game in it kicks off within `SOON_HORIZON_MS`. */
+export const REFRESH_SOON_MS = 60 * MINUTE_MS;
+/** …otherwise (line discovery for games days away). */
+export const REFRESH_DISCOVERY_MS = 6 * HOUR_MS;
+/** …once every game in it is final. */
+export const REFRESH_DONE_MS = 24 * HOUR_MS;
+/** "kickoff within 3 h" / "within 48 h" — the two tier boundaries. */
+export const LIVE_HORIZON_MS = 3 * HOUR_MS;
+export const SOON_HORIZON_MS = 48 * HOUR_MS;
+
+/**
+ * How often a still-scheduled game is expected to be refreshed, judged at
+ * instant `at`, by distance to kickoff — the same tiers `computeNextRunAt`
+ * (src/worker/ingest.ts) uses for a whole target. Per game it is conservative:
+ * a target refreshes at the tier of its NEAREST game, so a game's real cadence
+ * is this fast or faster.
+ */
+export function expectedRefreshMs(kickoffAt: EpochMs, at: EpochMs): number {
+  const ahead = kickoffAt - at;
+  if (ahead <= LIVE_HORIZON_MS) return REFRESH_LIVE_MS;
+  if (ahead <= SOON_HORIZON_MS) return REFRESH_SOON_MS;
+  return REFRESH_DISCOVERY_MS;
+}
+
+/**
+ * A line is stale once `now - seenAt` exceeds this: `LINE_STALE_MULTIPLIER`
+ * (3) refresh cycles at the tier that applied WHEN THE LINE WAS LAST SEEN,
+ * never less than `LINE_STALE_MS` (3 h). So a line confirmed inside 48 h of
+ * kickoff has a 3 h window (cadence hourly or faster; 3 h unconfirmed means
+ * ingestion is broken) and one confirmed further out has 18 h (cadence 6 h).
+ *
+ * Keyed off `seenAt`, not the current time, on purpose: the window then
+ * depends only on facts fixed at confirmation, so it is monotone — a line
+ * that is fresh now cannot become stale by the game merely getting closer to
+ * kickoff, and the board and placement (which evaluate at different instants)
+ * cannot disagree about it. PLAN.md §8.5.
+ */
+export function lineStaleAfterMs(kickoffAt: EpochMs, seenAt: EpochMs): number {
+  return Math.max(LINE_STALE_MS, LINE_STALE_MULTIPLIER * expectedRefreshMs(kickoffAt, seenAt));
 }
