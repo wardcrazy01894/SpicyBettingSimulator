@@ -78,7 +78,8 @@
 
 import { MAX_SETTLE_ATTEMPTS } from '../shared/constants.js';
 import { effectiveAmericanPrice, gradeBet } from '../shared/grading.js';
-import type { BetOutcome } from '../shared/grading.js';
+import { AppError } from '../shared/errors.js';
+import type { BetOutcome, BetPricing } from '../shared/grading.js';
 import type {
   BetLegSnapshot,
   EpochMs,
@@ -128,6 +129,8 @@ export interface SettleableBet {
   readonly bankrollId: string;
   readonly stakeCents: number;
   readonly betType: string;
+  /** Tenths of a point (60/65/70) for a teaser; null otherwise. */
+  readonly teaserPointsTenths: number | null;
   readonly legCount: number;
 }
 
@@ -143,20 +146,20 @@ export interface SettleLeg {
  * How the surviving legs are priced. TODAY there is exactly one kind, and this
  * function is the ONE place that decides it.
  *
- * M5b (in flight on another branch) adds `bet_type = 'teaser'` with
- * `teaser_points_tenths`, and `gradeBet` gains a 4th `pricing` argument. When
- * that lands, this function returns
- * `{ kind: 'teaser', pointsTenths: bet.teaserPointsTenths }` for a teaser and
- * the single `gradeBet(...)` call site below gains one argument. Nothing else in
- * this file moves — which is why the pricing decision is a named function
- * reading `bet_type` rather than an inline literal.
+ * Teasers (M5b): `bet_type = 'teaser'` carries `teaser_points_tenths`, and
+ * `gradeBet` takes the matching `pricing` so a pushed leg drops to the next
+ * payout tier and fewer than two survivors refunds the stake.
  */
-export interface BetPricing {
-  readonly kind: 'parlay';
-}
+export type { BetPricing } from '../shared/grading.js';
 
-export function pricingFor(_bet: SettleableBet): BetPricing {
-  // M5b: `return _bet.betType === 'teaser' ? { kind: 'teaser', pointsTenths: … } : …`
+export function pricingFor(bet: SettleableBet): BetPricing {
+  if (bet.betType === 'teaser') {
+    if (bet.teaserPointsTenths === null) {
+      // The schema CHECK makes this unreachable; refuse to guess a tier.
+      throw new AppError('INTERNAL', `teaser ${bet.id} has no teaser_points_tenths`);
+    }
+    return { kind: 'teaser', pointsTenths: bet.teaserPointsTenths };
+  }
   return { kind: 'parlay' };
 }
 
@@ -204,7 +207,7 @@ UPDATE bets SET settle_attempts = 0, settle_error = NULL
  * next run instead of being re-selected forever.
  */
 export const SELECT_SETTLEABLE_SQL = `
-SELECT b.id, b.bankroll_id, b.stake_cents, b.bet_type, b.leg_count
+SELECT b.id, b.bankroll_id, b.stake_cents, b.bet_type, b.teaser_points_tenths, b.leg_count
   FROM bets b
  WHERE b.status = 'pending'
    AND b.settle_attempts < ?1
@@ -320,6 +323,8 @@ interface SettleableBetDbRow {
   readonly bankroll_id: string;
   readonly stake_cents: number;
   readonly bet_type: string;
+  /** Tenths of a point (60/65/70) for a teaser; null otherwise. */
+  readonly teaser_points_tenths: number | null;
   readonly leg_count: number;
 }
 
@@ -336,6 +341,7 @@ export async function selectSettleableBets(
     bankrollId: row.bankroll_id,
     stakeCents: row.stake_cents,
     betType: row.bet_type,
+    teaserPointsTenths: row.teaser_points_tenths,
     legCount: row.leg_count,
   }));
 }
@@ -483,9 +489,9 @@ function gradeWithPricing(
   stakeCents: number,
   snapshots: readonly BetLegSnapshot[],
   games: ReadonlyMap<string, GameResult>,
-  _pricing: BetPricing,
+  pricing: BetPricing,
 ): BetOutcome {
-  return gradeBet(stakeCents, snapshots, games);
+  return gradeBet(stakeCents, snapshots, games, pricing);
 }
 
 /**
