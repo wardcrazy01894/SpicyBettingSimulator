@@ -2653,6 +2653,8 @@ main.tsx
     │           │   │   ├── <LedgerList entries>
     │           │   │   └── <LoadMore paged>
     │           │   ├── route "/admin"      <AdminPage>      (admin only)
+    │           │   │   ├── <Tabs> jobs|reconcile|users|bugs   role="tablist"; active tab in ?tab=
+    │           │   │   └── <TabPanel>            one panel mounted at a time, each owning its data hook
     │           │   └── route "*"           <NotFoundPage>
     │           └── <BetSlip>               role="dialog" sheet, useFocusTrap()
     │               ├── <Segmented straight|parlay|teaser>
@@ -2665,7 +2667,7 @@ main.tsx
 
 `<ErrorBanner>` / `<EmptyState>` and `<Spinner>` are shared by every page.
 Pure, DOM-free helpers live in `src/web/lib/` (`grouping`, `datetime`, `labels`,
-`lines`, `paging`, `stake-text`) and in `src/web/state/` (`slip-reducer`,
+`lines`, `paging`, `stake-text`, `tabs`, `admin-tabs`) and in `src/web/state/` (`slip-reducer`,
 `slip-preview`, `edit-bet`) precisely so the `web` test project can exercise them
 in a node environment — see §13.
 
