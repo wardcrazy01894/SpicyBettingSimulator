@@ -3,6 +3,10 @@ Keep this checklist. It is the project's merge gate written down (CLAUDE.md).
 Tick what you did; strike through with ~~…~~ and one line of WHY for anything
 that genuinely does not apply. An unticked box with no explanation reads as
 "not done", which is the point.
+
+NOTE: this is a CHECKLIST, not a CI gate. Nothing machine-checks that a box is
+ticked, and nothing machine-checks that a ticked box is TRUE. CI runs the five
+gate commands and gitleaks; the boxes are for the human reviewer.
 -->
 
 ## What changed, and why
@@ -34,8 +38,10 @@ that genuinely does not apply. An unticked box with no explanation reads as
 - [ ] Nothing writes `INSERT OR IGNORE` / `INSERT OR REPLACE` into `ledger`
       (rule 6). Any new atomic sequence is ONE `db.batch()` with its guard in the
       `WHERE`, never read-then-write (rule 5).
-- [ ] `migrations/0001_init.sql` edited in place only while M8 has not deployed;
-      after that, a new numbered migration (rule 9).
+- [ ] **`migrations/0001_init.sql` is FROZEN** — it is applied to the live remote
+      D1 and recorded in `d1_migrations`. Any schema change in this PR is a NEW
+      numbered `migrations/000N_*.sql` (rule 9). Comment-only edits to `0001` are
+      the one exception, because they change no DDL.
 - [ ] `SUM(ledger) === balance_cents` still holds — a worker test asserts it for
       every scenario this PR touches.
 

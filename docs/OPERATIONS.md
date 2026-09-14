@@ -44,9 +44,13 @@ use are in the (gitignored) `.env.deploy.local` on the deploying machine.
 
 ## Schema changes
 
-`migrations/0001_init.sql` was applied to the remote D1 on 2026-09-14. From now on **never edit
-0001** — add `migrations/0002_*.sql` and apply with the command above. (Before the first remote
-deploy the file was edited in place; that window is closed.)
+`migrations/0001_init.sql` is **FROZEN**: it was applied to the remote D1 on 2026-09-14 and D1
+recorded it in the `d1_migrations` table, so `wrangler d1 migrations apply` will never replay it.
+From now on **never edit 0001** — every schema change is a new numbered `migrations/000N_*.sql`,
+applied with the command above. An edit to `0001` reaches nothing and leaves the repo describing a
+database that does not exist. Comment-only edits are fine. (History, so the rule is not
+re-derived: before the first remote deploy `0001` WAS the live schema and was revised in place;
+that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's own header.)
 
 ## Accounts
 
@@ -58,8 +62,13 @@ deploy the file was edited in place; that window is closed.)
 
 ## Data feed
 
-- Source: ESPN's public scoreboard API (no key). Cron `*/15` refreshes, `5-59/15` settles,
-  `30 8 * * *` maintenance. Manual: `POST /api/admin/jobs/{refresh|settle|maintenance}` as admin.
+- Source: ESPN's public scoreboard API (no key). Crons, exactly as `wrangler.jsonc` deploys them
+  (PLAN §9.1): `*/15 * * * *` refresh (:00 :15 :30 :45), `5-59/15 * * * *` settle (:05 :20 :35
+  :50), `30 8 * * *` maintenance (08:30 UTC). Manual:
+  `POST /api/admin/jobs/{refresh|settle|maintenance}` as admin.
+- Per-run work is capped by two `wrangler.jsonc` vars: `REFRESH_TARGETS_PER_RUN` (2 ET-date
+  targets per refresh) and `SETTLE_CHUNK` (20 bets per settle). Do not raise either before PLAN
+  Spikes S1/S2 are measured — see below.
 - **ESPN's edge filters on User-Agent, and the rule is opaque.** Measured 2026-09-14: no UA, an empty
   UA, `Mozilla/5.0 (compatible; …)`, a real Chrome UA, and the BARE product token
   `SpicyBettingSimulator/0.1` all get **403**; the token WITH the GitHub comment
@@ -91,3 +100,22 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT job, status, sta
 A settle run that could not settle a bet records `status='error'` with the stats intact; the bet is
 retried automatically (`settle_attempts`) and parked in `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`
 (96 × the 15-minute cadence = 24 h).
+
+## Open measurements (PLAN Spikes S1 / S2)
+
+Neither is blocked any more — they wanted a deployed Worker and now have one. Until somebody runs
+them, `REFRESH_TARGETS_PER_RUN` stays at 2 and `SETTLE_CHUNK` at 20.
+
+```bash
+npx wrangler tail --format json    # one JSON line per invocation; it carries `cpuTime` (ms)
+# in another shell, as an admin, force one ingest on a Saturday ET date target:
+curl -s -X POST -b "$COOKIE" -H 'x-csrf: 1' \
+  https://spicybetting.wardcrazy01894.workers.dev/api/admin/jobs/refresh
+```
+
+- **S1 (CPU)**: read `cpuTime` off that invocation's tailed line; the free-tier limit is 10 ms. Take
+  several Saturday runs for a p95, not one sample. `GET /api/admin/jobs` gives the matching
+  `stats.rowsWritten` so CPU and rows are read together.
+- **S2 (D1 statement accounting)**: the same tail shows whether a `batch()` of 60 statements errors,
+  and `outcome` distinguishes "exceeded limits" from an application failure.
+- **S4(c)**: the January postseason check above.

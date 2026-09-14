@@ -7,11 +7,23 @@ few friends. Real lines, real odds, real payouts, **no real money**.
 data model, odds math, settlement algorithm, ingestion design, milestones and the
 parallel-execution map.
 
-**Status: v1 is feature-complete on `main`** — M0–M7 plus M5b (account balances,
-cross-league bets, teasers) are done; **M8 (deploy + operate) is in progress and
-nothing is deployed yet**. Two rules below hang off that last fact: rule 9
-(`migrations/0001_init.sql` is still editable) and Spikes S1/S2, which need a
-deployed Worker to close (PLAN.md §18).
+**Status: v1 is feature-complete AND DEPLOYED.** M0–M8 plus M5b (account
+balances, cross-league bets, teasers) are done. The app is live at
+**https://spicybetting.wardcrazy01894.workers.dev**, first deployed 2026-09-14,
+and that is permanent — this is the real instance Alex and his friends bet on,
+not a preview. `docs/OPERATIONS.md` is the runbook.
+
+Two consequences hang off being deployed:
+
+- **`migrations/0001_init.sql` is FROZEN** (rule 9). It has been applied to the
+  remote D1 and recorded in D1's `d1_migrations` table, so every schema change
+  from here is a new numbered `migrations/000N_*.sql`. Editing `0001` now means
+  the file and the live database say different things and nothing ever
+  reconciles them.
+- **Spikes S1 and S2 are simply UNMEASURED** (PLAN.md §18), not blocked. Both
+  wanted a deployed Worker and now have one: run a refresh and read `cpuTime`
+  off the `wrangler tail` log line. The only genuinely date-blocked item left is
+  S4(c), the January postseason check.
 
 ---
 
@@ -47,6 +59,13 @@ Do not open a PR with any of these red. Green CI is necessary, not sufficient �
 every PR also gets an adversarial review before merge. The checklist in
 `.github/pull_request_template.md` is that gate written down; fill it in rather
 than deleting it.
+
+**The PR template is a CHECKLIST, not a CI gate.** Nothing verifies that its
+boxes are ticked, or that a ticked box is true — `.github/workflows/ci.yml` runs
+the five gate commands and gitleaks and knows nothing about the template. It is
+there so a human (and the adversarial reviewer) can see what the author claims to
+have checked. Ticking a box you did not do is therefore invisible to CI and is
+the one failure mode the whole checklist has.
 
 ---
 
@@ -142,14 +161,19 @@ than deleting it.
    `TEASER_PAYOUTS[tier][legCount]`. `gradeBet` therefore needs its `pricing`
    argument built from the BET ROW (`bet_type` / `teaser_points_tenths`) — the
    legs cannot tell you. PLAN.md §5.8.
-9. `migrations/0001_init.sql` is **editable until M8's first remote deploy**, then
-   frozen for good and every change is a new numbered file. Nothing is deployed
-   yet, so a cross-cutting schema change (M5b) edits it in place rather than
-   shipping a `0002` that immediately rebuilds empty tables. PLAN.md §16.1.
+9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
+   2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will
+   never replay it. **Every schema change is a new numbered
+   `migrations/000N_*.sql`** — never an edit to `0001`, not even "just a column
+   default", because the live database will not pick it up and the file stops
+   describing production. Comment-only edits to `0001` are fine (they change no
+   DDL). The pre-deploy window in which the M5b contract change was folded into
+   `0001` is closed and is history, not precedent. PLAN.md §16.1.
 10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE` and
     `IP_HASH_SALT`; there is no ESPN key.
 11. **Docs are part of the change.** Any PR that changes behaviour updates
-    `PLAN.md` / `CLAUDE.md` / `README.md` **in the same PR** — not in a follow-up,
+    `PLAN.md` / `CLAUDE.md` / `README.md` / `docs/OPERATIONS.md` **in the same
+    PR** — not in a follow-up,
     because a follow-up is a promise and this file is supposed to be the thing
     you can trust without reading the code. `npm test` runs
     `tests/unit/docs.spec.ts`, which FAILS when the docs disagree with the code
@@ -160,15 +184,26 @@ than deleting it.
       `MAX_SETTLE_ATTEMPTS`, `LINE_STALE_MS`, `BET_CUTOFF_BUFFER_MS` and
       `SESSION_TTL_MS` match PLAN §3.1's constants-of-record table;
     - PLAN §5.8's teaser card equals `TEASER_PAYOUTS` **cell for cell**;
-    - every cron expression in `wrangler.jsonc` appears in PLAN §9.1;
-    - every route literal in `src/worker/routes/*.ts`, at its mounted prefix,
-      appears in PLAN §11;
-    - every table in `migrations/0001_init.sql` is named in PLAN §3;
+    - `VOID_AFTER_MS`, `MAX_PARLAY_LEGS`, `MIN_TEASER_LEGS` and
+      `TEASER_POINTS_TENTHS` match that table too, as do the `wrangler.jsonc`
+      vars `REFRESH_TARGETS_PER_RUN` and `SETTLE_CHUNK` against PLAN §9.1;
+    - every cron expression in `wrangler.jsonc` appears in PLAN §9.1 **and** in
+      `docs/OPERATIONS.md`;
+    - every route literal in `src/worker/routes/*.ts` — every file in that
+      directory, listed at test time, never a hard-coded list — at its mounted
+      prefix, appears in PLAN §11;
+    - every table AND every `CREATE TRIGGER` in `migrations/0001_init.sql` is
+      named in PLAN §3 / §4;
+    - the live URL is byte-identical in README, `docs/OPERATIONS.md` and PLAN §15;
+    - CLAUDE.md rule 9, the PR template, PLAN §16.1 and the `0001_init.sql`
+      header all say `0001` is FROZEN and that changes are new numbered
+      migrations;
     - the pre-PR gate command above is exactly what `package.json` runs;
     - the stale phrases `per-league bankroll`, `season rollover`,
-      `ensureBankroll prelude` and `MIXED_LEAGUE_PARLAY is thrown` appear nowhere
-      in PLAN/CLAUDE/README except inside an explicit history or "superseded"
-      note.
+      `ensureBankroll prelude`, `MIXED_LEAGUE_PARLAY is thrown`,
+      `editable until` and `edit 0001 in place` appear nowhere in
+      PLAN/CLAUDE/README/OPERATIONS except inside an explicit history or
+      "superseded" note.
       The guard is deliberately mechanical. It cannot tell you the prose is
       _wrong_, only that a number, a code, a route or a table no longer exists —
       which is the drift that actually happens. Judgement is still the reviewer's
@@ -203,8 +238,8 @@ src/worker/routes/  one file per API area; index.ts holds the route table
 src/web/      React SPA: pages/, components/, state/ (contexts + pure reducers),
               hooks/ (useResource, usePages, useFocusTrap, useNow), lib/ (pure,
               DOM-free helpers), api/ (client, kdf, error copy)
-migrations/   D1 schema. 0001 is EDITABLE until M8's first remote deploy, then
-              frozen for good (rule 9)
+migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
+              every change is a new numbered 000N_*.sql (rule 9)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES
@@ -240,6 +275,10 @@ server. Without that file, `npm run dev` talks to production ESPN.
 - `package.json` dependencies: raise it, don't add unilaterally.
 
 ## Operating the deployed app
+
+Live: **https://spicybetting.wardcrazy01894.workers.dev**. The full runbook —
+deploy, secrets, the schema-change policy, the ESPN User-Agent probe, the weekly
+checks — is `docs/OPERATIONS.md`; this is the short version.
 
 ```bash
 wrangler d1 migrations apply spicybetting --remote

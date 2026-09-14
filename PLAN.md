@@ -165,15 +165,22 @@ section explains the _why_.
   reasons about them, and `tests/unit/docs.spec.ts` fails if the two ever disagree.
   Change the constant and this table in the same PR.
 
-| Constant                 | Value           | Meaning                                                              |
-| ------------------------ | --------------- | -------------------------------------------------------------------- |
-| `INITIAL_BANKROLL_CENTS` | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)        |
-| `MIN_STAKE_CENTS`        | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                    |
-| `MAX_PAYOUT_CENTS`       | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b) |
-| `BET_CUTOFF_BUFFER_MS`   | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)               |
-| `LINE_STALE_MS`          | `10_800_000`    | 3 h since `game_lines.seen_at` → not bettable (§8.5)                 |
-| `SESSION_TTL_MS`         | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                 |
-| `MAX_SETTLE_ATTEMPTS`    | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)      |
+| Constant                 | Value           | Meaning                                                                                   |
+| ------------------------ | --------------- | ----------------------------------------------------------------------------------------- |
+| `INITIAL_BANKROLL_CENTS` | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                             |
+| `MIN_STAKE_CENTS`        | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                         |
+| `MAX_PAYOUT_CENTS`       | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                      |
+| `BET_CUTOFF_BUFFER_MS`   | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                    |
+| `LINE_STALE_MS`          | `10_800_000`    | 3 h since `game_lines.seen_at` → not bettable (§8.5)                                      |
+| `SESSION_TTL_MS`         | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                      |
+| `MAX_SETTLE_ATTEMPTS`    | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                           |
+| `VOID_AFTER_MS`          | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                   |
+| `MAX_PARLAY_LEGS`        | `10`            | also `CHECK(leg_count BETWEEN 1 AND 10)` on `bets`; the teaser card stops here too (§5.8) |
+| `MIN_TEASER_LEGS`        | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                             |
+
+`TEASER_POINTS_TENTHS = [60, 65, 70]` — the 6 / 6.5 / 7-point tiers, in TENTHS,
+matching every other line quantity in the system (§5.8); also
+`CHECK (teaser_points_tenths IN (60,65,70))` on `bets`.
 
 - `bankrolls.id` is an ordinary uuid. It **used** to be the deterministic
   `"<userId>:<league>:<season>"`, which is what made lazy per-season creation a
@@ -262,9 +269,13 @@ with `UNIQUE(bankroll_id, kind, ref_id)`.
 `kind ∈ {deposit_initial, bet_stake, bet_payout, bet_refund, admin_adjust}`.
 `ref_id` is the **idempotency key**: the bet id for bet-related kinds, the literal
 `'init'` for the opening deposit, a caller-supplied UUID for admin adjustments.
-Four triggers (§4.2): a `BEFORE INSERT` value guard that `INSERT OR IGNORE`
-cannot suppress, an `AFTER INSERT` that applies the amount to
-`bankrolls.balance_cents`, and `BEFORE UPDATE` / `BEFORE DELETE` blocks.
+Five triggers (§4.2): TWO `BEFORE INSERT` value guards that `INSERT OR IGNORE`
+cannot suppress (`ledger_bi_bankroll_exists`, `ledger_bi_sufficient_funds`), an
+`AFTER INSERT` (`ledger_ai_apply`) that applies the amount to
+`bankrolls.balance_cents`, and `BEFORE UPDATE` / `BEFORE DELETE` blocks
+(`ledger_bu_block`, `ledger_bd_block`). Two more triggers sit on `bankrolls`
+itself and make "the `AFTER INSERT` is the only writer" enforceable rather than
+merely intended — §4.2 again.
 
 **`bets`** — `id, user_id, bankroll_id, league, season, bet_type,
 teaser_points_tenths, leg_count, stake_cents, american_price,
@@ -383,7 +394,9 @@ value so a later optimisation needs no migration; nothing constructs one in v1.
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | Balance is never negative                                          | `BEFORE INSERT ON ledger` trigger `RAISE(ABORT)` (unsuppressable, §4.2) **plus** `CHECK(balance_cents >= 0)` on `bankrolls`     |
 | No ledger row against a non-existent balance                       | a SECOND `BEFORE INSERT` trigger, `ledger_bi_bankroll_exists`, testing `NOT EXISTS` — never a `COALESCE(…, -1)` sentinel (§4.2) |
-| Balance always equals the sum of its ledger rows                   | `AFTER INSERT ON ledger` trigger is the _only_ writer of `balance_cents`                                                        |
+| Balance always equals the sum of its ledger rows                   | `AFTER INSERT ON ledger` trigger `ledger_ai_apply` is the _only_ writer of `balance_cents`                                      |
+| …and nothing else may write `balance_cents`                        | `bankrolls_bu_balance_guard` (`BEFORE UPDATE OF balance_cents`) aborts any UPDATE that leaves it ≠ `SUM(ledger)` (§4.2)         |
+| A balance always opens at 0                                        | `bankrolls_bi_balance_guard` (`BEFORE INSERT`) aborts a row inserted with a non-zero `balance_cents` (§4.2)                     |
 | Ledger is append-only                                              | `BEFORE UPDATE`/`BEFORE DELETE` triggers `RAISE(ABORT)`                                                                         |
 | A bet is paid at most once                                         | `UNIQUE(bankroll_id, kind, ref_id)` on `ledger`                                                                                 |
 | A bet is refunded at most once                                     | same unique key, `kind='bet_refund'`                                                                                            |
@@ -433,7 +446,43 @@ END;
 CREATE TRIGGER ledger_bd_block BEFORE DELETE ON ledger BEGIN
   SELECT RAISE(ABORT, 'ledger is append-only');
 END;
+
+-- (5)(6) THE OTHER HALF of "trigger (2) is the ONLY writer of balance_cents":
+-- two guards on `bankrolls` that make that sentence enforced rather than merely
+-- asserted. Without them "only writer" is a convention, and any stray
+-- `UPDATE bankrolls SET balance_cents = …` — an admin fix, a migration, a
+-- well-meant repair script — silently breaks SUM(ledger) = balance_cents in a
+-- table that cannot be repaired.
+CREATE TRIGGER bankrolls_bu_balance_guard BEFORE UPDATE OF balance_cents ON bankrolls
+WHEN NEW.balance_cents <> (SELECT COALESCE(SUM(amount_cents), 0) FROM ledger
+                            WHERE bankroll_id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'bankrolls: balance_cents may only be written by the ledger trigger');
+END;
+
+CREATE TRIGGER bankrolls_bi_balance_guard BEFORE INSERT ON bankrolls
+WHEN NEW.balance_cents <> 0
+BEGIN
+  SELECT RAISE(ABORT, 'bankrolls: balance_cents may only be written by the ledger trigger');
+END;
 ```
+
+**Why the two `bankrolls_*_balance_guard` triggers are not redundant.** Trigger
+(2) is the only thing that is _supposed_ to write `balance_cents`; (5) is what
+makes that true of every other statement in the system. It passes exactly when
+the post-update value equals `SUM(ledger)` for that bankroll — which is what
+(2)'s own `balance_cents + NEW.amount_cents` computes, since the ledger row has
+already landed by the time the `AFTER INSERT` fires — and aborts otherwise. So
+(2) sails through and a hand-written balance UPDATE aborts, with no way to tell
+the trigger "I meant it".
+
+(6) is the INSERT half, and it is deliberately `<> 0` rather than
+`<> SUM(ledger)`: a `BEFORE INSERT` fires _before_ `OR IGNORE` resolves a
+uniqueness conflict, so an idempotent insert aimed at an already-funded row would
+abort the whole batch under a SUM comparison. For a genuinely new id no ledger
+rows can exist (trigger (1a) guarantees it), so `<> 0` is equivalent for every
+real insert. A balance therefore always opens empty and is funded by a
+`deposit_initial` ledger row — never by an opening `balance_cents` literal.
 
 **Two triggers with distinct messages, not one with a compound `WHEN`.** They
 describe different faults that must reach the user differently:
@@ -1143,12 +1192,13 @@ Corollaries, both stated so nothing downstream looks like a latent bug:
 Statement count per bet: `1 + legCount + (payout>0 ? 1 : 0)` ≤ 12 for a settled
 bet (10-leg parlay: 1 + 10 + 1). A **deferred** bet (§7.1) writes exactly **1**
 statement — the `settle_attempts` / `settle_attempted_at` / `settle_error` UPDATE —
-and no batch. A run therefore issues `1 (reset sweep) + 1 (select) + 1 (load legs)
-
-- ≤20 batches`= **23 D1 calls** if a batch counts as one, or **243 statements**
-worst case if it counts per-statement — which is why Spike **S2** must confirm
-the accounting before we raise`chunk` above 20. With ≤ 10 users the realistic
-  volume is a few bets per run.
+and no batch. A run therefore issues four fixed calls — reset sweep, select, stuck
+report, load legs — plus at most one per selected bet, i.e. `4 + ≤20 batches`:
+**24 D1 calls** at the chunk of 20 if a batch counts as one, or **244 statements**
+worst case if it counts per-statement (4 + 20 × 12). That is why Spike **S2** must
+confirm the accounting before we raise `chunk` above 20; `runSettle`'s docblock in
+`src/worker/settle.ts` carries the same two numbers. With ≤ 10 users the realistic
+volume is a few bets per run.
 
 **If the Worker dies mid-run**: each bet's transition + leg results + payout are one
 atomic batch, so every bet is either fully settled or fully pending. Bets not yet
@@ -1716,6 +1766,18 @@ one, because the 10 ms CPU limit is per invocation and staggering them means the
 settle job never competes with a 1 MB `JSON.parse`. Settle runs 5 minutes after
 refresh so it grades against freshly written scores.
 
+**How much work each run does** is two `wrangler.jsonc` vars, not constants —
+they are the knobs Spikes S1 and S2 exist to justify, and `env.ts` bounds-checks
+both at startup:
+
+| Var                       | Value | What it caps                                                                   |
+| ------------------------- | ----- | ------------------------------------------------------------------------------ |
+| `REFRESH_TARGETS_PER_RUN` | `2`   | ET-date targets ingested per `refresh` run (§8.4). Spike S1 blocks raising it. |
+| `SETTLE_CHUNK`            | `20`  | bets settled per `settle` run (§7.1). Spike S2 blocks raising it.              |
+
+`docs/OPERATIONS.md` lists the same three cron expressions from the operator's
+side, and `tests/unit/docs.spec.ts` asserts all of it against `wrangler.jsonc`.
+
 ### 9.2 Lease
 
 ```sql
@@ -1923,10 +1985,12 @@ Documented here so nobody has to invent it under pressure.
   yourself. `is_admin` is only ever written by the first-signup `CASE` — there is
   no promotion path — so locking out the last admin would be unrecoverable
   without `wrangler d1 execute`. The guard is a `WHERE` conjunct inside the same
-  UPDATE (`… OR (SELECT COUNT(*) FROM users WHERE is_admin = 1 AND is_disabled =
+  UPDATE, not a read-then-write, and a refusal is reported as a distinct
+  `400 VALIDATION` on `disabled` rather than a silent no-op:
 
-0. > 1`), not a read-then-write, and a refusal is reported as a distinct
-  `400 VALIDATION`on`disabled` rather than a silent no-op.
+  ```sql
+  … OR (SELECT COUNT(*) FROM users WHERE is_admin = 1 AND is_disabled = 0) > 1
+  ```
 
 ### 10.6 Admin password reset
 
@@ -2925,29 +2989,36 @@ Each milestone lists: files owned, tests written **first**, and a definition of 
 "DoD" always implicitly includes: `npm run typecheck && npm run lint && npm run
 format:check && npm test && npm run build` all green.
 
-**STATUS — v1 is feature-complete on `main`.**
+**STATUS — v1 is feature-complete on `main` AND DEPLOYED.**
+Live at https://spicybetting.wardcrazy01894.workers.dev, first deployed
+2026-09-14, permanently. Runbook: `docs/OPERATIONS.md`.
 
-| Milestone                                     | Status                                                |
-| --------------------------------------------- | ----------------------------------------------------- |
-| M0 toolchain                                  | **DONE**                                              |
-| M1 local dev loop                             | **DONE**                                              |
-| M2a/b/c/d pure domain                         | **DONE**                                              |
-| M3 auth                                       | **DONE**                                              |
-| M4 ingestion                                  | **DONE**                                              |
-| M5 betting                                    | **DONE**                                              |
-| M5b account balances / cross-league / teasers | **DONE** — the one sanctioned contract change (§16.1) |
-| M6 settlement                                 | **DONE**                                              |
-| M7a–e frontend                                | **DONE**                                              |
-| M8 deploy + operate                           | **IN PROGRESS** — nothing is deployed yet             |
+| Milestone                                     | Status                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------- |
+| M0 toolchain                                  | **DONE**                                                            |
+| M1 local dev loop                             | **DONE**                                                            |
+| M2a/b/c/d pure domain                         | **DONE**                                                            |
+| M3 auth                                       | **DONE**                                                            |
+| M4 ingestion                                  | **DONE**                                                            |
+| M5 betting                                    | **DONE**                                                            |
+| M5b account balances / cross-league / teasers | **DONE** — the one sanctioned contract change (§16.1)               |
+| M6 settlement                                 | **DONE**                                                            |
+| M7a–e frontend                                | **DONE**                                                            |
+| M8 deploy + operate                           | **DONE** — deployed 2026-09-14; see the two open measurements below |
 
-Two things hang off M8 not having happened:
+Two things follow from the deploy having happened:
 
-- **`migrations/0001_init.sql` is still EDITABLE.** It freezes for good at M8's
-  first `wrangler d1 migrations apply --remote`, after which every change is a
-  new numbered `0002_*.sql`. §16.1 and the file's own header say the same thing;
-  all three must move together.
-- **Spikes S1 and S2 are still open** (§18) — both need a deployed Worker to
-  measure. S3 and S4(a)/(b) are resolved; S4(c) waits for January.
+- **`migrations/0001_init.sql` is FROZEN.** It was applied to the remote D1 on
+  2026-09-14 and D1 recorded it in `d1_migrations`, so it will never be replayed
+  and an edit to it can never reach production. Every schema change is a new
+  numbered `000N_*.sql`. §16.1 and the file's own header say the same thing; all
+  three must move together.
+- **Spikes S1 and S2 are UNMEASURED, not blocked** (§18). Both were waiting for
+  a deployed Worker and now have one; they are two `wrangler tail` runs away
+  from an answer, and until somebody does them `REFRESH_TARGETS_PER_RUN` stays
+  at 2 and `SETTLE_CHUNK` at 20. S3 and S4(a)/(b) are resolved. The one item
+  still genuinely blocked on the calendar is **S4(c)**, the January postseason
+  reachability check, which is also a `docs/OPERATIONS.md` runbook item.
 
 ### M0 — Repo skeleton and toolchain — **DONE** _(no parallelism; everything depends on it)_
 
@@ -3089,17 +3160,28 @@ on the next run).
   **DoD**: mobile viewport (390×844) walk-through of place → view → edit → cancel with
   no horizontal scroll; every API error code renders a human message.
 
-### M8 — Deploy + operate — **IN PROGRESS**
+### M8 — Deploy + operate — **DONE** _(deployed 2026-09-14)_
 
-**Files**: `README.md` deploy section, `CLAUDE.md` runbook, `scripts/reconcile.mjs`,
-`.github/workflows/ci.yml` (add a manual deploy job).
-**Tasks**: `wrangler d1 migrations apply --remote`; `wrangler secret put INVITE_CODE`;
-`wrangler secret put IP_HASH_SALT`; `wrangler deploy`; flip `ESPN_BASE_URL` to the real
-host; watch `GET /api/admin/jobs` for one full weekend.
+**Files**: `README.md` deploy section, `docs/OPERATIONS.md` (the runbook),
+`scripts/reconcile.mjs`.
+**Tasks** (all done): `wrangler d1 migrations apply --remote` — this is the
+moment `0001_init.sql` froze; `wrangler secret put INVITE_CODE`;
+`wrangler secret put IP_HASH_SALT`; `wrangler deploy`; `ESPN_BASE_URL` left at
+the real host in `wrangler.jsonc` (only `.dev.vars` overrides it).
 **DoD**: a real NFL week ingests, a real bet grades correctly, `reconcile` reports
 zero drift, and the free-tier dashboard shows usage within budget — specifically,
 check `job_runs.stats.rowsWritten` against the §8.6 model after the first full
 Saturday, since the D1 write cap is hard-enforced.
+
+**What M8 did NOT close**, stated plainly so it is not mistaken for done:
+
+- Spikes **S1** (ingest CPU) and **S2** (D1 statement accounting) are
+  **unmeasured**. They are no longer blocked — the Worker they needed exists —
+  and §18 gives the exact commands.
+- **S4(c)** (January postseason reachability) cannot be checked until January.
+- A manual deploy job in `.github/workflows/ci.yml` was dropped: deploy stays a
+  local `npm run deploy` (`docs/OPERATIONS.md`), because a deploy job would need
+  a Cloudflare API token in repository secrets for a two-command manual step.
 
 **Runbook items with a date attached** (do not let these be discovered by a
 friend who cannot find a game to bet):
@@ -3192,12 +3274,17 @@ meaning something afterwards:
   `@deprecated`, and never thrown. **A code is never repurposed or removed**, so a
   deployed client's copy of the vocabulary stays valid.
 
-**`migrations/0001_init.sql` is edited IN PLACE for the same reason.** Nothing is
-deployed yet, so a cross-cutting schema change is applied to the initial file
-rather than shipped as a `0002` that immediately rebuilds tables nobody has ever
-populated. From M8's first `wrangler d1 migrations apply --remote` onward the file
-is frozen for good and every change is a new numbered migration. The header of
-the file says so too.
+**`migrations/0001_init.sql` is now FROZEN.** M5b's schema half was folded into
+`0001` for the same "the contract re-opens exactly once" reason — at the time
+nothing had been deployed, so a `0002` would have immediately rebuilt tables
+nobody had ever populated. **That window closed on 2026-09-14**, when
+`wrangler d1 migrations apply spicybetting --remote` applied `0001` to the live
+D1 and D1 recorded it in `d1_migrations`. Since then the file is frozen for good
+and **every schema change is a new numbered `migrations/000N_*.sql`** — an edit
+to `0001` is never replayed, so it would silently desynchronise the repo from
+production. (Comment-only edits are fine; they change no DDL.) CLAUDE.md rule 9
+and the header of the file itself say the same thing, and
+`tests/unit/docs.spec.ts` fails if any of the four stops saying it.
 
 ## 17. Risks and mitigations
 
@@ -3221,10 +3308,29 @@ the file says so too.
 
 ## 18. Spikes
 
-Status at a glance: **S1 OPEN** (needs a deployed Worker — M8), **S2 OPEN**
-(same), **S3 RESOLVED**, **S4(a)/(b) RESOLVED**, **S4(c) OPEN until January**.
+Status at a glance: **S1 UNMEASURED** (no longer blocked — the Worker is
+deployed; nobody has read the number yet), **S2 UNMEASURED** (same),
+**S3 RESOLVED**, **S4(a)/(b) RESOLVED**, **S4(c) OPEN until January**.
 
-**S1 — CPU cost of ingesting a full CFB Saturday (RE-SCOPED). OPEN — blocked on M8.**
+**How to measure S1 and S2, now that there is a deployed Worker.** Both answers
+come off `wrangler tail`, which prints one JSON log line per invocation carrying
+a **`cpuTime`** field (milliseconds) alongside `outcome` and any exception:
+
+```bash
+npx wrangler tail --format json                 # leave running in one terminal
+# in another, as an admin, force one ingest:
+curl -X POST -b "$COOKIE" -H 'x-csrf: 1' https://spicybetting.wardcrazy01894.workers.dev/api/admin/jobs/refresh
+# then read `cpuTime` off the tailed line for that invocation (S1).
+```
+
+Do it on a Saturday ET date target (the 86-game CFB slate is the worst case) and
+take a handful of runs for a p95 rather than one sample. `GET /api/admin/jobs`
+gives the matching `stats.rowsWritten` for the same run, so CPU and rows are read
+together. For **S2**, the same tail shows whether a `batch()` of 60 statements
+returns an error — the probe below — and `outcome` says whether the invocation
+was killed for exceeding limits rather than failing in application code.
+
+**S1 — CPU cost of ingesting a full CFB Saturday (RE-SCOPED). UNMEASURED.**
 _Background_: an earlier version of this spike assumed `JSON.parse` was the risk.
 It is not. Measured locally, `JSON.parse` of the committed 1.3 MB CFB week file is
 **~2.0 ms** (20-run mean), and per-ET-date splitting barely helps anyway because
@@ -3239,17 +3345,17 @@ numbers. What remains is CPU.)
 _Note_: the A/B split is what makes it ~172 statements rather than ~86 — two per
 game plus one per line. That trade is deliberate: rows written are hard-enforced,
 statements per invocation are the open question of S2.
-_Method_: after M4, `POST /api/admin/jobs/refresh` against a deployed Worker on a
-real Saturday date; read CPU time from `wrangler tail` and the dashboard. Also
-instrument `performance.now()` around map/bind separately from parse in a
-pool-workers test.
+_Method_: `POST /api/admin/jobs/refresh` against the deployed Worker on a real
+Saturday date; read the `cpuTime` field off that invocation's `wrangler tail`
+line (see the recipe above) and cross-check the dashboard. Also instrument
+`performance.now()` around map/bind separately from parse in a pool-workers test.
 _Exit criterion_: a p95 CPU number for the worst target, plus a decision between (a) ship as is,
 (b) `REFRESH_TARGETS_PER_RUN=1`, (c) drop `display_clock` from the comparison
 tuple (§8.6), (d) split the mapping across two invocations via an internal
 self-`fetch`, (e) escalate to Alex re: Workers Paid.
 **Blocks raising `REFRESH_TARGETS_PER_RUN` above 2.**
 
-**S2 — D1 statement accounting per invocation. OPEN — blocked on M8.**
+**S2 — D1 statement accounting per invocation. UNMEASURED.**
 _Question_: does a `db.batch([...n])` count as 1 or n against the free-plan
 subrequest/query budget, and is the binding number 50 or 1000? The D1 limits page
 says 50; the 2026-02-11 changelog says Cloudflare-service subrequests are 1000 on
@@ -3267,7 +3373,7 @@ per-invocation total, and db.ts now says so.
 
 **S3 — `@cloudflare/vitest-pool-workers` + D1 migrations ergonomics. RESOLVED.**
 `readD1Migrations('./migrations')` + `applyD1Migrations` in
-`tests/worker/setup.ts` applies `0001_init.sql` in full — all six triggers and
+`tests/worker/setup.ts` applies `0001_init.sql` in full — all seven triggers and
 every `CHECK` — and `tests/worker/schema.spec.ts` exercises them directly,
 including the `INSERT OR IGNORE` overdraft abort. The `better-sqlite3` fallback
 was not needed. The secondary question is answered too: the pool tolerates
