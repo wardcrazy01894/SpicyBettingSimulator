@@ -53,9 +53,10 @@ To seed some games, sign up (first user becomes admin) and hit
 
 1. **Sign up** with the invite code. The first account to sign up becomes the
    admin. You get one **$1,000** balance, once, for the life of the account.
-2. **Pick a game** on the board (NFL / CFB tabs). Tapping a price adds a leg to
-   the bet slip — there is ONE slip and it spans both leagues, so the tabs move
-   the board and never your picks.
+2. **Pick a game** on the board (NFL / CFB tabs). On the CFB tab, "Show" narrows
+   the week to the Top 25 or to one conference (a game counts if either team
+   matches). Tapping a price adds a leg to the bet slip — there is ONE slip and
+   it spans both leagues, so the tabs move the board and never your picks.
 3. **Choose a shape**: one leg is a straight bet; two or more is a parlay, or a
    teaser if you switch mode and pick 6 / 6.5 / 7 points. Teaser legs must be
    spreads or totals.
@@ -67,6 +68,9 @@ To seed some games, sign up (first user becomes admin) and hit
 6. **Watch it grade.** Scores are ingested every 15 minutes and bets settle 5
    minutes after that, automatically. `/account` has the full ledger;
    `/leaderboard` ranks everyone by equity.
+7. **Something broken?** `/account` → "Report a bug" files a GitHub issue in
+   this repo with your username, the page and the app version attached. (Only
+   shown when the admin has set `GITHUB_TOKEN`; see `docs/OPERATIONS.md`.)
 
 ## Before you open a PR
 
@@ -105,5 +109,6 @@ Live at https://spicybetting.wardcrazy01894.workers.dev (Cloudflare free plan). 
 npx wrangler d1 migrations apply spicybetting --remote
 npx wrangler secret put INVITE_CODE
 npx wrangler secret put IP_HASH_SALT
+npx wrangler secret put GITHUB_TOKEN   # optional: in-app bug reports → GitHub issues
 npm run deploy
 ```

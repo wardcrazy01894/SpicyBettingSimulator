@@ -50,6 +50,9 @@ export interface EventSpec {
   /** `curatedRank.current`; 99 (ESPN's "unranked") is emitted when omitted. */
   readonly homeRank?: number;
   readonly awayRank?: number;
+  /** `team.conferenceId`; omitted when unset (the NFL shape). */
+  readonly homeConferenceId?: string;
+  readonly awayConferenceId?: string;
   /**
    * Raw override for `competitors[].score`, emitted verbatim — so a test can
    * post `"0"`, `"TBD"` or a number and see what the parser does with it.
@@ -211,6 +214,7 @@ function buildCompetitor(spec: EventSpec, side: 'home' | 'away'): Record<string,
   const abbr = side === 'home' ? spec.homeAbbr : spec.awayAbbr;
   const id = teamId(spec.league, abbr);
   const rank = side === 'home' ? spec.homeRank : spec.awayRank;
+  const conferenceId = side === 'home' ? spec.homeConferenceId : spec.awayConferenceId;
   const raw = side === 'home' ? spec.homeScoreRaw : spec.awayScoreRaw;
   const score = side === 'home' ? spec.homeScore : spec.awayScore;
 
@@ -228,6 +232,7 @@ function buildCompetitor(spec: EventSpec, side: 'home' | 'away'): Record<string,
       displayName: `${abbr} Full Name`,
       shortDisplayName: abbr,
       logo: teamLogo(spec.league, abbr),
+      ...(conferenceId === undefined ? {} : { conferenceId }),
     },
     // ESPN's "unranked" sentinel; the parser maps 99 -> null.
     curatedRank: { current: rank ?? 99 },

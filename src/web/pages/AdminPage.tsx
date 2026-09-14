@@ -12,13 +12,18 @@ import {
   postAdminUserPassword,
 } from '../api/client.js';
 import { deriveKey } from '../api/kdf.js';
-import { useAdminJobs, useAdminUsers } from '../hooks/useApi.js';
+import { useAdminBugReports, useAdminJobs, useAdminUsers } from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
 import { formatDateTime } from '../lib/datetime.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
 import type { AdminJob } from '../api/client.js';
-import type { AdminUserView, JobRunView, ReconcileResponse } from '../../shared/api-types.js';
+import type {
+  AdminUserView,
+  BugReportView,
+  JobRunView,
+  ReconcileResponse,
+} from '../../shared/api-types.js';
 
 const JOBS: readonly AdminJob[] = ['refresh', 'settle', 'maintenance'];
 
@@ -57,6 +62,40 @@ function StatsCell(props: { readonly run: JobRunView }): ReactElement {
  * neither disabled nor deleted. A deleted account is disabled by construction, so
  * the two definitions cannot drift.
  */
+/**
+ * Newest first, straight off `GET /api/admin/bugs`. A row with no issue link is
+ * one GitHub refused — the reporter only saw a 503 — so its text is shown in
+ * full here; that is the list's reason to exist.
+ */
+function BugReportList(props: { readonly reports: readonly BugReportView[] }): ReactElement {
+  if (props.reports.length === 0) return <EmptyState title="No bug reports yet." />;
+  return (
+    <ul className="bug-list">
+      {props.reports.map((r) => (
+        <li key={r.id} className="card">
+          <p className="card-title">
+            {r.issueUrl !== null && r.issueNumber !== null ? (
+              <a href={r.issueUrl} target="_blank" rel="noreferrer">
+                #{String(r.issueNumber)} {r.title}
+              </a>
+            ) : (
+              <>
+                <span className="tag tag-error">not filed</span> {r.title}
+              </>
+            )}
+          </p>
+          <p className="muted">
+            @{r.username} · {formatDateTime(r.createdAt)} · v{r.appVersion}
+            {r.page !== null ? ` · ${r.page}` : ''}
+          </p>
+          {r.error !== null && <p className="field-problem">GitHub: {r.error}</p>}
+          {r.issueUrl === null && <pre className="bug-text">{r.description}</pre>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function isLastEnabledAdmin(user: AdminUserView, all: readonly AdminUserView[]): boolean {
   if (!user.isAdmin || user.isDisabled || user.isDeleted) return false;
   return all.filter((u) => u.isAdmin && !u.isDisabled && !u.isDeleted).length <= 1;
@@ -245,6 +284,7 @@ export function AdminPage(): ReactElement {
   const meId = session.user?.id ?? null;
   const jobs = useAdminJobs();
   const users = useAdminUsers();
+  const bugs = useAdminBugReports();
   const [busyJob, setBusyJob] = useState<AdminJob | null>(null);
   const [jobError, setJobError] = useState<unknown>(null);
   const [reconcile, setReconcile] = useState<ReconcileResponse | null>(null);
@@ -370,6 +410,13 @@ export function AdminPage(): ReactElement {
       )}
       {users.loading && users.data === undefined && <Spinner label="Loading users…" />}
       {users.data !== undefined && <UserList users={users.data.users} meId={meId} />}
+
+      <h3 className="section-title">Bug reports</h3>
+      {bugs.error !== undefined && bugs.data === undefined && (
+        <ErrorBanner error={bugs.error} onRetry={bugs.refetch} />
+      )}
+      {bugs.loading && bugs.data === undefined && <Spinner label="Loading bug reports…" />}
+      {bugs.data !== undefined && <BugReportList reports={bugs.data.reports} />}
     </section>
   );
 }

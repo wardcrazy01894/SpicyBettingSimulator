@@ -120,6 +120,7 @@ describe('parseScoreboard — real NFL sample', () => {
       name: 'Cincinnati Bengals',
       logo: 'https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/cin.png',
       rank: null, // NFL curatedRank is always 99
+      conferenceId: null, // NFL teams carry no conferenceId
       score: 0, // pre-game "0" parses to 0, NOT null
     });
     expect(game.away).toMatchObject({ teamId: '27', abbr: 'TB', name: 'Tampa Bay Buccaneers' });
@@ -207,6 +208,16 @@ describe('parseScoreboard — real CFB sample', () => {
     const iu = gameById(parsed.games, 'ncaaf:401858439');
     expect(iu.home.rank).toBe(5);
     expect(iu.away.rank).toBeNull();
+  });
+
+  it('keeps team.conferenceId for CFB (IU is Big Ten, id 5) and every id is a numeric string', () => {
+    const iu = gameById(parsed.games, 'ncaaf:401858439');
+
+    expect(iu.home.conferenceId).toBe('5');
+    const ids = parsed.games.flatMap((g) => [g.home.conferenceId, g.away.conferenceId]);
+    expect(ids.every((id) => id === null || /^\d+$/.test(id))).toBe(true);
+    // The sample is a full FBS Saturday: every Power-4 conference appears.
+    for (const id of ['8', '5', '4', '1']) expect(ids).toContain(id);
 
     const ranks = parsed.games.flatMap((g) => [g.home.rank, g.away.rank]);
     const ranked = ranks.filter((r): r is number => r !== null);
