@@ -84,10 +84,15 @@ function codeOf(error: unknown): ErrorCode | null {
 export function messageForError(error: unknown): string {
   const code = codeOf(error);
   if (code !== null) {
-    // For these two the server's message carries the specific, useful detail
-    // (which field failed / how long the lockout is) and is safe to show.
+    // For these three the server's message carries the specific, useful detail
+    // (which field failed / how long the lockout is / WHICH username is in the
+    // way) and is safe to show. `USERNAME_TAKEN` is here because it now arrives
+    // from two places: signup, where the generic copy below is right, and a
+    // soft delete whose tombstone names are both occupied (PLAN §10.5), where
+    // "Pick another one" would be nonsense advice to an admin deleting somebody.
     const message = error instanceof Error ? error.message : '';
-    if ((code === 'VALIDATION' || code === 'RATE_LIMITED') && message !== '') return message;
+    const verbatim = code === 'VALIDATION' || code === 'RATE_LIMITED' || code === 'USERNAME_TAKEN';
+    if (verbatim && message !== '') return message;
     return ERROR_MESSAGES[code];
   }
   if (error instanceof Error && error.message !== '') return error.message;

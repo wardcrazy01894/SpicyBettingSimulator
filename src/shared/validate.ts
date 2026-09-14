@@ -80,6 +80,25 @@ function isIn<T extends string>(list: readonly T[], v: unknown): v is T {
   return typeof v === 'string' && (list as readonly string[]).includes(v);
 }
 
+/**
+ * The prefix a soft-deleted account's username is rewritten to (`auth.ts`
+ * `deleteUser`, PLAN.md §10.5). NOBODY MAY REGISTER IT.
+ *
+ * `deleted_<hex>` is a perfectly legal username under the charset and length
+ * rules below, and every authenticated user can read every other user's uuid off
+ * `GET /api/leaderboard`. Without this reservation a squatter could register the
+ * exact tombstone name of an account they want to protect, and the admin's
+ * `DELETE /api/admin/users/:id` would then collide on `users.username` forever —
+ * an unfixable 500 driven entirely by attacker-chosen input. `deleteUser` has a
+ * retry and a coded error for the collision it can still hit (a DIFFERENT
+ * deleted account whose id shares the first 12 hex digits); this closes the half
+ * that is reachable on purpose.
+ *
+ * Shared, not worker-local, because the browser validates the same field before
+ * it spends ~1s deriving a key for a signup that cannot succeed.
+ */
+export const RESERVED_USERNAME_PREFIX = 'deleted_';
+
 /** Lowercase, trim, and check length + charset. */
 export function validateUsername(raw: unknown): ValidationResult<string> {
   if (typeof raw !== 'string') return bad('username must be a string', 'username');
@@ -92,6 +111,12 @@ export function validateUsername(raw: unknown): ValidationResult<string> {
   }
   if (!USERNAME_PATTERN.test(u)) {
     return bad('username may only contain a-z, 0-9 and _', 'username');
+  }
+  if (u.startsWith(RESERVED_USERNAME_PREFIX)) {
+    return bad(
+      `username may not start with "${RESERVED_USERNAME_PREFIX}" — that prefix is reserved`,
+      'username',
+    );
   }
   return good(u);
 }

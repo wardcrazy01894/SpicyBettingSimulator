@@ -42,7 +42,7 @@ import { BOARD_LOOKBACK_MS, INITIAL_BANKROLL_CENTS } from '../shared/constants.j
 import { AppError } from '../shared/errors.js';
 import { LEAGUES } from '../shared/types.js';
 import type { Env } from './env.js';
-import { newId, queryAll, queryOne, runBatch } from './db.js';
+import { changesAt, newId, queryAll, queryOne, runBatch } from './db.js';
 
 /**
  * The two statements that open an account's `main` balance: the row, then the
@@ -379,7 +379,16 @@ export function isLeague(value: string): value is League {
  * back, and the caller maps that to `409 INSUFFICIENT_FUNDS` (§4.2) — the guard
  * lives in the schema, not here.
  *
- * @throws AppError BANKROLL_NOT_FOUND when the user has no balance.
+ * A SOFT-DELETED ACCOUNT IS A 404, like `/password` and `/disabled` (PLAN §11.6).
+ * Nobody can reach that balance again, so money moved into it is money nobody can
+ * ever bet or see, and money moved out of it silently rewrites the history
+ * `db:reconcile` is there to vouch for. The guard is a `WHERE EXISTS` INSIDE the
+ * INSERT rather than a read before it (CLAUDE.md rule 5) — a read-then-write on
+ * a money path would let a delete land in between — and `INSERT … SELECT … WHERE`
+ * rather than `INSERT OR IGNORE`, which rule 6 bans from `ledger` outright.
+ *
+ * @throws AppError BANKROLL_NOT_FOUND when the user has no balance;
+ *                  NOT_FOUND when the account is deleted.
  */
 export async function adminAdjust(
   env: Env,
@@ -392,12 +401,16 @@ export async function adminAdjust(
   if (bankrollId === null) {
     throw new AppError('BANKROLL_NOT_FOUND', 'That user has no balance.');
   }
-  await runBatch(env.DB, [
+  const results = await runBatch(env.DB, [
     env.DB.prepare(
       `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
-       VALUES (?1, ?2, 'admin_adjust', ?1, NULL, ?3, ?4, ?5)`,
-    ).bind(newId(), bankrollId, amountCents, now, memo),
+       SELECT ?1, ?2, 'admin_adjust', ?1, NULL, ?3, ?4, ?5
+        WHERE EXISTS (SELECT 1 FROM users WHERE id = ?6 AND deleted_at IS NULL)`,
+    ).bind(newId(), bankrollId, amountCents, now, memo, userId),
   ]);
+  // The only guard in that WHERE is the account's state, so zero rows means
+  // exactly one thing. Diagnosing a completed write, not gating one.
+  if (changesAt(results, 0) === 0) throw new AppError('NOT_FOUND', 'No such user.');
 }
 
 // ---------------------------------------------------------------------------

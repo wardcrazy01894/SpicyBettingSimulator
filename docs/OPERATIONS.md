@@ -54,12 +54,16 @@ that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's
 
 Applied migrations, newest last:
 
-| File                        | What                                                  | Applied remotely |
-| --------------------------- | ----------------------------------------------------- | ---------------- |
-| `0001_init.sql`             | the whole schema                                      | 2026-09-14       |
-| `0002_users_deleted_at.sql` | `users.deleted_at INTEGER NULL` — account soft delete | _pending_        |
+| File                        | What                                                  | Applied remotely                           |
+| --------------------------- | ----------------------------------------------------- | ------------------------------------------ |
+| `0001_init.sql`             | the whole schema                                      | 2026-09-14                                 |
+| `0002_users_deleted_at.sql` | `users.deleted_at INTEGER NULL` — account soft delete | on merge to `main`, by the Deploy workflow |
 
-**Deploying the soft-delete change (0002) — run the migration FIRST:**
+**You do not normally run a migration by hand.** `.github/workflows/deploy.yml` runs
+`wrangler d1 migrations apply --remote` on every push to `main`, BEFORE `wrangler deploy` — so
+merging the PR that adds `0002` applies `0002` and then ships the code that needs it, in that
+order, with no window in between. The order below is for a MANUAL deploy (or a hand-fixed one),
+and getting it wrong is the failure mode worth naming:
 
 ```bash
 npx wrangler d1 migrations apply spicybetting --remote   # adds users.deleted_at
@@ -85,20 +89,31 @@ previous sha leaves the column in place and unused.
 - Admin pages: `/admin` in the SPA (jobs, users, disable, password reset, reconcile).
 - Reset a password from the CLI: `node scripts/admin-hash.mjs <username> <new-password>` prints a
   `wrangler d1 execute` statement to run with `--remote`.
-- Adjust a balance: `POST /api/admin/users/:id/adjust {amountCents, memo}` (ledger row; cannot overdraft).
+- Adjust a balance: `POST /api/admin/users/:id/adjust {amountCents, memo}` (ledger row; cannot
+  overdraft; `404` on a deleted account, like `/password` and `/disabled`).
 - **Delete an account** (the Delete button on `/admin`, or
   `DELETE /api/admin/users/:id`): a SOFT delete. The account is disabled, stamped
   `users.deleted_at`, renamed to `deleted_<12 hex of its id>`, given the display name
   `Deleted user`, and has all its sessions dropped — one atomic batch. Afterwards it cannot log
   in (plain `401 INVALID_CREDENTIALS`, no "this account is disabled" tell), it is **off the
   leaderboard**, and its old username is free for someone else to register. It still appears in
-  the admin user list with a `deleted` chip.
+  the admin user list with a `deleted` chip. Like every state-changing call it needs the
+  `X-SBS-Client` header (`403 CSRF_BLOCKED` without it) — `curl` it with `-H 'X-SBS-Client: 1'`.
   - **No money moves.** Settled bets and every ledger row stay: the ledger is append-only by DDL
     and `bankrolls`/`ledger` are `ON DELETE RESTRICT`, so a hard delete would destroy the history
     `npm run db:reconcile` checks. Reconcile gives the same answer before and after.
   - **Refused with `409 ACCOUNT_HAS_PENDING_BETS` while the account has open bets** — cancel or
     settle them first, otherwise a payout would land in an account nobody can reach. Also refused
-    for your own account and for the last enabled admin (`400`).
+    for your own account, and for an admin while only one enabled admin remains (`400`).
+  - The `deleted_` prefix is RESERVED: signup and login refuse it (`400 VALIDATION`), so nobody
+    can squat an account's tombstone name and make it undeletable. If you ever see
+    `409 USERNAME_TAKEN` from a delete, both the 12- and the 16-hex tombstone are occupied — find
+    them and rename them, then delete again:
+
+    ```bash
+    npx wrangler d1 execute spicybetting --remote --command "SELECT id, username FROM users WHERE username LIKE 'deleted_%'"
+    ```
+
   - Disabling alone is enough to get someone off the leaderboard; delete is for when you also want
     the username back.
 

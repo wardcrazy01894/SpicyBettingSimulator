@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  RESERVED_USERNAME_PREFIX,
   formatCents,
   formatLineTenths,
   isCoherentMarketSide,
@@ -58,6 +59,49 @@ describe('validateUsername', () => {
     for (const bad of [undefined, null, 42, {}, [], true]) {
       expect(validateUsername(bad).ok).toBe(false);
     }
+  });
+
+  /**
+   * THE TOMBSTONE PREFIX IS RESERVED (`auth.ts` `deleteUser`, PLAN §10.5).
+   *
+   * `deleted_<12 hex of the account's uuid>` passes every rule above — it is
+   * lowercase a-z0-9_ and 20 characters — and every authenticated user can read
+   * every other user's uuid off `GET /api/leaderboard`. So without this rule a
+   * squatter registers the exact tombstone of an account they want to protect,
+   * and `DELETE /api/admin/users/:id` then loses to `UNIQUE(users.username)` for
+   * good. This is the half of that collision that is reachable ON PURPOSE; the
+   * retry in `deleteUser` covers the accidental half.
+   */
+  it('rejects the reserved `deleted_` tombstone prefix', () => {
+    for (const reserved of [
+      `${RESERVED_USERNAME_PREFIX}0123456789ab`,
+      `${RESERVED_USERNAME_PREFIX}0123456789abcdef`,
+      'deleted_x',
+      'deleted_',
+      'DELETED_0123456789AB', // lowercased first, so the check still bites
+      '  deleted_abc  ', // ...and trimmed first
+    ]) {
+      const r = fail(validateUsername(reserved));
+      expect(r.field).toBe('username');
+      expect(r.message).toContain('that prefix is reserved');
+    }
+  });
+
+  it('still accepts names that merely CONTAIN or resemble the prefix', () => {
+    // The rule is a prefix rule, not a substring ban: nothing about `undeleted`
+    // or `deletedz` can ever collide with a tombstone.
+    expect(ok(validateUsername('undeleted_1'))).toBe('undeleted_1');
+    expect(ok(validateUsername('deletedbob'))).toBe('deletedbob');
+    expect(ok(validateUsername('my_deleted_acct'))).toBe('my_deleted_acct');
+  });
+
+  it('refuses the reserved prefix on signup AND login, with the same field', () => {
+    const name = `${RESERVED_USERNAME_PREFIX}0123456789ab`;
+    expect(fail(validateSignup({ username: name, dk: DK })).field).toBe('username');
+    // Login too. It is a purely syntactic refusal — the answer is identical for
+    // a tombstone that exists and one that never will — so it is no enumeration
+    // oracle, and it stops a deleted account being probed by its new name.
+    expect(fail(validateLogin({ username: name, dk: DK })).field).toBe('username');
   });
 });
 

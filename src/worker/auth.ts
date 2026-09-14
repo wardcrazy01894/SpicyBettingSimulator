@@ -19,6 +19,7 @@ import { AppError, isAppError } from '../shared/errors.js';
 import type { AdminUserView } from '../shared/api-types.js';
 import type { EpochMs, UserSummary } from '../shared/types.js';
 import type { LoginInput, SignupInput } from '../shared/validate.js';
+import { RESERVED_USERNAME_PREFIX } from '../shared/validate.js';
 import type { Env } from './env.js';
 import { mainBalanceStatements } from './bankroll.js';
 import {
@@ -340,28 +341,114 @@ export async function setDisabled(
  * The rename is what frees the username for re-registration:
  * `deleted_<first 12 hex of the uuid>` is 20 characters, inside the
  * `length(username) BETWEEN 3 AND 24` CHECK, lowercase like every stored
- * username, and derived from the id so it is stable and collision-proof in
- * practice. `display_name` becomes 'Deleted user' so nothing that renders a name
- * has to know about any of this.
+ * username, and derived from the id so it is stable. It is NOT collision-proof,
+ * and the two ways it can collide are handled differently:
+ *
+ *   * SOMEBODY REGISTERED THE TOMBSTONE NAME. `deleted_<12 hex>` is a legal
+ *     username under `validateUsername`'s charset rules, and every authenticated
+ *     user can read every other user's uuid off `GET /api/leaderboard` — so
+ *     without a rule this is a squat anybody can perform, on any account, and the
+ *     admin's delete then fails forever on a `UNIQUE` violation with no way out
+ *     but hand-editing the database. `validateUsername` now REJECTS the
+ *     `deleted_` prefix outright (`RESERVED_USERNAME_PREFIX`), which is what
+ *     actually closes it.
+ *   * ANOTHER DELETED ACCOUNT SHARES THE FIRST 12 HEX DIGITS. Astronomically
+ *     unlikely (2^48 per pair) but not attacker-controlled, and it is still a
+ *     collision. The retry below widens the suffix to 16 hex digits — 24
+ *     characters, exactly the CHECK's upper bound — which is a different value
+ *     for the same id, so it cannot collide with the same row it just lost to.
+ *
+ * If even that collides, the answer is `409 USERNAME_TAKEN` naming the tombstone,
+ * never a bare `500 INTERNAL`: an operator who is told which name is in the way
+ * can rename that row and retry, whereas INTERNAL is a dead end.
+ *
+ * `display_name` becomes 'Deleted user' so nothing that renders a name has to
+ * know about any of this.
  *
  * NO MONEY MOVES. Not one ledger row, not one `balance_cents` write: the bankroll
  * and its history stay exactly as they were, which is why `SUM(ledger) = balance`
  * still holds for the row afterwards and reconcile keeps passing.
  *
  * @returns 'deleted' on the delete, 'already-deleted' when it was a no-op
- * @throws AppError NOT_FOUND | VALIDATION | ACCOUNT_HAS_PENDING_BETS
+ * @throws AppError NOT_FOUND | VALIDATION | ACCOUNT_HAS_PENDING_BETS |
+ *                  USERNAME_TAKEN
  */
 export async function deleteUser(
   env: Env,
   userId: string,
   now: EpochMs,
 ): Promise<'deleted' | 'already-deleted'> {
-  const results = await runBatch(env.DB, [
+  let results: readonly D1Result[];
+  try {
+    results = await runBatch(env.DB, deleteStatements(env, userId, now, 12));
+  } catch (err) {
+    if (!isUniqueViolation(err, 'users.username')) throw err;
+    // The 12-hex tombstone is taken. Retry ONCE at the full 16 — a different
+    // string for this id, so it cannot lose to the same row twice.
+    try {
+      results = await runBatch(env.DB, deleteStatements(env, userId, now, 16));
+    } catch (retryErr) {
+      if (!isUniqueViolation(retryErr, 'users.username')) throw retryErr;
+      throw new AppError(
+        'USERNAME_TAKEN',
+        `Both tombstone names for this account (${RESERVED_USERNAME_PREFIX}<12 or 16 hex ` +
+          `of its id>) are already in use. Rename the account holding them, then delete again.`,
+        { userId },
+      );
+    }
+  }
+  if (changesAt(results, 0) > 0) return 'deleted';
+
+  // Nothing changed: ONE read tells us which guard spoke. This is a diagnosis of
+  // an already-completed write, not a check that gates one, so it is not the
+  // read-then-write rule 5 forbids.
+  const row = await queryOne<{ deleted_at: number | null; is_admin: number; pending: number }>(
+    env.DB.prepare(
+      `SELECT u.deleted_at AS deleted_at,
+              u.is_admin   AS is_admin,
+              (SELECT COUNT(*) FROM bets WHERE user_id = u.id AND status = 'pending') AS pending
+         FROM users u WHERE u.id = ?1`,
+    ).bind(userId),
+  );
+  if (row === null) throw new AppError('NOT_FOUND', 'No such user.');
+  if (row.deleted_at !== null) return 'already-deleted';
+  if (row.pending > 0) {
+    throw new AppError(
+      'ACCOUNT_HAS_PENDING_BETS',
+      'That account still has open bets — cancel or settle them first, then delete it.',
+      { pendingBets: row.pending },
+    );
+  }
+  // The admin guard counts ENABLED admins, and the target need not be one of
+  // them: deleting an already-disabled admin is refused too, because that row is
+  // the only thing that could be re-enabled if the last enabled admin is lost.
+  // "the last enabled admin" would therefore be a lie about who was refused.
+  throw new AppError('VALIDATION', 'Cannot delete an admin while only one enabled admin remains.', {
+    field: 'id',
+  });
+}
+
+/**
+ * The soft-delete batch, with the tombstone suffix width as a parameter so the
+ * collision retry is the SAME two statements and not a second, divergent copy.
+ *
+ * `hexDigits` is 12 or 16, both interpolated from this module's own call sites —
+ * never from a request — and both inside `length(username) BETWEEN 3 AND 24`
+ * (`deleted_` is 8 characters).
+ */
+function deleteStatements(
+  env: Env,
+  userId: string,
+  now: EpochMs,
+  hexDigits: 12 | 16,
+): readonly D1PreparedStatement[] {
+  return [
     env.DB.prepare(
       `UPDATE users
           SET is_disabled  = 1,
               deleted_at   = ?2,
-              username     = 'deleted_' || substr(replace(id, '-', ''), 1, 12),
+              username     = '${RESERVED_USERNAME_PREFIX}' ||
+                             substr(replace(id, '-', ''), 1, ${String(hexDigits)}),
               display_name = 'Deleted user',
               updated_at   = ?2
         WHERE id = ?1
@@ -376,29 +463,7 @@ export async function deleteUser(
       `DELETE FROM sessions WHERE user_id = ?1
          AND EXISTS (SELECT 1 FROM users WHERE id = ?1 AND deleted_at IS NOT NULL)`,
     ).bind(userId),
-  ]);
-  if (changesAt(results, 0) > 0) return 'deleted';
-
-  // Nothing changed: ONE read tells us which guard spoke. This is a diagnosis of
-  // an already-completed write, not a check that gates one, so it is not the
-  // read-then-write rule 5 forbids.
-  const row = await queryOne<{ deleted_at: number | null; pending: number }>(
-    env.DB.prepare(
-      `SELECT u.deleted_at AS deleted_at,
-              (SELECT COUNT(*) FROM bets WHERE user_id = u.id AND status = 'pending') AS pending
-         FROM users u WHERE u.id = ?1`,
-    ).bind(userId),
-  );
-  if (row === null) throw new AppError('NOT_FOUND', 'No such user.');
-  if (row.deleted_at !== null) return 'already-deleted';
-  if (row.pending > 0) {
-    throw new AppError(
-      'ACCOUNT_HAS_PENDING_BETS',
-      'That account still has open bets — cancel or settle them first, then delete it.',
-      { pendingBets: row.pending },
-    );
-  }
-  throw new AppError('VALIDATION', 'Cannot delete the last enabled admin.', { field: 'id' });
+  ];
 }
 
 /**
