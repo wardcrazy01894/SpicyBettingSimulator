@@ -194,7 +194,7 @@ the one failure mode the whole checklist has.
       prefix, appears in PLAN §11;
     - every table AND every `CREATE TRIGGER` in `migrations/0001_init.sql` is
       named in PLAN §3 / §4;
-    - the live URL is byte-identical in README, `docs/OPERATIONS.md` and PLAN §15;
+    - the live URL is byte-identical in README, `docs/OPERATIONS.md`, CLAUDE.md and PLAN §15;
     - CLAUDE.md rule 9, the PR template, PLAN §16.1 and the `0001_init.sql`
       header all say `0001` is FROZEN and that changes are new numbered
       migrations;

@@ -109,7 +109,7 @@ them, `REFRESH_TARGETS_PER_RUN` stays at 2 and `SETTLE_CHUNK` at 20.
 ```bash
 npx wrangler tail --format json    # one JSON line per invocation; it carries `cpuTime` (ms)
 # in another shell, as an admin, force one ingest on a Saturday ET date target:
-curl -s -X POST -b "$COOKIE" -H 'x-csrf: 1' \
+curl -s -X POST -b "$COOKIE" -H 'X-SBS-Client: 1' \
   https://spicybetting.wardcrazy01894.workers.dev/api/admin/jobs/refresh
 ```
 
