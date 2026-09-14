@@ -2465,19 +2465,48 @@ is about one bet's status and says the opposite thing, and `VALIDATION` is a 400
 
 ### 11.7 Bug reports
 
-| Method | Path        | Response                                                                                                                                             |
-| ------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/bugs` | `{title, description, page?}` → `201 {id, issueNumber, issueUrl}`; `400 VALIDATION`, `429 RATE_LIMITED`, `503 UPSTREAM_UNAVAILABLE`. Signed-in only. |
+| Method | Path                      | Response                                                                                                                                                           |
+| ------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| POST   | `/api/bugs`               | `{title, description, page?, diagnostics?}` → `201 {id, issueNumber, issueUrl}`; `400 VALIDATION`, `429 RATE_LIMITED`, `503 UPSTREAM_UNAVAILABLE`. Signed-in only. |
+| POST   | `/api/bugs/client-errors` | `{diagnostics}` → `204`. The uncaught-error beacon: logged as one `[client-error]` line, never stored. Signed-in only; ≤ `CLIENT_ERROR_BEACON_MAX` (2,000) chars.  |
 
-The in-app "Report a bug" form (`/account`). The person types a title and a
-description; the client adds the SPA path they are on (`page`, path + query,
-never the origin). `page` is optional on the wire and derived rather than typed,
+The in-app "Report a bug" form, reachable from the header button on EVERY
+page (and from `/account`); the open/close state lives in `AppShell` above the
+router (`state/bug-report.tsx`). The person types a title and a description;
+the client adds the SPA path they are on (`page`, path + query, never the
+origin) and the **diagnostics log**: the browser's own record of the last 60
+events — uncaught errors and unhandled rejections (name, message, first stack
+frame), `console.error`/`console.warn` calls, every API call as
+`METHOD path status [code] ms` (never a body or a query string), and route
+changes — plus app version, viewport, language, online state and user agent.
+`src/web/lib/diagnostics.ts` is the pure ring buffer and renderer (tested
+without a DOM); `src/web/diagnostics.ts` installs the `window` listeners
+before React mounts and patches `console.error`/`warn` and
+`history.pushState`/`replaceState`; `api/client.ts` records each request. The
+form shows the block under "What gets attached" before sending. It is bounded
+to `BUG_REPORT_DIAGNOSTICS_MAX` (8,000) chars, cut from the OLD end so the
+latest events survive, stored in `bug_reports.diagnostics` (migration 0006) and
+filed as a second fenced block, so an issue can be diagnosed without asking
+the reporter to open devtools. `page` is optional on the wire and derived rather than typed,
 so if the validator refuses it (a 200+ char query string, say) the client files
 the report WITHOUT it instead of disabling Send over something the person
 cannot fix. The SERVER adds everything else — reporter username, app
 version, request time, `User-Agent` — so a report can never claim to be from
 someone else or from a version that was not running (rule 8, applied to
 provenance instead of prices).
+
+**The beacon.** An uncaught error or unhandled rejection also POSTs the
+current diagnostics (≤ 2,000 chars) to `/api/bugs/client-errors`, at most once
+per 30 s and only while a session is live, fire-and-forget. The Worker logs it
+as one `[client-error] user=<name> …` line and stores nothing, so a browser
+crash is visible in `wrangler tail` / Workers Logs even when nobody files a
+report (docs/OPERATIONS.md "Logs"). There is no server-side rate limit: the
+client throttle is bypassable with `curl`, and a signed-in account looping the
+beacon spends Worker invocations against the free plan's daily budget exactly
+as looping `GET /api/games` would — the same exposure every authenticated route
+has, answered the same way (disable the account). API paths in the log have
+uuids collapsed to `:id`; the log is cleared when the session ends, so a shared
+browser cannot carry one person's activity into another's public issue.
 
 **Row first, issue second.** `createBugReport` (`src/worker/bugs.ts`) INSERTs
 into `bug_reports` and only then POSTs to GitHub's Issues API
@@ -3557,6 +3586,19 @@ deleted_at INTEGER NULL`, for the soft delete (§3.2 / §10.5 / §11.6). One nul
 - **`errors.ts`** — `ACCOUNT_HAS_PENDING_BETS` (409) added, under the same rule as
   M5b's additions: a code is never repurposed or removed, so an existing 409 could
   not be borrowed for a meaning it does not have.
+- **`migrations/0006_bug_reports_diagnostics.sql`** — `bug_reports.diagnostics
+TEXT NULL` for the browser diagnostics log a report now attaches (§11.7). One
+  nullable `ADD COLUMN`. (Numbered after 0005, which is on a parallel branch;
+  either order applies — different tables.)
+- **Logging (§11.7, docs/OPERATIONS.md "Logs").** `requestLogMiddleware` is
+  now the outermost middleware and writes ONE line per request that failed
+  (status ≥ 400, with the error code the handler set on `c.var.errorCode`) or
+  took over `SLOW_REQUEST_MS` (1 s): `[api] METHOD path status CODE user=name
+ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
+  query string. Successful fast requests stay silent. Together with the
+  existing `[cron]`, `[bugs]`, `[config]` lines and the new `[client-error]`
+  beacon this is what `wrangler tail` and the dashboard's Workers Logs
+  (`observability.enabled` in wrangler.jsonc) show.
 - **`migrations/0003_bug_reports.sql`** — the `bug_reports` table and its two
   indexes, for the in-app bug report → GitHub issue feature (§3.2 / §11.7). A new
   table, nothing in 0001 or 0002 touched. Applied by the Deploy workflow on merge.

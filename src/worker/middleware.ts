@@ -18,6 +18,8 @@ export interface AppVariables {
   readonly config: RuntimeConfig;
   readonly user: UserSummary | null;
   readonly sessionToken: string | null;
+  /** Set by `errorHandler` so the request log can name the code, not just the status. */
+  readonly errorCode: string | null;
 }
 
 export interface AppContext {
@@ -33,7 +35,36 @@ export function contextMiddleware(): MiddlewareHandler<AppContext> {
     // M3's sessionMiddleware overwrites these; until then every request is anonymous.
     c.set('user', null);
     c.set('sessionToken', null);
+    c.set('errorCode', null);
     await next();
+  };
+}
+
+/** A request slower than this is logged even when it succeeded. */
+export const SLOW_REQUEST_MS = 1_000;
+
+/**
+ * ONE log line per request that went wrong or went slowly — status >= 400 or
+ * over `SLOW_REQUEST_MS` — so `wrangler tail` and Workers Logs can answer "what
+ * failed for whom, when" without a debugger (docs/OPERATIONS.md "Logs"). 2xx
+ * requests under the threshold are silent: the log is for diagnosis, not
+ * traffic. Must be OUTERMOST so it sees the error handler's response and the
+ * session middleware's `user`. Never logs bodies, tokens or query strings.
+ */
+export function requestLogMiddleware(): MiddlewareHandler<AppContext> {
+  return async (c, next) => {
+    const started = Date.now();
+    await next();
+    const ms = Date.now() - started;
+    const status = c.res.status;
+    if (status < 400 && ms < SLOW_REQUEST_MS) return;
+    const path = new URL(c.req.url).pathname;
+    const user = c.var.user;
+    const line = `${c.req.method} ${path} ${String(status)}${
+      c.var.errorCode === null ? '' : ` ${c.var.errorCode}`
+    } user=${user === null ? 'anon' : user.username} ${String(ms)}ms`;
+    if (status >= 500) console.error('[api]', line);
+    else console.warn('[api]', line);
   };
 }
 
@@ -109,6 +140,7 @@ export function requireAdmin(): MiddlewareHandler<AppContext> {
 export function errorHandler(): ErrorHandler<AppContext> {
   return (err, c) => {
     const appErr = fromThrown(err);
+    c.set('errorCode', appErr.code);
     if (appErr.code === 'INTERNAL') {
       // The body never carries the original message or stack; the log does.
       console.error('[api] unhandled error', c.req.method, c.req.path, err);

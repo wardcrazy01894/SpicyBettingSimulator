@@ -28,6 +28,7 @@ import {
   contextMiddleware,
   csrfMiddleware,
   errorHandler,
+  requestLogMiddleware,
   sessionMiddleware,
 } from './middleware.js';
 import type { AppContext } from './middleware.js';
@@ -44,13 +45,15 @@ import { metaRoutes } from './routes/meta.js';
  * Build the app. A function rather than a module-level singleton so tests can
  * construct one against a test Env with no import-time side effects.
  *
- * Middleware order: context (seeds `now` + `config`) -> session -> csrf -> routes.
+ * Middleware order: request log (outermost) -> context (seeds `now` + `config`)
+ * -> session -> csrf -> routes.
  * `now` is captured ONCE per request and threaded through every guard, because
  * Workers freezes `Date.now()` between I/O operations.
  */
 export function buildApp(): Hono<AppContext> {
   const app = new Hono<AppContext>();
   app.onError(errorHandler());
+  app.use('*', requestLogMiddleware());
   app.use('*', contextMiddleware());
   app.use('*', sessionMiddleware());
   app.use('*', csrfMiddleware());
