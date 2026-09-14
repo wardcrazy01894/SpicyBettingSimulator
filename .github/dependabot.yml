@@ -1,0 +1,57 @@
+# Dependabot: keep npm packages and GitHub Actions current.
+#
+# Every PR it opens still goes through the normal merge gate — CI plus an
+# adversarial review (CLAUDE.md, "dependency bumps included"). Nothing here
+# auto-merges.
+#
+# Grouping keeps the PR count sane: one weekly PR for all minor/patch bumps,
+# and one per major. The Cloudflare toolchain is its own group because
+# `wrangler` and `@cloudflare/vitest-pool-workers` bundle their own workerd and
+# MUST move together — the pool refuses a `compatibility_date` newer than its
+# workerd, so bumping wrangler alone breaks `npm run test:worker`
+# (see the comment on `compatibility_date` in wrangler.jsonc).
+#
+# The `ignore` entries are the three ceilings documented in PLAN.md §16
+# ("Why not latest"): vitest 5 is unsupported by the pool, typescript 6+/7 is
+# outside typescript-eslint's range, and @vitejs/plugin-react 6 drags in peers
+# we do not use. Lift an ignore only when its constraint in PLAN.md is lifted.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: America/Detroit
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: deps
+    groups:
+      cloudflare:
+        patterns:
+          - wrangler
+          - '@cloudflare/*'
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: vitest
+        update-types: [version-update:semver-major]
+      - dependency-name: '@vitest/*'
+        update-types: [version-update:semver-major]
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+      - dependency-name: '@vitejs/plugin-react'
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: America/Detroit
+    labels: [dependencies]
+    commit-message:
+      prefix: ci

@@ -3172,6 +3172,12 @@ constrained:
 `vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.131` are current and unconstrained.
 If a dependency bump is proposed, check these three first — and note Alex's
 standing rule that dependency-bump PRs also get an adversarial review.
+`.github/dependabot.yml` proposes the bumps (weekly, Monday 06:00 ET): minor and
+patch bumps arrive as ONE grouped PR, majors one PR each, and `wrangler` +
+`@cloudflare/*` always together because their bundled workerd binaries must
+agree with `compatibility_date`. The three ceilings above are `ignore` entries
+there, so lifting a ceiling means editing both this table and that file.
+Dependabot security updates are enabled on the repo as well.
 
 **`tsconfig` layout.** SEVEN projects wired as a `tsc -b` solution, not one
 config: `shared` (lib ES2023, `types: []`), `worker` (Workers types), `web`

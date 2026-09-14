@@ -158,6 +158,17 @@ A settle run that could not settle a bet records `status='error'` with the stats
 retried automatically (`settle_attempts`) and parked in `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`
 (96 × the 15-minute cadence = 24 h).
 
+## Dependencies
+
+Dependabot (`.github/dependabot.yml`) opens bump PRs weekly on Monday morning ET: one grouped PR
+for minor/patch npm bumps, one per major, one for the Cloudflare toolchain (`wrangler` and
+`@cloudflare/*` move together), and one for GitHub Actions. Each is a normal PR — CI plus an
+adversarial review before merge; nothing auto-merges. Before merging a Cloudflare bump, confirm
+`npm run test:worker` still accepts `compatibility_date` in `wrangler.jsonc` (the pool refuses a
+date newer than its bundled workerd). The three version ceilings in PLAN §16 (vitest, typescript,
+@vitejs/plugin-react majors) are `ignore` rules in that file. Security-only updates are enabled
+separately in the repo settings and arrive the same way.
+
 ## Open measurements (PLAN Spikes S1 / S2)
 
 Neither is blocked any more — they wanted a deployed Worker and now have one. Until somebody runs
