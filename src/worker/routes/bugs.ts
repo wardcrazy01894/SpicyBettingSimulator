@@ -41,5 +41,5 @@ function readUserAgent(raw: string | undefined): string | null {
   const trimmed = raw?.trim() ?? '';
   if (trimmed === '') return null;
   // Slice by code point, not UTF-16 unit, so a surrogate pair is never halved.
-  return [...trimmed].slice(0, BUG_REPORT_USER_AGENT_MAX).join('');
+  return Array.from(trimmed).slice(0, BUG_REPORT_USER_AGENT_MAX).join('');
 }
