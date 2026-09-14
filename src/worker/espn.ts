@@ -46,6 +46,10 @@ const LEAGUE_PATH: Readonly<Record<League, string>> = {
  * so the parameter ORDER is pinned exactly as PLAN.md §8.1 documents it; that
  * makes the URL assertable, and ESPN is order-insensitive anyway.
  */
+/** See the fetch below: ESPN rejects empty/bot-style UAs. */
+export const ESPN_USER_AGENT =
+  'SpicyBettingSimulator/0.1 (+https://github.com/wardcrazy01894/SpicyBettingSimulator)';
+
 export function buildScoreboardUrl(baseUrl: string, league: League, target: SlateTarget): string {
   if (target.kind !== 'date') {
     // v1 never constructs a week target (PLAN.md §8.2); the union member only
@@ -76,7 +80,10 @@ export async function fetchScoreboard(
   try {
     response = await fetch(url, {
       method: 'GET',
-      headers: { accept: 'application/json' },
+      // ESPN's edge returns 403 for an EMPTY User-Agent (Workers send none by
+      // default) and for "Mozilla/5.0 (compatible; …)" style bot UAs; a plain
+      // product token passes. Verified 2026-09-14 from the deployed Worker.
+      headers: { accept: 'application/json', 'user-agent': ESPN_USER_AGENT },
       // A hung upstream must not burn the job's wall clock; the lease TTL is
       // only 5 minutes and two targets share one invocation (PLAN.md §14.8).
       signal: AbortSignal.timeout(ESPN_TIMEOUT_MS),
