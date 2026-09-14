@@ -69,6 +69,10 @@
     "workerd@1.20260911.1": true
   },
   "overrides": {
-    "sharp": "0.35.4"
+    "@cloudflare/vitest-pool-workers": {
+      "miniflare": {
+        "sharp": "0.35.4"
+      }
+    }
   }
 }

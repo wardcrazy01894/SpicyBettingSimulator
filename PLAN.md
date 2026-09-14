@@ -3269,15 +3269,19 @@ constrained:
 
 `vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.131` are current and unconstrained.
 
-**One `overrides` entry, `sharp: 0.35.4`** (package.json). `sharp` is not our
-dependency: `@cloudflare/vitest-pool-workers@0.22.0` → `miniflare@5.20260815`
-pins it EXACTLY at 0.35.2, which carries GHSA-rgj7-g3m4-5g8c (libheif, high;
+**One `overrides` entry, scoped: `@cloudflare/vitest-pool-workers → miniflare
+→ sharp: 0.35.4`** (package.json). `sharp` is not our dependency:
+`@cloudflare/vitest-pool-workers@0.22.0` → `miniflare@5.20260815.0-alpha` pins
+it EXACTLY at 0.35.2, which carries GHSA-rgj7-g3m4-5g8c (libheif, high;
 dev-only here — miniflare uses sharp to emulate the Images binding, which this
 project has no binding for). No pool release moves that pin yet, so the
-override forces both miniflare copies (wrangler's already wants 0.35.4) to the
-patched version; `npm audit` is clean and the worker pool runs unchanged. Drop
-the override once a pool bump carries a miniflare with `sharp >= 0.35.4`
-(`npm ls sharp` shows "overridden" while it is in effect).
+scoped override forces that one copy to the patched version (wrangler's own
+miniflare already wants 0.35.4, so both dedupe); `npm audit` is clean and the
+worker pool runs unchanged. Drop the override once a pool bump carries a
+miniflare with `sharp >= 0.35.4` — docs/OPERATIONS.md "Dependencies" has the
+check. Scoped rather than global so it can never silently pin a future
+`sharp` 0.36 requirement elsewhere.
+
 If a dependency bump is proposed, check these four first — and note Alex's
 standing rule that dependency-bump PRs also get an adversarial review.
 `.github/dependabot.yml` proposes the bumps (weekly, Monday 06:00 ET): minor and
