@@ -2,7 +2,7 @@
 
 Live: **https://spicybetting.wardcrazy01894.workers.dev** (Cloudflare Workers free plan, $0/month).
 First deployed 2026-09-14. Everything below runs from a checkout of `main` with `wrangler` logged in
-to the `alanc3939+cloudflare@gmail.com` Cloudflare account.
+to the owner's Cloudflare account (`npx wrangler whoami`).
 
 ## Deploy
 
@@ -44,9 +44,21 @@ deploy the file was edited in place; that window is closed.)
 
 - Source: ESPN's public scoreboard API (no key). Cron `*/15` refreshes, `5-59/15` settles,
   `30 8 * * *` maintenance. Manual: `POST /api/admin/jobs/{refresh|settle|maintenance}` as admin.
-- **ESPN returns 403 for an empty User-Agent** (Workers send none) and for `Mozilla/5.0 (compatible; …)`
-  bot strings. `ESPN_USER_AGENT` in `src/worker/espn.ts` is a plain product token and passes
-  (0 failures over 12 consecutive runs at first deploy). If 403s reappear, check that constant first.
+- **ESPN's edge filters on User-Agent, and the rule is opaque.** Measured 2026-09-14: no UA, an empty
+  UA, `Mozilla/5.0 (compatible; …)`, a real Chrome UA, and the BARE product token
+  `SpicyBettingSimulator/0.1` all get **403**; the token WITH the GitHub comment
+  (`ESPN_USER_AGENT` in `src/worker/espn.ts`) gets 200 (12/12 live runs). Do not shorten or edit
+  that string without re-running this probe:
+
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' -A 'SpicyBettingSimulator/0.1 (+https://github.com/wardcrazy01894/SpicyBettingSimulator)' \
+    'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=20260914'   # expect 200
+  ```
+
+  If 403s reappear in `GET /api/admin/jobs` → `stats.failures[]`, re-run the probe with candidate
+  strings, change the constant, `npm run deploy`. A 403 degrades gracefully (rows untouched, target
+  backs off) but is only discovered by looking — check `failures[]` and `dayRowsWritten` weekly.
+
 - Budget: `GET /api/admin/jobs` → newest run's `stats.dayRowsWritten` is the rolling 24 h rows-written
   total against D1's hard 100,000/day. Modelled ≈5k on a college Saturday.
 - **January (postseason):** verify a `dates=` target returns bowl / NFL playoff games (PLAN Spike S4(c)).
@@ -55,10 +67,11 @@ deploy the file was edited in place; that window is closed.)
 ## Checks
 
 ```bash
-node scripts/reconcile.mjs --remote     # SUM(ledger) vs balance for every account; exit 1 on drift
+npm run db:reconcile -- --remote        # SUM(ledger) vs balance for every account; exit 1 on drift
 npx wrangler tail                       # live logs (cron runs, errors)
 npx wrangler d1 execute spicybetting --remote --command "SELECT job, status, started_at FROM job_runs ORDER BY started_at DESC LIMIT 10"
 ```
 
 A settle run that could not settle a bet records `status='error'` with the stats intact; the bet is
-retried automatically (`settle_attempts`) and parked in `stats.stuck[]` after 24 h.
+retried automatically (`settle_attempts`) and parked in `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`
+(96 × the 15-minute cadence = 24 h).

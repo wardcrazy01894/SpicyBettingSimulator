@@ -55,6 +55,9 @@ npm run typecheck && npm run lint && npm run format:check && npm test && npm run
 
 ## Deploy
 
+Live at https://spicybetting.wardcrazy01894.workers.dev (Cloudflare free plan). Full runbook:
+`docs/OPERATIONS.md` (secrets, schema-change policy, the ESPN User-Agent probe, checks).
+
 ```bash
 npx wrangler d1 migrations apply spicybetting --remote
 npx wrangler secret put INVITE_CODE

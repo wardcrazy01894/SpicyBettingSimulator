@@ -46,7 +46,7 @@ const LEAGUE_PATH: Readonly<Record<League, string>> = {
  * so the parameter ORDER is pinned exactly as PLAN.md §8.1 documents it; that
  * makes the URL assertable, and ESPN is order-insensitive anyway.
  */
-/** See the fetch below: ESPN rejects empty/bot-style UAs. */
+/** See the fetch below: ESPN's edge filters on this string; every part after the product token is load-bearing. */
 export const ESPN_USER_AGENT =
   'SpicyBettingSimulator/0.1 (+https://github.com/wardcrazy01894/SpicyBettingSimulator)';
 
@@ -80,9 +80,15 @@ export async function fetchScoreboard(
   try {
     response = await fetch(url, {
       method: 'GET',
-      // ESPN's edge returns 403 for an EMPTY User-Agent (Workers send none by
-      // default) and for "Mozilla/5.0 (compatible; …)" style bot UAs; a plain
-      // product token passes. Verified 2026-09-14 from the deployed Worker.
+      // ESPN's edge filters on User-Agent. MEASURED 2026-09-14 (5/5 each):
+      //   (none) / '' / 'Mozilla/5.0 (compatible; …)' / a real Chrome UA -> 403
+      //   'SpicyBettingSimulator/0.1'            (no comment)          -> 403
+      //   'SpicyBettingSimulator/0.1 (+https://example.com)'           -> 403
+      //   'SpicyBettingSimulator/0.1 (+https://github.com/…/…)'        -> 200
+      //   'curl/8.7.1'                                                 -> 200
+      // The filter is opaque; the product name and version are free, but the
+      // "(+https://github.com/…)" comment is load-bearing. Do NOT shorten or
+      // "tidy" ESPN_USER_AGENT without re-running the probe in docs/OPERATIONS.md.
       headers: { accept: 'application/json', 'user-agent': ESPN_USER_AGENT },
       // A hung upstream must not burn the job's wall clock; the lease TTL is
       // only 5 minutes and two targets share one invocation (PLAN.md §14.8).

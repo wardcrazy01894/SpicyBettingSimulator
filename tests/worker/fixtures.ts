@@ -312,6 +312,8 @@ export interface EspnStub {
   /** Every URL the Worker asked for, in order. */
   readonly urls: readonly string[];
   restore(): void;
+  /** Lower-cased request headers, one entry per upstream call. */
+  readonly requestHeaders: readonly Record<string, string>[];
 }
 
 /**
@@ -328,6 +330,7 @@ export interface EspnStub {
 export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> = {}): EspnStub {
   const responders = new Map<string, EspnResponder>();
   const urls: string[] = [];
+  const requestHeaders: Record<string, string>[] = [];
   const original = globalThis.fetch;
 
   const jsonResponder =
@@ -346,6 +349,13 @@ export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> 
       return original(input, init);
     }
     urls.push(url);
+    // Record the headers the Worker actually sends (ESPN's edge filters on
+    // User-Agent — see src/worker/espn.ts), so a test can assert them.
+    const sent: Record<string, string> = {};
+    new Headers(init?.headers).forEach((value, key) => {
+      sent[key.toLowerCase()] = value;
+    });
+    requestHeaders.push(sent);
     const dateKey = new URL(url).searchParams.get('dates') ?? '';
     const responder = responders.get(dateKey);
     if (responder === undefined) return jsonResponder([])();
@@ -370,9 +380,13 @@ export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> 
     get urls() {
       return urls;
     },
+    get requestHeaders() {
+      return requestHeaders;
+    },
     restore() {
       globalThis.fetch = original;
       urls.length = 0;
+      requestHeaders.length = 0;
     },
   };
 }
