@@ -1587,12 +1587,14 @@ WHERE
       (excluded.status, excluded.kickoff_at, COALESCE(COALESCE(excluded.week, games.week), -1));
 
 -- (B) LIVE update. NO INDEXED COLUMN MAY APPEAR IN THIS SET LIST. 1 row written
--- for a clock, score or rank change, and 1 for an L3 "seen" touch.
+-- for a clock, score, rank or conference change, and 1 for an L3 "seen" touch.
 UPDATE games SET
   period = ?, display_clock = ?,
   home_score = COALESCE(?, home_score), away_score = COALESCE(?, away_score),
   status_detail = ?,
-  home_rank = ?, away_rank = ?, home_conference_id = ?, away_conference_id = ?,
+  home_rank = ?, away_rank = ?,
+  home_conference_id = COALESCE(?, home_conference_id),   -- absent != left the conference
+  away_conference_id = COALESCE(?, away_conference_id),
   home_logo = ?, away_logo = ?,
   name = ?, short_name = ?, home_name = ?, away_name = ?,
   last_seen_at = ?,
@@ -2559,7 +2561,7 @@ main.tsx
     │           │   ├── route "/"           <GamesPage>
     │           │   │   ├── <LeagueTabs>    moves the BOARD only — never the slip
     │           │   │   ├── <WeekPicker>
-    │           │   │   ├── <BoardFilterSelect>   CFB only: All / Top 25 / conference / Other (FCS)
+    │           │   │   ├── <BoardFilterSelect>   CFB only: All / Top 25 / conference / Other
     │           │   │   │                          → filterGames() in lib/board-filter.ts, client-side;
     │           │   │   │                            a game matches when EITHER team does; reset on league change
     │           │   │   └── groupGamesByLocalDate()   (viewer's LOCAL tz)

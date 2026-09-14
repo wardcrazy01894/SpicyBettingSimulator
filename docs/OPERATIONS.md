@@ -71,6 +71,9 @@ Applied migrations, newest last:
 | `0003_bug_reports.sql`      | `bug_reports` table + 2 indexes — in-app bug reports         | on merge to `main`, by the Deploy workflow |
 | `0004_games_conference.sql` | `games.home/away_conference_id TEXT NULL` — CFB board filter | on merge to `main`, by the Deploy workflow |
 
+(0003 and 0004 were written on parallel branches and numbered by reservation; wrangler applies
+whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)
+
 **You do not normally run a migration by hand.** `.github/workflows/deploy.yml` runs
 `wrangler d1 migrations apply --remote` on every push to `main`, BEFORE `wrangler deploy` — so
 merging the PR that adds `0002` applies `0002` and then ships the code that needs it, in that

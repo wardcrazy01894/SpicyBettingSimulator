@@ -464,16 +464,16 @@ const GAMES_LIVE_OLD = `(period, display_clock,
    COALESCE(home_logo, ''), COALESCE(away_logo, ''),
    name, short_name, home_name, away_name)`;
 
-// Conference is COALESCEd against the stored value like a score: a CFB payload
-// that omits it is an absence, never "this team left its conference", so an
-// ESPN flap must not clear the column, bump updated_at, and hand every pending
-// bet on the game a fresh settle budget (§7.1). Rank is NOT treated this way —
-// for a rank, NULL means "dropped out of the poll" and is a fact.
-
 /**
  * The bound counterpart of `GAMES_LIVE_OLD`. Scores are COALESCEd against the
  * stored value first, exactly as the SET list does, so a payload that omits a
  * score neither nulls it out nor counts as a change.
+ *
+ * Conference ids get the same treatment: a CFB payload that omits one is an
+ * absence, never "this team left its conference", so an ESPN flap must not
+ * clear the column, bump `updated_at`, and hand every pending bet on the game a
+ * fresh settle budget (§7.1). Rank is deliberately NOT coalesced — for a rank,
+ * NULL means "dropped out of the poll" and is a fact.
  */
 const GAMES_LIVE_NEW = `(?, ?,
    COALESCE(COALESCE(?, home_score), -1), COALESCE(COALESCE(?, away_score), -1),
