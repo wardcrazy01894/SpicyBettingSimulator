@@ -9,10 +9,11 @@ describe('teaserTierOptionLabel', () => {
     expect(teaserTierOptionLabel(65, 2, TEASER_PAYOUTS)).toBe('6.5-pt · -130');
   });
 
-  it('clamps the leg count into the card: one leg previews the 2-leg row, eleven the 10-leg row', () => {
+  it('a slip below the teaser minimum previews the smallest row; beyond the card it shows no price', () => {
     expect(teaserTierOptionLabel(60, 1, TEASER_PAYOUTS)).toBe('6-pt · -120');
     expect(teaserTierOptionLabel(60, 0, TEASER_PAYOUTS)).toBe('6-pt · -120');
-    expect(teaserTierOptionLabel(60, 11, TEASER_PAYOUTS)).toBe('6-pt · +2500');
+    // Eleven legs is not on the card: never quote the 10-leg price for it.
+    expect(teaserTierOptionLabel(60, 11, TEASER_PAYOUTS)).toBe('6-pt');
   });
 
   it('falls back to the bare points label when the card has no such cell', () => {

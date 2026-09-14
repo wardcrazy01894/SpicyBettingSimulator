@@ -4,7 +4,7 @@
  * instead of rendering a raw enum value to a user.
  */
 
-import { MAX_PARLAY_LEGS, MIN_TEASER_LEGS } from '../../shared/constants.js';
+import { MIN_TEASER_LEGS } from '../../shared/constants.js';
 import { formatAmerican } from '../../shared/odds.js';
 import { formatLineTenths } from '../../shared/validate.js';
 import type {
@@ -80,17 +80,18 @@ export function teaserPointsLabel(pointsTenths: number): string {
 
 /**
  * The tier dropdown's entry: "6-pt · -120". The price is the card's cell for
- * the slip's CURRENT leg count, clamped into the card's 2–10 range so a
- * one-leg (not yet placeable) slip previews the 2-leg row rather than nothing.
- * A tier the card somehow lacks falls back to the bare points label — the
- * server's card is the truth, and the label must never invent a number.
+ * the slip's CURRENT leg count; a slip below the teaser minimum (not yet
+ * placeable) previews the smallest row rather than nothing. Any cell the
+ * server's card does not have — an unknown tier, or more legs than it prices —
+ * falls back to the bare points label: the card is the truth, and the label
+ * must never invent a number (no upper clamp, on purpose).
  */
 export function teaserTierOptionLabel(
   pointsTenths: number,
   legCount: number,
   card: Readonly<Record<number, Readonly<Record<number, number>>>>,
 ): string {
-  const legs = Math.min(Math.max(legCount, MIN_TEASER_LEGS), MAX_PARLAY_LEGS);
+  const legs = Math.max(legCount, MIN_TEASER_LEGS);
   const price = card[pointsTenths]?.[legs];
   const points = teaserPointsLabel(pointsTenths);
   return price === undefined ? points : `${points} · ${formatAmerican(price)}`;

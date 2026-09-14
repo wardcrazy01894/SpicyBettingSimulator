@@ -2636,7 +2636,7 @@ main.tsx
     │           │   └── route "*"           <NotFoundPage>
     │           └── <BetSlip>               role="dialog" sheet, useFocusTrap()
     │               ├── <Segmented straight|parlay|teaser>
-    │               ├── <Segmented<number> 6 | 6.5 | 7>   (teaser mode only)
+    │               ├── <select> 3 … 14 pt (teaser mode only): each option "6-pt · -120" from config.teaserPayouts for the slip's leg count
     │               ├── leg rows w/ NFL·CFB badge and "-7.5 → -1.5" tease preview
     │               ├── <StakeInput cents quickChips>
     │               └── <SlipSummary preview stakeCents>
