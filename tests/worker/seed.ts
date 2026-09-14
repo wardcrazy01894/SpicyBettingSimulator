@@ -37,6 +37,11 @@ export interface SeedGameSpec {
   readonly awayScore?: number | null;
   readonly neutralSite?: boolean;
   readonly lastSeenAt?: number;
+  /** ESPN conference ids (`CFB_CONFERENCES`); default NULL, like the NFL. */
+  readonly homeConferenceId?: string | null;
+  readonly awayConferenceId?: string | null;
+  readonly homeRank?: number | null;
+  readonly awayRank?: number | null;
 }
 
 export interface SeedLineSpec {
@@ -86,11 +91,13 @@ export async function seedGame(db: D1Database, spec: SeedGameSpec): Promise<void
          period, display_clock, neutral_site,
          home_team_id, home_abbr, home_name, home_logo, home_rank, home_score,
          away_team_id, away_abbr, away_name, away_logo, away_rank, away_score,
+         home_conference_id, away_conference_id,
          first_seen_at, last_seen_at, updated_at)
        VALUES (?1, 'espn', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                NULL, NULL, ?13,
-               ?14, ?15, ?15, NULL, NULL, ?16,
-               ?17, ?18, ?18, NULL, NULL, ?19,
+               ?14, ?15, ?15, NULL, ?23, ?16,
+               ?17, ?18, ?18, NULL, ?24, ?19,
+               ?21, ?22,
                ?20, ?20, ?20)`,
     )
     .bind(
@@ -114,6 +121,10 @@ export async function seedGame(db: D1Database, spec: SeedGameSpec): Promise<void
       away,
       spec.awayScore ?? null,
       spec.lastSeenAt ?? spec.kickoffAt,
+      spec.homeConferenceId ?? null,
+      spec.awayConferenceId ?? null,
+      spec.homeRank ?? null,
+      spec.awayRank ?? null,
     )
     .run();
 }

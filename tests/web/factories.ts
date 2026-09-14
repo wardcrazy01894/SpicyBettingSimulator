@@ -15,7 +15,15 @@ export function localMs(year: number, month1: number, day: number, hour = 12, mi
 }
 
 function team(abbr: string): GameTeamView {
-  return { teamId: abbr, abbr, name: abbr, logo: null, rank: null, score: null };
+  return {
+    teamId: abbr,
+    abbr,
+    name: abbr,
+    logo: null,
+    rank: null,
+    conferenceId: null,
+    score: null,
+  };
 }
 
 export function gameCard(overrides: Partial<GameCard> & { id: string }): GameCard {

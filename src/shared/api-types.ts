@@ -109,6 +109,8 @@ export interface GameTeamView {
   readonly name: string;
   readonly logo: string | null;
   readonly rank: number | null;
+  /** ESPN conference id, see `CFB_CONFERENCES`; null for the NFL. */
+  readonly conferenceId: string | null;
   readonly score: number | null;
 }
 

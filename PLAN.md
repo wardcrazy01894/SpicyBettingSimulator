@@ -216,6 +216,11 @@ itself, so a D1 dump does not hand an attacker live sessions. Plus `user_id`,
 **`games`** — the canonical game row.
 Notable columns:
 
+- `home_conference_id` / `away_conference_id` (migration `0004_games_conference.sql`)
+  — ESPN `team.conferenceId` as a TEXT id (`"8"` = SEC; the FBS list is
+  `CFB_CONFERENCES` in constants.ts), NULL for the NFL. Denormalized like rank
+  and logo so the CFB board can filter by conference (§12.1) from the slate it
+  already has. Written by the live update (B), so realignment self-corrects.
 - `kickoff_at` — **mutable**; ESPN can reschedule.
 - `original_kickoff_at` — written once on insert, never updated. Used by the
   "postponed too long → void" rule (§7.5) so a game that gets pushed a month out
@@ -1450,6 +1455,9 @@ team fields    team.{id, abbreviation, displayName, logo}. id, abbreviation and
                nullable. Stored denormalized on `games`.
 rank           competitors[].curatedRank.current. Kept only when 1..25; 99 and
                anything else becomes NULL. NFL competitors have no curatedRank.
+conference     team.conferenceId, kept as a string id (asIdString). NULL when
+               absent, which is every NFL competitor. Stored on `games` as
+               home/away_conference_id (migration 0004).
 neutral site   competitions[0].neutralSite. Absent => false.
 season/week    event.season.{year,type} and event.week.number, taken from the
                EVENT, not from the payload root, because a date query can return
@@ -1579,12 +1587,15 @@ WHERE
       (excluded.status, excluded.kickoff_at, COALESCE(COALESCE(excluded.week, games.week), -1));
 
 -- (B) LIVE update. NO INDEXED COLUMN MAY APPEAR IN THIS SET LIST. 1 row written
--- for a clock, score or rank change, and 1 for an L3 "seen" touch.
+-- for a clock, score, rank or conference change, and 1 for an L3 "seen" touch.
 UPDATE games SET
   period = ?, display_clock = ?,
   home_score = COALESCE(?, home_score), away_score = COALESCE(?, away_score),
   status_detail = ?,
-  home_rank = ?, away_rank = ?, home_logo = ?, away_logo = ?,
+  home_rank = ?, away_rank = ?,
+  home_conference_id = COALESCE(?, home_conference_id),   -- absent != left the conference
+  away_conference_id = COALESCE(?, away_conference_id),
+  home_logo = ?, away_logo = ?,
   name = ?, short_name = ?, home_name = ?, away_name = ?,
   last_seen_at = ?,
   -- updated_at means "data changed", NOT "seen again": it advances only when the
@@ -2183,7 +2194,7 @@ GameCard = {
   period: number | null,
   displayClock: string | null,
   neutralSite: boolean,
-  home: { teamId, abbr, name, logo, rank, score }, away: {...},
+  home: { teamId, abbr, name, logo, rank, conferenceId, score }, away: {...},
   lockAt: number,                 // kickoffAt - cutoffBufferMs
   bettable: boolean,              // status==='scheduled' && now < lockAt && lines fresh
   lines: null | {
@@ -2200,7 +2211,11 @@ GameCard = {
 
 `rank` is `curatedRank.current` kept only for 1..25 (`null` otherwise, and always
 `null` for the NFL); it is in the card because on a CFB board the rank is the
-most visible thing about a matchup. `period`/`displayClock` render a live game's
+most visible thing about a matchup. `conferenceId` is ESPN's `team.conferenceId`
+(`null` for the NFL); the CFB board's Top 25 / conference filter (§12.1) is
+computed CLIENT-SIDE from these two fields over the week's slate — there is no
+`?conference=` or `?ranked=` query, because it is a board narrowing, not a money
+slice, and the whole week is already in hand. `period`/`displayClock` render a live game's
 "Q3 07:12".
 
 **Reading the board WRITES NOTHING.** It used to run §4.4's lazy bankroll
@@ -2546,6 +2561,9 @@ main.tsx
     │           │   ├── route "/"           <GamesPage>
     │           │   │   ├── <LeagueTabs>    moves the BOARD only — never the slip
     │           │   │   ├── <WeekPicker>
+    │           │   │   ├── <BoardFilterSelect>   CFB only: All / Top 25 / conference / Other
+    │           │   │   │                          → filterGames() in lib/board-filter.ts, client-side;
+    │           │   │   │                            a game matches when EITHER team does; reset on league change
     │           │   │   └── groupGamesByLocalDate()   (viewer's LOCAL tz)
     │           │   │       └── <GameCard game now>
     │           │   │           ├── <TeamRow team score rank>
@@ -3535,6 +3553,15 @@ deleted_at INTEGER NULL`, for the soft delete (§3.2 / §10.5 / §11.6). One nul
 - **`constants.ts`** — `BUG_REPORT_*` limits and `BUG_REPORTS_PER_WINDOW` /
   `BUG_REPORT_WINDOW_MS`. No error code added: `VALIDATION`, `RATE_LIMITED` and
   `UPSTREAM_UNAVAILABLE` already mean exactly the three failures.
+- **`migrations/0004_games_conference.sql`** — `games.home_conference_id` /
+  `away_conference_id TEXT NULL`, for the CFB board's conference filter (§3.2 /
+  §8.3 / §12.1). Two nullable `ADD COLUMN`s; the parser, the ingest live update
+  (B) and `GameTeamView.conferenceId` are the code half. Applied by the Deploy
+  workflow on merge; the old Worker neither reads nor writes the columns, so the
+  order is harmless in both directions. After the apply every existing `games`
+  row has NULL in both until the next refresh's (B) pass fills it — a few
+  minutes in which every CFB game sits under the board filter's "Other" — at a
+  one-time cost of about one row write per active game.
 
 ## 17. Risks and mitigations
 

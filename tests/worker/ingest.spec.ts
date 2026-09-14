@@ -325,6 +325,7 @@ describe('fixture conformance', () => {
         name: 'CIN Full Name',
         logo: 'https://a.espncdn.com/i/teamlogos/nfl/500/cin.png',
         rank: null, // curatedRank.current 99 -> null
+        conferenceId: null, // no team.conferenceId in the NFL shape
         score: 0, // the pre-game STRING "0" is 0, never null
       },
       away: {
@@ -333,6 +334,7 @@ describe('fixture conformance', () => {
         name: 'TB Full Name',
         logo: 'https://a.espncdn.com/i/teamlogos/nfl/500/tb.png',
         rank: null,
+        conferenceId: null,
         score: 0,
       },
     };
@@ -1369,9 +1371,23 @@ describe('A/B split: rows written per kind of change (PLAN.md §8.5)', () => {
       expect(assigned.has(column), `${column} must not be SET by the live update`).toBe(false);
     }
     // ...and it MUST still carry the columns that used to be INSERT-only.
-    for (const column of ['home_rank', 'away_rank', 'home_logo', 'away_logo', 'name']) {
+    for (const column of [
+      'home_rank',
+      'away_rank',
+      'home_conference_id',
+      'away_conference_id',
+      'home_logo',
+      'away_logo',
+      'name',
+    ]) {
       expect(assigned.has(column), `${column} must be SET by the live update`).toBe(true);
     }
+  });
+
+  it("GAME_LIVE_SQL stays under D1's 100 bound parameters per statement", () => {
+    // Every column added to (B) costs THREE placeholders (SET + two tuple
+    // splices); this turns the platform wall into a test failure.
+    expect((GAME_LIVE_SQL.match(/\?/g) ?? []).length).toBeLessThanOrEqual(100);
   });
 });
 
@@ -1819,5 +1835,64 @@ describe('the live update refreshes fields that used to go stale', () => {
     expect((await gameRow('nfl:401872925'))?.neutral_site).toBe(0);
     await ingestSlate([spec({ neutralSite: true, odds: undefined })], T0 + DAY, t);
     expect((await gameRow('nfl:401872925'))?.neutral_site).toBe(0);
+  });
+});
+
+describe('conference id (migration 0004)', () => {
+  it('is inserted from team.conferenceId, NULL for the NFL, and updated by (B) on change', async () => {
+    await planTargets(env, T0);
+    const cfb = await loadTarget(`ncaaf:date:${etDateKey(T0)}`);
+    const game = (awayConferenceId: string): EventSpec =>
+      spec({
+        eventId: '990001',
+        league: 'ncaaf',
+        homeAbbr: 'UGA',
+        awayAbbr: 'KENT',
+        homeConferenceId: '8',
+        awayConferenceId,
+      });
+    const read = (id: string) =>
+      env.DB.prepare(
+        'SELECT home_conference_id, away_conference_id, updated_at FROM games WHERE id = ?1',
+      )
+        .bind(id)
+        .first<{
+          home_conference_id: string | null;
+          away_conference_id: string | null;
+          updated_at: number;
+        }>();
+
+    await ingestSlate([game('15')], T0, cfb);
+    const first = await read('ncaaf:990001');
+    expect(first).toMatchObject({ home_conference_id: '8', away_conference_id: '15' });
+
+    // Realignment: the away team moves to the American. (B) must write it AND
+    // count it as a data change (updated_at advances) — not an L3 touch.
+    await ingestSlate([game('151')], T0 + MIN, cfb);
+    const second = await read('ncaaf:990001');
+    expect(second).toMatchObject({ home_conference_id: '8', away_conference_id: '151' });
+    expect(second?.updated_at ?? 0).toBeGreaterThan(first?.updated_at ?? 0);
+
+    // Seen again, unchanged: no data change.
+    await ingestSlate([game('151')], T0 + 2 * MIN, cfb);
+    expect((await read('ncaaf:990001'))?.updated_at).toBe(second?.updated_at);
+
+    // A payload that OMITS the id is an absence, not a change: the stored
+    // value sticks and updated_at does not move.
+    await ingestSlate(
+      [spec({ eventId: '990001', league: 'ncaaf', homeAbbr: 'UGA', awayAbbr: 'KENT' })],
+      T0 + 3 * MIN,
+      cfb,
+    );
+    const third = await read('ncaaf:990001');
+    expect(third).toMatchObject({ home_conference_id: '8', away_conference_id: '151' });
+    expect(third?.updated_at).toBe(second?.updated_at);
+
+    // The NFL shape carries no conferenceId at all.
+    await ingestSlate([spec({ eventId: '990002' })], T0 + 4 * MIN);
+    expect(await read('nfl:990002')).toMatchObject({
+      home_conference_id: null,
+      away_conference_id: null,
+    });
   });
 });

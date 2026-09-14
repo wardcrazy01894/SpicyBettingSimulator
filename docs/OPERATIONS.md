@@ -64,11 +64,15 @@ that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's
 
 Applied migrations, newest last:
 
-| File                        | What                                                  | Applied remotely                           |
-| --------------------------- | ----------------------------------------------------- | ------------------------------------------ |
-| `0001_init.sql`             | the whole schema                                      | 2026-09-14                                 |
-| `0002_users_deleted_at.sql` | `users.deleted_at INTEGER NULL` — account soft delete | on merge to `main`, by the Deploy workflow |
-| `0003_bug_reports.sql`      | `bug_reports` table + 2 indexes — in-app bug reports  | on merge to `main`, by the Deploy workflow |
+| File                        | What                                                         | Applied remotely                           |
+| --------------------------- | ------------------------------------------------------------ | ------------------------------------------ |
+| `0001_init.sql`             | the whole schema                                             | 2026-09-14                                 |
+| `0002_users_deleted_at.sql` | `users.deleted_at INTEGER NULL` — account soft delete        | on merge to `main`, by the Deploy workflow |
+| `0003_bug_reports.sql`      | `bug_reports` table + 2 indexes — in-app bug reports         | on merge to `main`, by the Deploy workflow |
+| `0004_games_conference.sql` | `games.home/away_conference_id TEXT NULL` — CFB board filter | on merge to `main`, by the Deploy workflow |
+
+(0003 and 0004 were written on parallel branches and numbered by reservation; wrangler applies
+whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)
 
 **You do not normally run a migration by hand.** `.github/workflows/deploy.yml` runs
 `wrangler d1 migrations apply --remote` on every push to `main`, BEFORE `wrangler deploy` — so
