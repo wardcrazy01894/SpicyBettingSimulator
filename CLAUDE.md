@@ -169,9 +169,10 @@ the one failure mode the whole checklist has.
    describing production. Comment-only edits to `0001` are fine (they change no
    DDL). The pre-deploy window in which the M5b contract change was folded into
    `0001` is closed and is history, not precedent. PLAN.md §16.1.
-   - `0002_users_deleted_at.sql` is the first of those new files,
-     `0003_bug_reports.sql` (the `bug_reports` table) the second, and
-     `0004_games_conference.sql` adds `games.home/away_conference_id`. PLAN.md §16.2.
+   - `0002_users_deleted_at.sql` is the first of those new files;
+     `0003_bug_reports.sql` (the `bug_reports` table) the second,
+     `0004_games_conference.sql` adds `games.home/away_conference_id`, and
+     `0006_bug_reports_diagnostics.sql` adds `bug_reports.diagnostics`. PLAN.md §16.2.
    - A new migration is a deploy step. The Deploy workflow
      (`.github/workflows/deploy.yml`) applies pending migrations automatically on
      every merge to `main`, before it deploys. For a MANUAL deploy the order is
@@ -322,7 +323,10 @@ Jobs can be kicked manually as an admin: `POST /api/admin/jobs/{refresh|settle|m
 `GET /api/admin/jobs` shows the last 50 runs with stats, parser warnings and
 auto-void decisions — check it first when something looks wrong.
 `GET /api/admin/bugs` (and the Bug reports section of `/admin`) lists what users
-filed through "Report a bug", including reports GitHub refused.
+filed through "Report a bug", including reports GitHub refused, each with the
+browser's diagnostics log. `wrangler tail` shows one `[api]` line per failed or
+slow request and one `[client-error]` line per browser crash — the "Logs"
+section of `docs/OPERATIONS.md` is the key to the prefixes.
 
 ## Git identity
 

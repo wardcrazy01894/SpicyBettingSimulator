@@ -12,10 +12,15 @@ import type { ReactElement, SyntheticEvent } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import { ErrorBanner } from './ErrorBanner.js';
+import { diagnosticsText } from '../diagnostics.js';
 import { Spinner } from './Spinner.js';
 import { postBugReport } from '../api/client.js';
 import { useFocusTrap } from '../hooks/useFocusTrap.js';
-import { BUG_REPORT_DESCRIPTION_MAX, BUG_REPORT_TITLE_MAX } from '../../shared/constants.js';
+import {
+  BUG_REPORT_DESCRIPTION_MAX,
+  BUG_REPORT_DIAGNOSTICS_MAX,
+  BUG_REPORT_TITLE_MAX,
+} from '../../shared/constants.js';
 import { validateBugReport } from '../../shared/validate.js';
 import type { BugReportResponse } from '../../shared/api-types.js';
 
@@ -71,7 +76,8 @@ export function BugReportSheet(props: {
     if (!draft.ok || busy) return;
     setBusy(true);
     setError(null);
-    postBugReport(draft.value)
+    // Rendered at SUBMIT so the log includes everything up to the click.
+    postBugReport({ ...draft.value, diagnostics: diagnosticsText(BUG_REPORT_DIAGNOSTICS_MAX) })
       .then((response) => {
         setFiled(response);
         setTitle('');
@@ -132,8 +138,8 @@ export function BugReportSheet(props: {
           <form className="bug-form" onSubmit={onSubmit}>
             <p className="muted slip-hint">
               What were you doing, what did you expect, and what happened instead? Your username,
-              the page you are on, the app version and your browser are attached automatically, and
-              the report is filed as a public GitHub issue.
+              the page you are on, the app version, your browser and a log of recent errors and
+              requests are attached automatically, and the report is filed as a public GitHub issue.
             </p>
             <label className="field">
               <span className="field-label">What went wrong</span>
@@ -166,6 +172,10 @@ export function BugReportSheet(props: {
               </span>
             </label>
             <p className="muted slip-hint">Page: {page}</p>
+            <details className="bug-diagnostics">
+              <summary className="muted">What gets attached</summary>
+              <pre className="bug-text">{diagnosticsText(BUG_REPORT_DIAGNOSTICS_MAX)}</pre>
+            </details>
 
             {problem !== null && <p className="field-problem">{problem}</p>}
             {error !== null && <ErrorBanner error={error} />}

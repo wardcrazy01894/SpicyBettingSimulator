@@ -15,6 +15,7 @@ import {
   BUG_REPORTS_PER_WINDOW,
   BUG_REPORT_USER_AGENT_MAX,
   BUG_REPORT_WINDOW_MS,
+  CLIENT_ERROR_BEACON_MAX,
 } from '../../src/shared/constants.js';
 import type { ApiErrorBody } from '../../src/shared/errors.js';
 import { GITHUB_USER_AGENT } from '../../src/worker/bugs.js';
@@ -275,6 +276,25 @@ describe('POST /api/bugs', () => {
     expect(typeof row?.['created_at']).toBe('number');
   });
 
+  it('stores the diagnostics block and files it in a fenced section', async () => {
+    const me = await register();
+    const diagnostics =
+      'app test · en · 390×844 · online\n12:00:00.000 api GET /api/games 200 40ms';
+    const res = await post({ ...GOOD, diagnostics }, me.cookie);
+    expect(res.status).toBe(201);
+    const body = await res.json<BugReportResponse>();
+    expect(github.calls[0]?.body.body).toContain(
+      `## Diagnostics\n\n\`\`\`text\n${diagnostics}\n\`\`\``,
+    );
+    const row = await env.DB.prepare('SELECT diagnostics FROM bug_reports WHERE id = ?1')
+      .bind(body.id)
+      .first<{ diagnostics: string | null }>();
+    expect(row?.diagnostics).toBe(diagnostics);
+    const admin = await register(true);
+    const list = await (await get('/api/admin/bugs', admin.cookie)).json<AdminBugReportsResponse>();
+    expect(list.reports.find((r) => r.id === body.id)?.diagnostics).toBe(diagnostics);
+  });
+
   it('never trusts a client-supplied reporter, version or time', async () => {
     const me = await register();
     const res = await post(
@@ -426,6 +446,44 @@ describe('POST /api/bugs', () => {
     }
     expect((await post(GOOD, me.cookie)).status).toBe(201);
     expect((await post(GOOD, other.cookie)).status).toBe(201);
+  });
+});
+
+describe('POST /api/bugs/client-errors', () => {
+  function beacon(body: unknown, cookie?: string): Promise<Response> {
+    return Promise.resolve(
+      buildApp().request(
+        'https://example.com/api/bugs/client-errors',
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-SBS-Client': '1',
+            ...(cookie === undefined ? {} : { cookie }),
+          },
+          body: JSON.stringify(body),
+        },
+        env,
+      ),
+    );
+  }
+
+  it('is 401 anonymous, 400 without text or over the cap, 204 when logged', async () => {
+    expect((await beacon({ diagnostics: 'x' })).status).toBe(401);
+    const me = await register();
+    expect((await beacon({}, me.cookie)).status).toBe(400);
+    expect((await beacon({ diagnostics: '   ' }, me.cookie)).status).toBe(400);
+    expect(
+      (await beacon({ diagnostics: 'y'.repeat(CLIENT_ERROR_BEACON_MAX + 1) }, me.cookie)).status,
+    ).toBe(400);
+    expect(
+      (await beacon({ diagnostics: 'TypeError: x is not a function (at a.js:1:1)' }, me.cookie))
+        .status,
+    ).toBe(204);
+    const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM bug_reports WHERE user_id = ?1')
+      .bind(me.id)
+      .first<{ n: number }>();
+    expect(n?.n).toBe(0);
   });
 });
 

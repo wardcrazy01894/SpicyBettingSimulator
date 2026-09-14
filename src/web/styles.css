@@ -187,6 +187,18 @@ button:disabled {
   color: var(--accent);
 }
 
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-bug {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
 .bankroll {
   display: flex;
   flex-direction: column;
@@ -1238,4 +1250,15 @@ select:focus-visible,
   font-size: 14px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.bug-diagnostics summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.bug-diagnostics .bug-text {
+  max-height: 240px;
+  overflow: auto;
+  font-size: 12px;
 }
