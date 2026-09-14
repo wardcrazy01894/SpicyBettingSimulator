@@ -5,9 +5,9 @@
  */
 
 import { footballWeekStart, formatDateRange, formatDayHeading, localDateKey } from './datetime.js';
-import { LEAGUE_LABEL } from './labels.js';
+import { BET_LEAGUE_LABEL } from './labels.js';
 import type { BetView, GameCard } from '../../shared/api-types.js';
-import type { EpochMs, League } from '../../shared/types.js';
+import type { BetLeague, EpochMs } from '../../shared/types.js';
 
 export interface DayGroup {
   /** `YYYY-MM-DD` in the viewer's local timezone. Stable React key. */
@@ -46,33 +46,37 @@ function byKickoff(a: GameCard, b: GameCard): number {
 
 export interface BetGroup {
   readonly key: string;
-  readonly league: League;
-  readonly season: number;
-  /** "NFL 2026 · Sep 11 – Sep 15". */
+  readonly league: BetLeague;
+  /** "NFL · Sep 11 – Sep 15". */
   readonly label: string;
   readonly bets: readonly BetView[];
 }
 
 /**
- * Group bets by `(league, season, football week)`, newest week first.
+ * Group bets by `(league, football week)`, newest week first.
+ *
+ * NO SEASON, in the key or the label (decided 2026-09-14, PLAN.md §19 Q5). The
+ * product has no concept of one, and it was redundant here anyway: the bucket is
+ * already keyed on `footballWeekStart`, an absolute timestamp, so two weeks a
+ * year apart could never have collided.
  *
  * DEVIATION FROM PLAN.md §12.3, stated out loud: the plan asks for the label
- * "Week N — Sep 11–15" using ESPN's authoritative week number. The FROZEN wire
- * contract does not expose `week` on `BetView` or `BetLegView` (only on
- * `GameCard`), so the number is not obtainable without an extra request per
- * game. The window itself is reproducible — `footballWeekStart` anchors to
- * Tuesday 00:00 local, which is the boundary that keeps a Thursday opener and
- * the following Monday nighter in one bucket — so the grouping is right and only
- * the numeric label is missing. The board still uses the server's `week`.
+ * "Week N — Sep 11–15" using ESPN's authoritative week number. The wire contract
+ * does not expose `week` on `BetView` or `BetLegView` (only on `GameCard`), so
+ * the number is not obtainable without an extra request per game. The window
+ * itself is reproducible — `footballWeekStart` anchors to Tuesday 00:00 local,
+ * which is the boundary that keeps a Thursday opener and the following Monday
+ * nighter in one bucket — so the grouping is right and only the numeric label is
+ * missing. The board still uses the server's `week`.
  */
 export function groupBetsByWeek(bets: readonly BetView[]): readonly BetGroup[] {
-  const buckets = new Map<string, { league: League; season: number; bets: BetView[] }>();
+  const buckets = new Map<string, { league: BetLeague; bets: BetView[] }>();
   for (const bet of bets) {
     const anchor = footballWeekStart(earliestKickoff(bet));
-    const key = `${bet.league}:${String(bet.season)}:${String(anchor)}`;
+    const key = `${bet.league}:${String(anchor)}`;
     const bucket = buckets.get(key);
     if (bucket === undefined) {
-      buckets.set(key, { league: bet.league, season: bet.season, bets: [bet] });
+      buckets.set(key, { league: bet.league, bets: [bet] });
     } else {
       bucket.bets.push(bet);
     }
@@ -86,8 +90,7 @@ export function groupBetsByWeek(bets: readonly BetView[]): readonly BetGroup[] {
       return {
         key,
         league: bucket.league,
-        season: bucket.season,
-        label: `${LEAGUE_LABEL[bucket.league]} ${String(bucket.season)} · ${formatDateRange(from, to)}`,
+        label: `${BET_LEAGUE_LABEL[bucket.league]} · ${formatDateRange(from, to)}`,
         bets: sorted,
       };
     })

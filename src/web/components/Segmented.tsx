@@ -1,6 +1,11 @@
 /**
- * The one segmented control used by the Open/Settled, NFL/NCAAF/All-time and
- * straight/parlay switches. 44px tall via `.segment` in styles.css.
+ * The one segmented control used by the Open/Settled, All/NFL/NCAAF,
+ * Straight/Parlay/Teaser and 6/6.5/7-point switches. 44px tall via `.segment`
+ * in styles.css.
+ *
+ * `T` allows a NUMBER as well as a string so the teaser tier (60/65/70 tenths)
+ * can be its own value rather than a stringified one that every call site has to
+ * parse back — a parse is exactly where "6.5 points" becomes "6 points".
  *
  * PLAIN buttons with `aria-pressed`, deliberately NOT `role="tab"`. A tablist
  * owes assistive tech a `tabpanel` for each tab and roving `tabindex` /
@@ -11,14 +16,14 @@
  */
 import type { ReactElement } from 'react';
 
-export interface SegmentedOption<T extends string> {
+export interface SegmentedOption<T extends string | number> {
   readonly value: T;
   readonly label: string;
   /** e.g. "Parlay" below two legs — offered, but not selectable yet. */
   readonly disabled?: boolean;
 }
 
-export function Segmented<T extends string>(props: {
+export function Segmented<T extends string | number>(props: {
   readonly label: string;
   readonly value: T;
   readonly options: readonly SegmentedOption<T>[];

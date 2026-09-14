@@ -2,11 +2,23 @@
  * Core domain types. Platform-free: no DOM, no Workers, no D1.
  *
  * OWNERSHIP: this file is written in milestone M2d and FROZEN at the end of M2d.
- * Every other track treats it as read-only (PLAN.md §16).
+ * Every other track treats it as read-only (PLAN.md §16). **M5b is the one
+ * sanctioned re-opening of that freeze** — see PLAN.md §16's contract-change
+ * note; it added `'teaser'` and `BetLeague`, and nothing else.
  */
 
 export const LEAGUES = ['nfl', 'ncaaf'] as const;
 export type League = (typeof LEAGUES)[number];
+
+/**
+ * What a BET's league column can hold. A GAME is always in exactly one league;
+ * a bet whose legs span both is `'mixed'` (M5b — cross-league parlays and
+ * teasers). Deliberately a separate alias rather than widening `League`: every
+ * `Record<League, …>` label table, every `games.league` value and every board
+ * query still means "one real league", and widening would have made all of them
+ * silently incomplete.
+ */
+export type BetLeague = League | 'mixed';
 
 export type GameStatus =
   'scheduled' | 'in_progress' | 'final' | 'postponed' | 'canceled' | 'unknown';
@@ -16,7 +28,12 @@ export type Market = 'moneyline' | 'spread' | 'total';
 /** `home`/`away` for moneyline+spread, `over`/`under` for totals. */
 export type Side = 'home' | 'away' | 'over' | 'under';
 
-export type BetType = 'straight' | 'parlay';
+/**
+ * `teaser` is a parlay whose spread/total legs are all moved the same number of
+ * points in the bettor's favour, priced from a fixed card
+ * (`TEASER_PAYOUTS`) instead of from the product of its legs.
+ */
+export type BetType = 'straight' | 'parlay' | 'teaser';
 
 export type BetStatus = 'pending' | 'won' | 'lost' | 'push' | 'void' | 'cancelled';
 
@@ -140,13 +157,20 @@ export interface GameResult {
   readonly awayScore: number | null;
 }
 
+/**
+ * One account balance. Not scoped to a league or a season and never rolled over
+ * (M5b): a user has exactly one `main` balance, created at signup, plus any
+ * number of future `custom` side pots.
+ */
 export interface Bankroll {
   readonly id: string;
   readonly userId: string;
-  readonly league: League;
-  readonly season: number;
+  readonly name: string;
+  readonly kind: BankrollKind;
   readonly balanceCents: Cents;
 }
+
+export type BankrollKind = 'main' | 'custom';
 
 export interface UserSummary {
   readonly id: string;

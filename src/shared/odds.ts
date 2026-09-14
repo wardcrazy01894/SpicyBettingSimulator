@@ -32,7 +32,7 @@
  * exact arithmetic is the guarantee, not the empirical hit rate.
  */
 
-import { MAX_PAYOUT_CENTS } from './constants.js';
+import { MAX_PAYOUT_CENTS, TEASER_PAYOUTS, isTeaserPoints } from './constants.js';
 import { AppError } from './errors.js';
 import type { AmericanPrice, Cents, Price } from './types.js';
 
@@ -202,6 +202,78 @@ export function priceToAmerican(price: Price): AmericanPrice {
     throw new AppError('VALIDATION', 'Price is too long to express as an American price.');
   }
   return positive ? Number(magnitude) : -Number(magnitude);
+}
+
+/**
+ * Move one line `pointsTenths` in the BETTOR'S favour. Integer tenths in,
+ * integer tenths out — no float, no rounding, and exactly representable because
+ * the tiers (60/65/70) and football lines are both multiples of 5 tenths.
+ *
+ * The direction is the whole content of the function, so it is spelled out:
+ *   spread  `lineTenths + points`  — the line is ALREADY from the bettor's side
+ *           (home −7.5 is −75, away +3.5 is +35, PLAN.md §3.2), so adding always
+ *           helps: −75 → −15 at 6 points, +35 → +95. There is no sign flip and
+ *           there must not be one; a `side`-dependent version would tease the
+ *           away side the wrong way.
+ *   over    `lineTenths − points`  — a lower total is easier to go over.
+ *   under   `lineTenths + points`  — a higher total is easier to stay under.
+ *
+ * A moneyline has no line to move and is rejected upstream by `validatePlaceBet`;
+ * passing one here throws rather than inventing a number.
+ *
+ * @throws AppError('VALIDATION') for a moneyline, a non-integer line, or a tier
+ *   that is not on the card.
+ */
+export function teasedLineTenths(
+  market: 'spread' | 'total',
+  side: 'home' | 'away' | 'over' | 'under',
+  lineTenths: number,
+  pointsTenths: number,
+): number {
+  assertInteger(lineTenths, 'Line tenths');
+  if (!isTeaserPoints(pointsTenths)) {
+    throw new AppError(
+      'VALIDATION',
+      `Teaser points must be 60, 65 or 70 tenths, got ${String(pointsTenths)}.`,
+    );
+  }
+  if (market === 'spread') return lineTenths + pointsTenths;
+  if (side === 'over') return lineTenths - pointsTenths;
+  if (side === 'under') return lineTenths + pointsTenths;
+  throw new AppError('VALIDATION', `Cannot tease a ${market}/${side} leg.`);
+}
+
+/**
+ * The CARD price of a teaser: a lookup, not a computation.
+ *
+ * A teaser's price has nothing to do with its legs' prices — moving every line
+ * six points in the bettor's favour invalidates them — so this is a total
+ * function of (tier, leg count) and of nothing else. It is the ONLY way a teaser
+ * price is obtained, at placement and at settlement alike, which is what makes
+ * "the price a pushed-down teaser is paid at" a table read rather than a second
+ * pricing rule that could drift from the first.
+ *
+ * @param pointsTenths 60 | 65 | 70 (6 / 6.5 / 7 points).
+ * @param legCount     2..10 — the SURVIVING leg count at settlement, which is
+ *                     why a 1-leg lookup must throw rather than return a
+ *                     straight-bet price: there is no such thing as a one-team
+ *                     teaser, and a caller that reaches here with 1 has skipped
+ *                     the no-action rule (PLAN.md §5.8).
+ * @throws AppError('VALIDATION') for a tier or leg count off the card.
+ */
+export function teaserPrice(pointsTenths: number, legCount: number): AmericanPrice {
+  if (!isTeaserPoints(pointsTenths)) {
+    throw new AppError(
+      'VALIDATION',
+      `Teaser points must be 60, 65 or 70 tenths, got ${String(pointsTenths)}.`,
+    );
+  }
+  const row: Readonly<Record<number, AmericanPrice>> = TEASER_PAYOUTS[pointsTenths];
+  const price = row[legCount];
+  if (price === undefined) {
+    throw new AppError('VALIDATION', `A teaser has 2-10 legs, got ${String(legCount)}.`);
+  }
+  return price;
 }
 
 /** Product of leg prices. Empty input returns EVEN_MONEY_UNIT. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { mergePages, nextCursorOf } from '../../src/web/lib/paging.js';
+import { mergePages, nextCursorOf, windowIsStale } from '../../src/web/lib/paging.js';
 import type { Page } from '../../src/web/lib/paging.js';
 
 interface Row {
@@ -49,5 +49,38 @@ describe('nextCursorOf', () => {
 
   it('is null when nothing has loaded yet', () => {
     expect(nextCursorOf<Row>([])).toBeNull();
+  });
+});
+
+describe('windowIsStale', () => {
+  const held = { resetKey: 'open', firstId: 'b1' };
+
+  it('is false while nothing has moved', () => {
+    expect(windowIsStale(held, 'open', 'b1')).toBe(false);
+  });
+
+  it('is true when the filter changes', () => {
+    expect(windowIsStale(held, 'settled', 'b1')).toBe(true);
+    // ...even before page 1 of the new filter has arrived.
+    expect(windowIsStale(held, 'settled', undefined)).toBe(true);
+  });
+
+  it('is TRUE when the top of page 1 changes under the held pages', () => {
+    // A new bet lands at the top, so every held page is off by one and the row
+    // that used to end page 1 is now unreachable. This is the case M7's review
+    // flagged and the one `mergePages` cannot detect.
+    expect(windowIsStale(held, 'open', 'b2')).toBe(true);
+  });
+
+  it('holds the pages while page 1 is still loading (undefined is not information)', () => {
+    // Otherwise a remount, or any refetch, would throw away pages the user has
+    // explicitly asked for on every poll.
+    expect(windowIsStale(held, 'open', undefined)).toBe(false);
+  });
+
+  it('treats an emptied page 1 as a real change, but an always-empty one as stable', () => {
+    expect(windowIsStale(held, 'open', null)).toBe(true);
+    expect(windowIsStale({ resetKey: 'open', firstId: null }, 'open', null)).toBe(false);
+    expect(windowIsStale({ resetKey: 'open', firstId: null }, 'open', 'b1')).toBe(true);
   });
 });

@@ -25,9 +25,13 @@ export interface GameCardProps {
   readonly now: number;
 }
 
+/** Shown on a greyed moneyline cell while the slip is building a teaser. */
+const UNTEASABLE_HINT = 'moneylines cannot be teased';
+
 export function GameCard(props: GameCardProps): ReactElement {
   const { game, now } = props;
   const slip = useBetSlip();
+  const teasing = slip.mode === 'teaser';
 
   const final = game.status === 'final';
   const started = game.status === 'in_progress' || final;
@@ -80,7 +84,12 @@ export function GameCard(props: GameCardProps): ReactElement {
               // one eagerly with `americanPrice: cell.price ?? 0` — a price of
               // ZERO, which is not a legal American price at all — for all six
               // cells of every card on the board.
-              const disabled = !game.bettable || stale || quote === null;
+              //
+              // A teaser MOVES A LINE, so a moneyline has nothing to move: the
+              // cell is greyed out while the slip is in teaser mode rather than
+              // accepting a tap the server would then refuse.
+              const unteasable = teasing && cell.market === 'moneyline';
+              const disabled = !game.bettable || stale || quote === null || unteasable;
               return (
                 <MarketButton
                   key={`${cell.market}:${cell.side}`}
@@ -92,6 +101,7 @@ export function GameCard(props: GameCardProps): ReactElement {
                   disabled={disabled}
                   selected={slip.isSelected(game.id, cell.market, cell.side)}
                   ariaLabel={label}
+                  {...(unteasable ? { disabledReason: UNTEASABLE_HINT } : {})}
                   onToggle={() => {
                     if (quote === null) return;
                     slip.toggleLeg({

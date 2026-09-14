@@ -6,32 +6,30 @@ import { BetSlip } from './BetSlip.js';
 import { BetSlipBar } from './BetSlipBar.js';
 import { NavTabs } from './NavTabs.js';
 import { Spinner } from './Spinner.js';
-import { useBankroll } from '../hooks/useApi.js';
-import { LEAGUE_LABEL } from '../lib/labels.js';
-import { useBetSlip } from '../state/bet-slip.js';
-import { useConfig } from '../state/config.js';
+import { useBalances } from '../hooks/useApi.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
 
 /**
- * Balance and equity for the slip's active league, so the header agrees with
- * what the slip is spending. `equityCents = balance + pending` (PLAN.md §11.5):
- * pending stakes are ALREADY deducted from the balance, so equity is what the
- * bankroll would be worth if every open bet were voided.
+ * The ACCOUNT balance and its equity. One number for the whole app (M5b) — it no
+ * longer changes when the board's league tab does, because there is no longer a
+ * per-league pot for it to change to.
+ *
+ * `equityCents = balance + pending` (PLAN.md §11.5): pending stakes are ALREADY
+ * deducted from the balance, so equity is what the account would be worth if
+ * every open bet were voided.
  */
 function BankrollBadge(): ReactElement {
-  const config = useConfig();
-  const slip = useBetSlip();
-  const season = config.currentSeason[slip.league];
-  const bankroll = useBankroll(slip.league, season);
+  const balances = useBalances();
+  const main = balances.data?.balances.find((b) => b.kind === 'main');
 
-  if (bankroll.data === undefined) {
-    return <span className="bankroll bankroll-empty">{LEAGUE_LABEL[slip.league]} —</span>;
+  if (main === undefined) {
+    return <span className="bankroll bankroll-empty">—</span>;
   }
   return (
     <span className="bankroll">
-      <span className="bankroll-balance">{formatCents(bankroll.data.balanceCents)}</span>
-      <span className="bankroll-equity">equity {formatCents(bankroll.data.equityCents)}</span>
+      <span className="bankroll-balance">{formatCents(main.balanceCents)}</span>
+      <span className="bankroll-equity">equity {formatCents(main.equityCents)}</span>
     </span>
   );
 }

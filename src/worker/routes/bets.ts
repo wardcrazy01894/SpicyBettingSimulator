@@ -15,16 +15,17 @@ import {
 } from '../bets.js';
 import { requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
-import { readInt, readLimit } from './games.js';
+import type { BetLeague } from '../../shared/types.js';
+import { readBetLeague, readLimit } from './games.js';
 import { readJson, validationError } from './auth.js';
 
 const BET_FILTERS = ['open', 'settled', 'all'] as const;
 type BetFilter = (typeof BET_FILTERS)[number];
 
+/** No `season`: the product has no concept of one (PLAN.md §19 Q5). */
 interface BetListFilter {
   status: BetFilter;
-  league?: 'nfl' | 'ncaaf';
-  season?: number;
+  league?: BetLeague;
   limit: number;
   cursor?: string;
 }
@@ -48,10 +49,8 @@ export function betsRoutes(): Hono<AppContext> {
       status: readFilter(c.req.query('status')),
       limit: readLimit(c.req.query('limit'), DEFAULT_BET_PAGE, MAX_BET_PAGE),
     };
-    const league = c.req.query('league');
-    if (league !== undefined && league !== '') filter.league = readLeagueFilter(league);
-    const season = readInt(c.req.query('season'), 'season');
-    if (season !== undefined) filter.season = season;
+    const league = readBetLeague(c.req.query('league'));
+    if (league !== undefined) filter.league = league;
     const cursor = c.req.query('cursor');
     if (cursor !== undefined && cursor !== '') filter.cursor = cursor;
 
@@ -103,11 +102,4 @@ function readFilter(raw: string | undefined): BetFilter {
     throw new AppError('VALIDATION', 'status must be open, settled or all', { field: 'status' });
   }
   return raw as BetFilter;
-}
-
-function readLeagueFilter(raw: string): 'nfl' | 'ncaaf' {
-  if (raw !== 'nfl' && raw !== 'ncaaf') {
-    throw new AppError('VALIDATION', 'league must be nfl or ncaaf', { field: 'league' });
-  }
-  return raw;
 }

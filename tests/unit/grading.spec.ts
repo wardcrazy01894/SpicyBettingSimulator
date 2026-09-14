@@ -8,8 +8,14 @@ import {
   gradeTotal,
   projectLeg,
 } from '../../src/shared/grading.js';
+import type { BetPricing } from '../../src/shared/grading.js';
 import { AppError } from '../../src/shared/errors.js';
-import { EVEN_MONEY_UNIT, americanToPrice, multiplyPrices } from '../../src/shared/odds.js';
+import {
+  EVEN_MONEY_UNIT,
+  americanToPrice,
+  multiplyPrices,
+  teasedLineTenths,
+} from '../../src/shared/odds.js';
 import type {
   AmericanPrice,
   BetLegSnapshot,
@@ -814,5 +820,130 @@ describe('effectiveAmericanPrice', () => {
   it('throws for a pending bet — nothing is written, so nothing is priced', () => {
     const { legs, games } = betFor(['pending']);
     expect(() => effectiveAmericanPrice(gradeBet(1000, legs, games))).toThrow(AppError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Teasers (M5b). PLAN.md §5.8 and §7.
+//
+// EVERY payout literal below came out of a BigInt REPL, and the three headline
+// ones are the spec's own worked examples at a 1000¢ stake, 6-point tier:
+//     3 legs, all win          -> +150  -> 2500
+//     ...one leg pushes        -> -120  -> 1833   (reduced to the 2-leg row)
+//     ...two legs push         -> 1/1   -> 1000   (no action: fewer than 2 left)
+// ---------------------------------------------------------------------------
+
+describe('gradeBet — teasers', () => {
+  const SIX: BetPricing = { kind: 'teaser', pointsTenths: 60 };
+
+  it('pays the card price for the surviving leg count when every leg wins', () => {
+    const { legs, games } = betFor(['win', 'win', 'win']);
+    const outcome = gradeBet(1000, legs, games, SIX);
+    expect(outcome.status).toBe('won');
+    expect(outcome.payoutCents).toBe(2500);
+    expect(effectiveAmericanPrice(outcome)).toBe(150);
+    // The legs' own prices are IGNORED: three -110 legs as a parlay pay 6957.
+    expect(gradeBet(1000, legs, games).payoutCents).toBe(6957);
+  });
+
+  it('a pushed leg reduces the bet to the next-lower row of the same tier', () => {
+    const { legs, games } = betFor(['win', 'win', 'push']);
+    const outcome = gradeBet(1000, legs, games, SIX);
+    expect(outcome.status).toBe('won');
+    expect(outcome.payoutCents).toBe(1833);
+    expect(effectiveAmericanPrice(outcome)).toBe(-120);
+  });
+
+  it('reducing below two survivors is NO ACTION — the stake comes back', () => {
+    const { legs, games } = betFor(['win', 'push', 'push']);
+    const outcome = gradeBet(1000, legs, games, SIX);
+    expect(outcome.status).toBe('push');
+    expect(outcome.payoutCents).toBe(1000);
+    expect(effectiveAmericanPrice(outcome)).toBe(100);
+    // The same shape as a PARLAY would be a 1-leg win at -110, paying 1909.
+    expect(gradeBet(1000, legs, games).status).toBe('won');
+    expect(gradeBet(1000, legs, games).payoutCents).toBe(1909);
+  });
+
+  it('a 2-leg teaser with one push is no action, never a priced single', () => {
+    const { legs, games } = betFor(['win', 'push']);
+    const outcome = gradeBet(1000, legs, games, SIX);
+    expect(outcome.status).toBe('push');
+    expect(outcome.payoutCents).toBe(1000);
+  });
+
+  it('a voided leg (canceled game) reduces exactly like a push', () => {
+    const four = betFor(['win', 'win', 'win', 'void']);
+    expect(gradeBet(1000, four.legs, four.games, SIX).payoutCents).toBe(2500); // 3-leg row
+    const two = betFor(['win', 'void']);
+    expect(gradeBet(1000, two.legs, two.games, SIX).status).toBe('push');
+  });
+
+  it('every leg voided is `void`, not `push` — the distinction survives teasing', () => {
+    const { legs, games } = betFor(['void', 'void']);
+    const outcome = gradeBet(1000, legs, games, SIX);
+    expect(outcome.status).toBe('void');
+    expect(outcome.payoutCents).toBe(1000);
+  });
+
+  it('any loss loses the whole teaser, however many legs pushed', () => {
+    const { legs, games } = betFor(['loss', 'push', 'push', 'win']);
+    const outcome = gradeBet(1000, legs, games, SIX);
+    expect(outcome.status).toBe('lost');
+    expect(outcome.payoutCents).toBe(0);
+    // A lost bet keeps its PLACEMENT price: the 4-leg row, not the 2-leg one.
+    expect(effectiveAmericanPrice(outcome)).toBe(260);
+  });
+
+  it('a pending leg still beats everything, exactly as for a parlay', () => {
+    const { legs, games } = betFor(['win', 'pending']);
+    const outcome = gradeBet(1000, legs, games, SIX);
+    expect(outcome.status).toBe('pending');
+    expect(outcome.payoutCents).toBe(0);
+    expect(outcome.legs).toEqual([]);
+  });
+
+  it('grades the TEASED line out of the snapshot, knowing nothing about teasers', () => {
+    // Home -7.5 teased to -1.5 at 6 points. A 27-24 home win (margin 3) LOSES on
+    // the book line and WINS on the teased one; only the snapshot is consulted.
+    const book = makeLeg({ gameId: 'gt', lineTenths: -75 });
+    const teased = makeLeg({
+      gameId: 'gt',
+      lineTenths: teasedLineTenths('spread', 'home', -75, 60),
+    });
+    const games = new Map([['gt', final(27, 24)]]);
+    expect(gradeLeg(book, final(27, 24))).toBe('loss');
+    expect(gradeLeg(teased, final(27, 24))).toBe('win');
+    // Two teased legs so it is a legal teaser shape.
+    const second = makeLeg({ gameId: 'gt2', lineTenths: 95, side: 'away' });
+    games.set('gt2', final(10, 20));
+    expect(gradeBet(1000, [teased, second], games, SIX).status).toBe('won');
+  });
+
+  it('all three tiers price from their own row', () => {
+    const { legs, games } = betFor(['win', 'win', 'win']);
+    // REPL-verified at a 1000c stake: 6pt +150 -> 2500, 6.5pt +135 -> 2350,
+    // 7pt +120 -> 2200.
+    expect(gradeBet(1000, legs, games, { kind: 'teaser', pointsTenths: 60 }).payoutCents).toBe(
+      2500,
+    );
+    expect(gradeBet(1000, legs, games, { kind: 'teaser', pointsTenths: 65 }).payoutCents).toBe(
+      2350,
+    );
+    expect(gradeBet(1000, legs, games, { kind: 'teaser', pointsTenths: 70 }).payoutCents).toBe(
+      2200,
+    );
+  });
+
+  it('rejects a tier that is not on the card rather than guessing one', () => {
+    const { legs, games } = betFor(['win', 'win']);
+    expect(() => gradeBet(1000, legs, games, { kind: 'teaser', pointsTenths: 6 })).toThrow(
+      AppError,
+    );
+  });
+
+  it('omitting `pricing` is exactly the parlay behaviour (default argument)', () => {
+    const { legs, games } = betFor(['win', 'win']);
+    expect(gradeBet(1000, legs, games)).toEqual(gradeBet(1000, legs, games, { kind: 'parlay' }));
   });
 });

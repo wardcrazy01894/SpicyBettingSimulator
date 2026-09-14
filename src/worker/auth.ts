@@ -19,6 +19,7 @@ import { AppError, isAppError } from '../shared/errors.js';
 import type { EpochMs, UserSummary } from '../shared/types.js';
 import type { LoginInput, SignupInput } from '../shared/validate.js';
 import type { Env } from './env.js';
+import { mainBalanceStatements } from './bankroll.js';
 import {
   blobToBytes,
   hashDerivedKey,
@@ -80,12 +81,19 @@ export function assertInviteCode(env: Env, supplied: string | null): void {
 }
 
 /**
- * Create a user + session.
+ * Create a user + their `main` account balance + a session.
  *
  * The whole thing is ONE batch so that "first user becomes admin" cannot be won
  * by two simultaneous signups: `is_admin` is computed inside the INSERT as
  * `CASE WHEN (SELECT COUNT(*) FROM users) = 0 THEN 1 ELSE 0 END`, and the
  * UNIQUE(username) constraint decides the winner.
+ *
+ * THE BALANCE IS CREATED HERE (M5b), not lazily on first read. That is the whole
+ * point of the change: an account has exactly one opening deposit, for its
+ * entire life, and it lands in the same atomic batch as the account itself — so
+ * "a user exists but has no money" is not a reachable state, and no GET has to
+ * write rows to make one. If the username collides, the UNIQUE index aborts
+ * statement 1 and D1 rolls the balance and the session back with it.
  *
  * @throws AppError BAD_INVITE_CODE | USERNAME_TAKEN | RATE_LIMITED
  */
@@ -97,9 +105,6 @@ export async function signup(env: Env, input: SignupInput, now: EpochMs): Promis
   const userId = newId();
   const { token, session } = await newSessionMaterial(userId, now);
 
-  // One batch: the user row, its session, and the read-back of the conditional
-  // `is_admin`. If the username is taken the UNIQUE index aborts statement 1 and
-  // D1 rolls the whole thing back, so no orphan session can survive.
   let results: readonly D1Result[];
   try {
     results = await runBatch(env.DB, [
@@ -121,6 +126,7 @@ export async function signup(env: Env, input: SignupInput, now: EpochMs): Promis
         toBlobParam(passwordHash),
         now,
       ),
+      ...mainBalanceStatements(env, userId, newId(), now),
       insertSessionStatement(env, session),
       env.DB.prepare(
         'SELECT id, username, display_name, is_admin, is_disabled, created_at FROM users WHERE id = ?1',
@@ -133,7 +139,8 @@ export async function signup(env: Env, input: SignupInput, now: EpochMs): Promis
     throw err;
   }
 
-  const row = (results[2]?.results as readonly UserRow[] | undefined)?.[0];
+  // Index 4: user, balance, deposit, session, read-back.
+  const row = (results[4]?.results as readonly UserRow[] | undefined)?.[0];
   if (row === undefined) throw new AppError('INTERNAL', 'Signup did not persist.');
   return { user: toSummary(row), token };
 }

@@ -98,6 +98,11 @@ img {
   text-align: right;
 }
 
+/* The leaderboard's RANKED column (equity). Weight only — never colour alone. */
+.num-strong {
+  font-weight: 600;
+}
+
 .tone-win {
   color: var(--win);
 }
@@ -721,6 +726,24 @@ button:disabled {
 }
 
 .slip-leg-market {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/*
+ * The per-leg NFL / CFB badge. The slip is one cross-league draft (M5b), so the
+ * badge sits on its own line ABOVE the pick rather than inline with it: a pick
+ * label can be long ("MICH +9.5"), and a badge that wraps under it mid-string
+ * reads as part of the pick.
+ */
+.slip-leg-league {
+  align-self: flex-start;
+  margin-bottom: 2px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.slip-bar-leagues {
   font-size: 11px;
   color: var(--text-dim);
 }

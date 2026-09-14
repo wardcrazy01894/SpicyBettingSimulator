@@ -10,6 +10,7 @@ export const ERROR_CODES = [
   // 400
   'VALIDATION',
   'MALFORMED_JSON',
+  'TEASER_INVALID',
   // 401 / 403
   'UNAUTHENTICATED',
   'INVALID_CREDENTIALS',
@@ -20,6 +21,7 @@ export const ERROR_CODES = [
   'NOT_FOUND',
   'GAME_NOT_FOUND',
   'BET_NOT_FOUND',
+  'BANKROLL_NOT_FOUND',
   // 409
   'USERNAME_TAKEN',
   'GAME_NOT_BETTABLE',
@@ -27,7 +29,15 @@ export const ERROR_CODES = [
   'MARKET_UNAVAILABLE',
   'LINE_CHANGED',
   'INSUFFICIENT_FUNDS',
+  /**
+   * @deprecated M5b. Legs may span leagues and seasons — a balance is no longer
+   * scoped to either, so there is nothing left for these to protect. NOTHING
+   * THROWS THEM ANY MORE. They stay in the vocabulary because the codes are part
+   * of the wire contract and a deployed client still has copy for them; removing
+   * a code would be repurposing the list, which this file forbids.
+   */
   'MIXED_LEAGUE_PARLAY',
+  /** @deprecated M5b — see `MIXED_LEAGUE_PARLAY`. Never thrown. */
   'MIXED_SEASON_PARLAY',
   'DUPLICATE_GAME_IN_PARLAY',
   'PAYOUT_LIMIT_EXCEEDED',
@@ -54,6 +64,7 @@ export interface ApiErrorBody {
 export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   VALIDATION: 400,
   MALFORMED_JSON: 400,
+  TEASER_INVALID: 400,
   UNAUTHENTICATED: 401,
   INVALID_CREDENTIALS: 401,
   BAD_INVITE_CODE: 401,
@@ -62,6 +73,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   NOT_FOUND: 404,
   GAME_NOT_FOUND: 404,
   BET_NOT_FOUND: 404,
+  BANKROLL_NOT_FOUND: 404,
   USERNAME_TAKEN: 409,
   GAME_NOT_BETTABLE: 409,
   BETTING_CLOSED: 409,

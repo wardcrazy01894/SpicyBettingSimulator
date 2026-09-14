@@ -10,6 +10,8 @@ import {
   MAX_PARLAY_LEGS,
   MAX_PAYOUT_CENTS,
   MIN_STAKE_CENTS,
+  TEASER_PAYOUTS,
+  TEASER_POINTS_TENTHS,
 } from '../../shared/constants.js';
 import { LEAGUES } from '../../shared/types.js';
 import { currentSeasonFor } from '../bankroll.js';
@@ -41,6 +43,11 @@ export function metaRoutes(): Hono<AppContext> {
       cutoffBufferMs: BET_CUTOFF_BUFFER_MS,
       initialBankrollCents: INITIAL_BANKROLL_CENTS,
       maxPayoutCents: MAX_PAYOUT_CENTS,
+      teaserPoints: TEASER_POINTS_TENTHS,
+      // The whole card, so the slip prices a teaser from SERVER truth. Unlike a
+      // parlay there is no per-leg `expected` that would catch a client whose
+      // bundled copy of the table had drifted.
+      teaserPayouts: TEASER_PAYOUTS,
     };
     return c.json(body);
   });

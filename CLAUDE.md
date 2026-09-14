@@ -86,7 +86,11 @@ every PR also gets an adversarial review before merge.
      intent explicitly. The two `ledger_bi_*` triggers use `RAISE(ABORT)`, which
      `OR IGNORE` _cannot_ suppress, as the backstop for when somebody does it
      anyway.
-     (`OR IGNORE` on `bankrolls` is fine — it is not the ledger.)
+     (`OR IGNORE` on `bankrolls` is allowed in general — it is not the ledger —
+     but the balance-opening statements use `INSERT … SELECT … WHERE NOT EXISTS`
+     anyway: the id is a uuid, so a duplicate collides on the PARTIAL unique index
+     `idx_bankrolls_main`, `OR IGNORE` swallows that, and the deposit that follows
+     then fires against a bankroll id that does not exist. PLAN.md §4.4.)
 7. **Grading reads the line from the `bet_legs` snapshot, never from
    `game_lines`.** `settle.ts` must not import a `game_lines` accessor.
 8. **The server is the only authority on whether a bet may be placed.** The
@@ -96,9 +100,33 @@ every PR also gets an adversarial review before merge.
    `bets.earliest_kickoff_at`.** That column is a placement-time snapshot that
    ingestion never updates; guarding on it alone lets a user cancel a game that
    ESPN rescheduled earlier and which has already kicked off. PLAN.md §14.2.
-   8c. **`bets.season` comes from the legs' `games` rows, never from a wall clock.**
-   Otherwise a January bowl lands on next season's bankroll. PLAN.md §4.4.
-9. `migrations/0001_init.sql` is **frozen**. Schema changes are new numbered files.
+   8c. **`bets.season` and `bets.league` come from the legs' `games` rows, never
+   from a wall clock or from the request.** Both are labels since M5b — `season`
+   is the season of the earliest-kickoff leg and `league` is `'mixed'` when the
+   legs span both — so neither constrains what a bet may contain.
+   `PlaceBetRequest.league` is advisory and the server never compares it.
+   **`season` is INTERNAL ONLY**: it exists for ingestion and the board's `week`
+   default, and appears in no public filter and no UI copy, because the product
+   has no concept of a season (PLAN.md §19 Q5). Do not add one back.
+   PLAN.md §4.4.
+   8d. **Money is ACCOUNT-level: one balance per user, opened in the SIGNUP
+   batch, never per league, per season or lazily.** Nothing on a read path
+   creates a balance. `bets.bankroll_id` comes from `PlaceBetRequest.bankrollId`
+   (default: the caller's `main`), and the guard that it is the caller's own is an
+   `EXISTS` inside the placement INSERT — the pre-flight read exists only to
+   produce a specific `404 BANKROLL_NOT_FOUND`. `MIXED_LEAGUE_PARLAY` /
+   `MIXED_SEASON_PARLAY` are deprecated and never thrown. PLAN.md §4.4.
+   8e. **A teaser's `bet_legs.line_tenths` is the TEASED line and
+   `original_line_tenths` the book's**, which is what lets `gradeLeg` stay
+   completely unaware teasers exist. Its per-leg `american_price` is a +100
+   PLACEHOLDER, not a price: the bet is priced once, at the bet level, from
+   `TEASER_PAYOUTS[tier][legCount]`. `gradeBet` therefore needs its `pricing`
+   argument built from the BET ROW (`bet_type` / `teaser_points_tenths`) — the
+   legs cannot tell you. PLAN.md §5.8.
+9. `migrations/0001_init.sql` is **editable until M8's first remote deploy**, then
+   frozen for good and every change is a new numbered file. Nothing is deployed
+   yet, so a cross-cutting schema change (M5b) edits it in place rather than
+   shipping a `0002` that immediately rebuilds empty tables. PLAN.md §16.1.
 10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE` and
     `IP_HASH_SALT`; there is no ESPN key.
 
@@ -145,7 +173,9 @@ server. Without that file, `npm run dev` talks to production ESPN.
 ## Merge-conflict etiquette (multi-agent work)
 
 - `src/shared/{types,api-types,errors,constants}.ts` are frozen after M2d;
-  changes go through one PR owned by that track.
+  changes go through one PR owned by that track. **M5b was that PR** — the
+  account-balance / cross-league / teaser contract change. What it added, and why
+  no error code was removed or repurposed, is PLAN.md §16.1.
 - `src/worker/index.ts` route table: add exactly one `app.route(...)` line.
 - `src/worker/env.ts`: additive only.
 - `src/worker/middleware.ts`, `db.ts` and `routes/admin.ts` are each touched by

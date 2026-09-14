@@ -15,7 +15,7 @@
  * the rest of the system.
  */
 
-import type { GameStatus, League } from '../../src/shared/types.js';
+import type { BetLeague, GameStatus, League } from '../../src/shared/types.js';
 
 /** How far ahead of `now` a seeded game kicks off unless the test says otherwise. */
 export const DEFAULT_KICKOFF_OFFSET_MS = 2 * 60 * 60 * 1000;
@@ -193,43 +193,58 @@ export async function updateGame(
 }
 
 /**
- * Create a bankroll the same way `ensureBankroll` does — `INSERT OR IGNORE` on
- * `bankrolls` (0 balance) plus an explicit `INSERT … SELECT … WHERE NOT EXISTS`
- * for the opening deposit. NEVER `INSERT OR IGNORE` into `ledger`
- * (CLAUDE.md rule 6), even in a test helper.
+ * Open a user's `main` ACCOUNT BALANCE exactly the way the signup batch does
+ * (M5b): a guarded `INSERT … SELECT … WHERE NOT EXISTS` on `bankrolls` at a 0
+ * balance, plus an explicit guarded insert for the opening deposit. Idempotent,
+ * and NEVER `INSERT OR IGNORE` into `ledger` (CLAUDE.md rule 6), even in a test
+ * helper.
+ *
+ * Most tests get this for free by signing up over HTTP; this is for the ones
+ * that create a user row directly, or that want a non-default opening balance.
  */
 export async function seedBankroll(
   db: D1Database,
   userId: string,
-  league: League,
-  season: number,
   now: number,
   initialCents = 100_000,
 ): Promise<string> {
-  const id = `${userId}:${league}:${String(season)}`;
+  const id = crypto.randomUUID();
   await db.batch([
     db
       .prepare(
-        `INSERT OR IGNORE INTO bankrolls (id, user_id, league, season, balance_cents, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)`,
+        `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+         SELECT ?1, ?2, 'Main', 'main', 0, ?3, ?3
+          WHERE NOT EXISTS (SELECT 1 FROM bankrolls WHERE user_id = ?2 AND kind = 'main')`,
       )
-      .bind(id, userId, league, season, now),
+      .bind(id, userId, now),
     db
       .prepare(
         `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
-         SELECT ?2, ?1, 'deposit_initial', 'init', NULL, ?4, ?3, 'season opening balance'
-          WHERE NOT EXISTS (SELECT 1 FROM ledger
+         SELECT ?2, ?1, 'deposit_initial', 'init', NULL, ?4, ?3, 'opening balance'
+          WHERE EXISTS (SELECT 1 FROM bankrolls WHERE id = ?1)
+            AND NOT EXISTS (SELECT 1 FROM ledger
                              WHERE bankroll_id = ?1 AND kind = 'deposit_initial' AND ref_id = 'init')`,
       )
       .bind(id, crypto.randomUUID(), now, initialCents),
   ]);
-  return id;
+  return mainBankrollId(db, userId);
+}
+
+/** The user's one `main` balance id. Throws rather than returning a bad bind. */
+export async function mainBankrollId(db: D1Database, userId: string): Promise<string> {
+  const row = await db
+    .prepare(`SELECT id FROM bankrolls WHERE user_id = ?1 AND kind = 'main'`)
+    .bind(userId)
+    .first<{ id: string }>();
+  if (row === null) throw new Error(`user ${userId} has no main balance`);
+  return row.id;
 }
 
 export interface SeedBetSpec {
   readonly id: string;
   readonly userId: string;
-  readonly league?: League;
+  /** `bets.league` — may be `'mixed'` since M5b. Informational. */
+  readonly league?: BetLeague;
   readonly season?: number;
   readonly status: 'pending' | 'won' | 'lost' | 'push' | 'void' | 'cancelled';
   readonly stakeCents: number;
@@ -249,7 +264,9 @@ export async function seedSettledBet(db: D1Database, spec: SeedBetSpec): Promise
   const league = spec.league ?? 'nfl';
   const season = spec.season ?? 2026;
   const placedAt = spec.placedAt ?? Date.now();
-  const bkId = await seedBankroll(db, spec.userId, league, season, placedAt);
+  // Idempotent: a user who signed up over HTTP already has their main balance,
+  // and this returns the existing id rather than opening a second one.
+  const bkId = await seedBankroll(db, spec.userId, placedAt);
   const american = spec.americanPrice ?? -110;
   const payout = spec.payoutCents ?? 0;
   const statements: D1PreparedStatement[] = [
@@ -303,6 +320,61 @@ export async function seedSettledBet(db: D1Database, spec: SeedBetSpec): Promise
     );
   }
   await db.batch(statements);
+}
+
+/**
+ * TEST-ONLY: empty `users` and everything that hangs off them.
+ *
+ * Signup now opens an account balance and writes its opening deposit in the SAME
+ * batch (M5b), and the schema deliberately makes both of those permanent:
+ * `bankrolls.user_id` is `ON DELETE RESTRICT`, `ledger.bankroll_id` is `ON
+ * DELETE RESTRICT`, and `ledger_bd_block` refuses `DELETE FROM ledger` outright.
+ * There is therefore NO ordering of DELETEs that can empty `users` — which is
+ * exactly right in production (money does not evaporate) and leaves a test file
+ * whose premise is "an empty users table" with nothing to stand on.
+ *
+ * So this takes the two append-only block triggers down for the duration of the
+ * wipe and puts them back, in a `finally`. It is confined to this helper, the
+ * DDL is copied VERBATIM from migrations/0001_init.sql, and the recreate is
+ * asserted so a file can never continue with the guards missing. Production code
+ * must never do anything remotely like this.
+ */
+export async function wipeAccounts(db: D1Database): Promise<void> {
+  try {
+    await db.batch([
+      db.prepare('DROP TRIGGER IF EXISTS ledger_bd_block'),
+      db.prepare('DROP TRIGGER IF EXISTS ledger_bu_block'),
+    ]);
+    await db.batch([
+      db.prepare('DELETE FROM ledger'),
+      db.prepare('DELETE FROM bet_legs'),
+      db.prepare('DELETE FROM bets'),
+      db.prepare('DELETE FROM bankrolls'),
+      db.prepare('DELETE FROM auth_throttle'),
+      db.prepare('DELETE FROM sessions'),
+      db.prepare('DELETE FROM users'),
+    ]);
+  } finally {
+    await db.batch([
+      db.prepare(
+        `CREATE TRIGGER IF NOT EXISTS ledger_bu_block BEFORE UPDATE ON ledger BEGIN
+           SELECT RAISE(ABORT, 'ledger is append-only');
+         END`,
+      ),
+      db.prepare(
+        `CREATE TRIGGER IF NOT EXISTS ledger_bd_block BEFORE DELETE ON ledger BEGIN
+           SELECT RAISE(ABORT, 'ledger is append-only');
+         END`,
+      ),
+    ]);
+  }
+  const guards = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM sqlite_master
+        WHERE type = 'trigger' AND name IN ('ledger_bu_block', 'ledger_bd_block')`,
+    )
+    .first<{ n: number }>();
+  if (guards?.n !== 2) throw new Error('wipeAccounts failed to restore the ledger guards');
 }
 
 /** `SUM(ledger.amount_cents)` for one bankroll — the money invariant's left side. */

@@ -11,6 +11,8 @@
 
 import type {
   AmericanPrice,
+  BankrollKind,
+  BetLeague,
   BetStatus,
   BetType,
   Cents,
@@ -49,6 +51,20 @@ export interface ConfigResponse {
    * a 409. Echoed by the server so a stale client cannot disagree with it.
    */
   readonly maxPayoutCents: Cents;
+  /** TEASER_POINTS_TENTHS — the tiers the slip's 6 / 6.5 / 7 selector offers. */
+  readonly teaserPoints: readonly number[];
+  /**
+   * TEASER_PAYOUTS, keyed `[pointsTenths][legCount]`. Echoed in full so the slip
+   * prices a teaser from SERVER TRUTH rather than from its own bundled copy of
+   * `constants.ts`: a deployed client whose card disagreed with the deployed
+   * server would quote a price the bet was never booked at, and unlike a parlay
+   * there is no per-leg price for `expected` to catch the difference.
+   *
+   * Indexed loosely (`number`) because JSON object keys are strings; the client
+   * looks a value up and renders "—" if it is missing rather than asserting the
+   * shape of a payload it did not author.
+   */
+  readonly teaserPayouts: Readonly<Record<number, Readonly<Record<number, AmericanPrice>>>>;
 }
 
 export interface KdfParamsResponse {
@@ -168,10 +184,29 @@ export interface PlaceBetLegRequest {
 }
 
 export interface PlaceBetRequest {
-  readonly league: League;
+  /**
+   * ADVISORY ONLY since M5b. The server derives the bet's league from the legs'
+   * own `games` rows (`'mixed'` when they span both) and never compares the two:
+   * a balance is no longer scoped to a league, so a disagreement has no money
+   * consequence to protect against. Still validated as a legal value, and still
+   * sent by the slip, so the field keeps its meaning for a reader of the logs.
+   */
+  readonly league: BetLeague;
   readonly betType: BetType;
   readonly stakeCents: Cents;
   readonly acceptLineChange?: boolean;
+  /**
+   * Required iff `betType === 'teaser'`, rejected otherwise. TENTHS of a point:
+   * 60 / 65 / 70. Unlike a price, this IS a client instruction — it selects a
+   * row of the server's card, and the server re-reads the price from that card.
+   */
+  readonly teaserPoints?: 60 | 65 | 70;
+  /**
+   * Which account balance to charge. Absent means the caller's `main` balance.
+   * A balance that is not the caller's is `404 BANKROLL_NOT_FOUND` — never 403,
+   * for the same no-existence-oracle reason `GET /api/bets/:id` is a 404.
+   */
+  readonly bankrollId?: string;
   readonly legs: readonly PlaceBetLegRequest[];
 }
 
@@ -179,9 +214,26 @@ export interface BetLegView {
   readonly id: string;
   readonly legIndex: number;
   readonly gameId: string;
+  /**
+   * The leg's OWN league. Always a real one — a leg is a game, and a game is
+   * never `'mixed'`. Needed since M5b because `BetView.league` may be `'mixed'`,
+   * so it is no longer a per-leg answer: rebuilding a cross-league bet's slip
+   * for an edit has to read each leg's league from here.
+   */
+  readonly league: League;
   readonly market: Market;
   readonly side: Side;
+  /** The line this leg is GRADED on — for a teaser leg, the teased one. */
   readonly lineTenths: LineTenths | null;
+  /**
+   * The book's line BEFORE the tease, so My Bets can render "-7.5 → -1.5".
+   * `null` for straight and parlay legs, which are never moved.
+   */
+  readonly originalLineTenths: LineTenths | null;
+  /**
+   * For a teaser leg this is the placeholder +100 the schema requires, NOT a
+   * price: a teaser is priced once, at the bet level, from the card.
+   */
   readonly americanPrice: AmericanPrice;
   readonly provider: string;
   readonly lineCapturedAt: EpochMs;
@@ -208,9 +260,15 @@ export interface BetLegView {
 
 export interface BetView {
   readonly id: string;
-  readonly league: League;
+  /** The account balance this bet is staked against. */
+  readonly bankrollId: string;
+  /** `'mixed'` when the legs span both leagues. Informational — see §11.4. */
+  readonly league: BetLeague;
+  /** Season of the earliest-kickoff leg. Informational. */
   readonly season: number;
   readonly betType: BetType;
+  /** Tenths: 60 / 65 / 70 for a teaser, `null` for every other bet type. */
+  readonly teaserPoints: number | null;
   readonly stakeCents: Cents;
   /**
    * THE EFFECTIVE price. While `status === 'pending'` this is the price the bet
@@ -281,12 +339,22 @@ export interface BettingRecord {
   readonly void: number;
 }
 
-export interface BankrollResponse {
-  readonly league: League;
-  readonly season: number;
+/**
+ * One account balance plus its statistics. Replaces M5's `BankrollResponse`,
+ * which was keyed on (league, season) — a balance is neither, now.
+ *
+ * `balanceCents` is the whole account and is never filtered; `record`, `roi` and
+ * `settledCount` ARE filterable by `?league=&season=`, because "how did I do in
+ * college football this year" is a real question and "how much money do I have,
+ * in college football" is not.
+ */
+export interface BankrollView {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: BankrollKind;
   /** Settled cash. Pending stakes are ALREADY DEDUCTED. */
   readonly balanceCents: Cents;
-  /** Sum of stakes on pending bets ("exposure"). */
+  /** Sum of stakes on pending bets ("exposure"), within the filter. */
   readonly pendingStakeCents: Cents;
   /** balanceCents + pendingStakeCents. */
   readonly equityCents: Cents;
@@ -294,6 +362,17 @@ export interface BankrollResponse {
   /** (Σ payout − Σ stake) / Σ stake over won+lost bets only. null when no action. */
   readonly roi: number | null;
   readonly settledCount: number;
+}
+
+/**
+ * `GET /api/bankroll` → every balance the caller owns, `main` first.
+ *
+ * A LIST even though v1 always returns exactly one, because the schema models
+ * balances as a list for future side pots and a single-object response would
+ * have to be replaced (not extended) the day a second one exists.
+ */
+export interface BankrollsResponse {
+  readonly balances: readonly BankrollView[];
 }
 
 export interface LedgerEntry {
@@ -305,27 +384,55 @@ export interface LedgerEntry {
   readonly memo: string | null;
 }
 
+/** `GET /api/ledger?bankrollId=&limit=&cursor=`. Defaults to the main balance. */
 export interface LedgerResponse {
   readonly entries: readonly LedgerEntry[];
   readonly nextCursor: string | null;
+}
+
+/** `POST /api/admin/users/:id/adjust`. Either sign; an overdraft is a 409. */
+export interface AdminAdjustRequest {
+  readonly amountCents: Cents;
+  readonly memo?: string;
 }
 
 export interface LeaderboardRow {
   readonly userId: string;
   readonly username: string;
   readonly displayName: string;
+  /**
+   * The user's MAIN account balance, always — never a per-league subtotal, and
+   * never affected by `?league=`, which filters the record and ROI only.
+   * Ranking on a filtered balance would be ranking on a number that does not
+   * exist anywhere in the ledger.
+   *
+   * NOT the ranked column: see `equityCents`.
+   */
   readonly balanceCents: Cents;
   readonly pendingStakeCents: Cents;
+  /**
+   * `balanceCents + pendingStakeCents` — what the account is worth if every open
+   * bet were voided. **THE RANKED COLUMN** (decided 2026-09-14): a stake that is
+   * still in flight should neither help nor hurt your position, and ranking on
+   * the settled balance alone put a player with $2,000 and $1,500 riding on
+   * tonight's game below one sitting on $600.
+   */
   readonly equityCents: Cents;
   readonly record: BettingRecord;
   readonly roi: number | null;
   readonly rank: number;
 }
 
+/**
+ * `season` is deliberately ABSENT (decided 2026-09-14): the product has no
+ * concept of a season. Balances never roll over, so "the 2026 leaderboard" would
+ * be a slice of a number that was never reset. A field that could only ever be
+ * `null` would be worse than no field. `bets.season` survives internally, for
+ * ingestion and the board's week default.
+ */
 export interface LeaderboardResponse {
   readonly league: League | 'all';
-  readonly season: number | null;
-  /** Ranked by balanceCents desc, then roi desc, then username. PLAN.md §11.5. */
+  /** Ranked by equityCents desc, then roi desc, then username. PLAN.md §11.5. */
   readonly rows: readonly LeaderboardRow[];
 }
 

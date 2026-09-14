@@ -1,5 +1,5 @@
 /**
- * Open / Settled tabs, grouped by (league, season, week) and labelled with local
+ * Open / Settled tabs, grouped by (league, football week) and labelled with local
  * dates.
  *
  * The "Week N" half of PLAN.md §12.3's label is NOT rendered: the frozen wire

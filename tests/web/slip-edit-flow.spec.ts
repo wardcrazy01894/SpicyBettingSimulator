@@ -18,6 +18,7 @@ import {
   lineChangeIsAcceptable,
 } from '../../src/web/state/slip-preview.js';
 import {
+  DEFAULT_TEASER_POINTS_TENTHS,
   EMPTY_SLIP,
   emptySlipState,
   parlayFullNotice,
@@ -25,7 +26,7 @@ import {
   serialiseSlip,
   slipReducer,
 } from '../../src/web/state/slip-reducer.js';
-import type { LeagueSlip, SlipLeg, SlipState } from '../../src/web/state/slip-reducer.js';
+import type { Slip, SlipLeg, SlipState } from '../../src/web/state/slip-reducer.js';
 import type { LineChangedDetails } from '../../src/shared/api-types.js';
 import type { League, Market, Side } from '../../src/shared/types.js';
 
@@ -47,8 +48,9 @@ function leg(gameId: string, overrides: Partial<SlipLeg> = {}, league: League = 
   };
 }
 
-function active(state: SlipState): LeagueSlip {
-  return state.byLeague[state.active];
+/** The one slip. Kept as a helper so the assertions below stay short. */
+function active(state: SlipState): Slip {
+  return state.slip;
 }
 
 function detail(
@@ -83,7 +85,6 @@ describe('editing a bet borrows the slip; it does not overwrite it', () => {
     return slipReducer(staked, {
       type: 'START_EDIT',
       betId: 'bet-1',
-      league: 'nfl',
       mode: 'straight',
       legs: [leg('bet-game')],
       stakeCents: 1000,
@@ -116,19 +117,18 @@ describe('editing a bet borrows the slip; it does not overwrite it', () => {
     const second = slipReducer(draftThenEdit(), {
       type: 'START_EDIT',
       betId: 'bet-2',
-      league: 'nfl',
       mode: 'straight',
       legs: [leg('other-bet-game')],
       stakeCents: 300,
     });
     expect(second.editingBetId).toBe('bet-2');
-    expect(second.editBackup?.slip.legs.map((l) => l.gameId)).toEqual(['draft-game']);
+    expect(second.editBackup?.legs.map((l: SlipLeg) => l.gameId)).toEqual(['draft-game']);
 
     const restored = slipReducer(second, { type: 'END_EDIT' });
     expect(active(restored).legs.map((l) => l.gameId)).toEqual(['draft-game']);
   });
 
-  it('backs up the slip of the league the BET is in, not the active one', () => {
+  it('loads a CROSS-LEAGUE bet into the one slip, whatever tab the board is on', () => {
     const drafted = slipReducer(emptySlipState('ncaaf'), {
       type: 'TOGGLE_LEG',
       leg: leg('cfb-draft', {}, 'ncaaf'),
@@ -137,18 +137,18 @@ describe('editing a bet borrows the slip; it does not overwrite it', () => {
     const editing = slipReducer(drafted, {
       type: 'START_EDIT',
       betId: 'bet-1',
-      league: 'nfl',
-      mode: 'straight',
-      legs: [leg('nfl-bet')],
+      mode: 'parlay',
+      legs: [leg('nfl-bet'), leg('cfb-bet', {}, 'ncaaf')],
       stakeCents: 1000,
     });
-    expect(editing.active).toBe('nfl');
-    // The NCAAF draft is untouched the whole time.
-    expect(editing.byLeague.ncaaf.legs.map((l) => l.gameId)).toEqual(['cfb-draft']);
+    // The BOARD is untouched by an edit; the slip holds both leagues at once.
+    expect(editing.board).toBe('ncaaf');
+    expect(active(editing).legs.map((l) => l.league)).toEqual(['nfl', 'ncaaf']);
+    expect(active(editing).mode).toBe('parlay');
 
     const restored = slipReducer(editing, { type: 'END_EDIT' });
-    expect(restored.byLeague.nfl).toEqual(EMPTY_SLIP);
-    expect(restored.byLeague.ncaaf.legs.map((l) => l.gameId)).toEqual(['cfb-draft']);
+    expect(restored.board).toBe('ncaaf');
+    expect(active(restored).legs.map((l) => l.gameId)).toEqual(['cfb-draft']);
   });
 
   it('CLEAR drops the backup: an explicit clear is not an edit ending', () => {
@@ -169,10 +169,11 @@ describe('editing a bet borrows the slip; it does not overwrite it', () => {
 // ---------------------------------------------------------------------------
 
 describe('applyLineChange', () => {
-  const slip = (legs: readonly SlipLeg[], stakeCents = 1000): LeagueSlip => ({
+  const slip = (legs: readonly SlipLeg[], stakeCents = 1000): Slip => ({
     mode: legs.length > 1 ? 'parlay' : 'straight',
     legs,
     stakeCents,
+    teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
   });
 
   it('rewrites the leg to the price and line the SERVER quoted', () => {
@@ -200,7 +201,7 @@ describe('applyLineChange', () => {
     const after = applyLineChange(before, {
       legs: [detail('g1', 'spread', 'home', -110, -35, { americanPrice: -130, lineTenths: -45 })],
     });
-    const body = buildPlaceBetRequest('nfl', after, true);
+    const body = buildPlaceBetRequest(after, true);
     expect(body.acceptLineChange).toBe(true);
     expect(body.legs[0]?.expected).toEqual({ americanPrice: -130, lineTenths: -45 });
   });
@@ -210,8 +211,8 @@ describe('applyLineChange', () => {
     const after = applyLineChange(before, {
       legs: [detail('g1', 'spread', 'home', 100, -35, { americanPrice: -200, lineTenths: -35 })],
     });
-    expect(computePreview('nfl', before, 100_000).toWinCents).toBe(1000);
-    expect(computePreview('nfl', after, 100_000).toWinCents).toBe(500);
+    expect(computePreview(before, 100_000).toWinCents).toBe(1000);
+    expect(computePreview(after, 100_000).toWinCents).toBe(500);
   });
 
   it('leaves a leg the server did not flag alone', () => {
@@ -292,8 +293,8 @@ describe('a parlay that is already full', () => {
 
     expect(after.notice).toBe(parlayFullNotice(3));
     // Identity, not just equality: the refusal allocates no new slip or legs.
-    expect(after.byLeague.nfl).toBe(before.byLeague.nfl);
-    expect(after.byLeague.nfl.legs).toBe(before.byLeague.nfl.legs);
+    expect(after.slip).toBe(before.slip);
+    expect(after.slip.legs).toBe(before.slip.legs);
   });
 
   it('still allows SWAPPING markets on a game already in the parlay', () => {
@@ -304,13 +305,13 @@ describe('a parlay that is already full', () => {
       maxLegs: 3,
     });
     expect(after.notice).toBeNull();
-    expect(after.byLeague.nfl.legs).toHaveLength(3);
-    expect(after.byLeague.nfl.legs.map((l) => l.market)).toContain('total');
+    expect(after.slip.legs).toHaveLength(3);
+    expect(after.slip.legs.map((l) => l.market)).toContain('total');
   });
 
   it('still allows removing a leg', () => {
     const after = slipReducer(full(), { type: 'TOGGLE_LEG', leg: leg('g0'), maxLegs: 3 });
-    expect(after.byLeague.nfl.legs).toHaveLength(2);
+    expect(after.slip.legs).toHaveLength(2);
     expect(after.notice).toBeNull();
   });
 
@@ -328,9 +329,7 @@ describe('mode follows the leg count', () => {
       leg: leg('g1'),
       maxLegs: MAX_LEGS,
     });
-    expect(slipReducer(one, { type: 'SET_MODE', mode: 'parlay' }).byLeague.nfl.mode).toBe(
-      'straight',
-    );
+    expect(slipReducer(one, { type: 'SET_MODE', mode: 'parlay' }).slip.mode).toBe('straight');
   });
 
   it('allows parlay once there are two legs', () => {
@@ -340,10 +339,8 @@ describe('mode follows the leg count', () => {
       maxLegs: MAX_LEGS,
     });
     state = slipReducer(state, { type: 'TOGGLE_LEG', leg: leg('g2'), maxLegs: MAX_LEGS });
-    expect(state.byLeague.nfl.mode).toBe('parlay');
-    expect(slipReducer(state, { type: 'SET_MODE', mode: 'parlay' }).byLeague.nfl.mode).toBe(
-      'parlay',
-    );
+    expect(state.slip.mode).toBe('parlay');
+    expect(slipReducer(state, { type: 'SET_MODE', mode: 'parlay' }).slip.mode).toBe('parlay');
   });
 
   it('NORMALISES a persisted one-leg "parlay" back to a straight on hydrate', () => {
@@ -353,6 +350,7 @@ describe('mode follows the leg count', () => {
       legs: [
         {
           gameId: 'g1',
+          league: 'nfl',
           market: 'spread',
           side: 'home',
           lineTenths: -35,
@@ -364,12 +362,17 @@ describe('mode follows the leg count', () => {
         },
       ],
     });
-    expect(parseStoredSlip(raw, 'nfl')?.mode).toBe('straight');
+    expect(parseStoredSlip(raw)?.mode).toBe('straight');
   });
 
   it('round-trips the abbreviations the relabelling depends on', () => {
-    const before: LeagueSlip = { mode: 'straight', legs: [leg('g1')], stakeCents: 1000 };
-    const after = parseStoredSlip(serialiseSlip(before), 'nfl');
+    const before: Slip = {
+      mode: 'straight',
+      legs: [leg('g1')],
+      stakeCents: 1000,
+      teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
+    };
+    const after = parseStoredSlip(serialiseSlip(before));
     expect(after?.legs[0]?.homeAbbr).toBe('HOME');
     expect(after?.legs[0]?.awayAbbr).toBe('AWAY');
   });
@@ -381,6 +384,7 @@ describe('mode follows the leg count', () => {
       legs: [
         {
           gameId: 'g1',
+          league: 'nfl',
           market: 'spread',
           side: 'home',
           lineTenths: -35,
@@ -390,7 +394,7 @@ describe('mode follows the leg count', () => {
         },
       ],
     });
-    expect(parseStoredSlip(raw, 'nfl')).toBeNull();
+    expect(parseStoredSlip(raw)).toBeNull();
   });
 });
 
@@ -410,10 +414,8 @@ describe('the identity churn behind the focus-trap bug', () => {
     const after = slipReducer(before, { type: 'SET_STAKE', stakeCents: 1250 });
 
     expect(after).not.toBe(before);
-    expect(after.byLeague.nfl).not.toBe(before.byLeague.nfl);
-    expect(computePreview('nfl', after.byLeague.nfl, 100_000)).not.toBe(
-      computePreview('nfl', after.byLeague.nfl, 100_000),
-    );
+    expect(after.slip).not.toBe(before.slip);
+    expect(computePreview(after.slip, 100_000)).not.toBe(computePreview(after.slip, 100_000));
   });
 
   it('churns on EVERY keystroke of a multi-character stake', () => {
@@ -425,7 +427,7 @@ describe('the identity churn behind the focus-trap bug', () => {
     const seen = new Set<unknown>();
     for (const cents of [100, 1200, 1250]) {
       state = slipReducer(state, { type: 'SET_STAKE', stakeCents: cents });
-      seen.add(state.byLeague.nfl);
+      seen.add(state.slip);
     }
     expect(seen.size).toBe(3);
   });
@@ -441,8 +443,8 @@ describe('the identity churn behind the focus-trap bug', () => {
     });
     const after = slipReducer(before, { type: 'SET_STAKE', stakeCents: 1250 });
 
-    expect(after.byLeague.nfl.legs).toBe(before.byLeague.nfl.legs);
+    expect(after.slip.legs).toBe(before.slip.legs);
     expect(after.editingBetId).toBe(before.editingBetId);
-    expect(after.active).toBe(before.active);
+    expect(after.board).toBe(before.board);
   });
 });

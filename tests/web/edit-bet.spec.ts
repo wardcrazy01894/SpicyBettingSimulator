@@ -150,13 +150,41 @@ describe('refreshSlipLegs', () => {
     expect(legs[1]?.label).toBe('O 51.2');
   });
 
-  it("stamps every leg with the BET's league", () => {
+  it("stamps every leg with the LEG's own league, not the bet's", () => {
+    // M5b: `bet.league` may be `'mixed'`, which is not a league a slip leg can
+    // hold. Each leg carries its own, and a cross-league bet rebuilds correctly.
     const bet = betView({
       id: 'b1',
-      league: 'ncaaf',
+      league: 'mixed',
+      legs: [
+        { gameId: 'g1', kickoffAt: KICKOFF, league: 'nfl' },
+        { gameId: 'g2', kickoffAt: KICKOFF, league: 'ncaaf' },
+      ],
+    });
+    const { legs } = refreshSlipLegs(
+      bet,
+      board(gameCard({ id: 'g1', lines: lines() }), gameCard({ id: 'g2', lines: lines() })),
+    );
+    expect(legs.map((l) => l.league)).toEqual(['nfl', 'ncaaf']);
+  });
+
+  it('seeds a TEASER leg from the BOOK line, never the teased one', () => {
+    // The snapshot's `lineTenths` IS the teased number on a teaser leg; seeding
+    // the slip with it and letting the server tease it again would move the line
+    // twice. `originalLineTenths` is the pre-tease value.
+    const base = betView({
+      id: 'b1',
+      betType: 'teaser',
+      teaserPoints: 60,
       legs: [{ gameId: 'g1', kickoffAt: KICKOFF }],
     });
-    const { legs } = refreshSlipLegs(bet, board(gameCard({ id: 'g1', lines: lines() })));
-    expect(legs[0]?.league).toBe('ncaaf');
+    const first = base.legs[0];
+    if (first === undefined) throw new Error('fixture has no legs');
+    const teased = { ...base, legs: [{ ...first, lineTenths: 25, originalLineTenths: -35 }] };
+    // No current quote for the game, so the fallback path is the one under test.
+    const { legs, unrefreshed } = refreshSlipLegs(teased, new Map());
+    expect(unrefreshed).toEqual(['g1']);
+    expect(legs[0]?.lineTenths).toBe(-35);
+    expect(legs[0]?.label).toBe('HOME -3.5');
   });
 });

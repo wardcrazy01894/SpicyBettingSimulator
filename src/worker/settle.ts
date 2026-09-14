@@ -43,6 +43,26 @@
  * American form and that call throws, which would park every all-push parlay
  * as "stuck". `effectiveAmericanPrice()` in grading.ts handles that for us.
  *
+ * PRICING IS AN ARGUMENT, NOT AN INFERENCE (M5b). `gradeBet` takes a fourth
+ * parameter, `pricing`, and M6 MUST build it from the BET ROW — never from the
+ * legs, which are deliberately indistinguishable:
+ *
+ *     const pricing = bet.bet_type === 'teaser'
+ *       ? { kind: 'teaser', pointsTenths: bet.teaser_points_tenths }
+ *       : { kind: 'parlay' };
+ *
+ * A teaser's legs carry the TEASED line in `bet_legs.line_tenths` (which is what
+ * makes grading identical) and a placeholder `american_price` of 100 (which is
+ * what makes `priceFromLegs` meaningless for them). Omitting `pricing` defaults
+ * to `{kind:'parlay'}` and would pay a 3-leg teaser as 2.0^3 instead of the
+ * card's +150 — the one place this change can go silently wrong, so the
+ * selection query must read `bet_type` and `teaser_points_tenths` alongside
+ * `stake_cents`. Everything downstream — `effectiveAmericanPrice`, the
+ * write-back, the ledger row — is unchanged: every card value round-trips
+ * through `priceToAmerican` exactly, and a teaser that reduces below two
+ * surviving legs comes back as `push` with `payout = stake`, which is already a
+ * shape this job handles.
+ *
  * Re-pricing can only ever DECREASE the payout: every legal American price has
  * decimal odds strictly greater than 1 (the minimum over the whole legal domain
  * is 1.001, at -100000), so dropping pushed/voided legs strictly shrinks the
@@ -58,7 +78,8 @@
 
 import { MAX_SETTLE_ATTEMPTS } from '../shared/constants.js';
 import { effectiveAmericanPrice, gradeBet } from '../shared/grading.js';
-import type { BetOutcome } from '../shared/grading.js';
+import { AppError } from '../shared/errors.js';
+import type { BetOutcome, BetPricing } from '../shared/grading.js';
 import type {
   BetLegSnapshot,
   EpochMs,
@@ -108,6 +129,8 @@ export interface SettleableBet {
   readonly bankrollId: string;
   readonly stakeCents: number;
   readonly betType: string;
+  /** Tenths of a point (60/65/70) for a teaser; null otherwise. */
+  readonly teaserPointsTenths: number | null;
   readonly legCount: number;
 }
 
@@ -123,20 +146,20 @@ export interface SettleLeg {
  * How the surviving legs are priced. TODAY there is exactly one kind, and this
  * function is the ONE place that decides it.
  *
- * M5b (in flight on another branch) adds `bet_type = 'teaser'` with
- * `teaser_points_tenths`, and `gradeBet` gains a 4th `pricing` argument. When
- * that lands, this function returns
- * `{ kind: 'teaser', pointsTenths: bet.teaserPointsTenths }` for a teaser and
- * the single `gradeBet(...)` call site below gains one argument. Nothing else in
- * this file moves — which is why the pricing decision is a named function
- * reading `bet_type` rather than an inline literal.
+ * Teasers (M5b): `bet_type = 'teaser'` carries `teaser_points_tenths`, and
+ * `gradeBet` takes the matching `pricing` so a pushed leg drops to the next
+ * payout tier and fewer than two survivors refunds the stake.
  */
-export interface BetPricing {
-  readonly kind: 'parlay';
-}
+export type { BetPricing } from '../shared/grading.js';
 
-export function pricingFor(_bet: SettleableBet): BetPricing {
-  // M5b: `return _bet.betType === 'teaser' ? { kind: 'teaser', pointsTenths: … } : …`
+export function pricingFor(bet: SettleableBet): BetPricing {
+  if (bet.betType === 'teaser') {
+    if (bet.teaserPointsTenths === null) {
+      // The schema CHECK makes this unreachable; refuse to guess a tier.
+      throw new AppError('INTERNAL', `teaser ${bet.id} has no teaser_points_tenths`);
+    }
+    return { kind: 'teaser', pointsTenths: bet.teaserPointsTenths };
+  }
   return { kind: 'parlay' };
 }
 
@@ -184,7 +207,7 @@ UPDATE bets SET settle_attempts = 0, settle_error = NULL
  * next run instead of being re-selected forever.
  */
 export const SELECT_SETTLEABLE_SQL = `
-SELECT b.id, b.bankroll_id, b.stake_cents, b.bet_type, b.leg_count
+SELECT b.id, b.bankroll_id, b.stake_cents, b.bet_type, b.teaser_points_tenths, b.leg_count
   FROM bets b
  WHERE b.status = 'pending'
    AND b.settle_attempts < ?1
@@ -300,6 +323,8 @@ interface SettleableBetDbRow {
   readonly bankroll_id: string;
   readonly stake_cents: number;
   readonly bet_type: string;
+  /** Tenths of a point (60/65/70) for a teaser; null otherwise. */
+  readonly teaser_points_tenths: number | null;
   readonly leg_count: number;
 }
 
@@ -316,6 +341,7 @@ export async function selectSettleableBets(
     bankrollId: row.bankroll_id,
     stakeCents: row.stake_cents,
     betType: row.bet_type,
+    teaserPointsTenths: row.teaser_points_tenths,
     legCount: row.leg_count,
   }));
 }
@@ -463,9 +489,9 @@ function gradeWithPricing(
   stakeCents: number,
   snapshots: readonly BetLegSnapshot[],
   games: ReadonlyMap<string, GameResult>,
-  _pricing: BetPricing,
+  pricing: BetPricing,
 ): BetOutcome {
-  return gradeBet(stakeCents, snapshots, games);
+  return gradeBet(stakeCents, snapshots, games, pricing);
 }
 
 /**

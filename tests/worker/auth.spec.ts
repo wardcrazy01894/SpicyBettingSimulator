@@ -21,6 +21,7 @@ import {
 } from '../../src/worker/crypto.js';
 import { buildApp } from '../../src/worker/index.js';
 import { DK_VECTORS, WRONG_DK } from './setup.js';
+import { wipeAccounts } from './seed.js';
 
 /**
  * TDD contract for M3.
@@ -117,11 +118,7 @@ async function register(
  * is only meaningful against a genuinely empty `users` table.
  */
 beforeEach(async () => {
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM auth_throttle'),
-    env.DB.prepare('DELETE FROM sessions'),
-    env.DB.prepare('DELETE FROM users'),
-  ]);
+  await wipeAccounts(env.DB);
 });
 
 interface UserRow {

@@ -2,19 +2,39 @@
  * Leaderboard queries. PLAN.md §11.5.
  *
  * SEMANTICS, stated once so nobody has to guess:
- *   balanceCents      settled cash; pending stakes are ALREADY deducted
- *   pendingStakeCents Σ stake of pending bets ("exposure")
+ *   balanceCents      the user's MAIN account balance — settled cash, with
+ *                     pending stakes ALREADY deducted. Never a subtotal, and
+ *                     never touched by the filter (see below)
+ *   pendingStakeCents Σ stake of pending bets ("exposure"), also unfiltered
  *   equityCents       balanceCents + pendingStakeCents
  *   record            settled bets only; cancelled bets are excluded entirely
  *   roi               (Σ payout − Σ stake) over bets with status ∈ {won, lost};
  *                     push and void are excluded from BOTH sides; null when the
  *                     denominator is 0
- *   RANKED BY balanceCents DESC, then roi DESC, then username ASC
+ *   RANKED BY equityCents DESC, then roi DESC, then username ASC
+ *
+ * THE FILTER IS `?league=all|nfl|ncaaf` AND NARROWS `record` AND `roi` ONLY
+ * (M5b). Money is account-level now — there is one pot, not one per league per
+ * season — so "NFL balance" is not a quantity that exists anywhere in the
+ * ledger, and publishing one would mean ranking on a number no reconciliation
+ * could check. The tabs answer "who is best at college football", and everyone's
+ * money is the same column under all three of them.
+ *
+ * THERE IS NO SEASON FILTER (decided 2026-09-14, PLAN.md §19 Q5). A season is
+ * not a thing the product has: balances never roll over, so "the 2026
+ * leaderboard" would be a slice of a number that was never reset. `bets.season`
+ * survives as an internal label for ingestion and the board's week default.
+ *
+ * `league` matches `bets.league` exactly, so a cross-league (`'mixed'`) bet
+ * counts under `all` and under neither single league. A mixed bet is not an NFL
+ * bet; splitting one across two records would double-count its stake in the ROI
+ * denominator.
  */
 
 import type { BettingRecord, LeaderboardResponse, LeaderboardRow } from '../shared/api-types.js';
 import type { League } from '../shared/types.js';
 import type { Env } from './env.js';
+import { statsFilterClauses } from './bankroll.js';
 import { queryAll } from './db.js';
 
 /** One `(user, status)` aggregate over the bets inside the requested scope. */
@@ -33,13 +53,6 @@ interface BalanceRow {
   balance_cents: number;
 }
 
-/**
- * Per-user totals, accumulated across however many bankrolls are in scope.
- *
- * ROI is pooled, NOT averaged: the all-time view sums the numerator and the
- * denominator across every league+season before dividing, so a $10 season and a
- * $10,000 season do not count equally (PLAN.md §11.5).
- */
 /** A mutable mirror of the readonly wire `BettingRecord`. */
 type MutableRecord = { -readonly [K in keyof BettingRecord]: BettingRecord[K] };
 
@@ -89,9 +102,18 @@ function applyStat(acc: Accumulator, row: StatRow): void {
 }
 
 /**
- * Ranked rows. Sorting: balance DESC, then ROI DESC, then username ASC.
+ * Ranked rows. Sorting: **EQUITY** DESC, then ROI DESC, then username ASC.
+ *
+ * EQUITY, NOT BALANCE (decided 2026-09-14, PLAN.md §19 Q2). `balanceCents`
+ * excludes stakes that are still in flight, so ranking on it puts someone
+ * holding $2,000 with $1,500 riding on tonight's game BELOW someone sitting on
+ * $600 — which is not what "who is winning" means to anyone playing. Equity is
+ * what the account is worth if every open bet were voided, so a bet neither
+ * helps nor hurts your position until it settles. Both numbers are in the row;
+ * only the sort key changed.
+ *
  * A null ROI ("no settled action") sorts below every real ROI at the same
- * balance; with two nulls the username decides, so the order is total and
+ * equity; with two nulls the username decides, so the order is total and
  * deterministic.
  */
 function rank(
@@ -113,7 +135,7 @@ function rank(
     };
   });
   rows.sort((a, b) => {
-    if (a.balanceCents !== b.balanceCents) return b.balanceCents - a.balanceCents;
+    if (a.equityCents !== b.equityCents) return b.equityCents - a.equityCents;
     const ra = a.roi ?? Number.NEGATIVE_INFINITY;
     const rb = b.roi ?? Number.NEGATIVE_INFINITY;
     if (ra !== rb) return rb - ra;
@@ -122,47 +144,33 @@ function rank(
   return rows.map((row, index) => ({ ...row, rank: index + 1 }));
 }
 
+export interface LeaderboardFilter {
+  /** `'all'` means "every bet"; a league narrows `record`/`roi` only. */
+  readonly league: League | 'all';
+}
+
+/**
+ * The one leaderboard query. `league: 'all'` is what used to be
+ * `/api/leaderboard/all-time`, and it is now the DEFAULT view rather than a
+ * separate endpoint — with one balance per account there is no "sum across
+ * bankrolls" left to do, so the two shapes had collapsed into each other.
+ */
 export async function leaderboardFor(
   env: Env,
-  league: League,
-  season: number,
+  filter: LeaderboardFilter,
 ): Promise<LeaderboardResponse> {
-  const [users, stats] = await Promise.all([
+  const values: unknown[] = [];
+  const extra = statsFilterClauses(
+    filter.league === 'all' ? {} : { league: filter.league },
+    values,
+  );
+  const [users, stats, pending] = await Promise.all([
     queryAll<BalanceRow>(
       env.DB.prepare(
         `SELECT bk.user_id AS user_id, u.username AS username, u.display_name AS display_name,
                 bk.balance_cents AS balance_cents
            FROM bankrolls bk JOIN users u ON u.id = bk.user_id
-          WHERE bk.league = ?1 AND bk.season = ?2`,
-      ).bind(league, season),
-    ),
-    queryAll<StatRow>(
-      env.DB.prepare(
-        `SELECT b.user_id AS user_id, b.status AS status, COUNT(*) AS n,
-                COALESCE(SUM(b.stake_cents), 0) AS stake,
-                COALESCE(SUM(b.payout_cents), 0) AS payout
-           FROM bets b
-          WHERE b.league = ?1 AND b.season = ?2
-          GROUP BY b.user_id, b.status`,
-      ).bind(league, season),
-    ),
-  ]);
-  return { league, season, rows: rank(users, accumulate(users, stats)) };
-}
-
-/**
- * Combined view across every league and season. Balances and exposures are
- * summed; ROI is recomputed from the POOLED numerator and denominator (not an
- * average of per-bankroll ROIs).
- */
-export async function leaderboardAllTime(env: Env): Promise<LeaderboardResponse> {
-  const [users, stats] = await Promise.all([
-    queryAll<BalanceRow>(
-      env.DB.prepare(
-        `SELECT bk.user_id AS user_id, u.username AS username, u.display_name AS display_name,
-                COALESCE(SUM(bk.balance_cents), 0) AS balance_cents
-           FROM bankrolls bk JOIN users u ON u.id = bk.user_id
-          GROUP BY bk.user_id, u.username, u.display_name`,
+          WHERE bk.kind = 'main'`,
       ),
     ),
     queryAll<StatRow>(
@@ -171,11 +179,26 @@ export async function leaderboardAllTime(env: Env): Promise<LeaderboardResponse>
                 COALESCE(SUM(b.stake_cents), 0) AS stake,
                 COALESCE(SUM(b.payout_cents), 0) AS payout
            FROM bets b
+          WHERE b.status IN ('won','lost','push','void')${extra}
           GROUP BY b.user_id, b.status`,
+      ).bind(...values),
+    ),
+    // Exposure is a property of the ACCOUNT, so it is deliberately not filtered:
+    // `equityCents = balanceCents + pendingStakeCents` has to stay true under
+    // every tab, and both halves of it are account-level.
+    queryAll<StatRow>(
+      env.DB.prepare(
+        `SELECT b.user_id AS user_id, 'pending' AS status, COUNT(*) AS n,
+                COALESCE(SUM(b.stake_cents), 0) AS stake, 0 AS payout
+           FROM bets b WHERE b.status = 'pending'
+          GROUP BY b.user_id`,
       ),
     ),
   ]);
-  return { league: 'all', season: null, rows: rank(users, accumulate(users, stats)) };
+  return {
+    league: filter.league,
+    rows: rank(users, accumulate(users, [...stats, ...pending])),
+  };
 }
 
 function accumulate(
@@ -186,8 +209,8 @@ function accumulate(
   for (const user of users) accumulators.set(user.user_id, emptyAccumulator(user.balance_cents));
   for (const stat of stats) {
     const acc = accumulators.get(stat.user_id);
-    // A bet whose user has no bankroll in scope is impossible (bets.bankroll_id
-    // is a FK), but skipping is the safe read.
+    // A bet whose user has no main balance is impossible (it is created at
+    // signup and `bets.bankroll_id` is a FK), but skipping is the safe read.
     if (acc !== undefined) applyStat(acc, stat);
   }
   return accumulators;

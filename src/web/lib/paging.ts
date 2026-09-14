@@ -39,3 +39,37 @@ export function mergePages<T>(pages: readonly Page<T>[], keyOf: (item: T) => str
 export function nextCursorOf<T>(pages: readonly Page<T>[]): string | null {
   return pages.length === 0 ? null : (pages[pages.length - 1]?.nextCursor ?? null);
 }
+
+/** What `usePages` is holding pages 2..n behind. */
+export interface HeldWindow {
+  readonly resetKey: string;
+  /** The id at the top of page 1 when those pages were fetched; `null` if none. */
+  readonly firstId: string | null;
+}
+
+/**
+ * Must the held pages 2..n be thrown away?
+ *
+ * TWO reasons, and the second is the one that is easy to miss:
+ *
+ *  1. `resetKey` changed — a different filter, a different league. Obvious.
+ *  2. THE TOP OF PAGE 1 CHANGED. Pages 2..n were fetched behind a cursor that
+ *     described where page 1 ENDED at the time. Place a bet (or settle one) and
+ *     page 1 re-reads with a new row at the top, pushing its old last row down
+ *     onto page 2 — which we are still holding from before. The boundary row is
+ *     then absent from the merged list and unreachable, because `nextCursorOf`
+ *     only ever asks beyond the LAST held page. `mergePages` hides it
+ *     completely: every id still differs, so there is no duplicate key to
+ *     notice. Re-paging from a fresh page 1 is the only correct answer.
+ *
+ * `firstId === undefined` means page 1 has not arrived yet, which is NOT
+ * information: hold what we have rather than dropping it on every remount.
+ */
+export function windowIsStale(
+  held: HeldWindow,
+  resetKey: string,
+  firstId: string | null | undefined,
+): boolean {
+  if (held.resetKey !== resetKey) return true;
+  return firstId !== undefined && held.firstId !== firstId;
+}

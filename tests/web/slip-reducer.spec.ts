@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_TEASER_POINTS_TENTHS,
   EMPTY_SLIP,
   emptySlipState,
   legKey,
   parseStoredSlip,
   serialiseSlip,
+  SLIP_STORAGE_KEY,
   slipReducer,
-  slipStorageKey,
+  staleSlipKeys,
 } from '../../src/web/state/slip-reducer.js';
 import type { SlipLeg, SlipState } from '../../src/web/state/slip-reducer.js';
 import type { League, Market, Side } from '../../src/shared/types.js';
@@ -38,15 +40,16 @@ function start(): SlipState {
   return emptySlipState('nfl');
 }
 
+/** The ONE slip (M5b). Kept as a helper so the assertions below stay short. */
 function active(state: SlipState) {
-  return state.byLeague[state.active];
+  return state.slip;
 }
 
 describe('slipReducer', () => {
-  it('starts empty for every league', () => {
+  it('starts with ONE empty slip and a board league', () => {
     const state = start();
-    expect(state.byLeague.nfl).toEqual(EMPTY_SLIP);
-    expect(state.byLeague.ncaaf).toEqual(EMPTY_SLIP);
+    expect(state.slip).toEqual(EMPTY_SLIP);
+    expect(state.board).toBe('nfl');
     expect(state.editingBetId).toBeNull();
   });
 
@@ -89,16 +92,30 @@ describe('slipReducer', () => {
     expect(active(state).legs).toHaveLength(3);
   });
 
-  it('keeps each league slip separate and follows the toggled leg to its league', () => {
+  it('holds NFL and NCAAF legs in the SAME slip — the point of M5b', () => {
+    // "Tease Michigan and the Steelers together" is one slip with two leagues in
+    // it, not two slips you have to choose between.
     let state = slipReducer(start(), { type: 'TOGGLE_LEG', leg: leg('nfl1'), maxLegs: MAX_LEGS });
     state = slipReducer(state, {
       type: 'TOGGLE_LEG',
       leg: leg('cfb1', 'spread', 'home', 'ncaaf'),
       maxLegs: MAX_LEGS,
     });
-    expect(state.active).toBe('ncaaf');
-    expect(state.byLeague.nfl.legs).toHaveLength(1);
-    expect(state.byLeague.ncaaf.legs).toHaveLength(1);
+    expect(active(state).legs.map((l) => l.league)).toEqual(['nfl', 'ncaaf']);
+    expect(active(state).mode).toBe('parlay');
+    // Adding a college leg did NOT drag the board to the college tab.
+    expect(state.board).toBe('nfl');
+  });
+
+  it('SET_BOARD moves the board and touches NOTHING else', () => {
+    let state = slipReducer(start(), { type: 'TOGGLE_LEG', leg: leg('nfl1'), maxLegs: MAX_LEGS });
+    state = slipReducer(state, { type: 'SET_STAKE', stakeCents: 2500 });
+    const before = state.slip;
+    const moved = slipReducer(state, { type: 'SET_BOARD', league: 'ncaaf' });
+    expect(moved.board).toBe('ncaaf');
+    // Identity, not just equality: switching tabs allocates no new slip at all.
+    expect(moved.slip).toBe(before);
+    expect(slipReducer(moved, { type: 'SET_BOARD', league: 'ncaaf' })).toBe(moved);
   });
 
   it('REMOVE_LEG drops exactly one pick', () => {
@@ -113,49 +130,70 @@ describe('slipReducer', () => {
     expect(active(state).legs.map((l) => l.gameId)).toEqual(['g2']);
   });
 
-  it('CLEAR wipes the active league only and ends an edit', () => {
+  it('CLEAR wipes the whole slip, both leagues, and ends an edit', () => {
     let state = slipReducer(start(), { type: 'TOGGLE_LEG', leg: leg('g1'), maxLegs: MAX_LEGS });
     state = slipReducer(state, {
       type: 'TOGGLE_LEG',
       leg: leg('c1', 'spread', 'home', 'ncaaf'),
       maxLegs: MAX_LEGS,
     });
-    state = slipReducer(state, { type: 'SET_LEAGUE', league: 'nfl' });
+    expect(active(state).legs).toHaveLength(2);
     state = slipReducer(state, { type: 'CLEAR' });
-    expect(state.byLeague.nfl.legs).toHaveLength(0);
-    expect(state.byLeague.ncaaf.legs).toHaveLength(1);
+    expect(active(state)).toEqual(EMPTY_SLIP);
     expect(state.editingBetId).toBeNull();
   });
 
-  it('START_EDIT loads the bet and switches to its league', () => {
+  it('START_EDIT loads the bet without moving the board', () => {
     const state = slipReducer(start(), {
       type: 'START_EDIT',
       betId: 'bet-1',
-      league: 'ncaaf',
       mode: 'parlay',
       legs: [leg('a', 'spread', 'home', 'ncaaf'), leg('b', 'total', 'over', 'ncaaf')],
       stakeCents: 2500,
     });
     expect(state.editingBetId).toBe('bet-1');
-    expect(state.active).toBe('ncaaf');
+    expect(state.board).toBe('nfl');
     expect(active(state).stakeCents).toBe(2500);
     expect(active(state).legs).toHaveLength(2);
   });
 
-  it('SET_STAKE and SET_MODE only touch the active league', () => {
+  it('SET_STAKE and SET_MODE apply to the one slip', () => {
     // Two legs, because SET_MODE now refuses to call a slip with fewer than two
     // a "parlay" — that mode was unplaceable and used to be persisted anyway.
     let state = slipReducer(start(), { type: 'TOGGLE_LEG', leg: leg('a'), maxLegs: MAX_LEGS });
     state = slipReducer(state, { type: 'TOGGLE_LEG', leg: leg('b'), maxLegs: MAX_LEGS });
     state = slipReducer(state, { type: 'SET_STAKE', stakeCents: 5000 });
     state = slipReducer(state, { type: 'SET_MODE', mode: 'parlay' });
-    expect(state.byLeague.nfl).toMatchObject({ stakeCents: 5000, mode: 'parlay' });
-    expect(state.byLeague.ncaaf).toEqual(EMPTY_SLIP);
+    expect(state.slip).toMatchObject({ stakeCents: 5000, mode: 'parlay' });
   });
 
-  it('SET_MODE refuses "parlay" below two legs', () => {
-    const state = slipReducer(start(), { type: 'SET_MODE', mode: 'parlay' });
-    expect(state.byLeague.nfl.mode).toBe('straight');
+  it('SET_MODE refuses "parlay" and "teaser" below two legs', () => {
+    expect(slipReducer(start(), { type: 'SET_MODE', mode: 'parlay' }).slip.mode).toBe('straight');
+    expect(slipReducer(start(), { type: 'SET_MODE', mode: 'teaser' }).slip.mode).toBe('straight');
+  });
+
+  it('a teaser STAYS a teaser as legs are added and removed', () => {
+    let state = slipReducer(start(), { type: 'TOGGLE_LEG', leg: leg('a'), maxLegs: MAX_LEGS });
+    state = slipReducer(state, { type: 'TOGGLE_LEG', leg: leg('b'), maxLegs: MAX_LEGS });
+    state = slipReducer(state, { type: 'SET_MODE', mode: 'teaser' });
+    expect(state.slip.mode).toBe('teaser');
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('c', 'spread', 'home', 'ncaaf'),
+      maxLegs: MAX_LEGS,
+    });
+    // A third leg, from the OTHER league, and it is still a teaser.
+    expect(state.slip.mode).toBe('teaser');
+    expect(state.slip.legs).toHaveLength(3);
+    // ...but dropping to one leg forces `straight`, which is the only placeable
+    // shape at that size.
+    state = slipReducer(state, { type: 'TOGGLE_LEG', leg: leg('b'), maxLegs: MAX_LEGS });
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('c', 'spread', 'home', 'ncaaf'),
+      maxLegs: MAX_LEGS,
+    });
+    expect(state.slip.mode).toBe('straight');
   });
 
   it('never mutates the state it is given', () => {
@@ -177,12 +215,23 @@ describe('legKey', () => {
   });
 });
 
-describe('slipStorageKey', () => {
-  it('is versioned and per league', () => {
-    expect(slipStorageKey('nfl')).not.toBe(slipStorageKey('ncaaf'));
-    // v2: `SlipLeg` gained homeAbbr/awayAbbr, which a v1 entry cannot supply.
-    expect(slipStorageKey('nfl')).toMatch(/\.v\d+\./);
-    expect(slipStorageKey('nfl')).toContain('v2');
+describe('storage keys', () => {
+  it('is ONE versioned slot, not one per league', () => {
+    expect(SLIP_STORAGE_KEY).toMatch(/\.v\d+$/);
+    expect(SLIP_STORAGE_KEY).toContain('v3');
+    // v3: the shape went from two per-league drafts to one cross-league slip.
+    expect(SLIP_STORAGE_KEY).not.toContain('nfl');
+    expect(SLIP_STORAGE_KEY).not.toContain('ncaaf');
+  });
+
+  it('names the abandoned per-league keys so they can be swept up', () => {
+    const stale = staleSlipKeys();
+    // Both leagues, both old versions — and never the live key, or a hydrate
+    // would delete the slip it just read.
+    expect(stale).toContain('sbs.slip.v2.nfl');
+    expect(stale).toContain('sbs.slip.v2.ncaaf');
+    expect(stale).toContain('sbs.slip.v1.nfl');
+    expect(stale).not.toContain(SLIP_STORAGE_KEY);
   });
 });
 
@@ -192,20 +241,52 @@ describe('persistence', () => {
       mode: 'parlay' as const,
       legs: [leg('g1'), leg('g2', 'total', 'over')],
       stakeCents: 1234,
+      teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
     };
-    const parsed = parseStoredSlip(serialiseSlip(slip), 'nfl');
+    const parsed = parseStoredSlip(serialiseSlip(slip));
     expect(parsed).toEqual(slip);
   });
 
   it('returns null for missing, malformed or foreign data instead of throwing', () => {
-    expect(parseStoredSlip(null, 'nfl')).toBeNull();
-    expect(parseStoredSlip('not json', 'nfl')).toBeNull();
-    expect(parseStoredSlip('[]', 'nfl')).toBeNull();
-    expect(parseStoredSlip('{"mode":"teaser","legs":[],"stakeCents":0}', 'nfl')).toBeNull();
-    expect(parseStoredSlip('{"mode":"straight","legs":[],"stakeCents":-1}', 'nfl')).toBeNull();
+    expect(parseStoredSlip(null)).toBeNull();
+    expect(parseStoredSlip('not json')).toBeNull();
+    expect(parseStoredSlip('[]')).toBeNull();
+    expect(parseStoredSlip('{"mode":"round-robin","legs":[],"stakeCents":0}')).toBeNull();
+    expect(parseStoredSlip('{"mode":"straight","legs":[],"stakeCents":-1}')).toBeNull();
+    expect(parseStoredSlip('{"mode":"straight","legs":[{"gameId":""}],"stakeCents":0}')).toBeNull();
+    // A tier that is not on the card is corruption, not an old entry.
     expect(
-      parseStoredSlip('{"mode":"straight","legs":[{"gameId":""}],"stakeCents":0}', 'nfl'),
+      parseStoredSlip('{"mode":"straight","legs":[],"stakeCents":0,"teaserPointsTenths":61}'),
     ).toBeNull();
+  });
+
+  it("'teaser' is a legal stored mode now, and a v2 entry without a tier gets the default", () => {
+    // A pre-M5b entry has no `teaserPointsTenths` at all; throwing the whole
+    // slip away for that would lose a draft for no reason.
+    const legacy = parseStoredSlip('{"mode":"straight","legs":[],"stakeCents":250}');
+    expect(legacy?.teaserPointsTenths).toBe(DEFAULT_TEASER_POINTS_TENTHS);
+    expect(legacy?.stakeCents).toBe(250);
+    // ...and every tier on the card round-trips.
+    for (const tenths of [60, 65, 70]) {
+      const raw = serialiseSlip({
+        mode: 'teaser',
+        legs: [leg('g1'), leg('g2', 'total', 'over')],
+        stakeCents: 500,
+        teaserPointsTenths: tenths,
+      });
+      const parsed = parseStoredSlip(raw);
+      expect(parsed?.mode).toBe('teaser');
+      expect(parsed?.teaserPointsTenths).toBe(tenths);
+    }
+    // A ONE-leg "teaser" is not placeable and is normalised back to a straight,
+    // exactly as a one-leg "parlay" already was.
+    const single = serialiseSlip({
+      mode: 'teaser',
+      legs: [leg('g1')],
+      stakeCents: 500,
+      teaserPointsTenths: 60,
+    });
+    expect(parseStoredSlip(single)?.mode).toBe('straight');
   });
 
   it('rejects a hand-edited price that is not a safe integer', () => {
@@ -214,15 +295,43 @@ describe('persistence', () => {
       stakeCents: 100,
       legs: [{ ...leg('g1'), americanPrice: 1.5 }],
     });
-    expect(parseStoredSlip(raw, 'nfl')).toBeNull();
+    expect(parseStoredSlip(raw)).toBeNull();
   });
 
-  it('re-stamps the league so a slip cannot be restored under the wrong one', () => {
+  it("keeps each leg's OWN league across a round trip, both in one slip", () => {
+    // The league used to be re-stamped from the per-league storage key. With one
+    // shared slot there is no key to stamp from, so it is PART OF THE ENTRY —
+    // and a cross-league draft has to survive a reload intact.
     const raw = serialiseSlip({
-      mode: 'straight',
-      legs: [leg('g1', 'spread', 'home', 'nfl')],
+      mode: 'parlay',
+      legs: [leg('g1', 'spread', 'home', 'nfl'), leg('g2', 'total', 'over', 'ncaaf')],
       stakeCents: 100,
+      teaserPointsTenths: DEFAULT_TEASER_POINTS_TENTHS,
     });
-    expect(parseStoredSlip(raw, 'ncaaf')?.legs[0]?.league).toBe('ncaaf');
+    expect(parseStoredSlip(raw)?.legs.map((l) => l.league)).toEqual(['nfl', 'ncaaf']);
+  });
+
+  it('rejects a stored leg whose league is missing or not a real one', () => {
+    const withLeague = (league: unknown): string =>
+      JSON.stringify({
+        mode: 'straight',
+        stakeCents: 100,
+        legs: [{ ...leg('g1'), league }],
+      });
+    expect(parseStoredSlip(withLeague(undefined))).toBeNull();
+    expect(parseStoredSlip(withLeague('nba'))).toBeNull();
+    expect(parseStoredSlip(withLeague(7))).toBeNull();
+    expect(parseStoredSlip(withLeague('nfl'))?.legs[0]?.league).toBe('nfl');
+  });
+
+  it('rejects a hand-edited entry holding two legs from ONE game', () => {
+    // The no-same-game rule is a slip invariant, so a corrupt entry is dropped
+    // rather than rehydrated into something the server would refuse.
+    const raw = JSON.stringify({
+      mode: 'parlay',
+      stakeCents: 100,
+      legs: [leg('g1', 'spread', 'home'), leg('g1', 'total', 'over')],
+    });
+    expect(parseStoredSlip(raw)).toBeNull();
   });
 });

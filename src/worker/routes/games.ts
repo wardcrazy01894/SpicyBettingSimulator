@@ -15,8 +15,8 @@ import {
 } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { lockAtFor } from '../../shared/time.js';
-import type { EpochMs, GameStatus, League } from '../../shared/types.js';
-import { currentSeasonFor, ensureBankroll, isLeague } from '../bankroll.js';
+import type { BetLeague, EpochMs, GameStatus, League } from '../../shared/types.js';
+import { currentSeasonFor, isLeague } from '../bankroll.js';
 import { queryAll, queryOne } from '../db.js';
 import { requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
@@ -123,11 +123,10 @@ export function gamesRoutes(): Hono<AppContext> {
       ).bind(...values),
     );
 
-    // PLAN.md §4.4: viewing the board is one of the three lazy-rollover points.
+    // Reading the board WRITES NOTHING (M5b). It used to run §4.4's lazy
+    // bankroll prelude here, because a new season needed a new bankroll; a
+    // balance is account-level and created at signup, so a GET is a GET again.
     const resolvedSeason = season ?? (await currentSeasonFor(c.env, league, now));
-    if (c.var.user !== null && resolvedSeason !== null) {
-      await ensureBankroll(c.env, c.var.user.id, league, resolvedSeason, now);
-    }
 
     const bodyOut: GamesResponse = {
       league,
@@ -242,6 +241,19 @@ export function readLeague(raw: string | undefined): League {
     throw new AppError('VALIDATION', 'league must be nfl or ncaaf', { field: 'league' });
   }
   return raw;
+}
+
+/**
+ * An OPTIONAL `?league=` filter over `bets.league`, which since M5b may also be
+ * `'mixed'`. Absent (or the empty string) means "every league", which is a real
+ * answer here rather than the error it is for the board — a balance and a
+ * leaderboard exist without one.
+ */
+export function readBetLeague(raw: string | undefined): BetLeague | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  if (raw === 'all') return undefined;
+  if (raw === 'mixed' || isLeague(raw)) return raw;
+  throw new AppError('VALIDATION', 'league must be nfl, ncaaf, mixed or all', { field: 'league' });
 }
 
 export function readInt(raw: string | undefined, field: string): number | undefined {

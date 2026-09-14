@@ -8,7 +8,7 @@
  */
 
 import type { BetView, GameCard, GameTeamView } from '../../src/shared/api-types.js';
-import type { Market, Side } from '../../src/shared/types.js';
+import type { League, Market, Side } from '../../src/shared/types.js';
 
 export function localMs(year: number, month1: number, day: number, hour = 12, minute = 0): number {
   return new Date(year, month1 - 1, day, hour, minute, 0, 0).getTime();
@@ -43,6 +43,7 @@ export function gameCard(overrides: Partial<GameCard> & { id: string }): GameCar
 interface BetLegSpec {
   readonly gameId: string;
   readonly kickoffAt: number;
+  readonly league?: League;
   readonly market?: Market;
   readonly side?: Side;
   readonly americanPrice?: number;
@@ -61,9 +62,11 @@ export function betView(overrides: BetOverrides): BetView {
     id: `${overrides.id}-${String(index)}`,
     legIndex: index,
     gameId: spec.gameId,
+    league: spec.league ?? ('nfl' as const),
     market: spec.market ?? 'spread',
     side: spec.side ?? 'home',
     lineTenths: -35,
+    originalLineTenths: null,
     americanPrice: spec.americanPrice ?? -110,
     provider: 'DraftKings',
     lineCapturedAt: spec.kickoffAt - 3_600_000,
@@ -84,9 +87,11 @@ export function betView(overrides: BetOverrides): BetView {
   const earliest = Math.min(...legs.map((l) => l.game.kickoffAt));
   const base: BetView = {
     id: overrides.id,
+    bankrollId: overrides.bankrollId ?? 'bk-main',
     league: overrides.league ?? 'nfl',
     season: overrides.season ?? 2026,
     betType: legs.length > 1 ? 'parlay' : 'straight',
+    teaserPoints: null,
     stakeCents: 1000,
     americanPrice: -110,
     decimalOdds: '1.909',

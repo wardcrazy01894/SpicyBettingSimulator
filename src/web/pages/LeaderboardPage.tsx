@@ -1,4 +1,15 @@
-/** Scope tabs: NFL / NCAAF / All-time. */
+/**
+ * The leaderboard, with All / NFL / NCAAF filters.
+ *
+ * THE TABS FILTER THE RECORD, NOT THE MONEY (M5b). Everyone's money is their one
+ * account balance under all three, because that is the only balance that exists;
+ * the tabs answer "who is best at college football", which is a question about
+ * W-L and ROI. The old third tab was "All-time", which meant "summed across
+ * per-league bankrolls" — a sum with nothing left to add up.
+ *
+ * THERE IS NO SEASON. Balances never roll over, so a per-season board would be a
+ * slice of a number that was never reset (PLAN.md §19 Q5).
+ */
 import { useState } from 'react';
 import type { ReactElement } from 'react';
 
@@ -18,14 +29,13 @@ type Scope = League | 'all';
 export function LeaderboardPage(): ReactElement {
   const config = useConfig();
   const session = useSession();
-  const [scope, setScope] = useState<Scope>(config.leagues[0] ?? 'all');
+  const [scope, setScope] = useState<Scope>('all');
 
-  const season = scope === 'all' ? null : config.currentSeason[scope];
-  const board = useLeaderboard(scope, season);
+  const board = useLeaderboard(scope);
 
   const options: readonly SegmentedOption<Scope>[] = [
+    { value: 'all', label: 'All' },
     ...config.leagues.map((league) => ({ value: league, label: LEAGUE_LABEL[league] })),
-    { value: 'all', label: 'All-time' },
   ];
 
   return (
@@ -40,7 +50,9 @@ export function LeaderboardPage(): ReactElement {
       </div>
 
       <p className="muted page-note">
-        Ranked by settled balance. Open stakes are already deducted; equity adds them back.
+        Ranked by <strong>equity</strong> — your balance plus whatever is riding on open bets, so a
+        stake in flight neither helps nor hurts you until it settles. The tabs filter each
+        player&rsquo;s record and ROI; the money is the whole account either way.
       </p>
 
       {board.error !== undefined && board.data === undefined && (

@@ -18,15 +18,23 @@ export interface BetSlipState {
   readonly mode: SlipMode;
   readonly legs: readonly SlipLeg[];
   readonly stakeCents: Cents;
+  /** The teaser tier in TENTHS (60/65/70). Meaningful only in teaser mode. */
+  readonly teaserPointsTenths: number;
 }
 
 export interface BetSlipApi extends BetSlipState {
-  readonly league: League;
-  readonly setLeague: (league: League) => void;
+  /**
+   * Which league the BOARD is showing. NOT a property of the slip: there is ONE
+   * cross-league slip (M5b), and switching tabs to find a college game to add to
+   * an NFL slip must never disturb it.
+   */
+  readonly boardLeague: League;
+  readonly setBoardLeague: (league: League) => void;
   readonly toggleLeg: (leg: SlipLeg) => void;
   readonly removeLeg: (gameId: string, market: Market, side: Side) => void;
   readonly clear: () => void;
   readonly setMode: (mode: SlipMode) => void;
+  readonly setTeaserPoints: (pointsTenths: number) => void;
   readonly setStakeCents: (cents: Cents) => void;
   readonly isSelected: (gameId: string, market: Market, side: Side) => boolean;
   readonly preview: SlipPreview;
@@ -39,7 +47,7 @@ export interface BetSlipApi extends BetSlipState {
   readonly open: boolean;
   readonly setOpen: (open: boolean) => void;
 
-  /** Bankroll available for the active (league, season); null while unknown. */
+  /** The ACCOUNT balance the slip will be staked against; null while unknown. */
   readonly availableCents: Cents | null;
 
   readonly submitting: boolean;
@@ -51,10 +59,11 @@ export interface BetSlipApi extends BetSlipState {
   readonly editingBetId: string | null;
   readonly startEdit: (
     betId: string,
-    league: League,
     mode: SlipMode,
     legs: readonly SlipLeg[],
     stakeCents: Cents,
+    /** Tenths, when the bet being edited is a teaser. */
+    teaserPointsTenths?: number,
   ) => void;
   readonly cancelEdit: () => void;
   /** Place (or PUT) the slip exactly as it is shown. */

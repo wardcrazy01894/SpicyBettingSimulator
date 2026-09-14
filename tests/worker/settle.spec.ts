@@ -7,7 +7,6 @@ import { isAppError } from '../../src/shared/errors.js';
 import { parseScoreboard } from '../../src/shared/espn.js';
 import { gradeBet } from '../../src/shared/grading.js';
 import { americanToPrice, formatDecimalOdds } from '../../src/shared/odds.js';
-import { bankrollId } from '../../src/worker/bankroll.js';
 import { placeBet } from '../../src/worker/bets.js';
 import { isUniqueViolation } from '../../src/worker/db.js';
 import { buildApp } from '../../src/worker/index.js';
@@ -31,7 +30,7 @@ import {
 import type { SettleStats, SettleableBet } from '../../src/worker/settle.js';
 import { buildScoreboard } from './fixtures.js';
 import type { EventSpec } from './fixtures.js';
-import { bankrollDrift, seedGameWithLine, seedLine, updateGame } from './seed.js';
+import { bankrollDrift, mainBankrollId, seedGameWithLine, seedLine, updateGame } from './seed.js';
 
 /**
  * TDD contract for M6 — PLAN.md §7, §13, §14.5.
@@ -195,6 +194,7 @@ interface BetDbRow {
   id: string;
   bankroll_id: string;
   bet_type: string;
+  teaser_points_tenths: number | null;
   leg_count: number;
   stake_cents: number;
   american_price: number;
@@ -250,7 +250,7 @@ async function ledgerRows(betId: string, kind?: string): Promise<LedgerDbRow[]> 
 
 async function balance(userId: string): Promise<number> {
   const row = await env.DB.prepare(`SELECT balance_cents AS b FROM bankrolls WHERE id = ?1`)
-    .bind(bankrollId(userId, 'nfl', 2026))
+    .bind(await mainBankrollId(env.DB, userId))
     .first<{ b: number }>();
   return row?.b ?? -1;
 }
@@ -268,6 +268,7 @@ async function settleableBetOf(betId: string): Promise<SettleableBet> {
     bankrollId: row.bankroll_id,
     stakeCents: row.stake_cents,
     betType: row.bet_type,
+    teaserPointsTenths: row.teaser_points_tenths,
     legCount: row.leg_count,
   };
 }
@@ -973,6 +974,62 @@ describe('runSettle — effective price write-back', () => {
     await expectNoDrift();
   });
 
+  it('a 2-leg 6-pt teaser pays at the standard card (-120 -> 1833 at 1000c) from TEASED lines', async () => {
+    const user = await register();
+    // home -3.0 teased by 6 -> +3.0; a 21-24 home loss by 3 is a WIN at +3? No: a
+    // push. Use 31-17 here so the teased spread wins cleanly.
+    const a = await seedScheduled(g(1), { spreadHomeTenths: -30, spreadAwayTenths: 30 });
+    const b = await seedScheduled(g(2), { totalTenths: 450 }); // over 45.0 teased -> over 39.0
+    const { bet: placed } = await placeBet(
+      env,
+      user.id,
+      {
+        league: 'nfl',
+        betType: 'teaser',
+        teaserPoints: 60,
+        stakeCents: 1000,
+        legs: [spreadLeg(a), totalLeg(b)],
+      },
+      NOW,
+    );
+    expect(placed.americanPrice).toBe(-120);
+    expect(placed.potentialPayoutCents).toBe(1833); // REPL: floor(1000 * 220/120)
+    await finalize(a, 31, 17); // home +3.0 teased: wins
+    await finalize(b, 24, 21); // 45 total > 39.0: over wins
+    await runSettle(env, NOW + 1, 20);
+    const bet = await betRow(placed.id);
+    expect(bet.status).toBe('won');
+    expect(bet.payout_cents).toBe(1833);
+    expect(bet.american_price).toBe(-120);
+    await expectNoDrift();
+  });
+
+  it('a 2-leg teaser with one pushed leg is refunded (fewer than two survivors = no action)', async () => {
+    const user = await register();
+    const a = await seedScheduled(g(1), { spreadHomeTenths: -30, spreadAwayTenths: 30 }); // teased +3.0
+    const b = await seedScheduled(g(2), { totalTenths: 450 });
+    const { bet: placed } = await placeBet(
+      env,
+      user.id,
+      {
+        league: 'nfl',
+        betType: 'teaser',
+        teaserPoints: 60,
+        stakeCents: 1000,
+        legs: [spreadLeg(a), totalLeg(b)],
+      },
+      NOW,
+    );
+    await finalize(a, 21, 24); // home loses by exactly 3 -> push at +3.0
+    await finalize(b, 24, 21); // over wins
+    await runSettle(env, NOW + 1, 20);
+    const bet = await betRow(placed.id);
+    expect(bet.status).toBe('push');
+    expect(bet.payout_cents).toBe(1000);
+    expect(bet.american_price).toBe(100);
+    await expectNoDrift();
+  });
+
   it('a losing bet KEEPS its placement price', async () => {
     const user = await register();
     const a = await seedScheduled(g(1));
@@ -1211,7 +1268,7 @@ describe('runSettle — idempotency', () => {
         `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
          VALUES (?1, ?2, 'bet_payout', ?3, ?3, 4772, ?4, 'double pay')`,
       )
-        .bind(crypto.randomUUID(), bankrollId(user.id, 'nfl', 2026), betId, NOW + 9)
+        .bind(crypto.randomUUID(), await mainBankrollId(env.DB, user.id), betId, NOW + 9)
         .run();
     } catch (err) {
       thrown = err;
@@ -1239,6 +1296,7 @@ describe('runSettle — idempotency', () => {
       bankrollId: 'bk',
       stakeCents: 1000,
       betType: 'parlay',
+      teaserPointsTenths: null,
       legCount: 10,
     };
     const outcome = {
@@ -1576,6 +1634,7 @@ describe('pricingFor', () => {
       bankrollId: 'bk',
       stakeCents: 100,
       betType: 'straight',
+      teaserPointsTenths: null,
       legCount: 1,
     };
     expect(pricingFor(straight)).toEqual({ kind: 'parlay' });

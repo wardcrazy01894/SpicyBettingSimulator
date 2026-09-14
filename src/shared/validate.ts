@@ -11,13 +11,25 @@ import {
   MIN_ABS_AMERICAN_PRICE,
   MIN_PARLAY_LEGS,
   MIN_STAKE_CENTS,
+  MIN_TEASER_LEGS,
+  TEASER_POINTS_TENTHS,
   USERNAME_MAX,
   USERNAME_MIN,
   USERNAME_PATTERN,
+  isTeaserPoints,
 } from './constants.js';
+import type { TeaserPointsTenths } from './constants.js';
 import type { PlaceBetLegRequest, PlaceBetRequest } from './api-types.js';
 import { LEAGUES } from './types.js';
-import type { AmericanPrice, BetType, Cents, LineTenths, Market, Side } from './types.js';
+import type {
+  AmericanPrice,
+  BetLeague,
+  BetType,
+  Cents,
+  LineTenths,
+  Market,
+  Side,
+} from './types.js';
 
 /** A discriminated result so callers never have to catch for control flow. */
 export type ValidationResult<T> =
@@ -48,7 +60,11 @@ export interface LoginInput {
 
 const MARKETS: readonly Market[] = ['moneyline', 'spread', 'total'];
 const SIDES: readonly Side[] = ['home', 'away', 'over', 'under'];
-const BET_TYPES: readonly BetType[] = ['straight', 'parlay'];
+const BET_TYPES: readonly BetType[] = ['straight', 'parlay', 'teaser'];
+/** `'mixed'` is accepted on the wire but is advisory; the server re-derives it. */
+const BET_LEAGUES: readonly BetLeague[] = [...LEAGUES, 'mixed'];
+/** Teasers move a LINE, so there has to be one: moneyline legs are refused. */
+const TEASABLE_MARKETS: readonly Market[] = ['spread', 'total'];
 export const DISPLAY_NAME_MAX = 40;
 
 function bad<T>(message: string, field?: string): ValidationResult<T> {
@@ -216,23 +232,52 @@ function validateLeg(raw: unknown, index: number): ValidationResult<PlaceBetLegI
   );
 }
 
+/** `teaserPoints`: required iff the bet is a teaser, rejected otherwise. */
+function validateTeaserPoints(
+  raw: unknown,
+  betType: BetType,
+): ValidationResult<TeaserPointsTenths | undefined> {
+  const value = raw ?? undefined; // null behaves like absent, as inviteCode does
+  if (betType !== 'teaser') {
+    return value === undefined
+      ? good(undefined)
+      : bad('teaserPoints is only valid on a teaser', 'teaserPoints');
+  }
+  if (!isTeaserPoints(value)) {
+    return bad(
+      `teaserPoints must be one of ${TEASER_POINTS_TENTHS.join(', ')} (tenths of a point)`,
+      'teaserPoints',
+    );
+  }
+  return good(value);
+}
+
 /**
  * Validate a bet request body. Checks, in order:
  *   - stakeCents is a safe integer >= MIN_STAKE_CENTS
- *   - betType 'straight' => exactly 1 leg; 'parlay' => 2..MAX_PARLAY_LEGS legs
+ *   - betType 'straight' => exactly 1 leg; 'parlay'/'teaser' => 2..MAX_PARLAY_LEGS
+ *   - teaserPoints is present iff betType is 'teaser', and is 60/65/70
+ *   - a teaser's legs are spread or total only — a moneyline has no line to move
  *   - each leg's market/side combination is coherent
  *     (total <=> over/under; moneyline/spread <=> home/away)
- *   - no two legs share a gameId (correlated parlay guard; the DB also enforces
+ *   - no two legs share a gameId (correlated-parlay guard; the DB also enforces
  *     it via UNIQUE(bet_id, game_id))
  *   - gameIds are non-empty strings
- * League membership of each game is checked server-side against the DB, not here.
+ *
+ * WHAT THIS DELIBERATELY NO LONGER CHECKS (M5b): that the legs share a league or
+ * a season. They may mix freely — a balance is not scoped to either — so the
+ * server reads the legs' real leagues from `games` and labels the bet `'mixed'`
+ * when they differ. `league` on the request is advisory and is only checked for
+ * being a legal value. Game membership is still a server-side DB check, not here.
  */
 export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput> {
   if (!isRecord(body)) return bad('body must be a JSON object');
   const league = body['league'];
-  if (!isIn(LEAGUES, league)) return bad('league must be nfl or ncaaf', 'league');
+  if (!isIn(BET_LEAGUES, league)) return bad('league must be nfl, ncaaf or mixed', 'league');
   const betType = body['betType'];
-  if (!isIn(BET_TYPES, betType)) return bad('betType must be straight or parlay', 'betType');
+  if (!isIn(BET_TYPES, betType)) {
+    return bad('betType must be straight, parlay or teaser', 'betType');
+  }
   const stake = body['stakeCents'];
   if (typeof stake !== 'number' || !Number.isSafeInteger(stake) || stake < MIN_STAKE_CENTS) {
     return bad(`stakeCents must be an integer >= ${String(MIN_STAKE_CENTS)}`, 'stakeCents');
@@ -241,29 +286,53 @@ export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput>
   if (alc !== undefined && typeof alc !== 'boolean') {
     return bad('acceptLineChange must be a boolean', 'acceptLineChange');
   }
+  const teaserPoints = validateTeaserPoints(body['teaserPoints'], betType);
+  if (!teaserPoints.ok) return teaserPoints;
+  const rawBankrollId = body['bankrollId'] ?? undefined;
+  if (rawBankrollId !== undefined && (typeof rawBankrollId !== 'string' || rawBankrollId === '')) {
+    return bad('bankrollId must be a non-empty string', 'bankrollId');
+  }
   const rawLegs = body['legs'];
   if (!Array.isArray(rawLegs)) return bad('legs must be an array', 'legs');
   if (betType === 'straight' && rawLegs.length !== 1) {
     return bad('a straight bet has exactly one leg', 'legs');
   }
-  if (
-    betType === 'parlay' &&
-    (rawLegs.length < MIN_PARLAY_LEGS || rawLegs.length > MAX_PARLAY_LEGS)
-  ) {
+  if (betType === 'parlay' && outsideRange(rawLegs.length, MIN_PARLAY_LEGS, MAX_PARLAY_LEGS)) {
     return bad(`a parlay has ${String(MIN_PARLAY_LEGS)}-${String(MAX_PARLAY_LEGS)} legs`, 'legs');
+  }
+  if (betType === 'teaser' && outsideRange(rawLegs.length, MIN_TEASER_LEGS, MAX_PARLAY_LEGS)) {
+    return bad(`a teaser has ${String(MIN_TEASER_LEGS)}-${String(MAX_PARLAY_LEGS)} legs`, 'legs');
   }
   const legs: PlaceBetLegInput[] = [];
   const seen = new Set<string>();
   for (const [i, rawLeg] of rawLegs.entries()) {
     const leg = validateLeg(rawLeg, i);
     if (!leg.ok) return leg;
+    if (betType === 'teaser' && !isIn(TEASABLE_MARKETS, leg.value.market)) {
+      // Field is `legs[i].market`, per the spec: the offending leg is the one
+      // the slip has to grey out, and "market" is what the user would change.
+      return bad('a teaser leg must be a spread or a total', `legs[${String(i)}].market`);
+    }
     if (seen.has(leg.value.gameId)) {
-      return bad('a parlay cannot include the same game twice', `legs[${String(i)}].gameId`);
+      return bad('a bet cannot include the same game twice', `legs[${String(i)}].gameId`);
     }
     seen.add(leg.value.gameId);
     legs.push(leg.value);
   }
-  return good({ league, betType, stakeCents: stake, acceptLineChange: alc ?? false, legs });
+  return good({
+    league,
+    betType,
+    stakeCents: stake,
+    acceptLineChange: alc ?? false,
+    legs,
+    ...(teaserPoints.value === undefined ? {} : { teaserPoints: teaserPoints.value }),
+    ...(rawBankrollId === undefined ? {} : { bankrollId: rawBankrollId }),
+  });
+}
+
+/** `value < min || value > max`, named so the leg-count checks read as one idea. */
+function outsideRange(value: number, min: number, max: number): boolean {
+  return value < min || value > max;
 }
 
 /**

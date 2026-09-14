@@ -1,6 +1,10 @@
 /**
- * Columns: rank, user, balance, open exposure, equity, W-L-P, ROI.
- * Ranked by BALANCE (realized). Equity is shown but not ranked — PLAN.md §11.5.
+ * Columns: rank, user, EQUITY, balance, open exposure, W-L-P, ROI.
+ *
+ * Equity leads because equity is the RANKED column (PLAN.md §11.5, decided
+ * 2026-09-14) — a table whose first money column is not the one the order is
+ * built from reads as if the sort is broken. Balance and open exposure follow,
+ * so the two halves of the equity figure are both visible.
  */
 import type { ReactElement } from 'react';
 
@@ -20,14 +24,14 @@ export function LeaderboardTable(props: {
           <tr>
             <th scope="col">#</th>
             <th scope="col">Player</th>
+            <th scope="col" className="num" aria-sort="descending">
+              Equity
+            </th>
             <th scope="col" className="num">
               Balance
             </th>
             <th scope="col" className="num">
               Open
-            </th>
-            <th scope="col" className="num">
-              Equity
             </th>
             <th scope="col" className="num">
               W-L-P
@@ -42,9 +46,9 @@ export function LeaderboardTable(props: {
             <tr key={row.userId} className={row.userId === meUserId ? 'row-me' : undefined}>
               <td>{String(row.rank)}</td>
               <td>{row.displayName}</td>
+              <td className="num num-strong">{formatCents(row.equityCents)}</td>
               <td className="num">{formatCents(row.balanceCents)}</td>
               <td className="num">{formatCents(row.pendingStakeCents)}</td>
-              <td className="num">{formatCents(row.equityCents)}</td>
               <td className="num">
                 {String(row.record.won)}-{String(row.record.lost)}-{String(row.record.push)}
               </td>

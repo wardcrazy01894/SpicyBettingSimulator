@@ -9,8 +9,7 @@
 import {
   getAdminJobs,
   getAdminUsers,
-  getAllTimeLeaderboard,
-  getBankroll,
+  getBalances,
   getBets,
   getGames,
   getHealth,
@@ -21,7 +20,7 @@ import { useResource } from './useResource.js';
 import type { Resource } from './useResource.js';
 import type {
   AdminUsersResponse,
-  BankrollResponse,
+  BankrollsResponse,
   BetsResponse,
   GamesResponse,
   HealthResponse,
@@ -49,38 +48,30 @@ export function useBets(status: 'open' | 'settled' | 'all'): Resource<BetsRespon
 }
 
 /**
- * `enabled` is how an anonymous visitor stops asking for a bankroll. The slip
- * provider sits ABOVE the router's auth gate (PLAN.md §12.1), so on `/login` it
- * was firing `GET /api/bankroll`, collecting a 401 and tripping the client's
+ * Every account balance the caller owns. There is no league or season in the
+ * key: a balance is account-level (M5b), so the header, the slip and the account
+ * page all read the SAME cache entry and stay in agreement for free.
+ *
+ * `enabled` is how an anonymous visitor stops asking for one. The slip provider
+ * sits ABOVE the router's auth gate (PLAN.md §12.1), so on `/login` it was
+ * firing `GET /api/bankroll`, collecting a 401 and tripping the client's
  * SESSION_EXPIRED side-channel before the user had even typed a password.
  */
-export function useBankroll(
-  league: League,
-  season: number | null,
-  enabled = true,
-): Resource<BankrollResponse> {
-  // A null season means the server has not opened this league's season yet;
-  // there is no bankroll to ask for, so the hook stays idle rather than 400ing.
-  const key = season === null || !enabled ? null : `bankroll:${league}:${String(season)}`;
-  return useResource(key, () => getBankroll(league, season));
+export function useBalances(enabled = true): Resource<BankrollsResponse> {
+  return useResource(enabled ? 'bankroll:all' : null, () => getBalances());
 }
 
 /** Page size asked for by both the ledger's first page and every "Load more". */
 export const LEDGER_PAGE_SIZE = 100;
 
-export function useLedger(league: League, season: number | null): Resource<LedgerResponse> {
-  const key = `ledger:${league}:${String(season ?? '')}`;
-  return useResource(key, () => getLedger({ league, season, limit: LEDGER_PAGE_SIZE }));
+/** `bankrollId` null means "the main balance", which is what the server defaults to. */
+export function useLedger(bankrollId: string | null): Resource<LedgerResponse> {
+  const key = `ledger:${bankrollId ?? 'main'}`;
+  return useResource(key, () => getLedger({ bankrollId, limit: LEDGER_PAGE_SIZE }));
 }
 
-export function useLeaderboard(
-  scope: League | 'all',
-  season: number | null,
-): Resource<LeaderboardResponse> {
-  const key = `leaderboard:${scope}:${String(season ?? '')}`;
-  return useResource(key, () =>
-    scope === 'all' ? getAllTimeLeaderboard() : getLeaderboard(scope, season),
-  );
+export function useLeaderboard(scope: League | 'all'): Resource<LeaderboardResponse> {
+  return useResource(`leaderboard:${scope}`, () => getLeaderboard(scope));
 }
 
 export function useAdminJobs(): Resource<JobRunsResponse> {

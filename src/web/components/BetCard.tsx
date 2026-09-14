@@ -15,7 +15,13 @@ import { ErrorBanner } from './ErrorBanner.js';
 import { deleteBet, getGame } from '../api/client.js';
 import { invalidate } from '../hooks/useResource.js';
 import { formatDateTime } from '../lib/datetime.js';
-import { BET_STATUS_LABEL, BET_TYPE_LABEL, LEAGUE_LABEL, STATUS_TONE } from '../lib/labels.js';
+import {
+  BET_LEAGUE_LABEL,
+  BET_STATUS_LABEL,
+  BET_TYPE_LABEL,
+  STATUS_TONE,
+  teaserPointsLabel,
+} from '../lib/labels.js';
 import { useBetSlip } from '../state/bet-slip.js';
 import { gameIdsToRefresh, refreshSlipLegs } from '../state/edit-bet.js';
 import { formatAmerican } from '../../shared/odds.js';
@@ -43,19 +49,39 @@ export function BetCard(props: BetCardProps): ReactElement {
    * moved, while the sheet went on displaying the old odds. Each leg's game is
    * re-read (§11.3) and the slip is built from the current quote, so the sheet
    * shows what the edit would actually cost.
+   *
+   * `allSettled`, NOT `all`. `refreshSlipLegs` already has a documented fallback
+   * for a game it was not handed — the leg keeps its placement snapshot and is
+   * reported in `unrefreshed` — and `Promise.all` made that fallback
+   * unreachable: ONE 404 on a 10-leg parlay (a game pruned, or a network blip)
+   * rejected the whole thing and the Edit button just showed an error. Now every
+   * game that did answer is used and the rest fall back, which is exactly the
+   * behaviour the fallback was written and tested for.
    */
   const startEdit = (): void => {
     setBusy(true);
     setError(null);
     setNote(null);
-    void Promise.all(gameIdsToRefresh(bet).map((id) => getGame(id)))
-      .then((responses) => {
-        const games = new Map<string, GameCard>(responses.map((r) => [r.game.id, r.game]));
+    void Promise.allSettled(gameIdsToRefresh(bet).map((id) => getGame(id)))
+      .then((results) => {
+        const games = new Map<string, GameCard>(
+          results
+            .filter((r) => r.status === 'fulfilled')
+            .map((r) => [r.value.game.id, r.value.game]),
+        );
         const refreshed = refreshSlipLegs(bet, games);
         if (refreshed.unrefreshed.length > 0) {
           setNote('One of these markets is no longer posted — that leg still shows its old price.');
         }
-        slip.startEdit(bet.id, bet.league, bet.betType, refreshed.legs, bet.stakeCents);
+        // No league argument: there is ONE cross-league slip, so a mixed bet
+        // loads into it exactly as a single-league one does.
+        slip.startEdit(
+          bet.id,
+          bet.betType,
+          refreshed.legs,
+          bet.stakeCents,
+          bet.teaserPoints ?? undefined,
+        );
       })
       .catch((thrown: unknown) => {
         setError(thrown);
@@ -72,13 +98,19 @@ export function BetCard(props: BetCardProps): ReactElement {
           {BET_STATUS_LABEL[bet.status]}
         </span>
         <span className="bet-type">
-          {BET_TYPE_LABEL[bet.betType]}
-          {bet.betType === 'parlay' ? ` · ${String(bet.legs.length)} legs` : ''}
+          {/* "6-pt teaser", "Parlay · 3 legs", "Straight". */}
+          {bet.teaserPoints === null
+            ? BET_TYPE_LABEL[bet.betType]
+            : `${teaserPointsLabel(bet.teaserPoints)} teaser`}
+          {bet.betType === 'straight' ? '' : ` · ${String(bet.legs.length)} legs`}
         </span>
         <span className="bet-price">{formatAmerican(bet.americanPrice)}</span>
-        <span className="muted">
-          {LEAGUE_LABEL[bet.league]} {String(bet.season)}
-        </span>
+        {/*
+         * League only. `bet.season` still exists on the wire as an internal
+         * label, but the product has no concept of a season (PLAN.md §19 Q5) and
+         * printing a year next to every bet implies a boundary that is not there.
+         */}
+        <span className="muted">{BET_LEAGUE_LABEL[bet.league]}</span>
       </header>
 
       <ul className="bet-legs">

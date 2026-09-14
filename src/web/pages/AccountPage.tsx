@@ -1,56 +1,33 @@
-/** Bankroll summary per league, full ledger history, logout. */
+/**
+ * Account balances, the full ledger history, and logout.
+ *
+ * ONE BALANCE, NOT ONE PER LEAGUE (M5b). The page lists every balance the
+ * account owns — today that is exactly the `main` one, and the list shape is
+ * what makes a future side pot a row rather than a rewrite. The league tabs it
+ * used to carry are gone: they selected a BANKROLL, and there is nothing left
+ * for them to select. The record/ROI filter lives on the leaderboard instead,
+ * where comparing leagues is the point.
+ */
 import { useState } from 'react';
 import type { ReactElement } from 'react';
 
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
-import { LeagueTabs } from '../components/LeagueTabs.js';
 import { LedgerList } from '../components/LedgerList.js';
 import { LoadMore } from '../components/LoadMore.js';
 import { Spinner } from '../components/Spinner.js';
 import { getLedger } from '../api/client.js';
-import { LEDGER_PAGE_SIZE, useBankroll, useLedger } from '../hooks/useApi.js';
+import { LEDGER_PAGE_SIZE, useBalances, useLedger } from '../hooks/useApi.js';
 import { usePages } from '../hooks/usePages.js';
-import { formatRoi, LEAGUE_LABEL } from '../lib/labels.js';
-import { useConfig } from '../state/config.js';
+import { formatRoi } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
-import type { LedgerEntry } from '../../shared/api-types.js';
-import type { League } from '../../shared/types.js';
+import type { BankrollView, LedgerEntry } from '../../shared/api-types.js';
 
-function BankrollSummary(props: { readonly league: League }): ReactElement {
-  const config = useConfig();
-  const season = config.currentSeason[props.league];
-  const bankroll = useBankroll(props.league, season);
-
-  if (season === null) {
-    return (
-      <div className="card">
-        <h3 className="card-title">{LEAGUE_LABEL[props.league]}</h3>
-        <p className="muted">No season open yet.</p>
-      </div>
-    );
-  }
-  if (bankroll.data === undefined) {
-    return (
-      <div className="card">
-        <h3 className="card-title">
-          {LEAGUE_LABEL[props.league]} {String(season)}
-        </h3>
-        {bankroll.error === undefined ? (
-          <Spinner label="Loading…" />
-        ) : (
-          <ErrorBanner error={bankroll.error} onRetry={bankroll.refetch} />
-        )}
-      </div>
-    );
-  }
-
-  const b = bankroll.data;
+function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
+  const b = props.balance;
   return (
     <div className="card">
-      <h3 className="card-title">
-        {LEAGUE_LABEL[props.league]} {String(b.season)}
-      </h3>
+      <h3 className="card-title">{b.name}</h3>
       <dl className="stat-grid">
         <div>
           <dt>Balance</dt>
@@ -85,24 +62,24 @@ function BankrollSummary(props: { readonly league: League }): ReactElement {
 }
 
 export function AccountPage(): ReactElement {
-  const config = useConfig();
   const session = useSession();
-  const [league, setLeague] = useState<League>(config.leagues[0] ?? 'nfl');
+  const balances = useBalances();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
-  const season = config.currentSeason[league];
-  const ledger = useLedger(league, season);
-  // `/api/ledger` pages with a cursor (§11.5). A season's history is longer than
-  // one page for anyone who bets more than once a week.
+  // The main balance's history. `null` asks the server for its default, which is
+  // the main balance — so the first render needs no round-trip to find an id.
+  const ledger = useLedger(null);
+  // `/api/ledger` pages with a cursor (§11.5). A history is longer than one page
+  // for anyone who bets more than once a week.
   const paged = usePages<LedgerEntry>(
-    `${league}:${String(season ?? '')}`,
+    'main',
     ledger.data === undefined
       ? undefined
       : { items: ledger.data.entries, nextCursor: ledger.data.nextCursor },
     (entry) => entry.id,
     async (cursor) => {
-      const page = await getLedger({ league, season, limit: LEDGER_PAGE_SIZE, cursor });
+      const page = await getLedger({ limit: LEDGER_PAGE_SIZE, cursor });
       return { items: page.entries, nextCursor: page.nextCursor };
     },
   );
@@ -126,12 +103,17 @@ export function AccountPage(): ReactElement {
         {session.user !== null && <span className="muted"> @{session.user.username}</span>}
       </h2>
 
-      {config.leagues.map((l) => (
-        <BankrollSummary key={l} league={l} />
-      ))}
+      {balances.data === undefined ? (
+        balances.error === undefined ? (
+          <Spinner label="Loading your balance…" />
+        ) : (
+          <ErrorBanner error={balances.error} onRetry={balances.refetch} />
+        )
+      ) : (
+        balances.data.balances.map((balance) => <BalanceCard key={balance.id} balance={balance} />)
+      )}
 
       <h3 className="section-title">Ledger</h3>
-      <LeagueTabs league={league} leagues={config.leagues} onChange={setLeague} />
 
       {ledger.error !== undefined && ledger.data === undefined && (
         <ErrorBanner error={ledger.error} onRetry={ledger.refetch} />

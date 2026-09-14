@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { mergePages, nextCursorOf } from '../lib/paging.js';
+import { mergePages, nextCursorOf, windowIsStale } from '../lib/paging.js';
 import type { Page } from '../lib/paging.js';
 
 export interface Paged<T> {
@@ -26,6 +26,11 @@ export interface Paged<T> {
 
 interface Held<T> {
   readonly resetKey: string;
+  /**
+   * The id at the TOP of page 1 the held pages were fetched behind.
+   * `null` means "page 1 has not arrived yet, or is empty".
+   */
+  readonly firstId: string | null;
   readonly pages: readonly Page<T>[];
 }
 
@@ -42,18 +47,31 @@ export function usePages<T>(
   keyOf: (item: T) => string,
   fetchPage: (cursor: string) => Promise<Page<T>>,
 ): Paged<T> {
-  const [held, setHeld] = useState<Held<T>>({ resetKey, pages: [] });
+  const [held, setHeld] = useState<Held<T>>({ resetKey, firstId: null, pages: [] });
   const [loadingMore, setLoadingMore] = useState(false);
   const [moreError, setMoreError] = useState<Error | undefined>(undefined);
+
+  /**
+   * `undefined` while page 1 is loading (no information — hold what we have),
+   * `null` once it has loaded and is empty, otherwise the top row's id.
+   */
+  const firstItem = first?.items[0];
+  const firstId: string | null | undefined =
+    first === undefined ? undefined : firstItem === undefined ? null : keyOf(firstItem);
+
+  // Drop the held pages when the filter changes OR when the top of page 1 does.
+  // The second half is the subtle one; `windowIsStale` carries the reasoning and
+  // is where `tests/web/paging.spec.ts` pins it.
+  const stale = windowIsStale(held, resetKey, firstId);
 
   // Adjust state during render rather than in an effect: an effect would paint
   // the previous filter's rows for one frame first (and trip
   // react-hooks/set-state-in-effect). Same pattern as `StakeInput`.
-  if (held.resetKey !== resetKey) {
-    setHeld({ resetKey, pages: [] });
-    setMoreError(undefined);
+  if (stale) {
+    setHeld({ resetKey, firstId: firstId ?? null, pages: [] });
+    if (held.resetKey !== resetKey) setMoreError(undefined);
   }
-  const pages = held.resetKey === resetKey ? held.pages : [];
+  const pages = stale ? [] : held.pages;
 
   // Fresh closure every render; the callback needs a stable one.
   const fetchRef = useRef(fetchPage);
@@ -71,10 +89,12 @@ export function usePages<T>(
     void fetchRef
       .current(cursor)
       .then((page) => {
-        // The filter may have changed while this was on the wire; those pages
-        // belong to a query nobody is looking at any more.
+        // The filter — or the top of page 1 — may have changed while this was on
+        // the wire; those pages belong to a window nobody is looking at any more.
         setHeld((current) =>
-          current.resetKey === resetKey ? { resetKey, pages: [...current.pages, page] } : current,
+          current.resetKey === resetKey && current.firstId === (firstId ?? null)
+            ? { resetKey, firstId: current.firstId, pages: [...current.pages, page] }
+            : current,
         );
       })
       .catch((thrown: unknown) => {
@@ -83,7 +103,7 @@ export function usePages<T>(
       .finally(() => {
         setLoadingMore(false);
       });
-  }, [cursor, loadingMore, resetKey]);
+  }, [cursor, loadingMore, resetKey, firstId]);
 
   return {
     items: mergePages(all, keyOf),

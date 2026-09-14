@@ -15,6 +15,7 @@ import { buildApp } from '../../src/worker/index.js';
 import { DK_VECTORS } from './setup.js';
 import { stubEspn } from './fixtures.js';
 import type { EspnStub } from './fixtures.js';
+import { wipeAccounts } from './seed.js';
 
 /** TDD contract for M4 (leases) — PLAN.md §9.2. */
 
@@ -29,9 +30,10 @@ beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM job_runs'),
     env.DB.prepare("UPDATE job_locks SET lease_until = 0, run_id = '', updated_at = 0"),
-    env.DB.prepare('DELETE FROM sessions'),
-    env.DB.prepare('DELETE FROM users'),
   ]);
+  // Signup opens an account balance and its opening deposit in the same batch
+  // (M5b), and both are permanent by design — see `wipeAccounts`.
+  await wipeAccounts(env.DB);
 });
 
 afterEach(() => {

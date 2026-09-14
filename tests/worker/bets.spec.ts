@@ -23,7 +23,6 @@ import {
 } from '../../src/shared/odds.js';
 import { isOrphanBankrollError, isOverdraftError } from '../../src/worker/db.js';
 import { validatePlaceBet } from '../../src/shared/validate.js';
-import { bankrollId } from '../../src/worker/bankroll.js';
 import {
   betInsertSql,
   buildPlacement,
@@ -39,6 +38,7 @@ import {
   bankrollDrift,
   fullLine,
   ledgerSum,
+  mainBankrollId,
   seedGame,
   seedGameWithLine,
   seedLine,
@@ -122,10 +122,13 @@ interface Account {
   readonly cookie: string;
   readonly id: string;
   readonly username: string;
+  /** The one account balance signup opened (M5b). Every stake comes out of it. */
+  readonly bkId: string;
 }
 
 /**
- * Sign a NEW user up through the real flow and hand back their cookie + id.
+ * Sign a NEW user up through the real flow and hand back their cookie, id and
+ * account balance.
  *
  * The `dk` is an arbitrary well-formed 64-hex string rather than a `DK_VECTORS`
  * entry: these tests never log back in, and a vector is only valid for the one
@@ -146,6 +149,9 @@ async function register(base = 'user'): Promise<Account> {
     cookie: /sbs_session=[^;]*/.exec(raw)?.[0] ?? '',
     id: parsed.user.id,
     username,
+    // Not lazily created and not derivable from (user, league, season) any more:
+    // the signup batch wrote it, and this is how a test finds it.
+    bkId: await mainBankrollId(env.DB, parsed.user.id),
   };
 }
 
@@ -196,6 +202,7 @@ interface BetRow {
   league: string;
   season: number;
   bet_type: string;
+  teaser_points_tenths: number | null;
   leg_count: number;
   stake_cents: number;
   american_price: number;
@@ -219,6 +226,7 @@ interface LegRow {
   market: string;
   side: string;
   line_tenths: number | null;
+  original_line_tenths: number | null;
   american_price: number;
   provider: string;
   line_captured_at: number;
@@ -267,16 +275,17 @@ const ledgerCount = (userId: string, kind?: string): Promise<number> =>
 // ===========================================================================
 
 describe('placeBet — happy path', () => {
-  it('lazily creates the bankroll with a 100000 deposit_initial ledger row', async () => {
+  it('SIGNUP opened the balance with one 100000 deposit_initial row; placement adds none', async () => {
     const alex = await register();
     const gameId = await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
 
-    expect(await balanceOf(env.DB, bankrollId(alex.id, 'nfl', 2026))).toBeNull();
+    // M5b: the balance exists BEFORE any bet. Nothing is created lazily.
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS);
 
     const res = await post('/api/bets', straight(gameId), alex.cookie);
     expect(res.status, await res.clone().text()).toBe(201);
 
-    const bkId = bankrollId(alex.id, 'nfl', 2026);
+    const bkId = alex.bkId;
     const deposit = await env.DB.prepare(
       `SELECT amount_cents, ref_id, kind FROM ledger
         WHERE bankroll_id = ?1 AND kind = 'deposit_initial'`,
@@ -286,6 +295,11 @@ describe('placeBet — happy path', () => {
     expect(deposit.results).toHaveLength(1);
     expect(deposit.results[0]?.amount_cents).toBe(INITIAL_BANKROLL_CENTS);
     expect(deposit.results[0]?.ref_id).toBe('init');
+    // ...and exactly one balance, still, after betting.
+    const balances = await env.DB.prepare(`SELECT COUNT(*) AS n FROM bankrolls WHERE user_id = ?1`)
+      .bind(alex.id)
+      .first<{ n: number }>();
+    expect(balances?.n).toBe(1);
     await expectLedgerMatchesBalance();
   });
 
@@ -299,7 +313,7 @@ describe('placeBet — happy path', () => {
     expect(res.status, await res.clone().text()).toBe(201);
     const { bet } = await res.json<BetResponse>();
 
-    const bkId = bankrollId(alex.id, 'nfl', 2026);
+    const bkId = alex.bkId;
     expect(await balanceOf(env.DB, bkId)).toBe(INITIAL_BANKROLL_CENTS - 2500);
     const stake = await env.DB.prepare(
       `SELECT amount_cents, ref_id, bet_id FROM ledger
@@ -379,7 +393,7 @@ describe('placeBet — happy path', () => {
     expect((await post('/api/bets', straight(g(1), 2500), alex.cookie)).status).toBe(201);
     expect((await post('/api/bets', straight(g(2), 700), alex.cookie)).status).toBe(201);
 
-    const bkId = bankrollId(alex.id, 'nfl', 2026);
+    const bkId = alex.bkId;
     expect(await ledgerSum(env.DB, bkId)).toBe(INITIAL_BANKROLL_CENTS - 3200);
     expect(await balanceOf(env.DB, bkId)).toBe(INITIAL_BANKROLL_CENTS - 3200);
     await expectLedgerMatchesBalance();
@@ -613,7 +627,7 @@ describe('placeBet — money and atomicity', () => {
     const res = await post('/api/bets', straight(g(1), INITIAL_BANKROLL_CENTS + 1), alex.cookie);
     expect(res.status).toBe(409);
     expect(await errorCode(res)).toBe('INSUFFICIENT_FUNDS');
-    expect(await balanceOf(env.DB, bankrollId(alex.id, 'nfl', 2026))).toBe(INITIAL_BANKROLL_CENTS);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS);
     await expectLedgerMatchesBalance();
   });
 
@@ -630,10 +644,12 @@ describe('placeBet — money and atomicity', () => {
     expect(await errorCode(res)).toBe('INSUFFICIENT_FUNDS');
     expect(await betCount(alex.id)).toBe(0);
     expect(await legCount(alex.id)).toBe(0);
-    // The batch rolled back entirely: not even the lazily-created bankroll's
-    // opening deposit survives when the stake row aborts.
-    expect(await ledgerCount(alex.id)).toBe(0);
-    expect(await balanceOf(env.DB, bankrollId(alex.id, 'nfl', 2026))).toBeNull();
+    // The batch rolled back entirely. The opening deposit is NOT part of it any
+    // more — it was written at signup — so the assertion is that the balance is
+    // exactly as signup left it, and that the batch added no row of its own.
+    expect(await ledgerCount(alex.id)).toBe(1);
+    expect(await ledgerCount(alex.id, 'bet_stake')).toBe(0);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS);
     await expectLedgerMatchesBalance();
   });
 
@@ -651,7 +667,7 @@ describe('placeBet — money and atomicity', () => {
     await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
     const res = await post('/api/bets', straight(g(1), INITIAL_BANKROLL_CENTS), alex.cookie);
     expect(res.status, await res.clone().text()).toBe(201);
-    expect(await balanceOf(env.DB, bankrollId(alex.id, 'nfl', 2026))).toBe(0);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(0);
     await expectLedgerMatchesBalance();
   });
 
@@ -668,7 +684,7 @@ describe('placeBet — money and atomicity', () => {
     expect(statuses).toEqual([201, 409]);
     const loser = a.status === 409 ? a : b;
     expect(await errorCode(loser)).toBe('INSUFFICIENT_FUNDS');
-    expect(await balanceOf(env.DB, bankrollId(alex.id, 'nfl', 2026))).toBe(0);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(0);
     expect(await betCount(alex.id)).toBe(1);
     await expectLedgerMatchesBalance();
   });
@@ -736,7 +752,7 @@ describe('placeBet — parlays', () => {
     ).rejects.toThrow(/UNIQUE constraint failed/);
   });
 
-  it('mixed-league legs are rejected with 409 MIXED_LEAGUE_PARLAY', async () => {
+  it("mixed-league legs are ACCEPTED and land as league='mixed'", async () => {
     const alex = await register();
     await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
     await seedGameWithLine(env.DB, {
@@ -745,9 +761,16 @@ describe('placeBet — parlays', () => {
       kickoffAt: NOW + 2 * HOUR,
     });
     const res = await post('/api/bets', parlay([g(1), gc(1)], 500), alex.cookie);
-    expect(res.status).toBe(409);
-    expect(await errorCode(res)).toBe('MIXED_LEAGUE_PARLAY');
-    expect(await betCount(alex.id)).toBe(0);
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+    // The request claimed 'nfl'; the SERVER labels the bet from the legs' own
+    // game rows and never compares the two (the field is advisory since M5b).
+    expect(bet.league).toBe('mixed');
+    expect((await betRow(bet.id))?.league).toBe('mixed');
+    // Each LEG still carries its own real league.
+    expect((await legRows(bet.id)).map((l) => l.league).sort()).toEqual(['ncaaf', 'nfl']);
+    expect(bet.bankrollId).toBe(alex.bkId);
+    await expectLedgerMatchesBalance();
   });
 
   it('the stored bet price is the product of the leg prices', async () => {
@@ -813,7 +836,7 @@ describe('cancelBet', () => {
     const { bet } = await res.json<BetResponse>();
     expect(bet.status).toBe('cancelled');
 
-    const bkId = bankrollId(alex.id, 'nfl', 2026);
+    const bkId = alex.bkId;
     expect(await balanceOf(env.DB, bkId)).toBe(INITIAL_BANKROLL_CENTS);
     const refunds = await env.DB.prepare(
       `SELECT amount_cents FROM ledger WHERE bankroll_id = ?1 AND kind = 'bet_refund'`,
@@ -836,7 +859,7 @@ describe('cancelBet', () => {
   it('a second cancel writes no second bet_refund row and does not move the balance', async () => {
     const { alex, betId } = await placed(2500);
     expect((await del(`/api/bets/${betId}`, alex.cookie)).status).toBe(200);
-    const bkId = bankrollId(alex.id, 'nfl', 2026);
+    const bkId = alex.bkId;
     const before = await balanceOf(env.DB, bkId);
     expect((await del(`/api/bets/${betId}`, alex.cookie)).status).toBe(409);
     expect(await balanceOf(env.DB, bkId)).toBe(before);
@@ -927,7 +950,7 @@ describe('editBet', () => {
 
     expect((await betRow(old.id))?.status).toBe('cancelled');
     expect((await betRow(parsed.bet.id))?.status).toBe('pending');
-    const bkId = bankrollId(alex.id, 'nfl', 2026);
+    const bkId = alex.bkId;
     expect(await balanceOf(env.DB, bkId)).toBe(INITIAL_BANKROLL_CENTS - 4000);
     await expectLedgerMatchesBalance();
   });
@@ -962,7 +985,7 @@ describe('editBet', () => {
     const first = await post('/api/bets', straight(g(1), 2500), alex.cookie);
     expect(first.status, await first.clone().text()).toBe(201);
     const { bet: old } = await first.json<BetResponse>();
-    const bkId = bankrollId(alex.id, 'nfl', 2026);
+    const bkId = alex.bkId;
     const before = await balanceOf(env.DB, bkId);
 
     // The replacement stake is larger than the balance PLUS the refund, so the
@@ -1034,7 +1057,7 @@ describe('editBet', () => {
     expect(parsed.bet.replacesBetId).toBe(old.id);
   });
 
-  it('an edit may NOT move the bet to another league (409 MIXED_LEAGUE_PARLAY)', async () => {
+  it('an edit MAY now move the bet to another league — same balance either way', async () => {
     const alex = await register();
     await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 4 * HOUR });
     await seedGameWithLine(env.DB, { id: gc(1), league: 'ncaaf', kickoffAt: NOW + 5 * HOUR });
@@ -1042,29 +1065,49 @@ describe('editBet', () => {
     expect(first.status, await first.clone().text()).toBe(201);
     const { bet: old } = await first.json<BetResponse>();
 
-    // An edit is cancel+place in one batch. Letting it change league would
-    // REFUND one bankroll and STAKE a different one under the banner of
-    // "editing a bet", and link two rows that never shared a ledger.
+    // M5b: the rule that made this a 409 was "an edit cannot move money between
+    // BANKROLLS", and league no longer selects one. The refund and the new stake
+    // land on the same account balance, which is all that ever mattered.
     const res = await put(
       `/api/bets/${old.id}`,
       { ...straight(gc(1), 2500), league: 'ncaaf' },
       alex.cookie,
     );
-    expect(res.status).toBe(409);
-    expect(await errorCode(res)).toBe('MIXED_LEAGUE_PARLAY');
-
-    expect((await betRow(old.id))?.status).toBe('pending');
-    expect(await betCount(alex.id)).toBe(1);
-    expect(await ledgerCount(alex.id, 'bet_refund')).toBe(0);
-    // The other bankroll was never even opened.
-    expect(await balanceOf(env.DB, bankrollId(alex.id, 'ncaaf', 2026))).toBeNull();
-    expect(await balanceOf(env.DB, bankrollId(alex.id, 'nfl', 2026))).toBe(
-      INITIAL_BANKROLL_CENTS - 2500,
-    );
+    expect(res.status, await res.clone().text()).toBe(200);
+    const parsed = await res.json<BetResponse>();
+    expect(parsed.bet.league).toBe('ncaaf');
+    expect(parsed.bet.bankrollId).toBe(alex.bkId);
+    expect((await betRow(parsed.bet.id))?.bankroll_id).toBe(alex.bkId);
+    expect((await betRow(old.id))?.status).toBe('cancelled');
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS - 2500);
     await expectLedgerMatchesBalance();
   });
 
-  it('an edit may NOT move the bet to another season (409 MIXED_SEASON_PARLAY)', async () => {
+  it('an edit may NOT move the bet to a DIFFERENT balance (400 VALIDATION)', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 4 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 5 * HOUR });
+    const first = await post('/api/bets', straight(g(1), 2500), alex.cookie);
+    expect(first.status, await first.clone().text()).toBe(201);
+    const { bet: old } = await first.json<BetResponse>();
+
+    // The one thing an edit still may not do: refund one balance and stake
+    // another in the same batch, linking two rows that never shared a ledger.
+    // Refused outright rather than silently overridden.
+    const res = await put(
+      `/api/bets/${old.id}`,
+      { ...straight(g(2), 2500), bankrollId: 'some-other-balance' },
+      alex.cookie,
+    );
+    expect(res.status).toBe(400);
+    expect(await errorCode(res)).toBe('VALIDATION');
+    expect((await betRow(old.id))?.status).toBe('pending');
+    expect(await betCount(alex.id)).toBe(1);
+    expect(await ledgerCount(alex.id, 'bet_refund')).toBe(0);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('an edit may now move the bet to another SEASON too', async () => {
     const alex = await register();
     await seedGameWithLine(env.DB, { id: g(1), season: 2026, kickoffAt: NOW + 4 * HOUR });
     await seedGameWithLine(env.DB, { id: g(2), season: 2027, kickoffAt: NOW + 5 * HOUR });
@@ -1073,13 +1116,10 @@ describe('editBet', () => {
     const { bet: old } = await first.json<BetResponse>();
 
     const res = await put(`/api/bets/${old.id}`, straight(g(2), 2500), alex.cookie);
-    expect(res.status).toBe(409);
-    expect(await errorCode(res)).toBe('MIXED_SEASON_PARLAY');
-
-    expect((await betRow(old.id))?.status).toBe('pending');
-    expect(await betCount(alex.id)).toBe(1);
-    expect(await ledgerCount(alex.id, 'bet_refund')).toBe(0);
-    expect(await balanceOf(env.DB, bankrollId(alex.id, 'nfl', 2027))).toBeNull();
+    expect(res.status, await res.clone().text()).toBe(200);
+    const parsed = await res.json<BetResponse>();
+    expect(parsed.bet.season).toBe(2027);
+    expect(parsed.bet.bankrollId).toBe(alex.bkId);
     await expectLedgerMatchesBalance();
   });
 
@@ -1096,18 +1136,21 @@ describe('editBet', () => {
     expect(res.status).toBe(404);
     expect(await errorCode(res)).toBe('BET_NOT_FOUND');
 
-    // The edit batch used to open with §14.2's lazy-bankroll prelude, which is
-    // UNGUARDED: it committed even though the edit itself matched nothing, so a
-    // 404 on somebody else's bet left rows behind for the caller. An edit needs
-    // no prelude at all — the bet being replaced already has a bankroll.
-    expect(await balanceOf(env.DB, bankrollId(bob.id, 'nfl', 2026))).toBeNull();
-    expect(await ledgerCount(bob.id)).toBe(0);
+    // An unauthorised PUT must write NOTHING. Historically this test caught the
+    // edit batch running §14.2's UNGUARDED lazy-bankroll prelude, which
+    // committed even when the edit itself matched nothing. There is no prelude
+    // at all now, and the assertion has grown teeth instead of losing them: the
+    // caller's balance exists from signup, so "nothing was written" is checked
+    // as "the balance is untouched at its opening value", which a stray write
+    // would break just as loudly.
+    expect(await balanceOf(env.DB, bob.bkId)).toBe(INITIAL_BANKROLL_CENTS);
+    expect(await ledgerCount(bob.id)).toBe(1); // the opening deposit, and only that
     expect(await betCount(bob.id)).toBe(0);
     expect((await betRow(old.id))?.status).toBe('pending');
     await expectLedgerMatchesBalance();
   });
 
-  it('buildPlacement omits the bankroll prelude for the edit half only', async () => {
+  it('buildPlacement is bet + legs + stake, with no bankroll prelude at all', async () => {
     const alex = await register();
     await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 4 * HOUR });
     const req = straight(g(1), 100);
@@ -1115,25 +1158,22 @@ describe('editBet', () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const legs = await resolveLegSnapshots(env, req, NOW);
-    const common = {
+    const plan = buildPlacement(env, {
       userId: alex.id,
       input: parsed.value,
-      scope: { league: 'nfl', season: 2026 },
+      bankrollId: alex.bkId,
       legs,
       now: NOW,
       replacesBetId: null,
       requiresCancelledBetId: null,
       memo: 'shape check',
-    } as const;
+    });
 
-    // Placement: two prelude statements sit in front of the `bets` INSERT.
-    const placement = buildPlacement(env, { ...common, includeBankrollPrelude: true });
-    expect(placement.betStatementIndex).toBe(2);
-    expect(placement.statements).toHaveLength(5); // bankroll + deposit + bet + leg + stake
-    // Edit: the `bets` INSERT is the very first statement of the placement half.
-    const edit = buildPlacement(env, { ...common, includeBankrollPrelude: false });
-    expect(edit.betStatementIndex).toBe(0);
-    expect(edit.statements).toHaveLength(3); // bet + leg + stake
+    // M5b deleted the two-statement prelude from BOTH halves: the balance is
+    // opened at signup, so there is nothing left to create lazily and the `bets`
+    // INSERT is always the first statement.
+    expect(plan.betStatementIndex).toBe(0);
+    expect(plan.statements).toHaveLength(3); // bet + leg + stake
   });
 });
 
@@ -1161,11 +1201,15 @@ describe('in-batch guards — the generated SQL', () => {
     // STRICTLY greater: a kickoff exactly at the cutoff is CLOSED.
     expect(sql).toContain('AND kickoff_at > ?14');
     expect(sql).not.toContain('kickoff_at >= ?14');
-    // One bankroll, always — re-checked inside the batch, not just before it.
-    expect(sql).toContain('AND league = ?4 AND season = ?5');
-    expect(sql).toContain('WHERE id IN (?15, ?16, ?17)');
+    expect(sql).toContain('WHERE id IN (?16, ?17, ?18)');
     // `?7` is leg_count: EVERY requested game must come back bettable.
     expect(sql).toContain(') = ?7');
+    // M5b: the balance is named on the request, so OWNERSHIP is what has to be
+    // re-checked inside the batch. This conjunct REPLACES `AND league = ?4 AND
+    // season = ?5`, which existed only to pin the bet to the bankroll its legs
+    // implied — legs imply no bankroll now.
+    expect(sql).toContain('AND EXISTS (SELECT 1 FROM bankrolls WHERE id = ?3 AND user_id = ?2)');
+    expect(sql).not.toContain('AND league = ?4 AND season = ?5');
   });
 
   it('editCancelSql carries BOTH the lock guard and the placement COUNT guard', () => {
@@ -1176,12 +1220,15 @@ describe('in-batch guards — the generated SQL', () => {
     expect(sql).toContain(`AND status = 'scheduled'`);
     expect(sql).toContain('AND kickoff_at > ?4');
     expect(sql).not.toContain('kickoff_at >= ?4');
-    expect(sql).toContain('AND league = ?6 AND season = ?7');
-    expect(sql).toContain('WHERE id IN (?8, ?9)');
-    // `= ?10` (8 + legCount), NOT `>= 0` or a dropped comparison: a vacuous
+    expect(sql).toContain('WHERE id IN (?6, ?7)');
+    // `= ?8` (6 + legCount), NOT `>= 0` or a dropped comparison: a vacuous
     // count would let the cancel + refund commit without the replacement.
-    expect(sql).toContain(') = ?10');
-    expect(editCancelSql(1)).toContain(') = ?9');
+    expect(sql).toContain(') = ?8');
+    expect(editCancelSql(1)).toContain(') = ?7');
+    // The edit is pinned to the OLD BET'S BALANCE (read from `bets.bankroll_id`,
+    // immutable), never to a league — so no league/season conjunct remains.
+    expect(sql).not.toContain('AND league =');
+    expect(sql).not.toContain('AND season =');
   });
 });
 
@@ -1202,7 +1249,7 @@ describe('placeBet — the game changes BETWEEN the read and the batch', () => {
     const alex = await register();
     await seedGameWithLine(env.DB, { id: g(1), kickoffAt });
     expect((await get('/api/bankroll?league=nfl&season=2026', alex.cookie)).status).toBe(200);
-    const bkId = bankrollId(alex.id, 'nfl', 2026);
+    const bkId = alex.bkId;
     return {
       alex,
       bkId,
@@ -1291,7 +1338,7 @@ describe('editBet — the game changes BETWEEN the read and the batch', () => {
     const res = await post('/api/bets', straight(g(1), 2500), alex.cookie);
     expect(res.status, await res.clone().text()).toBe(201);
     const { bet } = await res.json<BetResponse>();
-    return { alex, oldId: bet.id, bkId: bankrollId(alex.id, 'nfl', 2026) };
+    return { alex, oldId: bet.id, bkId: alex.bkId };
   }
 
   /**
@@ -1356,7 +1403,7 @@ describe('editBet — the game changes BETWEEN the read and the batch', () => {
   });
 });
 
-describe('season and league scope', () => {
+describe('season and league labels (M5b: informational, not a bankroll key)', () => {
   it('bets.season comes from the LEGS games, never from a wall-clock guess', async () => {
     const alex = await register();
     await seedGameWithLine(env.DB, { id: g(1), season: 2019, kickoffAt: NOW + 2 * HOUR });
@@ -1364,10 +1411,12 @@ describe('season and league scope', () => {
     expect(res.status, await res.clone().text()).toBe(201);
     const { bet } = await res.json<BetResponse>();
     expect(bet.season).toBe(2019);
-    expect((await betRow(bet.id))?.bankroll_id).toBe(bankrollId(alex.id, 'nfl', 2019));
+    // ...and it is a LABEL now: the money comes out of the one account balance
+    // whatever season the game belongs to.
+    expect((await betRow(bet.id))?.bankroll_id).toBe(alex.bkId);
   });
 
-  it('a January bowl (season 2026, played 2027) charges the 2026 bankroll', async () => {
+  it('a January bowl is labelled season 2026 (its own season), not 2027', async () => {
     const alex = await register();
     // 2027-01-11, a championship game belonging to the 2026 season.
     await seedGameWithLine(
@@ -1388,7 +1437,8 @@ describe('season and league scope', () => {
       Date.UTC(2027, 0, 10),
     );
     expect(bet.season).toBe(2026);
-    expect((await betRow(bet.id))?.bankroll_id).toBe(bankrollId(alex.id, 'ncaaf', 2026));
+    expect(bet.league).toBe('ncaaf');
+    expect((await betRow(bet.id))?.bankroll_id).toBe(alex.bkId);
     await expectLedgerMatchesBalance();
   });
 
@@ -1420,26 +1470,39 @@ describe('season and league scope', () => {
       Date.UTC(2027, 0, 10),
     );
     expect(bet.season).toBe(2026);
-    expect((await betRow(bet.id))?.bankroll_id).toBe(bankrollId(alex.id, 'ncaaf', 2026));
   });
 
-  it('legs from two different seasons are rejected with 409 MIXED_SEASON_PARLAY', async () => {
+  it('legs from two seasons are ACCEPTED; the label is the EARLIEST leg season', async () => {
     const alex = await register();
-    await seedGameWithLine(env.DB, { id: g(1), season: 2026, kickoffAt: NOW + 2 * HOUR });
-    await seedGameWithLine(env.DB, { id: g(2), season: 2027, kickoffAt: NOW + 3 * HOUR });
+    // g(2) is the 2027 game but kicks off FIRST, so 2027 is the label.
+    await seedGameWithLine(env.DB, { id: g(1), season: 2026, kickoffAt: NOW + 3 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), season: 2027, kickoffAt: NOW + 2 * HOUR });
     const res = await post('/api/bets', parlay([g(1), g(2)], 500), alex.cookie);
-    expect(res.status).toBe(409);
-    expect(await errorCode(res)).toBe('MIXED_SEASON_PARLAY');
-    expect(await betCount(alex.id)).toBe(0);
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+    expect(bet.season).toBe(2027);
+    expect(bet.league).toBe('nfl');
+
+    // Flip which one kicks off first and the label follows — it is the season of
+    // the first game to start, not the smallest number and not the leg order.
+    await updateGame(env.DB, g(1), { kickoffAt: NOW + 1 * HOUR });
+    const second = await post('/api/bets', parlay([g(1), g(2)], 500), alex.cookie);
+    expect(second.status, await second.clone().text()).toBe(201);
+    expect((await second.json<BetResponse>()).bet.season).toBe(2026);
+    await expectLedgerMatchesBalance();
   });
 
-  it('legs from two different leagues are rejected with 409 MIXED_LEAGUE_PARLAY', async () => {
+  it('a single-league bet keeps its own league label', async () => {
     const alex = await register();
-    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
-    await seedGameWithLine(env.DB, { id: gc(1), league: 'ncaaf', kickoffAt: NOW + 3 * HOUR });
-    const res = await post('/api/bets', parlay([g(1), gc(1)], 500), alex.cookie);
-    expect(res.status).toBe(409);
-    expect(await errorCode(res)).toBe('MIXED_LEAGUE_PARLAY');
+    await seedGameWithLine(env.DB, { id: gc(1), league: 'ncaaf', kickoffAt: NOW + 2 * HOUR });
+    await seedGameWithLine(env.DB, { id: gc(2), league: 'ncaaf', kickoffAt: NOW + 3 * HOUR });
+    const res = await post(
+      '/api/bets',
+      { ...parlay([gc(1), gc(2)], 500), league: 'ncaaf' },
+      alex.cookie,
+    );
+    expect(res.status, await res.clone().text()).toBe(201);
+    expect((await res.json<BetResponse>()).bet.league).toBe('ncaaf');
   });
 });
 
@@ -1473,8 +1536,10 @@ describe('payout cap', () => {
     expect((await post('/api/bets', req, alex.cookie)).status).toBe(409);
     expect(await betCount(alex.id)).toBe(0);
     expect(await legCount(alex.id)).toBe(0);
-    // Not even the lazy bankroll: the cap is checked before the batch is built.
-    expect(await ledgerCount(alex.id)).toBe(0);
+    // The cap is checked BEFORE the batch is built, so no statement ever ran:
+    // the ledger still holds only signup's opening deposit.
+    expect(await ledgerCount(alex.id)).toBe(1);
+    expect(await ledgerCount(alex.id, 'bet_stake')).toBe(0);
     await expectLedgerMatchesBalance();
   });
 
@@ -1544,7 +1609,7 @@ describe('ledger safety', () => {
     const alex = await register();
     const res = await get('/api/bankroll?league=nfl&season=2026', alex.cookie);
     expect(res.status, await res.clone().text()).toBe(200);
-    return { alex, bkId: bankrollId(alex.id, 'nfl', 2026) };
+    return { alex, bkId: alex.bkId };
   }
 
   function insertOrIgnore(
@@ -1807,5 +1872,355 @@ describe('GET /api/bets', () => {
     const after = await (await get(`/api/bets/${bet.id}`, alex.cookie)).json<BetResponse>();
     expect(after.bet.cancellable).toBe(false);
     expect(after.bet.earliestKickoffAt).toBe(kickoffAt);
+  });
+});
+
+// ===========================================================================
+// M5b: which BALANCE is charged
+// ===========================================================================
+
+describe('placeBet — the account balance', () => {
+  it('defaults to the caller’s main balance when `bankrollId` is absent', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const res = await post('/api/bets', straight(g(1), 2500), alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+    expect(bet.bankrollId).toBe(alex.bkId);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS - 2500);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('accepts the caller’s own balance named explicitly', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const res = await post(
+      '/api/bets',
+      { ...straight(g(1), 2500), bankrollId: alex.bkId },
+      alex.cookie,
+    );
+    expect(res.status, await res.clone().text()).toBe(201);
+    expect((await res.json<BetResponse>()).bet.bankrollId).toBe(alex.bkId);
+  });
+
+  it("someone else's balance is 404 BANKROLL_NOT_FOUND and writes nothing", async () => {
+    const alex = await register();
+    const bob = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const before = await balanceOf(env.DB, alex.bkId);
+
+    const res = await post(
+      '/api/bets',
+      { ...straight(g(1), 2500), bankrollId: alex.bkId },
+      bob.cookie,
+    );
+    expect(res.status).toBe(404);
+    expect(await errorCode(res)).toBe('BANKROLL_NOT_FOUND');
+    // 404, never 403 — a balance id must not be an existence oracle.
+    const missing = await post(
+      '/api/bets',
+      { ...straight(g(1), 2500), bankrollId: 'no-such-balance' },
+      bob.cookie,
+    );
+    expect(missing.status).toBe(404);
+    expect(await errorCode(missing)).toBe('BANKROLL_NOT_FOUND');
+
+    expect(await betCount(bob.id)).toBe(0);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(before);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('the in-batch ownership guard holds even if the pre-flight read is bypassed', async () => {
+    // `resolveBankrollId` runs first, but only to produce a specific 404. The
+    // real guard is `AND EXISTS (… WHERE id = ?3 AND user_id = ?2)` inside the
+    // INSERT, and this drives `buildPlacement` directly to reach it.
+    const alex = await register();
+    const bob = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const req = straight(g(1), 2500);
+    const parsed = validatePlaceBet(req);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const legs = await resolveLegSnapshots(env, req, NOW);
+    const plan = buildPlacement(env, {
+      userId: bob.id,
+      input: parsed.value,
+      // Bob's bet, ALEX's balance. Nothing outside the batch objects.
+      bankrollId: alex.bkId,
+      legs,
+      now: NOW,
+      replacesBetId: null,
+      requiresCancelledBetId: null,
+      memo: 'ownership guard',
+    });
+    const results = await env.DB.batch([...plan.statements]);
+    expect(results[0]?.meta.changes).toBe(0);
+    expect(await betCount(bob.id)).toBe(0);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS);
+    await expectLedgerMatchesBalance();
+  });
+});
+
+// ===========================================================================
+// M5b: teasers. PLAN.md §5.8.
+// ===========================================================================
+
+describe('placeBet — teasers', () => {
+  /** A 6-point teaser on `gameIds`, spread-home legs unless overridden. */
+  function teaser(
+    gameIds: readonly string[],
+    over: Partial<PlaceBetRequest> = {},
+  ): PlaceBetRequest {
+    return {
+      league: 'nfl',
+      betType: 'teaser',
+      teaserPoints: 60,
+      stakeCents: 1000,
+      legs: gameIds.map((gameId) => ({ gameId, market: 'spread', side: 'home' }) as const),
+      ...over,
+    };
+  }
+
+  it('stores the TEASED line, keeps the book line, and prices from the card', async () => {
+    const alex = await register();
+    // fullLine: home spread -3.5 @ -110, total 45.5, over @ -110.
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 3 * HOUR });
+    const res = await post(
+      '/api/bets',
+      teaser([g(1)], {
+        legs: [
+          { gameId: g(1), market: 'spread', side: 'home' },
+          { gameId: g(2), market: 'total', side: 'over' },
+        ],
+      }),
+      alex.cookie,
+    );
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+
+    expect(bet.betType).toBe('teaser');
+    expect(bet.teaserPoints).toBe(60);
+    const legs = await legRows(bet.id);
+    // spread home -35 + 60 = +25 (-3.5 -> +2.5); total over 455 - 60 = 395.
+    expect(legs[0]?.line_tenths).toBe(25);
+    expect(legs[0]?.original_line_tenths).toBe(-35);
+    expect(legs[1]?.line_tenths).toBe(395);
+    expect(legs[1]?.original_line_tenths).toBe(455);
+    // A teaser leg carries NO price: +100 is the schema-required placeholder.
+    expect(legs.map((l) => l.american_price)).toEqual([100, 100]);
+
+    // TEASER_PAYOUTS[60][2] = -120. REPL-verified at a 1000c stake: 1833.
+    const row = await betRow(bet.id);
+    expect(row?.american_price).toBe(-120);
+    expect(row?.teaser_points_tenths).toBe(60);
+    expect(row?.potential_payout_cents).toBe(1833);
+    expect(row?.potential_payout_cents).toBe(payoutCents(1000, americanToPrice(-120)));
+    expect(bet.potentialPayoutCents).toBe(1833);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS - 1000);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('prices a 3-leg 6-point teaser at +150 (REPL: 1000c -> 2500)', async () => {
+    const alex = await register();
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      ids.push(await seedGameWithLine(env.DB, { id: g(i), kickoffAt: NOW + 2 * HOUR }));
+    }
+    const res = await post('/api/bets', teaser(ids), alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+    expect(bet.americanPrice).toBe(150);
+    expect(bet.potentialPayoutCents).toBe(2500);
+    // ...and it is NOT the product of the legs, which would be 2^3 = 8000.
+    expect(bet.potentialPayoutCents).not.toBe(8000);
+  });
+
+  it('each tier moves the line by its own number of points', async () => {
+    const alex = await register();
+    for (const [i, tier] of [60, 65, 70].entries()) {
+      const a = await seedGameWithLine(env.DB, {
+        id: g(`a${String(i)}`),
+        kickoffAt: NOW + 2 * HOUR,
+      });
+      const b = await seedGameWithLine(env.DB, {
+        id: g(`b${String(i)}`),
+        kickoffAt: NOW + 2 * HOUR,
+      });
+      const res = await post(
+        '/api/bets',
+        teaser([a, b], { teaserPoints: tier as 60 | 65 | 70, stakeCents: 100 }),
+        alex.cookie,
+      );
+      expect(res.status, await res.clone().text()).toBe(201);
+      const { bet } = await res.json<BetResponse>();
+      const legs = await legRows(bet.id);
+      expect(legs[0]?.line_tenths).toBe(-35 + tier);
+      expect(bet.teaserPoints).toBe(tier);
+    }
+    await expectLedgerMatchesBalance();
+  });
+
+  it('a cross-league teaser is legal and lands as league=mixed', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    await seedGameWithLine(env.DB, { id: gc(1), league: 'ncaaf', kickoffAt: NOW + 3 * HOUR });
+    const res = await post('/api/bets', teaser([g(1), gc(1)]), alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+    expect(bet.league).toBe('mixed');
+    expect(bet.betType).toBe('teaser');
+    expect((await legRows(bet.id)).every((l) => l.original_line_tenths !== null)).toBe(true);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('a moneyline leg is 400 VALIDATION naming that leg’s market', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 3 * HOUR });
+    const res = await post(
+      '/api/bets',
+      teaser([g(1)], {
+        legs: [
+          { gameId: g(1), market: 'spread', side: 'home' },
+          { gameId: g(2), market: 'moneyline', side: 'home' },
+        ],
+      }),
+      alex.cookie,
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json<ApiErrorBody>();
+    expect(body.error.code).toBe('VALIDATION');
+    expect(body.error.details?.['field']).toBe('legs[1].market');
+    expect(await betCount(alex.id)).toBe(0);
+  });
+
+  it('requires a tier, rejects an off-card one, and rejects one on a parlay', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 3 * HOUR });
+    const ids = [g(1), g(2)];
+
+    const none = await post(
+      '/api/bets',
+      { league: 'nfl', betType: 'teaser', stakeCents: 1000, legs: teaser(ids).legs },
+      alex.cookie,
+    );
+    expect(none.status).toBe(400);
+    expect(await errorCode(none)).toBe('VALIDATION');
+
+    // 6 POINTS rather than 60 TENTHS is the obvious client bug.
+    const points = await post('/api/bets', { ...teaser(ids), teaserPoints: 6 }, alex.cookie);
+    expect(points.status).toBe(400);
+
+    const onParlay = await post(
+      '/api/bets',
+      { ...parlay(ids, 1000), teaserPoints: 60 },
+      alex.cookie,
+    );
+    expect(onParlay.status).toBe(400);
+    expect(await betCount(alex.id)).toBe(0);
+  });
+
+  it('a one-leg teaser is refused before the DB CHECK ever sees it', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const res = await post('/api/bets', teaser([g(1)]), alex.cookie);
+    expect(res.status).toBe(400);
+    expect(await errorCode(res)).toBe('VALIDATION');
+  });
+
+  it('`expected` is compared against the BOOK line, so a tease is not a LINE_CHANGED', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 3 * HOUR });
+    const res = await post(
+      '/api/bets',
+      teaser([g(1)], {
+        legs: [
+          {
+            gameId: g(1),
+            market: 'spread',
+            side: 'home',
+            // The number the BOARD showed, not the teased one.
+            expected: { americanPrice: -110, lineTenths: -35 },
+          },
+          {
+            gameId: g(2),
+            market: 'spread',
+            side: 'home',
+            expected: { americanPrice: -110, lineTenths: -35 },
+          },
+        ],
+      }),
+      alex.cookie,
+    );
+    expect(res.status, await res.clone().text()).toBe(201);
+    expect((await legRows((await res.json<BetResponse>()).bet.id))[0]?.line_tenths).toBe(25);
+
+    // ...and a real move is still caught.
+    await seedLine(env.DB, { ...fullLine(g(1), NOW - 500), spreadHomeTenths: -45 });
+    const moved = await post(
+      '/api/bets',
+      teaser([g(1)], {
+        legs: [
+          {
+            gameId: g(1),
+            market: 'spread',
+            side: 'home',
+            expected: { americanPrice: -110, lineTenths: -35 },
+          },
+          { gameId: g(2), market: 'spread', side: 'home' },
+        ],
+      }),
+      alex.cookie,
+    );
+    expect(moved.status).toBe(409);
+    expect(await errorCode(moved)).toBe('LINE_CHANGED');
+  });
+
+  it('a teaser can be cancelled and edited like any other bet', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 4 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 5 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(3), kickoffAt: NOW + 6 * HOUR });
+    const first = await post('/api/bets', teaser([g(1), g(2)]), alex.cookie);
+    expect(first.status, await first.clone().text()).toBe(201);
+    const { bet: old } = await first.json<BetResponse>();
+
+    // Edit to a 3-leg 7-point teaser: re-teased from the CURRENT book lines.
+    const edited = await put(
+      `/api/bets/${old.id}`,
+      teaser([g(1), g(2), g(3)], { teaserPoints: 70 }),
+      alex.cookie,
+    );
+    expect(edited.status, await edited.clone().text()).toBe(200);
+    const { bet } = await edited.json<BetResponse>();
+    expect(bet.teaserPoints).toBe(70);
+    expect(bet.americanPrice).toBe(120); // TEASER_PAYOUTS[70][3]
+    expect((await legRows(bet.id))[0]?.line_tenths).toBe(-35 + 70);
+    expect(bet.bankrollId).toBe(alex.bkId);
+
+    const cancelled = await del(`/api/bets/${bet.id}`, alex.cookie);
+    expect(cancelled.status, await cancelled.clone().text()).toBe(200);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('BetView exposes the tier and both lines so My Bets can render the move', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 3 * HOUR });
+    const res = await post('/api/bets', teaser([g(1), g(2)]), alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+    expect(bet.teaserPoints).toBe(60);
+    expect(bet.legs[0]?.originalLineTenths).toBe(-35);
+    expect(bet.legs[0]?.lineTenths).toBe(25);
+    expect(bet.legs[0]?.league).toBe('nfl');
+    // A straight's legs carry no pre-tease line at all.
+    const plain = await post('/api/bets', straight(g(1), 500), alex.cookie);
+    expect(plain.status, await plain.clone().text()).toBe(201);
+    expect((await plain.json<BetResponse>()).bet.legs[0]?.originalLineTenths).toBeNull();
   });
 });

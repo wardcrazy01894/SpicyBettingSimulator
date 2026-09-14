@@ -5,18 +5,21 @@
  * the dropdown is built from the weeks actually present in the slate the server
  * returned, unioned with whatever week is selected. The ◀ / ▶ buttons step by
  * one and are clamped at week 1 on the low side only — the API is the authority
- * on how many weeks a season has, and an out-of-range week simply comes back
- * empty, which is a legible outcome rather than a guess baked into the client.
+ * on how many weeks there are, and an out-of-range week simply comes back empty,
+ * which is a legible outcome rather than a guess baked into the client.
+ *
+ * The label is just "Week": the season is still what SCOPES the board query
+ * internally, but the product has no concept of a season (PLAN.md §19 Q5) and a
+ * year printed above the games implies a boundary that does not exist.
  */
 import type { ReactElement } from 'react';
 
 export function WeekPicker(props: {
   readonly week: number | null;
-  readonly season: number | null;
   readonly weeks: readonly number[];
   readonly onChange: (week: number | null) => void;
 }): ReactElement {
-  const { week, season, weeks, onChange } = props;
+  const { week, weeks, onChange } = props;
 
   return (
     <div className="week-picker">
@@ -33,7 +36,7 @@ export function WeekPicker(props: {
       </button>
 
       <label className="week-label" htmlFor="week-select">
-        {season === null ? 'Week' : `${String(season)} · Week`}
+        Week
       </label>
       <select
         id="week-select"

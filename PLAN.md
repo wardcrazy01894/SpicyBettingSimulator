@@ -32,7 +32,7 @@ a fresh fake $1,000 per `(league, season)`.
 16. [Parallel-execution map](#16-parallel-execution-map)
 17. [Risks and mitigations](#17-risks-and-mitigations)
 18. [Spikes](#18-spikes)
-19. [Open questions for Alex](#19-open-questions-for-alex)
+19. [Decisions (answered 2026-09-14)](#19-decisions-answered-2026-09-14)
 20. [Out of scope for v1](#20-out-of-scope-for-v1)
 
 ---
@@ -160,8 +160,10 @@ section explains the _why_.
   (`crypto.randomUUID()`). Game ids are `"<league>:<providerEventId>"` e.g.
   `"nfl:401872656"` — provider-scoped so an id collision between leagues or a future
   provider is impossible.
-- `bankrolls.id` is **deterministic**: `"<userId>:<league>:<season>"`. That makes lazy
-  bankroll creation a plain `INSERT OR IGNORE` — idempotent, no read-then-write race.
+- `bankrolls.id` is an ordinary uuid. It **used** to be the deterministic
+  `"<userId>:<league>:<season>"`, which is what made lazy per-season creation a
+  plain `INSERT OR IGNORE`; M5b creates the one balance in the signup batch
+  instead, so there is nothing left to derive and nothing left to create lazily.
 
 ### 3.2 Tables
 
@@ -223,10 +225,21 @@ _Why a separate table instead of columns on `games`_: refreshing scores must not
 rewrite the line columns and vice versa, and a second provider is a second row rather
 than a schema migration.
 
-**`bankrolls`** — `id` (deterministic), `user_id`, `league`, `season`,
-`balance_cents INTEGER NOT NULL DEFAULT 0 CHECK(balance_cents >= 0)`, timestamps,
-`UNIQUE(user_id, league, season)`.
+**`bankrolls`** — **ACCOUNT BALANCES** (M5b). `id` (uuid), `user_id`, `name`,
+`kind ∈ {main, custom}`, `balance_cents INTEGER NOT NULL DEFAULT 0
+CHECK(balance_cents >= 0)`, timestamps, `UNIQUE(user_id, name)` plus a PARTIAL
+unique index `ON bankrolls(user_id) WHERE kind = 'main'`.
 The `CHECK` is the real overdraft protection — see §4.
+
+A balance is **one pot of fake money that belongs to an account**. It is not
+scoped to a league or a season, it never rolls over, and it is created in the
+SIGNUP batch — not lazily. It is modelled as a LIST (a table keyed by user, not
+a column on `users`) because side pots are wanted later; `bets.bankroll_id` and
+`ledger.bankroll_id` already key off a balance id, so a second one is a row
+rather than a migration. `kind='custom'` is reserved for those and nothing in v1
+writes one. The partial unique index is what makes "exactly one main balance per
+user" a schema fact rather than a convention — a plain `UNIQUE(user_id, kind)`
+would also forbid two custom pots.
 
 **`ledger`** — append-only, the source of truth for money.
 `id, bankroll_id, kind, ref_id, bet_id, amount_cents (signed), created_at, memo`
@@ -238,11 +251,24 @@ Four triggers (§4.2): a `BEFORE INSERT` value guard that `INSERT OR IGNORE`
 cannot suppress, an `AFTER INSERT` that applies the amount to
 `bankrolls.balance_cents`, and `BEFORE UPDATE` / `BEFORE DELETE` blocks.
 
-**`bets`** — `id, user_id, bankroll_id, league, season, bet_type, leg_count,
-stake_cents, american_price, potential_payout_cents, status, payout_cents,
-placed_at, earliest_kickoff_at, settled_at, cancelled_at, settle_run_id,
-settle_attempts, settle_error, replaces_bet_id, replaced_by_bet_id, created_at,
-updated_at`.
+**`bets`** — `id, user_id, bankroll_id, league, season, bet_type,
+teaser_points_tenths, leg_count, stake_cents, american_price,
+potential_payout_cents, status, payout_cents, placed_at, earliest_kickoff_at,
+settled_at, cancelled_at, settle_run_id, settle_attempts, settle_error,
+replaces_bet_id, replaced_by_bet_id, created_at, updated_at`.
+
+- `league ∈ {nfl, ncaaf, mixed}` and `season` are **informational labels** since
+  M5b. `mixed` means the legs span both leagues; `season` is the season of the
+  EARLIEST-KICKOFF leg. Neither selects a balance any more (`bankroll_id` does),
+  so neither constrains what a bet may contain — they drive the stats filters and
+  the UI, and nothing else.
+- `bet_type ∈ {straight, parlay, teaser}`; `teaser_points_tenths ∈ {60, 65, 70}`
+  is the teaser tier in TENTHS of a point, and
+  `CHECK ((bet_type = 'teaser') = (teaser_points_tenths IS NOT NULL))` makes the
+  type and the tier the same fact. The leg-count CHECKs are written against
+  `'straight'` (`bet_type <> 'straight' OR leg_count = 1` and its mirror) rather
+  than against `'parlay'`, so adding `teaser` to the enum did not silently make a
+  1-leg teaser legal.
 
 - **There is NO stored decimal-odds rational, deliberately.** A 10-leg parlay
   numerator can reach 20+ digits (10 legs at −101 gives `201^10 ≈ 1.08e23`), and
@@ -279,8 +305,14 @@ updated_at`.
 
 **`bet_legs`** — **the immutable line snapshot**. One row per leg:
 `id, bet_id, leg_index, game_id, league, market, side, line_tenths,
-american_price, provider, line_captured_at, snapshot_at, kickoff_at_snapshot,
-home_abbr, away_abbr, result, graded_at`.
+original_line_tenths, american_price, provider, line_captured_at, snapshot_at,
+kickoff_at_snapshot, home_abbr, away_abbr, result, graded_at`.
+
+- `original_line_tenths` is the BOOK's line before a tease, for display and
+  audit; `NULL` on a straight or parlay leg, which is never moved. `line_tenths`
+  remains **the line the leg is graded on** in every case — for a teaser leg
+  that is the TEASED number — which is exactly what lets `gradeLeg` stay
+  completely unaware that teasers exist (§5.8).
 
 - `american_price` is a small bounded integer
   (`CHECK abs(...) BETWEEN 100 AND 100000`) and **is** the price snapshot. The
@@ -335,13 +367,16 @@ value so a later optimisation needs no migration; nothing constructs one in v1.
 | Invariant                                                          | Enforcement                                                                                                                 |
 | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | Balance is never negative                                          | `BEFORE INSERT ON ledger` trigger `RAISE(ABORT)` (unsuppressable, §4.2) **plus** `CHECK(balance_cents >= 0)` on `bankrolls` |
-| No ledger row against a non-existent bankroll                      | same `BEFORE INSERT` trigger (`COALESCE(..., -1)`)                                                                          |
+| No ledger row against a non-existent balance                       | same `BEFORE INSERT` trigger (`COALESCE(..., -1)`)                                                                          |
 | Balance always equals the sum of its ledger rows                   | `AFTER INSERT ON ledger` trigger is the _only_ writer of `balance_cents`                                                    |
 | Ledger is append-only                                              | `BEFORE UPDATE`/`BEFORE DELETE` triggers `RAISE(ABORT)`                                                                     |
 | A bet is paid at most once                                         | `UNIQUE(bankroll_id, kind, ref_id)` on `ledger`                                                                             |
 | A bet is refunded at most once                                     | same unique key, `kind='bet_refund'`                                                                                        |
-| Exactly one opening deposit per bankroll                           | same unique key, `kind='deposit_initial'`, `ref_id='init'`                                                                  |
+| Exactly one opening deposit per balance                            | same unique key, `kind='deposit_initial'`, `ref_id='init'`                                                                  |
+| Exactly one `main` balance per user                                | partial `UNIQUE INDEX ON bankrolls(user_id) WHERE kind = 'main'`                                                            |
+| A bet is staked against a balance its owner owns                   | `AND EXISTS (SELECT 1 FROM bankrolls WHERE id = :bankrollId AND user_id = :userId)` inside the placement INSERT (§14.2)     |
 | Stake ≥ $1.00                                                      | `CHECK(stake_cents >= 100)` on `bets`                                                                                       |
+| A teaser has a tier and nothing else does                          | `CHECK ((bet_type = 'teaser') = (teaser_points_tenths IS NOT NULL))` + `CHECK (teaser_points_tenths IN (60,65,70))`         |
 | Payout ≤ `MAX_PAYOUT_CENTS` (so no money column can become `REAL`) | `CHECK(potential_payout_cents BETWEEN 0 AND 100000000)` and the same on `payout_cents`                                      |
 | A leg price is a small bounded integer                             | `CHECK(abs(american_price) BETWEEN 100 AND 100000)` on `bet_legs`                                                           |
 | 1–10 legs                                                          | `CHECK(leg_count BETWEEN 1 AND 10)` + validation                                                                            |
@@ -450,56 +485,91 @@ Consequences worth spelling out:
 
 ### 4.3 Money flows
 
-| Event                   | Ledger rows written                                       |
-| ----------------------- | --------------------------------------------------------- |
-| Bankroll created (lazy) | `deposit_initial` `+100000`, `ref_id='init'`              |
-| Bet placed              | `bet_stake` `-stake`, `ref_id=betId`                      |
-| Bet won                 | `bet_payout` `+payout` (= stake + profit), `ref_id=betId` |
-| Bet pushed / voided     | `bet_payout` `+stake`, `ref_id=betId`                     |
-| Bet lost                | **none** — the stake row already debited it               |
-| Bet cancelled by user   | `bet_refund` `+stake`, `ref_id=betId`                     |
-| Admin adjustment        | `admin_adjust` `±n`, `ref_id=<uuid>`                      |
+| Event                 | Ledger rows written                                                           |
+| --------------------- | ----------------------------------------------------------------------------- |
+| **Signup**            | `deposit_initial` `+100000`, `ref_id='init'` — once per account, for its life |
+| Bet placed            | `bet_stake` `-stake`, `ref_id=betId`                                          |
+| Bet won               | `bet_payout` `+payout` (= stake + profit), `ref_id=betId`                     |
+| Bet pushed / voided   | `bet_payout` `+stake`, `ref_id=betId`                                         |
+| Bet lost              | **none** — the stake row already debited it                                   |
+| Bet cancelled by user | `bet_refund` `+stake`, `ref_id=betId`                                         |
+| Admin adjustment      | `admin_adjust` `±n`, `ref_id=<uuid>`                                          |
 
 A loss writing no row is deliberate: it keeps the ledger a pure cash-movement log,
 and `SUM(amount_cents) = balance_cents` stays trivially checkable
 (`scripts/reconcile.mjs`, M7).
 
-### 4.4 Lazy season rollover
+### 4.4 Account balances (M5b — replaces lazy season rollover)
 
-`GET /api/bankroll`, `GET /api/games`, and `POST /api/bets` all call
-`ensureBankroll(userId, league, season)`, a 1-statement `batch` prelude:
+**A user has exactly one balance, it is opened at signup, and it lasts forever.**
+No rollover, no per-league pot, no lazy creation on a read path. The two
+statements live in the SIGNUP batch, next to the `users` INSERT:
 
 ```sql
--- The bankroll may use OR IGNORE: it is not the ledger, and a duplicate is the
--- only failure mode.
-INSERT OR IGNORE INTO bankrolls (id, user_id, league, season, balance_cents, created_at, updated_at)
-  VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5);
+-- Guarded, NOT `OR IGNORE`. The id is a fresh uuid, so a duplicate would not
+-- collide on the primary key -- it would collide on the partial unique index
+-- `idx_bankrolls_main`, `OR IGNORE` would swallow THAT, and the ledger insert
+-- below would then fire against a bankroll id that does not exist, aborting the
+-- whole batch on `ledger_bi_bankroll_exists`. The NOT EXISTS states the intent.
+INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+SELECT ?1, ?2, 'Main', 'main', 0, ?3, ?3
+ WHERE NOT EXISTS (SELECT 1 FROM bankrolls WHERE user_id = ?2 AND kind = 'main');
 
--- The ledger may NOT. `OR IGNORE` on this table can swallow a value-guard
--- failure (§4.2); express idempotency explicitly instead.
+-- The ledger may never use `OR IGNORE` at all: it can swallow a value-guard
+-- failure (§4.2). Express idempotency explicitly.
 INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
-SELECT ?6, ?1, 'deposit_initial', 'init', NULL, 100000, ?5, 'season opening balance'
- WHERE NOT EXISTS (
-   SELECT 1 FROM ledger
-    WHERE bankroll_id = ?1 AND kind = 'deposit_initial' AND ref_id = 'init');
+SELECT ?4, ?1, 'deposit_initial', 'init', NULL, 100000, ?3, 'opening balance'
+ WHERE EXISTS (SELECT 1 FROM bankrolls WHERE id = ?1)
+   AND NOT EXISTS (
+     SELECT 1 FROM ledger
+      WHERE bankroll_id = ?1 AND kind = 'deposit_initial' AND ref_id = 'init');
 ```
 
-Both keys are deterministic, so this is idempotent and concurrency-proof (the
-`UNIQUE` index is still there if two runs race past the `NOT EXISTS`). The
-bankroll starts at `0` and the trigger raises it to `100000` — the balance is
-never written directly by application code.
+The balance opens at `0` and the trigger raises it to `100000` — application code
+never writes a balance. Both statements are idempotent, so the same pair is the
+admin **repair** path (`ensureMainBalance`, for an account that somehow has no
+balance); nothing on the request path calls it.
 
-**Season provenance.** `bets.season` is **never** guessed. It is read from the
-legs' own `games` rows inside placement (`resolveBetScope`), and every leg must
-share one `(league, season)` or the bet is rejected with `MIXED_LEAGUE_PARLAY` /
-`MIXED_SEASON_PARLAY`. So a January-2027 bowl bet is charged to the 2026
-bankroll, permanently and by construction.
+**What this deleted, and why it is a simplification rather than a loss.** `GET
+/api/bankroll`, `GET /api/games` and `POST /api/bets` each used to run the lazy
+prelude, because a new season needed a new bankroll. Consequences that are now
+simply gone:
 
-`currentSeason` — used only to _default_ the board and the bankroll view — is the
+- a GET that durably wrote two rows (including, for a while, on a request that
+  answered 404 — see §14.2);
+- `MIXED_LEAGUE_PARLAY` / `MIXED_SEASON_PARLAY`, which existed ONLY to keep every
+  leg pointing at the one bankroll a bet implied. Legs may now span leagues and
+  seasons freely. The codes stay in the vocabulary for wire stability and are
+  documented as deprecated; nothing throws them;
+- a leaderboard that had to sum across bankrolls to answer "all-time".
+
+**Which balance is charged** is now an explicit request field, `bankrollId`,
+defaulting to the caller's `main`. A balance that is not the caller's is
+`404 BANKROLL_NOT_FOUND` — never 403, for the same no-existence-oracle reason
+`GET /api/bets/:id` is a 404. The pre-flight read exists only to produce that
+specific error; the REAL guard is an `EXISTS` over `bankrolls` inside the
+placement INSERT (§14.2), because a read followed by an unguarded write is the
+read-then-write the house rules forbid.
+
+**Season and league provenance.** `bets.season` and `bets.league` are still read
+from the legs' own `games` rows and never guessed from a wall clock — but they
+are now LABELS rather than a partition of the money. `league` is the legs' one
+league, or `'mixed'` when they span both. `season` is the season of the
+EARLIEST-KICKOFF leg, which is the one a human would name. A January-2027 bowl
+bet is still labelled season 2026.
+
+`currentSeason` — used only to _default_ the board and the stats filters — is the
 season of the **next game to kick off** (`MIN(kickoff_at) >= now − BOARD_LOOKBACK_MS`),
 falling back to the most recent game when nothing is upcoming. It is deliberately
 not `MAX(games.season)`: once 2027 preseason lands in August 2027, `MAX` would
-point a January-2027 bowl at the 2027 bankroll.
+label a January-2027 bowl as 2027.
+
+**Admin adjustment.** `POST /api/admin/users/:id/adjust {amountCents, memo}`
+writes one `admin_adjust` ledger row against the target's main balance, either
+sign, with a fresh uuid `ref_id` — so an admin who types "+5000" twice means it
+twice. There is no overdraft branch in the application code: a debit larger than
+the balance is refused by `ledger_bi_sufficient_funds`, which rolls the batch
+back, and that abort is mapped to `409 INSUFFICIENT_FUNDS`.
 
 ---
 
@@ -695,6 +765,100 @@ ml:      sideScore > oppScore → win;  < → loss;  == → push (NFL ties)
 Because half-point lines are exactly representable in tenths, `== 0` is a real,
 reachable, exact comparison. No epsilon anywhere.
 
+### 5.8 Teasers (M5b)
+
+A **teaser** is a parlay whose spread/total legs are all moved the same number of
+points in the bettor's favour, priced from a **fixed card** instead of from the
+product of its legs. Implemented across `constants.ts` (`TEASER_PAYOUTS`),
+`odds.ts` (`teaserPrice`, `teasedLineTenths`) and `grading.ts` (`BetPricing`).
+
+**The card.** `TEASER_PAYOUTS[pointsTenths][legCount]`, integer American:
+
+| legs | 6 pt  | 6.5 pt | 7 pt  |
+| ---- | ----- | ------ | ----- |
+| 2    | −120  | −130   | −140  |
+| 3    | +150  | +135   | +120  |
+| 4    | +260  | +225   | +200  |
+| 5    | +400  | +350   | +325  |
+| 6    | +600  | +500   | +450  |
+| 7    | +900  | +800   | +700  |
+| 8    | +1400 | +1100  | +900  |
+| 9    | +1900 | +1500  | +1200 |
+| 10   | +2500 | +2000  | +1500 |
+
+These are the Bovada "classic standard" numbers — the only fully populated 2-10
+leg × 6/6.5/7-point grid that is actually published anywhere, and the closest
+match to what the industry calls the standard teaser card. DraftKings differs
+only at 3-leg/6-point (+160 vs +150) and FanDuel prices 2-leg/6-point nearer
+−110; neither publishes a complete grid. **Full sourcing, including the
+per-book caveats and what could not be confirmed, is in `docs/teaser-odds.md`.**
+
+Tiers are stored and transported in **TENTHS** (60/65/70), for the same reason
+lines are: 6.5 has no integer representation in points, and a client that sends
+`6` where `60` is meant would otherwise tease by 0.6 of a point. `teaserPoints:
+6` is rejected.
+
+**Line adjustment**, at placement, in integer tenths (REPL-verified):
+
+```
+spread:  teased = lineTenths + points     // the line already carries the bettor's
+                                          // sign, so ADDING always helps:
+                                          //   home -7.5 (-75) @6 -> -1.5 (-15)
+                                          //   away +3.5 (+35) @6 -> +9.5 (+95)
+total over:  teased = lineTenths - points //   o45.5 (455) @6 -> o39.5 (395)
+total under: teased = lineTenths + points //   u45.5 (455) @6 -> u51.5 (515)
+moneyline:   REJECTED — there is no line to move
+```
+
+The teased value goes into `bet_legs.line_tenths` and the book's into
+`bet_legs.original_line_tenths`. That is the single most important design choice
+here: **grading reads one column and has no idea teasers exist.** A 6.5-point
+tier off a half-point line lands on a whole number, which is a real push risk —
+exactly and deliberately representable.
+
+**Pricing.** `bets.american_price = TEASER_PAYOUTS[tier][legCount]` and
+`potential_payout_cents = payoutCents(stake, americanToPrice(that))`. Each LEG
+stores `american_price = 100` — a placeholder the schema's
+`CHECK (abs(american_price) BETWEEN 100 AND 100000)` requires, not a price.
+Nothing reads it; `priceFromLegs` is meaningless for a teaser.
+
+**Push rules** (confirmed across Bovada, covers.com, Wizard of Odds and
+FanDuel-derived sources):
+
+- **any loss → the whole teaser loses**, however many legs pushed. A loss is
+  never cured by a push elsewhere.
+- **a push or void reduces** the bet to the card's row for the SURVIVING leg
+  count, same tier. A 4-leg 6-point teaser with one push pays as a 3-leg one.
+- **fewer than two survivors → NO ACTION**: status `push` (or `void` when every
+  leg voided), payout = stake, `american_price = 100`. There is no such thing as
+  a one-team teaser, and a 2-leg teaser with one push is universally refunded
+  rather than re-graded as a priced single.
+- a postponed or cancelled game grades exactly like a push.
+
+**Worked examples, all REPL-verified at a 1000¢ stake, 6-point tier:**
+
+| Outcome         | Effective price                            | Payout ¢ |
+| --------------- | ------------------------------------------ | -------- |
+| 3 legs, all win | **+150**                                   | **2500** |
+| …one leg pushes | **−120** (2-leg row)                       | **1833** |
+| …two legs push  | 1/1 (no action)                            | **1000** |
+| any leg loses   | +260 if placed as 4 legs (placement price) | **0**    |
+
+Contrast: those same three −110 legs as a PARLAY pay 6957¢. The card is the
+price, not the legs.
+
+**Scope.** 2-10 legs; spread and total only; cross-league allowed (NFL and CFB
+share a point schedule, which is the industry condition for mixing); no two legs
+from the same game, as for any parlay. The payout cap is checked on the same
+shared path but is unreachable in practice — the worst cell at the full
+bankroll, 10 legs at 6 points (+2500) on 100,000¢, returns **2,600,000¢** against
+a 100,000,000¢ cap (verified).
+
+**Not implemented, deliberately:** DK-style "Super"/"Monster" specialty teasers
+(10 or 13 points, ties LOSE). They are a materially different rule set — no push
+protection at all — and conflating them with standard push handling is exactly
+the mistake `docs/teaser-odds.md` §4 warns about.
+
 ---
 
 ## 6. Bet lifecycle state machine
@@ -845,14 +1009,20 @@ gradeLeg(leg, game) -> 'win' | 'loss' | 'push' | 'void' | 'pending'
   scores not finite integers                    -> 'pending'   (log + skip; never guess)
   otherwise                                     -> §5.7
 
-gradeBet(bet, legs) -> BetOutcome
+gradeBet(bet, legs, games, pricing) -> BetOutcome
+  // `pricing` comes from the BET ROW, never from the legs:
+  //   bet_type = 'teaser' -> { kind: 'teaser', pointsTenths: teaser_points_tenths }
+  //   otherwise           -> { kind: 'parlay' }   (the default)
   if any leg 'pending'                          -> { status: 'pending' }          // no writes
   if any leg 'loss'                             -> { status: 'lost',  payout: 0 }
   live = legs where result === 'win'
-  if live.length === 0:
+  minSurvivors = pricing.kind === 'teaser' ? 2 : 1
+  if live.length < minSurvivors:
       allVoid = every leg is 'void'
       -> { status: allVoid ? 'void' : 'push', payout: stake }
-  price = Π live[i].price
+  price = pricing.kind === 'teaser'
+            ? americanToPrice(TEASER_PAYOUTS[pointsTenths][live.length])
+            : Π live[i].price
   payout = floorDiv(stake * price.num, price.den)
   -> { status: 'won', payout }
 ```
@@ -860,6 +1030,23 @@ gradeBet(bet, legs) -> BetOutcome
 Note the ordering: **a losing leg beats everything**, evaluated before push removal —
 a parlay with 1 loss and 4 pushes still loses. And a straight bet is just the
 1-leg case of the same function; there is no separate straight code path.
+
+**Push semantics, confirmed 2026-09-14 (§19 Q4), in one sentence:** a pushed
+STRAIGHT bet is refunded as if it never happened and is excluded from record and
+ROI entirely; a parlay or teaser DROPS the pushed leg and is re-priced from the
+survivors (the card's lower row, for a teaser); and an all-push bet — like one
+that reduces below a teaser's two-leg minimum — is refunded at even money.
+
+**`pricing` is an ARGUMENT, not an inference (M5b).** The legs of a teaser and of
+a parlay are deliberately indistinguishable — the teased line is already in
+`bet_legs.line_tenths`, which is what keeps `gradeLeg` teaser-unaware — so the
+only place the difference lives is the bet row. Omitting the argument defaults to
+`{kind:'parlay'}` and would pay a 3-leg teaser at 2.0³ instead of the card's
++150. §7.1's selection query must therefore read `bet_type` and
+`teaser_points_tenths` alongside `stake_cents`. Everything downstream is
+unchanged: every card value round-trips exactly through `priceToAmerican`, and a
+teaser reduced below two survivors comes back as `push` with `payout = stake`,
+which is a shape settlement already handles. Full rules in §5.8.
 
 ### 7.4 Persist — one `batch()` per bet, idempotent by construction
 
@@ -1638,11 +1825,11 @@ with codes enumerated in `src/shared/errors.ts`. All state-changing routes requi
 
 ### 11.1 Public
 
-| Method | Path            | Response                                                                                                                                                                                                                                                                                                                                             |
-| ------ | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/health`   | `200 {ok, version, now, inviteRequired}` — no DB access                                                                                                                                                                                                                                                                                              |
-| GET    | `/api/config`   | `200 {leagues, currentSeason:{nfl,ncaaf}, minStakeCents, maxParlayLegs, cutoffBufferMs, initialBankrollCents, maxPayoutCents}` — these field names match `ConfigResponse` in `src/shared/api-types.ts` exactly; `maxPayoutCents` exists because the bet slip calls `exceedsPayoutCap()` for pre-flight (§5.2b) and must not disagree with the server |
-| GET    | `/api/auth/kdf` | `200 {version, algorithm, hash, iterations, keyLengthBytes, saltPrefix}`                                                                                                                                                                                                                                                                             |
+| Method | Path            | Response                                                                                                                                                                                                                                                                                                                                                                          |
+| ------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/health`   | `200 {ok, version, now, inviteRequired}` — no DB access                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/api/config`   | `200 {leagues, currentSeason:{nfl,ncaaf}, minStakeCents, maxParlayLegs, cutoffBufferMs, initialBankrollCents, maxPayoutCents, teaserPoints, teaserPayouts}` — these field names match `ConfigResponse` in `src/shared/api-types.ts` exactly; `maxPayoutCents` exists because the bet slip calls `exceedsPayoutCap()` for pre-flight (§5.2b) and must not disagree with the server |
+| GET    | `/api/auth/kdf` | `200 {version, algorithm, hash, iterations, keyLengthBytes, saltPrefix}`                                                                                                                                                                                                                                                                                                          |
 
 ### 11.2 Auth
 
@@ -1694,10 +1881,12 @@ games. Requires auth (this is a private app; the whole API is behind a session e
 
 ```ts
 {
-  league: 'nfl'|'ncaaf',
-  betType: 'straight'|'parlay',
+  league: 'nfl'|'ncaaf'|'mixed',            // ADVISORY since M5b — see below
+  betType: 'straight'|'parlay'|'teaser',
   stakeCents: number,                       // integer, >= 100
   acceptLineChange?: boolean,               // default false
+  teaserPoints?: 60|65|70,                  // TENTHS; required iff betType='teaser'
+  bankrollId?: string,                      // default: the caller's main balance
   legs: Array<{
     gameId: string,
     market: 'moneyline'|'spread'|'total',
@@ -1707,6 +1896,21 @@ games. Requires auth (this is a private app; the whole API is behind a session e
 }
 ```
 
+**`league` is advisory (M5b).** The server derives the bet's league from the
+legs' own `games` rows — `'mixed'` when they span both — and never compares the
+two, because a balance is no longer scoped to a league and a disagreement has no
+money consequence to protect against. It is still validated as a legal value.
+
+**`bankrollId`** names the balance to charge; absent means the caller's `main`.
+One that is not the caller's is `404 BANKROLL_NOT_FOUND`, identical to one that
+does not exist.
+
+**Teasers** (§5.8): `teaserPoints` is required iff `betType === 'teaser'` and
+rejected otherwise; legs must be spread or total (a moneyline is
+`400 VALIDATION` on `legs[i].market`); 2-10 legs. `expected` still refers to the
+**book** line — the tease is applied by the server afterwards — so `LINE_CHANGED`
+means exactly what it always did.
+
 The client **never** sends the price it will be charged. The server reads the current
 `game_lines` row and snapshots it. `expected` is an optional optimistic-concurrency
 check: if it is supplied and differs from the server's current line, the request fails
@@ -1715,24 +1919,27 @@ This is how a real book behaves and it closes the "the screen said −110 but I 
 −130" complaint.
 
 Success `201 { bet: BetView }`. Error codes:
-`400 VALIDATION` (stake, leg count, market/side mismatch, duplicate game in parlay,
-straight with ≠1 leg, parlay with <2 legs), `404 GAME_NOT_FOUND`,
-`409 GAME_NOT_BETTABLE` (status ≠ scheduled), `409 BETTING_CLOSED` (past `lockAt`),
-`409 MARKET_UNAVAILABLE` (no line for that market, or `seenAt` stale),
-`409 LINE_CHANGED`, `409 INSUFFICIENT_FUNDS`, `409 PAYOUT_LIMIT_EXCEEDED`
-(potential payout above `MAX_PAYOUT_CENTS`), `409 MIXED_LEAGUE_PARLAY` and
-`409 MIXED_SEASON_PARLAY` (v1: every leg must share one `(league, season)` so
-exactly one bankroll is charged; `bets.season` is read from the legs' game rows,
-never guessed — §4.4).
+`400 VALIDATION` (stake, leg count, market/side mismatch, duplicate game, straight
+with ≠1 leg, multi with <2 legs, a teaser tier that is missing / off the card /
+on a non-teaser, a moneyline leg in a teaser), `404 GAME_NOT_FOUND`,
+`404 BANKROLL_NOT_FOUND`, `409 GAME_NOT_BETTABLE` (status ≠ scheduled),
+`409 BETTING_CLOSED` (past `lockAt`), `409 MARKET_UNAVAILABLE` (no line for that
+market, or `seenAt` stale), `409 LINE_CHANGED`, `409 INSUFFICIENT_FUNDS`,
+`409 PAYOUT_LIMIT_EXCEEDED` (potential payout above `MAX_PAYOUT_CENTS`).
+
+**`MIXED_LEAGUE_PARLAY` and `MIXED_SEASON_PARLAY` are never thrown (M5b).** They
+existed only to keep every leg pointing at the one bankroll a bet implied; legs
+may now span leagues and seasons freely. The codes stay in `ERROR_CODES` for wire
+stability — a code is never repurposed — and are marked deprecated there.
 
 Server-side placement is **one `batch()`** (§14.2).
 
-| Method | Path            | Notes                                                                                                                                                                                                                                 |
-| ------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/bets`     | `?status=open\|settled\|all&league=&season=&limit=&cursor=`. Returns `BetView[]` with legs; for open bets each leg carries a live `projected: 'win'\|'loss'\|'push'\|'pending'` computed from the current game row (never persisted). |
-| GET    | `/api/bets/:id` | `404 BET_NOT_FOUND` if not yours (not `403` — no existence oracle)                                                                                                                                                                    |
-| DELETE | `/api/bets/:id` | Cancel + full refund. `409 BET_LOCKED`, `409 BET_NOT_PENDING`                                                                                                                                                                         |
-| PUT    | `/api/bets/:id` | Edit = atomic cancel + place. Body identical to `POST`. Returns `200 {bet, replacedBetId}`. All `POST` errors plus `409 BET_LOCKED`. **Must keep the bet's `(league, season)`** — see below.                                          |
+| Method | Path            | Notes                                                                                                                                                                                                                                               |
+| ------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/bets`     | `?status=open\|settled\|all&league=&limit=&cursor=` (no `season` — §11.5). Returns `BetView[]` with legs; for open bets each leg carries a live `projected: 'win'\|'loss'\|'push'\|'pending'` computed from the current game row (never persisted). |
+| GET    | `/api/bets/:id` | `404 BET_NOT_FOUND` if not yours (not `403` — no existence oracle)                                                                                                                                                                                  |
+| DELETE | `/api/bets/:id` | Cancel + full refund. `409 BET_LOCKED`, `409 BET_NOT_PENDING`                                                                                                                                                                                       |
+| PUT    | `/api/bets/:id` | Edit = atomic cancel + place. Body identical to `POST`. Returns `200 {bet, replacedBetId}`. All `POST` errors plus `409 BET_LOCKED`. **Must keep the bet's BALANCE** — see below.                                                                   |
 
 **`status=open` / `status=settled` PARTITION a user's bets, so `settled`
 INCLUDES `cancelled`.** `open` is exactly `status = 'pending'` and `settled` is
@@ -1743,24 +1950,31 @@ _statistic_ (§11.5's record and ROI count only `won`/`lost`/`push`/`void`), so
 nothing downstream is skewed; a caller wanting true settlements only filters on
 `bet.status` itself.
 
-**`PUT` may not change the bet's `(league, season)`.** An edit is one atomic
-cancel + place, so a league or season change would refund one bankroll and stake
-a _different_ one in the same batch — moving money between bankrolls under the
-banner of "editing a bet", and linking two rows through `replaces_bet_id` /
-`replaced_by_bet_id` that never shared a ledger. The season pair would also make
-`GET /api/bets?season=` return a chain whose halves disagree. A user who wants a
-bet in another league or season places a new one and cancels the old. Mismatches
-get the same codes the equivalent parlay fault gets: `409 MIXED_LEAGUE_PARLAY`
-when the new legs' league differs from the bet's, `409 MIXED_SEASON_PARLAY` when
-the season does. Both are rejected before any statement is built, and the check
-is safe outside the batch because `bets.league`, `bets.season` and `bets.user_id`
-are immutable once written (every mutable condition still lives in the `WHERE` of
-the UPDATE — §14.2).
+**`PUT` may not change the bet's BALANCE.** An edit is one atomic cancel + place,
+so allowing it would refund one balance and stake a _different_ one in the same
+batch — moving money between balances under the banner of "editing a bet", and
+linking two rows through `replaces_bet_id` / `replaced_by_bet_id` that never
+shared a ledger. A caller who names a different `bankrollId` is refused with
+`400 VALIDATION` on that field rather than silently overridden.
 
-`BetView = { id, league, season, betType, stakeCents, americanPrice, decimalOdds
-(string, for display), potentialPayoutCents, toWinCents, status, payoutCents,
-placedAt, earliestKickoffAt, lockAt, settledAt, cancellable, replacesBetId,
-replacedByBetId, legs: BetLegView[] }`.
+That rule used to be spelled `(league, season)`, because a balance was implied by
+them. **It no longer is, so an edit may freely change the replacement's league
+and season** — the refund and the new stake land on the same pot whatever the
+legs are. The check is safe outside the batch because `bets.bankroll_id` and
+`bets.user_id` are immutable once written (every mutable condition still lives in
+the `WHERE` of the UPDATE — §14.2).
+
+`BetView = { id, bankrollId, league ('nfl'|'ncaaf'|'mixed'), season, betType
+('straight'|'parlay'|'teaser'), teaserPoints (tenths | null), stakeCents,
+americanPrice, decimalOdds (string, for display), potentialPayoutCents,
+toWinCents, status, payoutCents, placedAt, earliestKickoffAt, lockAt, settledAt,
+cancellable, replacesBetId, replacedByBetId, legs: BetLegView[] }`.
+
+`BetLegView` gains `league` (the LEG's own — always a real one, since
+`BetView.league` may be `'mixed'`) and `originalLineTenths` (the book's line
+before a tease; `null` on a straight or parlay leg). `BetLegView.americanPrice`
+on a teaser leg is the +100 placeholder, not a price — the bet is priced once,
+from the card.
 
 **`americanPrice` is the EFFECTIVE price, not always the placement price.** While
 `status === 'pending'` it is what the bet was placed at. Once the bet settles,
@@ -1770,16 +1984,23 @@ placed at. `decimalOdds` is derived from `americanPrice` for display and is neve
 parsed back into arithmetic. `potentialPayoutCents` is frozen at placement (it is
 what the slip promised); `payoutCents` is what was actually paid.
 
-### 11.5 Bankroll, ledger, leaderboard
+### 11.5 Balances, ledger, leaderboard
 
-| Method | Path                                         | Response                                                                                                                                |
-| ------ | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/bankroll?league=&season=`              | `200 {league, season, balanceCents, pendingStakeCents, equityCents, record:{w,l,p,v}, roi, settledCount}` (creates the bankroll lazily) |
-| GET    | `/api/ledger?league=&season=&limit=&cursor=` | `200 {entries: LedgerEntry[], nextCursor}`                                                                                              |
-| GET    | `/api/leaderboard?league=&season=`           | `200 {league, season, rows: LeaderboardRow[]}`                                                                                          |
-| GET    | `/api/leaderboard/all-time`                  | `200 {rows: LeaderboardRow[]}` — summed across every league+season                                                                      |
+| Method | Path                                      | Response                                                                                         |
+| ------ | ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| GET    | `/api/bankroll?league=`                   | `200 {balances: BankrollView[]}` — every balance the caller owns, `main` first. Creates nothing. |
+| GET    | `/api/ledger?bankrollId=&limit=&cursor=`  | `200 {entries: LedgerEntry[], nextCursor}`. `bankrollId` defaults to the main balance.           |
+| GET    | `/api/leaderboard?league=all\|nfl\|ncaaf` | `200 {league, rows: LeaderboardRow[]}`. `league` optional; `all` / absent is the default.        |
+| GET    | `/api/leaderboard/all-time`               | `200 {league:'all', rows}` — an ALIAS of the unfiltered board, kept for the shipped client.      |
 
-**Leaderboard semantics (explicit, because this is the classic ambiguity):**
+`BankrollView = { id, name, kind ('main'|'custom'), balanceCents,
+pendingStakeCents, equityCents, record:{w,l,p,v}, roi, settledCount }`.
+
+A LIST even though v1 always returns exactly one, because the schema models
+balances as a list for future side pots and a single-object response would have
+to be replaced rather than extended the day a second one exists.
+
+**Semantics (explicit, because this is the classic ambiguity):**
 
 ```
 balanceCents       = settled cash on hand. Pending stakes are ALREADY DEDUCTED.
@@ -1793,25 +2014,60 @@ roi                = (Σ payout - Σ stake) / Σ stake over bets with status ∈
                      undefined (null) when the denominator is 0
 ```
 
-**Ranking is by `balanceCents` descending**, tie-broken by `roi` then `username`. The
-table also shows `equityCents` and `pendingStakeCents` so a leader with a lot of open
-action is visible. Rationale: `balanceCents` is unambiguous and self-correcting;
-ranking by equity would let someone "lead" purely by having money in flight.
+**`?league=` NARROWS `record`, `roi` AND `settledCount` — NOTHING ELSE.**
+`balanceCents`, `pendingStakeCents` and `equityCents` are always the whole
+account, on both endpoints. Money is account-level now, so "my NFL balance" is
+not a quantity that exists anywhere in the ledger; publishing one would mean
+ranking on a number no reconciliation could check, and filtering the exposure but
+not the balance would break `equity = balance + pending`. The tabs answer "who is
+best at college football", which is a question about W-L and ROI.
 
-All-time view sums `balanceCents` and `pendingStakeCents` across bankrolls and
-recomputes `roi` from the pooled numerator/denominator (not an average of ROIs).
+`league` matches `bets.league` EXACTLY, so a cross-league (`'mixed'`) bet counts
+under `all` and under neither single league. A mixed bet is not an NFL bet, and
+splitting one across both records would double-count its stake in the ROI
+denominator. The same rule governs `GET /api/bets?league=`.
+
+**THERE IS NO `?season=` ANYWHERE IN THE PUBLIC API** (decided 2026-09-14, §19
+Q5). The product has no concept of a season: balances never roll over, so "the
+2026 leaderboard" would be a slice of a number that was never reset.
+`LeaderboardResponse` has no `season` field either — one that could only ever be
+`null` is worse than none. `bets.season` and `games.season` survive INTERNALLY,
+for ingestion (§8.2) and the board's `week` default (`currentSeason`), and are
+simply not exposed as a filter. An unknown query parameter is ignored, as
+everywhere else, so a stale client that still sends `?season=` gets a board
+rather than a 400.
+
+**Ranking is by `equityCents` descending** — `balanceCents + pendingStakeCents` —
+tie-broken by `roi` then `username`. Decided 2026-09-14 (§19 Q2), reversing the
+original choice of realized balance. The reasoning that reversed it: `balanceCents`
+excludes stakes that are still in flight, so ranking on it puts a player holding
+$2,000 with $1,500 riding on tonight's game BELOW one sitting on $600, which is
+not what "who is winning" means to anyone playing. Equity is what the account is
+worth if every open bet were voided, so a bet neither helps nor hurts your
+position until it settles. The counter-argument — "equity lets someone lead purely
+by having money in flight" — is wrong on inspection: staking money does not
+CREATE equity, it moves the same cents from one column to the other. All three
+figures are in the row and the table leads with equity, because a table whose
+first money column is not the sorted one reads as if the sort is broken.
+
+ROI is pooled, never averaged: the numerator and denominator are summed across
+every bet in scope before dividing, so a $10 week and a $10,000 week do not count
+equally. (That used to be the interesting part of the all-time view, which summed
+across per-season bankrolls. With one balance per account there is nothing left
+to sum, and `/all-time` is now literally the unfiltered board.)
 
 ### 11.6 Admin (requires `users.is_admin = 1`)
 
-| Method | Path                                   | Notes                                                                                                   |
-| ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                |
-| GET    | `/api/admin/jobs`                      | last 50 `job_runs`                                                                                      |
-| GET    | `/api/admin/users`                     | list                                                                                                    |
-| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets                                                                                         |
-| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}`                                                                                   |
-| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.          |
-| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes) |
+| Method | Path                                   | Notes                                                                                                                                                                         |
+| ------ | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                      |
+| GET    | `/api/admin/jobs`                      | last 50 `job_runs`                                                                                                                                                            |
+| GET    | `/api/admin/users`                     | list                                                                                                                                                                          |
+| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets                                                                                                                                                               |
+| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}`                                                                                                                                                         |
+| POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check. |
+| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                |
+| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                       |
 
 Non-admins get `404` on `/api/admin/*` (not `403`), so the surface is invisible.
 
@@ -1870,11 +2126,34 @@ Three contexts, each a `useReducer`; no Redux, no react-query.
   `X-SBS-Client: 1`, `credentials: 'same-origin'`, parses the error envelope into a
   typed `ApiError`, and on `401` dispatches `SESSION_EXPIRED`, which bounces to
   `/login`.
-- **BetSlipContext** — `{ mode, legs: SlipLeg[], stakeCents }`. Persisted to
-  `localStorage` keyed by league so a refresh doesn't lose the slip. Validation
-  mirrors `src/shared/validate.ts` (the _same_ pure functions the Worker uses) so the
-  UI can grey out an invalid slip before submitting — the server still re-validates,
-  the client copy is purely for UX.
+- **BetSlipContext** — `{ mode, legs: SlipLeg[], stakeCents, teaserPointsTenths }`,
+  plus `boardLeague`. **ONE CROSS-LEAGUE SLIP (M5b).** It used to be a
+  `Record<League, Slip>` with the league tab selecting which draft you were
+  looking at, because a bet belonged to exactly one `(league, season)` bankroll
+  and a cross-league parlay was a 409. Neither is true now, and the product owner
+  asked for the flow directly: "tease Michigan and the Steelers together". So:
+
+  - there is ONE draft, and a leg carries its own `league`;
+  - **the league tabs move the BOARD only** (`SET_BOARD`) — switching tabs to go
+    find a college game must never add, remove, hide or reorder a leg, which the
+    reducer spec pins by IDENTITY (`moved.slip` is the same object);
+  - every existing slip rule is unchanged: no two legs from one game, 2+ legs is
+    a multi (parlay unless the user picked teaser), teaser mode refuses
+    moneylines, the MAX chip is the whole balance, the payout cap is pre-flighted;
+  - each leg shows an NFL / CFB badge, and the collapsed bar shows `NFL + CFB`,
+    because the tab you are on no longer tells you where a pick came from;
+  - `buildPlaceBetRequest` derives the advisory `league` from the legs
+    (`'mixed'` when they span both), which is the same value the server derives
+    and stores.
+
+  Persisted to `localStorage` under ONE key, `sbs.slip.v3`. There is no honest
+  migration from v2 — there were two drafts and they can disagree about mode,
+  stake and even hold the same game twice — so the provider deletes the old
+  per-league keys on first hydrate instead of leaving dead JSON behind forever.
+  Validation mirrors `src/shared/validate.ts` (the _same_ pure functions the
+  Worker uses) so the UI can grey out an invalid slip before submitting — the
+  server still re-validates, the client copy is purely for UX.
+
 - **Data fetching** — `useResource<T>(key, fetcher)` in `src/web/hooks/useResource.ts`:
   a ~60-line hook with in-memory cache, `refetch()`, stale-while-revalidate and an
   `invalidate(keyPrefix)` used after a successful bet mutation. Deliberately not a
@@ -1945,11 +2224,15 @@ DDL, and a mock would not test them.
   batch (assert no orphan `bet_legs`); `BETTING_CLOSED` at `lockAt`; kickoff moved
   earlier blocks a new bet **and blocks cancel/edit even though
   `earliest_kickoff_at` is still in the future**; `LINE_CHANGED`; duplicate game in
-  a parlay rejected by the DB; `MIXED_SEASON_PARLAY`; a January bowl charges the
-  2026 bankroll even after 2027 games exist; `PAYOUT_LIMIT_EXCEEDED`; cancel refunds
-  exactly once; **double-cancel returns 409, never a 500, and writes no second
-  refund**; the three `INSERT OR IGNORE` ledger behaviours from §4.2; edit is atomic
-  (force a failure in the place half and assert the old bet is still pending).
+  a parlay rejected by the DB; a January bowl is labelled season 2026 even after
+  2027 games exist; `PAYOUT_LIMIT_EXCEEDED`; cancel refunds exactly once;
+  **double-cancel returns 409, never a 500, and writes no second refund**; the
+  three `INSERT OR IGNORE` ledger behaviours from §4.2; edit is atomic (force a
+  failure in the place half and assert the old bet is still pending). **M5b adds**:
+  a cross-league parlay lands as `league='mixed'`; `bankrollId` defaults to main,
+  and someone else's is a 404 that writes nothing; the in-batch ownership guard
+  holds when the pre-flight read is bypassed; a teaser stores the teased line, the
+  book line and the card price; `expected` on a teaser is still the BOOK line.
 - `settle.spec.ts` — straight win/loss/push; parlay with a push leg re-priced;
   parlay with a loss + pushes loses; partially-final parlay stays pending and
   writes nothing; **running settle twice pays once** (assert ledger row count and
@@ -2029,29 +2312,26 @@ the runtime.
 
 ### 14.2 Bet placement / cancel / edit atomicity — the exact batches
 
-**Placement**, one `batch()` (`n` = leg count):
+**Placement**, one `batch()` (`n` = leg count). **THERE IS NO BANKROLL PRELUDE
+(M5b)** — statements 0a/0b are gone from both halves, because the balance is
+opened in the signup batch (§4.4) and named on the request:
 
 ```sql
--- 0a. bankroll (OR IGNORE is fine HERE: not the ledger, duplicate is the only
---     failure mode, and the id is deterministic)
-INSERT OR IGNORE INTO bankrolls (id, user_id, league, season, balance_cents, created_at, updated_at)
-  VALUES (:bankrollId, :userId, :league, :season, 0, :now, :now);
--- 0b. opening deposit. NOT `OR IGNORE` — see §4.2.
-INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
-SELECT :depositId, :bankrollId, 'deposit_initial', 'init', NULL, 100000, :now, 'season opening balance'
- WHERE NOT EXISTS (SELECT 1 FROM ledger
-                    WHERE bankroll_id = :bankrollId AND kind = 'deposit_initial' AND ref_id = 'init');
-
--- 1. the bet, guarded on ALL legs being bettable AND in the same (league, season)
-INSERT INTO bets (id, user_id, bankroll_id, league, season, ..., earliest_kickoff_at, status, ...)
-SELECT :betId, :userId, :bankrollId, :league, :season, ..., :earliestKickoff, 'pending', ...
+-- 1. the bet, guarded on ALL legs being bettable AND on the balance being the
+--    caller's own.
+INSERT INTO bets (id, user_id, bankroll_id, league, season, bet_type,
+                  teaser_points_tenths, ..., earliest_kickoff_at, status, ...)
+SELECT :betId, :userId, :bankrollId, :league, :season, :betType,
+       :teaserPointsTenths, ..., :earliestKickoff, 'pending', ...
  WHERE (SELECT COUNT(*) FROM games
          WHERE id IN (:g1,…,:gn)
-           AND league = :league AND season = :season       -- one bankroll, always
            AND status = 'scheduled'
-           AND kickoff_at > :nowPlusBuffer) = :n;
+           AND kickoff_at > :nowPlusBuffer) = :n
+   AND EXISTS (SELECT 1 FROM bankrolls
+                WHERE id = :bankrollId AND user_id = :userId);
 
--- 2..n+1. legs, each guarded on the bet existing
+-- 2..n+1. legs, each guarded on the bet existing. For a teaser, `line_tenths`
+--         is the TEASED line and `original_line_tenths` the book's (§5.8).
 INSERT INTO bet_legs (...) SELECT ... WHERE EXISTS (SELECT 1 FROM bets WHERE id = :betId);
 
 -- n+2. stake
@@ -2060,20 +2340,25 @@ SELECT :ledgerId, b.bankroll_id, 'bet_stake', b.id, b.id, -:stake, :now, :memo
   FROM bets b WHERE b.id = :betId;
 ```
 
-`:league` / `:season` come from `resolveBetScope()`, which reads them from the
-legs' own `games` rows before the batch; the `COUNT(*) = :n` guard then re-checks
-inside the batch that all `n` games really do share that scope, so a race cannot
-smuggle a leg from another season into a bankroll.
+**The ownership `EXISTS` REPLACES the `AND league = :league AND season = :season`
+conjuncts the COUNT subquery used to carry.** Those pinned a bet to the one
+bankroll its legs implied; legs imply no bankroll now, so the thing that must be
+re-checked inside the batch is that the named balance belongs to the caller.
+`resolveBankrollId()` reads it beforehand ONLY to produce a specific
+`404 BANKROLL_NOT_FOUND` — a read followed by an unguarded write is exactly the
+read-then-write the house rules forbid, so the guard lives in the `WHERE` too.
 
-Then `results[2].meta.changes === 1`? → `201`. If `0`, nothing else in the batch
+`:league` and `:season` are computed from the resolved legs in process
+(`betLeagueOf` / `betSeasonOf`) and are informational labels, not guards.
+
+Then `results[0].meta.changes === 1`? → `201`. If `0`, nothing else in the batch
 matched either (every subsequent statement is guarded on the bet row existing), so
 the batch is a clean no-op; we re-query the games to produce a _specific_ error
-(`BETTING_CLOSED` vs `GAME_NOT_BETTABLE` vs `GAME_NOT_FOUND` vs
-`MIXED_SEASON_PARLAY`). Insufficient funds surfaces as the
-`ledger_bi_sufficient_funds`
-`RAISE(ABORT)` (§4.2), which throws and rolls the batch back → `409
-INSUFFICIENT_FUNDS`. `PAYOUT_LIMIT_EXCEEDED` is checked in-process before the
-batch is built, and again by the `CHECK` on `potential_payout_cents`.
+(`BETTING_CLOSED` vs `GAME_NOT_BETTABLE` vs `GAME_NOT_FOUND`). Insufficient funds
+surfaces as the `ledger_bi_sufficient_funds` `RAISE(ABORT)` (§4.2), which throws
+and rolls the batch back → `409 INSUFFICIENT_FUNDS`. `PAYOUT_LIMIT_EXCEEDED` is
+checked in-process before the batch is built, and again by the `CHECK` on
+`potential_payout_cents`.
 
 Bound parameters: worst case 10 legs ≈ 10 (game ids) + ~14 (bet) + 10×15 (legs) —
 that **exceeds the 100-parameter-per-statement limit if written as one
@@ -2118,15 +2403,17 @@ distinguishes `BET_LOCKED` from `BET_NOT_PENDING` from `BET_NOT_FOUND`.
 
 **Edit (`PUT /api/bets/:id`)**, one `batch()`:
 
-Before anything is built, the handler loads the target bet by `(id, user_id)`.
-Not yours or not there → `404 BET_NOT_FOUND`, having written nothing. That read
-is also what pins the edit's scope: **an edit must keep the bet's original
-`(league, season)`** (see §11.4), so the replacement always lands on the bankroll
-the old bet is already charged to. Two consequences: the edit batch needs **no
-bankroll prelude** (statements 0a/0b of placement — the bankroll provably exists,
-and running the unguarded prelude anyway meant a 404 `PUT` still committed the
-caller's bankroll rows), and the `bankroll_id` is identical on both halves, so
-the refund and the new stake can never straddle two bankrolls.
+Before anything is built, the handler loads the target bet's `bankroll_id` by
+`(id, user_id)`. Not yours or not there → `404 BET_NOT_FOUND`, having written
+nothing. That read is also what pins the edit's scope: **an edit must keep the
+bet's BALANCE** (see §11.4), so `bankroll_id` is identical on both halves and the
+refund and the new stake can never straddle two balances. The replacement's
+league and season may differ freely — they no longer select anything.
+
+(Historically this section also warned that the edit batch must carry no bankroll
+prelude, because the prelude was unguarded and a 404 `PUT` on somebody else's bet
+still committed the CALLER's bankroll rows. There is no prelude in either half
+any more, so the hazard is gone rather than avoided.)
 
 ```sql
 -- 1. cancel half. TWO guards, and the second is NOT optional:
@@ -2144,7 +2431,6 @@ UPDATE bets
         AND (g.status <> 'scheduled' OR g.kickoff_at <= :nowPlusBuffer))
    AND (SELECT COUNT(*) FROM games
          WHERE id IN (:g1,…,:gn)
-           AND league = :league AND season = :season
            AND status = 'scheduled'
            AND kickoff_at > :nowPlusBuffer) = :n;
 
@@ -2156,9 +2442,9 @@ SELECT :refundId, b.bankroll_id, 'bet_refund', b.id, b.id, b.stake_cents, :now, 
    AND NOT EXISTS (SELECT 1 FROM ledger
                     WHERE bankroll_id = b.bankroll_id AND kind = 'bet_refund' AND ref_id = b.id);
 
--- 3..  the placement sequence above MINUS its 0a/0b bankroll prelude, with
---      replaces_bet_id = :oldId, and its statement 1 ADDITIONALLY guarded on the
---      cancel having applied:
+-- 3..  the placement sequence above, with replaces_bet_id = :oldId and
+--      bankroll_id = the OLD bet's, and its statement 1 ADDITIONALLY guarded on
+--      the cancel having applied:
 --        AND EXISTS (SELECT 1 FROM bets
 --                     WHERE id = :oldId AND status = 'cancelled'
 --                       AND replaced_by_bet_id = :newBetId)
@@ -2547,16 +2833,49 @@ Real edges that are easy to miss, now drawn explicitly:
 **Shared files — owner and protocol.** These are the ones that will actually
 collide, so each has a named rule rather than a hope:
 
-| File                                                               | Touched by                                                                                                                                                     | Protocol                                                                                                                       |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `src/shared/types.ts`, `api-types.ts`, `errors.ts`, `constants.ts` | everyone                                                                                                                                                       | **M2d writes them first and freezes at end of M2d.** Read-only thereafter; changes go through one PR that M2d's owner reviews. |
-| `src/worker/middleware.ts`                                         | **M1** (`contextMiddleware`, `errorHandler`) and **M3** (`sessionMiddleware`, `csrfMiddleware`, `requireAuth`, `requireAdmin`)                                 | M1 lands the file with all six exports stubbed; M3 fills only its four. Function-level ownership, no structural edits.         |
-| `src/worker/db.ts`                                                 | **M1** (`runBatch`, `queryOne`, `queryAll`, `newId`, `nowMs`, `changesAt`), **M5** (`isOverdraftError`, `isUniqueViolation`), **M7/M8** (`reconcileBankrolls`) | Same rule: M1 lands every export stubbed; later milestones fill their own functions only.                                      |
-| `src/worker/routes/admin.ts`                                       | **M4** (job triggers/history), **M3** (user admin, password reset), **M8** (reconcile)                                                                         | M4 lands the router skeleton with one commented placeholder per group; each milestone adds its own `app.get/post` block.       |
-| `src/worker/index.ts` (route table)                                | E, F, M5                                                                                                                                                       | Table is a flat list of `app.route('/api/x', xRoutes())` lines; each track adds exactly one. Conflicts are one line.           |
-| `src/worker/env.ts`                                                | all                                                                                                                                                            | Additive only; append your binding/var, never reorder.                                                                         |
-| `migrations/0001_init.sql`                                         | —                                                                                                                                                              | **Frozen after M1.** Any schema change is a new `0002_*.sql`; nobody edits `0001`.                                             |
-| `package.json`                                                     | M0                                                                                                                                                             | Only M0 adds dependencies. A track that needs one raises it.                                                                   |
+| File                                                               | Touched by                                                                                                                                                     | Protocol                                                                                                                                                       |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/shared/types.ts`, `api-types.ts`, `errors.ts`, `constants.ts` | everyone                                                                                                                                                       | **M2d writes them first and freezes at end of M2d.** Read-only thereafter; changes go through one PR that M2d's owner reviews. **M5b is that PR** — see below. |
+| `src/worker/middleware.ts`                                         | **M1** (`contextMiddleware`, `errorHandler`) and **M3** (`sessionMiddleware`, `csrfMiddleware`, `requireAuth`, `requireAdmin`)                                 | M1 lands the file with all six exports stubbed; M3 fills only its four. Function-level ownership, no structural edits.                                         |
+| `src/worker/db.ts`                                                 | **M1** (`runBatch`, `queryOne`, `queryAll`, `newId`, `nowMs`, `changesAt`), **M5** (`isOverdraftError`, `isUniqueViolation`), **M7/M8** (`reconcileBankrolls`) | Same rule: M1 lands every export stubbed; later milestones fill their own functions only.                                                                      |
+| `src/worker/routes/admin.ts`                                       | **M4** (job triggers/history), **M3** (user admin, password reset), **M8** (reconcile)                                                                         | M4 lands the router skeleton with one commented placeholder per group; each milestone adds its own `app.get/post` block.                                       |
+| `src/worker/index.ts` (route table)                                | E, F, M5                                                                                                                                                       | Table is a flat list of `app.route('/api/x', xRoutes())` lines; each track adds exactly one. Conflicts are one line.                                           |
+| `src/worker/env.ts`                                                | all                                                                                                                                                            | Additive only; append your binding/var, never reorder.                                                                                                         |
+| `migrations/0001_init.sql`                                         | —                                                                                                                                                              | **Editable until M8's first remote deploy**, then frozen for good. See below.                                                                                  |
+| `package.json`                                                     | M0                                                                                                                                                             | Only M0 adds dependencies. A track that needs one raises it.                                                                                                   |
+
+### 16.1 M5b — the one sanctioned contract change
+
+`types.ts`, `api-types.ts`, `errors.ts` and `constants.ts` were frozen at the end
+of M2d, and M5b is the single PR that re-opens them, by the owner's decision and
+after M5/M7 were already built. Recorded here so "the contract is frozen" keeps
+meaning something afterwards:
+
+- **`types.ts`** — `BetType` gains `'teaser'`; `BetLeague = League | 'mixed'` is
+  ADDED rather than `League` being widened, so every `Record<League, …>` label
+  table and every board query still means "one real league"; `Bankroll` becomes
+  `{id, userId, name, kind, balanceCents}`.
+- **`constants.ts`** — `TEASER_POINTS_TENTHS`, `TEASER_PAYOUTS`, `MIN_TEASER_LEGS`.
+- **`api-types.ts`** — `PlaceBetRequest` gains `teaserPoints?` and `bankrollId?`
+  and widens `league`; `BetView` gains `bankrollId` / `teaserPoints` and widens
+  `league`; `BetLegView` gains `league` and `originalLineTenths`;
+  `BankrollResponse` is REPLACED by `BankrollView` + `BankrollsResponse`;
+  `ConfigResponse` gains `teaserPoints` and `teaserPayouts`; `AdminAdjustRequest`
+  is new. `LeaderboardResponse` LOSES `season` (§19 Q5 — a field that could only
+  ever be `null` is worse than none) and its `rows` are ranked by `equityCents`
+  rather than `balanceCents` (§19 Q2); `LeaderboardRow` and `LedgerResponse` are
+  otherwise unchanged.
+- **`errors.ts`** — `BANKROLL_NOT_FOUND` (404) and `TEASER_INVALID` (400) added;
+  `MIXED_LEAGUE_PARLAY` / `MIXED_SEASON_PARLAY` kept in the enum, marked
+  `@deprecated`, and never thrown. **A code is never repurposed or removed**, so a
+  deployed client's copy of the vocabulary stays valid.
+
+**`migrations/0001_init.sql` is edited IN PLACE for the same reason.** Nothing is
+deployed yet, so a cross-cutting schema change is applied to the initial file
+rather than shipped as a `0002` that immediately rebuilds tables nobody has ever
+populated. From M8's first `wrangler d1 migrations apply --remote` onward the file
+is frozen for good and every change is a new numbered migration. The header of
+the file says so too.
 
 ## 17. Risks and mitigations
 
@@ -2662,55 +2981,62 @@ by a friend who cannot find a game to bet.
 
 ---
 
-## 19. Open questions for Alex
+## 19. Decisions (answered 2026-09-14)
 
-1. **Workers Paid ($5/mo) — confirmed as LAST resort only?** You have said $0/month
-   is the target and $5 is a last resort; the plan is built that way. The 10 ms free
-   CPU limit is what forces the split-KDF design (§10.1), and workerd's hard 100k
-   PBKDF2 cap independently forces it too. R1's fallback ladder now has four free
-   rungs before Workers Paid. Confirm you want me to exhaust all four (the last
-   being a CPU-splitting internal self-`fetch`, which adds real complexity) before
-   escalating. **Default if you say nothing: exhaust all four, escalate only then.**
-2. **Leaderboard ranking metric** — §11.5 ranks by realized `balanceCents` with equity
-   shown alongside. Do you want equity (balance + open stakes) to be the ranked column
-   instead? It changes who is "winning" mid-weekend.
-3. **Mixed-league parlays** — v1 rejects a parlay with NFL and NCAAF legs, because a
-   bet belongs to exactly one `(league, season)` bankroll. Is that acceptable, or do
-   you want a combined bankroll? (The combined option is a bigger change: it makes
-   `league` a property of the leg, not the bet.)
-4. **ROI treatment of pushes** — §11.5 excludes pushes and voids from both sides of
-   the ROI fraction (standard). Confirm.
-5. **Season definition for CFB bowls / NFL playoffs** — ESPN puts January bowls and
-   playoff games in the _previous_ season year with `seasontype=3`. v1 keeps them on
-   that season's bankroll, so the 2026 bankroll stays open until mid-January 2027.
-   This is now load-bearing in two places: ingest targets are keyed by ET **date**
-   rather than by week specifically so postseason games are reachable (§8.2), and
-   `bets.season` is read from the legs' own game rows rather than from a wall clock
-   so a January bowl cannot be charged to the 2027 bankroll (§4.4). Confirm that is
-   what you want; the alternative is closing the bankroll at the end of the regular
-   season, which would need an explicit cutoff rule.
-6. **Invite code**: one shared code for the whole friend group, or do you want
-   single-use codes? v1 is one shared secret.
-7. **Bet limits** — any cap on a single bet's stake, or is "up to your whole bankroll"
-   the intent? v1 allows all-in.
-8. **`docs/samples/*.json` in the repo** — 1.5 MB of fixtures committed. Fine, or
-   should they be trimmed to ~10 events each? (Trimming makes tests faster but
-   weakens the "parses the real thing" guarantee. v1 keeps them; the `worker` test
-   project uses small synthesised slates instead, so the big files only cost the
-   fast node project.)
-9. **Max payout cap** — `MAX_PAYOUT_CENTS = $1,000,000`. It exists mainly so money
-   columns provably cannot overflow into floats (§5.2b), and it is unreachable at
-   realistic prices (a 10-leg −110 parlay at a $1000 stake returns ~$643k). Happy
-   with $1M, or would you rather it were lower so a lucky 10-leg parlay does not
-   end the season's leaderboard on day one?
-10. **`display_clock` in the UI** — keeping a live game's clock current is still the
-    single biggest remaining D1 write stream (§8.6), but the question is now much
-    less pressing than it was when it was first asked. The M4 A/B split took a
-    measured CFB Saturday from **33,196** rows to **2,979** (5% of the daily cap,
-    all streams in), and a clock change now costs exactly 1 row rather than 4.
-    Dropping `display_clock` from the compare tuple would save roughly 1,200 rows
-    a Saturday — worth having if we ever run hot, not worth a worse UI now. So:
-    **no decision needed from you today**; the answer is only wanted if
+These were the ten open questions the plan carried. All are now ANSWERED, and
+each is stated with the decision first so nothing below reads as still open.
+Where an answer reversed an earlier default, the reversal is called out.
+
+1. **Workers Paid ($5/mo) is a LAST RESORT.** Free tier first: exhaust all four
+   free rungs of R1's fallback ladder — the last being a CPU-splitting internal
+   self-`fetch` — before escalating. The 10 ms free CPU limit is what forces the
+   split-KDF design (§10.1) and the plan is built around it; nothing in v1
+   assumes paid capacity.
+2. **The leaderboard ranks by EQUITY** (`balanceCents + pendingStakeCents`), then
+   ROI, then username. **REVERSES the original choice of realized balance.** "If
+   I have $2,000 but $1,500 is tied up in a bet, that should be ahead of someone
+   with $600." A stake in flight neither helps nor hurts your position until it
+   settles. Full reasoning, including why the old "equity lets you lead on money
+   in flight" objection does not hold, is in §11.5.
+3. **No per-league bankrolls — ONE account balance.** Opened at signup, never
+   rolled over, shared across NFL and CFB. `league` is therefore a property of
+   the LEG, cross-league parlays and teasers are legal, and a bet spanning both
+   is labelled `'mixed'`. §4.4, §11.4. **This reaches the UI as ONE cross-league
+   bet slip** — "tease Michigan and the Steelers together" — with the league tabs
+   moving only the board. §12.2. (M5b.)
+4. **A push is a refund.** A pushed straight bet is refunded as if it never
+   happened and is excluded from record and ROI on both sides of the fraction; a
+   parlay or teaser drops the pushed leg and is re-priced from the survivors;
+   all-push is refunded at even money. §7.3.
+5. **There are NO SEASONS in the product.** Removed from every public filter —
+   `GET /api/bankroll`, `GET /api/bets`, `GET /api/leaderboard` — and from the
+   UI, which filters by league only (All / NFL / NCAAF). `bets.season` and
+   `games.season` survive INTERNALLY for ingestion (§8.2) and the board's `week`
+   default, and are not exposed. Balances never reset, so a per-season slice of
+   one would describe a boundary that does not exist. This also settles what used
+   to be a question about CFB bowls and NFL playoffs: ESPN labels a January bowl
+   with the PREVIOUS season year and so do we, but since nothing hangs off that
+   label any more it is bookkeeping rather than a money decision. Ingest targets
+   are still keyed by ET **date** rather than by week, which is what makes the
+   postseason reachable at all (§8.2).
+6. **One shared invite code** for the whole friend group. Not single-use codes.
+7. **All-in is allowed.** No cap on a single bet's stake beyond the balance
+   itself — which already excludes money riding on open bets — and
+   `MAX_PAYOUT_CENTS`, which limits the PAYOUT rather than the stake. The slip's
+   MAX chip is the full available balance and nothing may cap it lower.
+8. **Keep `docs/samples/*.json` committed** (~1.5 MB). Trimming them would make
+   the fast node project marginally faster at the cost of the "parses the real
+   thing" guarantee. The `worker` project already uses small synthesised slates,
+   so the big files only cost the project that can afford them.
+9. **`MAX_PAYOUT_CENTS = $1,000,000` stands.** It exists mainly so money columns
+   provably cannot overflow into floats (§5.2b) and is unreachable at realistic
+   prices — a 10-leg −110 parlay at a $1,000 stake returns ~$643k, and the worst
+   teaser on the card returns $26k (§5.8).
+10. **Keep `display_clock` live.** It is still the single biggest remaining D1
+    write stream (§8.6), but the M4 A/B split took a measured CFB Saturday from
+    **33,196** rows to **2,979** (5% of the daily cap, all streams in), and a
+    clock change now costs 1 row rather than 4. Dropping it from the compare
+    tuple would save roughly 1,200 rows a Saturday — worth revisiting only if
     `GET /api/admin/jobs`'s `dayRowsWritten` starts approaching 50,000.
 
 ---

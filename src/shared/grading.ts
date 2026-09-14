@@ -38,6 +38,7 @@
  *    `effectiveAmericanPrice()` below and that trap is handled for you.
  */
 
+import { MIN_TEASER_LEGS } from './constants.js';
 import { AppError } from './errors.js';
 import {
   EVEN_MONEY_UNIT,
@@ -46,6 +47,7 @@ import {
   payoutCents,
   priceFromLegs,
   priceToAmerican,
+  teaserPrice,
 } from './odds.js';
 import type {
   AmericanPrice,
@@ -69,9 +71,26 @@ export interface GradedLeg {
   /**
    * Derived from the leg's snapshot `americanPrice` via `americanToPrice()`.
    * Nothing persists a rational; see PLAN.md §5.2.
+   *
+   * MEANINGLESS FOR A TEASER LEG, which stores the placeholder +100: a teaser is
+   * priced once, at the bet level, from `TEASER_PAYOUTS`. Nothing in the teaser
+   * path reads this field; it is still populated so `GradedLeg` has one shape.
    */
   readonly price: Price;
 }
+
+/**
+ * How a bet's price is derived from its legs. Passed in by the caller because it
+ * is a property of the BET ROW (`bets.bet_type` / `bets.teaser_points_tenths`),
+ * not of the leg snapshots — the legs of a teaser and of a parlay are
+ * indistinguishable once the teased line is stored, which is deliberate: it is
+ * what lets `gradeLeg` stay completely unaware that teasers exist.
+ */
+export type BetPricing =
+  { readonly kind: 'parlay' } | { readonly kind: 'teaser'; readonly pointsTenths: number };
+
+/** The default: straights and parlays alike are the product of their legs. */
+export const PARLAY_PRICING: BetPricing = Object.freeze({ kind: 'parlay' as const });
 
 export interface BetOutcome {
   /** `pending` means NOTHING is written — not even partial leg results. */
@@ -82,7 +101,8 @@ export interface BetOutcome {
   readonly legs: readonly GradedLeg[];
   /**
    * The effective price after pushed/voided legs are removed, i.e. what the bet
-   * was actually PAID at. Per status:
+   * was actually PAID at. Per status (for a TEASER, read "the card's row for the
+   * surviving leg count" wherever this says "the product of the surviving legs"):
    *   `won`     the product of the surviving (winning) legs only.
    *   `lost`    the full PLACEMENT price — §7.4: "a lost bet keeps its placement
    *             price: there are no surviving legs to re-price from, and the
@@ -245,21 +265,41 @@ function pendingReasonFor(
  * Order matters and is tested:
  *   1. ANY leg still 'pending'  -> the bet stays pending, nothing is written.
  *   2. ANY leg 'loss'           -> 'lost', payout 0. A loss beats every push.
- *   3. No surviving 'win' legs  -> 'void' if all legs voided, else 'push';
- *                                  payout = stake.
- *   4. Otherwise                -> 'won', payout = floor(stake * Π winningPrices).
+ *   3. Too few surviving 'win' legs -> 'void' if all legs voided, else 'push';
+ *                                  payout = stake. The threshold is 1 for a
+ *                                  parlay and MIN_TEASER_LEGS (2) for a teaser.
+ *   4. Otherwise                -> 'won', payout = floor(stake * survivorPrice).
  *
- * @throws AppError('VALIDATION') for a bet with no legs, or a negative /
- *   non-integer stake (the latter from `payoutCents`).
+ * ── TEASERS (`pricing.kind === 'teaser'`, PLAN.md §5.8/§7) ───────────────────
+ * The grades themselves are identical — `gradeLeg` reads the TEASED line out of
+ * the snapshot and has no idea a tease happened. Only the PRICE differs, and
+ * only in three places:
+ *   * a loss keeps the placement price, which is `TEASER_PAYOUTS[pts][legCount]`
+ *     rather than a product;
+ *   * pushed/voided legs reduce the bet to the card's row for the SURVIVING leg
+ *     count — a 4-leg 6-point teaser with one push pays as a 3-leg one;
+ *   * a reduction below two survivors is NO ACTION: there is no such thing as a
+ *     one-team teaser, so the stake comes back at even money. That is the
+ *     dominant industry rule (Bovada, covers.com, FanDuel-derived sources), and
+ *     it is why step 3's threshold is a parameter instead of a hard `=== 0`.
+ *
+ * @param pricing Defaults to `PARLAY_PRICING`, so every existing caller and the
+ *   entire straight/parlay contract are unchanged by teasers existing.
+ * @throws AppError('VALIDATION') for a bet with no legs, a negative /
+ *   non-integer stake (the latter from `payoutCents`), or a teaser tier that is
+ *   not on the card (from `teaserPrice`).
  * @throws AppError('PAYOUT_LIMIT_EXCEEDED') if the payout would breach the cap.
- *   §7.4 proves this is unreachable for a legally placed bet — dropping pushed
- *   legs strictly shrinks the product — so it is left to propagate rather than
- *   be clamped, which would silently underpay.
+ *   §7.4 proves this is unreachable for a legally placed parlay — dropping
+ *   pushed legs strictly shrinks the product — and the teaser card's largest
+ *   payout at the full bankroll is 2,600,000¢ against a 100,000,000¢ cap
+ *   (verified). It is left to propagate rather than be clamped, which would
+ *   silently underpay.
  */
 export function gradeBet(
   stakeCents: Cents,
   legs: readonly BetLegSnapshot[],
   games: ReadonlyMap<string, GameResult>,
+  pricing: BetPricing = PARLAY_PRICING,
 ): BetOutcome {
   if (legs.length === 0) {
     throw new AppError('VALIDATION', 'A bet must have at least one leg to grade.');
@@ -292,14 +332,16 @@ export function gradeBet(
       payoutCents: 0,
       legs: graded,
       // §7.4: a lost bet keeps the price it was offered at.
-      effectivePrice: priceFromLegs(legs.map((leg) => leg.americanPrice)),
+      effectivePrice: priceForSurvivors(pricing, legs, legs.length),
     };
   }
 
-  // 3. No survivors: the stake comes back at even money. `void` only when EVERY
-  //    leg voided, so one push among voids still reads as a push (§7.3).
+  // 3. Too few survivors: the stake comes back at even money. `void` only when
+  //    EVERY leg voided, so one push among voids still reads as a push (§7.3).
+  //    A parlay survives on one leg; a teaser needs two (§5.8's no-action rule).
   const survivors = legs.filter((_leg, i) => graded[i]?.grade === 'win');
-  if (survivors.length === 0) {
+  const minSurvivors = pricing.kind === 'teaser' ? MIN_TEASER_LEGS : 1;
+  if (survivors.length < minSurvivors) {
     const status: BetStatus = graded.every((l) => l.grade === 'void') ? 'void' : 'push';
     return {
       status,
@@ -311,8 +353,9 @@ export function gradeBet(
     };
   }
 
-  // 4. Re-price from the surviving legs' stored American integers (§7.4).
-  const effectivePrice = priceFromLegs(survivors.map((leg) => leg.americanPrice));
+  // 4. Re-price: the surviving legs' product (§7.4), or the teaser card's row
+  //    for however many legs survived.
+  const effectivePrice = priceForSurvivors(pricing, survivors, survivors.length);
   return {
     status: 'won',
     payoutCents: payoutCents(stakeCents, effectivePrice),
@@ -322,11 +365,35 @@ export function gradeBet(
 }
 
 /**
+ * The price a set of surviving legs is paid at.
+ *
+ * A parlay multiplies the legs' own snapshot prices; a teaser ignores them
+ * entirely and reads one cell of the card. `count` is passed separately from
+ * `survivors` so the `lost` branch can ask for the FULL leg count's price (the
+ * one the bet was offered at) while handing over the full leg array.
+ */
+function priceForSurvivors(
+  pricing: BetPricing,
+  survivors: readonly BetLegSnapshot[],
+  count: number,
+): Price {
+  if (pricing.kind === 'teaser') {
+    return americanToPrice(teaserPrice(pricing.pointsTenths, count));
+  }
+  return priceFromLegs(survivors.map((leg) => leg.americanPrice));
+}
+
+/**
  * The value §7.4 binds as `:effectiveAmerican` in the settlement UPDATE.
  *
  * This exists so no caller has to remember that `priceToAmerican(1/1)` THROWS:
  * even money has no American equivalent (§5.5), and a push/void outcome's
  * effective price is exactly 1/1. Those two statuses return the literal 100.
+ *
+ * A TEASER needs nothing special here. Every value on the card round-trips
+ * exactly through `americanToPrice` → `priceToAmerican` (verified, 27/27 cells),
+ * so a won or lost teaser renders the same integer the card holds, and a reduced
+ * teaser renders its reduced row.
  *
  * @throws AppError('VALIDATION') for a `pending` (or otherwise unsettled) bet —
  *   nothing is written, so there is nothing to price.

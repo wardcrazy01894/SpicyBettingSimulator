@@ -6,6 +6,7 @@
 
 import { formatLineTenths } from '../../shared/validate.js';
 import type {
+  BetLeague,
   BetStatus,
   BetType,
   GameStatus,
@@ -20,6 +21,29 @@ import type {
 export const LEAGUE_LABEL: Readonly<Record<League, string>> = {
   nfl: 'NFL',
   ncaaf: 'NCAAF',
+};
+
+/**
+ * A BET's league, which may be `'mixed'` — a cross-league parlay or teaser
+ * (M5b). Separate from `LEAGUE_LABEL` because a GAME is never mixed, and a
+ * `Record<League, …>` that quietly accepted a third key would stop failing the
+ * build when a real fourth league appeared.
+ */
+export const BET_LEAGUE_LABEL: Readonly<Record<BetLeague, string>> = {
+  nfl: 'NFL',
+  ncaaf: 'NCAAF',
+  mixed: 'NFL + NCAAF',
+};
+
+/**
+ * The SHORT badge shown on each leg of a cross-league slip, where the label sits
+ * beside a pick and has to stay out of the way. "CFB" rather than "NCAAF"
+ * because it is three characters and is what the product owner calls it; the
+ * long form stays for headings, where the room exists.
+ */
+export const LEAGUE_BADGE: Readonly<Record<League, string>> = {
+  nfl: 'NFL',
+  ncaaf: 'CFB',
 };
 
 export const MARKET_LABEL: Readonly<Record<Market, string>> = {
@@ -38,7 +62,19 @@ export const SIDE_LABEL: Readonly<Record<Side, string>> = {
 export const BET_TYPE_LABEL: Readonly<Record<BetType, string>> = {
   straight: 'Straight',
   parlay: 'Parlay',
+  teaser: 'Teaser',
 };
+
+/**
+ * A teaser tier in TENTHS rendered as points: 60 → "6-pt", 65 → "6.5-pt".
+ *
+ * Reuses `formatLineTenths`, which is the only thing in the app allowed to turn
+ * tenths into a decimal string — a second implementation here is exactly how
+ * "6.5" starts rendering as "6".
+ */
+export function teaserPointsLabel(pointsTenths: number): string {
+  return `${formatLineTenths(pointsTenths, false)}-pt`;
+}
 
 export const BET_STATUS_LABEL: Readonly<Record<BetStatus, string>> = {
   pending: 'Open',

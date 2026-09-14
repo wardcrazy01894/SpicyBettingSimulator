@@ -15,6 +15,13 @@ export interface MarketButtonProps {
   readonly selected: boolean;
   /** Screen-reader text, e.g. "Miami Dolphins spread -3.5 at -110". */
   readonly ariaLabel: string;
+  /**
+   * Why the button is disabled, when the reason is worth saying out loud — e.g.
+   * "moneylines cannot be teased". Rendered as the native `title` AND appended
+   * to the accessible name, because a disabled button gets no tooltip on touch
+   * and a screen reader would otherwise just find an unexplained dead control.
+   */
+  readonly disabledReason?: string;
   readonly onToggle: () => void;
 }
 
@@ -24,15 +31,19 @@ export interface MarketButtonProps {
  * vertical rhythm.
  */
 export function MarketButton(props: MarketButtonProps): ReactElement {
-  const { market, lineTenths, price, disabled, selected, ariaLabel, onToggle } = props;
+  const { market, lineTenths, price, disabled, selected, ariaLabel, disabledReason, onToggle } =
+    props;
   const unavailable = price === null;
+  const off = disabled || unavailable;
+  const reason = off && disabledReason !== undefined ? disabledReason : undefined;
   return (
     <button
       type="button"
       className="market-btn"
       aria-pressed={selected}
-      aria-label={ariaLabel}
-      disabled={disabled || unavailable}
+      aria-label={reason === undefined ? ariaLabel : `${ariaLabel} — ${reason}`}
+      {...(reason === undefined ? {} : { title: reason })}
+      disabled={off}
       onClick={onToggle}
     >
       <span className="market-line">
