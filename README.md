@@ -7,22 +7,25 @@ want to find out who actually knows football, without anyone's rent riding on
 it.
 
 You sign up, get a fake **$1,000**, and bet it on this week's NFL and college
-games at the same prices the books are posting. Games go final, bets grade
-themselves, the money moves, and a leaderboard settles the argument. Bust the
-bankroll and it stays busted, so bet like it's real.
+games at the prices the books are posting. Games go final, bets grade
+themselves, the money moves, and a leaderboard settles the argument. There is
+no top-up button, so bet like it's real.
 
 ---
 
 ## What's on the board
 
-- **Every NFL game and every FBS college game**, refreshed every 15 minutes
-  from ESPN's scoreboard with DraftKings' prices.
+- **Every NFL game and every FBS college game**, pulled from ESPN's scoreboard
+  with DraftKings' prices (or the top book ESPN carries when DK isn't there).
+  The board refreshes on a 15-minute cycle, games nearest kickoff first; a game
+  that's still days away is re-checked every few hours.
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 10 legs, and the legs
   can mix Saturday and Sunday.
-- **Teasers** from 3 to 14 points (plus 6.5). Every spread or total in the bet
-  moves your way by that much, and you pay for it in the price. A push still
-  reduces the bet instead of killing it, at every tier.
+- **Teasers** from 3 to 14 points (plus 6.5). Every leg moves your way by that
+  much, and you pay for it in the price. Spreads and totals only, since a
+  moneyline has no line to move. A push still reduces the bet instead of
+  killing it, at every tier.
 - A **Top 25 / conference filter** on the college tab, because 80 games is a
   lot of games.
 
@@ -41,10 +44,13 @@ bankroll and it stays busted, so bet like it's real.
 6. **Watch it grade.** Settlement runs a few minutes after each refresh. Your
    account page has the full ledger, every cent of it, and the leaderboard
    ranks everyone by **equity**: balance plus whatever is still riding.
-7. **Something look wrong?** "Report a bug" is in the header on every page. It
-   files a GitHub issue here with your username, the page you were on, the app
-   version, your browser and a log of recent errors and requests attached. The
-   form shows you exactly what it's sending first.
+7. **Something look wrong?** "Report a bug" is in the header on every page
+   once you're signed in. It files an issue in
+   [this repo](https://github.com/wardcrazy01894/SpicyBettingSimulator/issues)
+   with your username, the page you were on, the app version, your browser and
+   a log of recent errors and requests attached. The form shows you exactly
+   what it's sending first. (The button only appears when the admin has set
+   the `GITHUB_TOKEN` secret; it is set on the live site.)
 
 ## Under the hood
 
@@ -59,18 +65,22 @@ record, [`CLAUDE.md`](./CLAUDE.md) holds the conventions, and
 
 ## Run it locally
 
-Needs Node 24+ and a free Cloudflare account.
+Needs Node 24+. Everything runs against a local, in-process copy of D1, so
+you don't need a Cloudflare account until you deploy your own copy.
 
 ```bash
 git clone git@github-wardcrazy:wardcrazy01894/SpicyBettingSimulator.git
 cd SpicyBettingSimulator
 npm install
 
-npx wrangler d1 create spicybetting   # paste the id into wrangler.jsonc
-npm run db:migrate:local              # apply the schema
+npm run db:migrate:local              # apply the schema to the local D1
 cp .dev.vars.example .dev.vars        # local secrets + the fixture-server override
 npm run dev                           # fixture ESPN server + Worker + Vite
 ```
+
+(Deploying your own copy also needs `npx wrangler d1 create spicybetting` and
+its id in `wrangler.jsonc`; don't commit that change, the committed id is the
+live database.)
 
 Open <http://localhost:5173>. Vite proxies `/api` to `wrangler dev` on `:8787`,
 and `ESPN_BASE_URL` points at a local fixture server replaying the captured
