@@ -2598,8 +2598,9 @@ This is the tree as SHIPPED. A few named boxes in the original sketch turned out
 not to want their own file — `<DayGroup>`, `<WeekendGroup>`, `<BankrollSummary>`
 are a `map` over a pure grouping helper in `lib/grouping.ts`, and the three
 tab strips (`<BetFilterTabs>`, `<ScopeTabs>`, `<SlipModeToggle>`) collapsed into
-ONE generic `<Segmented<T>>`, which is why the slip's teaser tier picker is also
-a `<Segmented>`.
+ONE generic `<Segmented<T>>`. The slip's teaser tier picker is the one exception:
+a native `<select>`, because thirteen tiers do not fit a segmented row, with
+each option showing the card price for the slip's current leg count.
 
 ```
 main.tsx
