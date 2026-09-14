@@ -137,8 +137,10 @@ export function adminRoutes(): Hono<AppContext> {
   // The HTTP status answers "did the trigger work", which it did: the lease was
   // taken, the run was recorded, and the failure is now visible in
   // GET /api/admin/jobs exactly as a failed CRON run would be. Mapping it to 500
-  // would throw away the run id and the stats. `settle` does this today until M6
-  // lands. The only non-200 here is 409 JOB_LOCKED (the lease is held).
+  // would throw away the run id and the stats — which, for `settle`, ARE the
+  // answer: `SettleRunError` carries the full per-bet stats and `withJobRun`
+  // records them alongside the message (PLAN.md §7.4 / §9.2). The only non-200
+  // here is 409 JOB_LOCKED (the lease is held).
   app.post('/jobs/:job', async (c) => {
     const name = c.req.param('job');
     if (!isJobName(name)) {

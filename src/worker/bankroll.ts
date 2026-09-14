@@ -10,9 +10,14 @@
  * silently wrote two rows was always a wart, and with no season boundary there
  * is nothing left for it to do.
  *
- * `ensureMainBalance` survives for ONE caller: the admin repair route, for a user
- * whose signup predates this design (there are none) or whose batch was somehow
- * rolled back after the fact. It is idempotent by construction.
+ * `ensureMainBalance` is a TESTED REPAIR PRIMITIVE WITH NO ENDPOINT YET. It is
+ * idempotent by construction and `tests/worker/schema.spec.ts` pins that against
+ * an already-funded row, so the day an account is found without a balance the
+ * fix is a route that calls it rather than an untested `INSERT` written under
+ * pressure. It is deliberately not wired to one today: signup opens the balance
+ * in its own batch, no account can reach production without one, and an admin
+ * route nobody can demonstrate a use for is a surface, not a safety net. If you
+ * add `POST /api/admin/users/:id/repair-balance`, document it in PLAN.md §11.6.
  *
  * `balance_cents` is ONLY ever written by the ledger trigger. Nothing in this
  * file (or anywhere else) issues `UPDATE bankrolls SET balance_cents = ...`.
@@ -87,7 +92,9 @@ export function mainBalanceStatements(
  * Idempotent: against a user who already has one, both statements match zero
  * rows and the existing id is returned.
  *
- * Nothing on the request path calls this. Balances are created at signup.
+ * NOTHING CALLS THIS IN PRODUCTION — there is no endpoint. It is kept, and
+ * covered by `tests/worker/schema.spec.ts`, as a ready repair primitive; see the
+ * module docblock for why it is not routed.
  */
 export async function ensureMainBalance(env: Env, userId: string, now: EpochMs): Promise<string> {
   const existing = await mainBalanceId(env, userId);
@@ -234,28 +241,6 @@ export function statsFilterClauses(filter: StatsFilter, values: unknown[]): stri
   return ` AND league = ?${String(values.length)}`;
 }
 
-/** The per-status aggregate for one balance (or every balance of one user). */
-export async function settledStatusRows(
-  env: Env,
-  where: 'bankroll' | 'user',
-  key: string,
-  filter: StatsFilter = {},
-): Promise<readonly SettledStatusRow[]> {
-  const column = where === 'bankroll' ? 'bankroll_id' : 'user_id';
-  const values: unknown[] = [key];
-  const extra = statsFilterClauses(filter, values);
-  return queryAll<SettledStatusRow>(
-    env.DB.prepare(
-      `SELECT status AS status, COUNT(*) AS n,
-              COALESCE(SUM(stake_cents), 0) AS stake,
-              COALESCE(SUM(payout_cents), 0) AS payout
-         FROM bets
-        WHERE ${column} = ?1 AND status IN ('won','lost','push','void')${extra}
-        GROUP BY status`,
-    ).bind(...values),
-  );
-}
-
 interface BalanceRow {
   id: string;
   name: string;
@@ -335,17 +320,6 @@ export async function listBalances(
       };
     }),
   };
-}
-
-/** Sum of stakes on `status='pending'` bets — the "exposure" column. */
-export async function pendingStakeCents(env: Env, id: string): Promise<Cents> {
-  const row = await queryOne<{ total: number }>(
-    env.DB.prepare(
-      `SELECT COALESCE(SUM(stake_cents), 0) AS total
-         FROM bets WHERE bankroll_id = ?1 AND status = 'pending'`,
-    ).bind(id),
-  );
-  return row?.total ?? 0;
 }
 
 /**

@@ -160,6 +160,28 @@ section explains the _why_.
   (`crypto.randomUUID()`). Game ids are `"<league>:<providerEventId>"` e.g.
   `"nfl:401872656"` — provider-scoped so an id collision between leagues or a future
   provider is impossible.
+  **CONSTANTS OF RECORD.** These live in `src/shared/constants.ts`, which is the
+  source of truth; the values are restated here because the rest of this document
+  reasons about them, and `tests/unit/docs.spec.ts` fails if the two ever disagree.
+  Change the constant and this table in the same PR.
+
+| Constant                 | Value           | Meaning                                                                                   |
+| ------------------------ | --------------- | ----------------------------------------------------------------------------------------- |
+| `INITIAL_BANKROLL_CENTS` | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                             |
+| `MIN_STAKE_CENTS`        | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                         |
+| `MAX_PAYOUT_CENTS`       | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                      |
+| `BET_CUTOFF_BUFFER_MS`   | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                    |
+| `LINE_STALE_MS`          | `10_800_000`    | 3 h since `game_lines.seen_at` → not bettable (§8.5)                                      |
+| `SESSION_TTL_MS`         | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                      |
+| `MAX_SETTLE_ATTEMPTS`    | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                           |
+| `VOID_AFTER_MS`          | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                   |
+| `MAX_PARLAY_LEGS`        | `10`            | also `CHECK(leg_count BETWEEN 1 AND 10)` on `bets`; the teaser card stops here too (§5.8) |
+| `MIN_TEASER_LEGS`        | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                             |
+
+`TEASER_POINTS_TENTHS = [60, 65, 70]` — the 6 / 6.5 / 7-point tiers, in TENTHS,
+matching every other line quantity in the system (§5.8); also
+`CHECK (teaser_points_tenths IN (60,65,70))` on `bets`.
+
 - `bankrolls.id` is an ordinary uuid. It **used** to be the deterministic
   `"<userId>:<league>:<season>"`, which is what made lazy per-season creation a
   plain `INSERT OR IGNORE`; M5b creates the one balance in the signup batch
@@ -247,9 +269,13 @@ with `UNIQUE(bankroll_id, kind, ref_id)`.
 `kind ∈ {deposit_initial, bet_stake, bet_payout, bet_refund, admin_adjust}`.
 `ref_id` is the **idempotency key**: the bet id for bet-related kinds, the literal
 `'init'` for the opening deposit, a caller-supplied UUID for admin adjustments.
-Four triggers (§4.2): a `BEFORE INSERT` value guard that `INSERT OR IGNORE`
-cannot suppress, an `AFTER INSERT` that applies the amount to
-`bankrolls.balance_cents`, and `BEFORE UPDATE` / `BEFORE DELETE` blocks.
+Five triggers (§4.2): TWO `BEFORE INSERT` value guards that `INSERT OR IGNORE`
+cannot suppress (`ledger_bi_bankroll_exists`, `ledger_bi_sufficient_funds`), an
+`AFTER INSERT` (`ledger_ai_apply`) that applies the amount to
+`bankrolls.balance_cents`, and `BEFORE UPDATE` / `BEFORE DELETE` blocks
+(`ledger_bu_block`, `ledger_bd_block`). Two more triggers sit on `bankrolls`
+itself and make "the `AFTER INSERT` is the only writer" enforceable rather than
+merely intended — §4.2 again.
 
 **`bets`** — `id, user_id, bankroll_id, league, season, bet_type,
 teaser_points_tenths, leg_count, stake_cents, american_price,
@@ -364,23 +390,25 @@ value so a later optimisation needs no migration; nothing constructs one in v1.
 
 ### 4.1 Invariants (each enforced by the database, not by application code)
 
-| Invariant                                                          | Enforcement                                                                                                                 |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| Balance is never negative                                          | `BEFORE INSERT ON ledger` trigger `RAISE(ABORT)` (unsuppressable, §4.2) **plus** `CHECK(balance_cents >= 0)` on `bankrolls` |
-| No ledger row against a non-existent balance                       | same `BEFORE INSERT` trigger (`COALESCE(..., -1)`)                                                                          |
-| Balance always equals the sum of its ledger rows                   | `AFTER INSERT ON ledger` trigger is the _only_ writer of `balance_cents`                                                    |
-| Ledger is append-only                                              | `BEFORE UPDATE`/`BEFORE DELETE` triggers `RAISE(ABORT)`                                                                     |
-| A bet is paid at most once                                         | `UNIQUE(bankroll_id, kind, ref_id)` on `ledger`                                                                             |
-| A bet is refunded at most once                                     | same unique key, `kind='bet_refund'`                                                                                        |
-| Exactly one opening deposit per balance                            | same unique key, `kind='deposit_initial'`, `ref_id='init'`                                                                  |
-| Exactly one `main` balance per user                                | partial `UNIQUE INDEX ON bankrolls(user_id) WHERE kind = 'main'`                                                            |
-| A bet is staked against a balance its owner owns                   | `AND EXISTS (SELECT 1 FROM bankrolls WHERE id = :bankrollId AND user_id = :userId)` inside the placement INSERT (§14.2)     |
-| Stake ≥ $1.00                                                      | `CHECK(stake_cents >= 100)` on `bets`                                                                                       |
-| A teaser has a tier and nothing else does                          | `CHECK ((bet_type = 'teaser') = (teaser_points_tenths IS NOT NULL))` + `CHECK (teaser_points_tenths IN (60,65,70))`         |
-| Payout ≤ `MAX_PAYOUT_CENTS` (so no money column can become `REAL`) | `CHECK(potential_payout_cents BETWEEN 0 AND 100000000)` and the same on `payout_cents`                                      |
-| A leg price is a small bounded integer                             | `CHECK(abs(american_price) BETWEEN 100 AND 100000)` on `bet_legs`                                                           |
-| 1–10 legs                                                          | `CHECK(leg_count BETWEEN 1 AND 10)` + validation                                                                            |
-| No duplicate game in a parlay                                      | `UNIQUE(bet_id, game_id)` on `bet_legs`                                                                                     |
+| Invariant                                                          | Enforcement                                                                                                                     |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| Balance is never negative                                          | `BEFORE INSERT ON ledger` trigger `RAISE(ABORT)` (unsuppressable, §4.2) **plus** `CHECK(balance_cents >= 0)` on `bankrolls`     |
+| No ledger row against a non-existent balance                       | a SECOND `BEFORE INSERT` trigger, `ledger_bi_bankroll_exists`, testing `NOT EXISTS` — never a `COALESCE(…, -1)` sentinel (§4.2) |
+| Balance always equals the sum of its ledger rows                   | `AFTER INSERT ON ledger` trigger `ledger_ai_apply` is the _only_ writer of `balance_cents`                                      |
+| …and nothing else may write `balance_cents`                        | `bankrolls_bu_balance_guard` (`BEFORE UPDATE OF balance_cents`) aborts any UPDATE that leaves it ≠ `SUM(ledger)` (§4.2)         |
+| A balance always opens at 0                                        | `bankrolls_bi_balance_guard` (`BEFORE INSERT`) aborts a row inserted with a non-zero `balance_cents` (§4.2)                     |
+| Ledger is append-only                                              | `BEFORE UPDATE`/`BEFORE DELETE` triggers `RAISE(ABORT)`                                                                         |
+| A bet is paid at most once                                         | `UNIQUE(bankroll_id, kind, ref_id)` on `ledger`                                                                                 |
+| A bet is refunded at most once                                     | same unique key, `kind='bet_refund'`                                                                                            |
+| Exactly one opening deposit per balance                            | same unique key, `kind='deposit_initial'`, `ref_id='init'`                                                                      |
+| Exactly one `main` balance per user                                | partial `UNIQUE INDEX ON bankrolls(user_id) WHERE kind = 'main'`                                                                |
+| A bet is staked against a balance its owner owns                   | `AND EXISTS (SELECT 1 FROM bankrolls WHERE id = :bankrollId AND user_id = :userId)` inside the placement INSERT (§14.2)         |
+| Stake ≥ $1.00                                                      | `CHECK(stake_cents >= 100)` on `bets`                                                                                           |
+| A teaser has a tier and nothing else does                          | `CHECK ((bet_type = 'teaser') = (teaser_points_tenths IS NOT NULL))` + `CHECK (teaser_points_tenths IN (60,65,70))`             |
+| Payout ≤ `MAX_PAYOUT_CENTS` (so no money column can become `REAL`) | `CHECK(potential_payout_cents BETWEEN 0 AND 100000000)` and the same on `payout_cents`                                          |
+| A leg price is a small bounded integer                             | `CHECK(abs(american_price) BETWEEN 100 AND 100000)` on `bet_legs`                                                               |
+| 1–10 legs                                                          | `CHECK(leg_count BETWEEN 1 AND 10)` + validation                                                                                |
+| No duplicate game in a parlay                                      | `UNIQUE(bet_id, game_id)` on `bet_legs`                                                                                         |
 
 The point of pushing these into DDL: a settlement bug becomes a failed `batch()`
 (loud, rolled back, retried next run) instead of silent money creation.
@@ -418,7 +446,43 @@ END;
 CREATE TRIGGER ledger_bd_block BEFORE DELETE ON ledger BEGIN
   SELECT RAISE(ABORT, 'ledger is append-only');
 END;
+
+-- (5)(6) THE OTHER HALF of "trigger (2) is the ONLY writer of balance_cents":
+-- two guards on `bankrolls` that make that sentence enforced rather than merely
+-- asserted. Without them "only writer" is a convention, and any stray
+-- `UPDATE bankrolls SET balance_cents = …` — an admin fix, a migration, a
+-- well-meant repair script — silently breaks SUM(ledger) = balance_cents in a
+-- table that cannot be repaired.
+CREATE TRIGGER bankrolls_bu_balance_guard BEFORE UPDATE OF balance_cents ON bankrolls
+WHEN NEW.balance_cents <> (SELECT COALESCE(SUM(amount_cents), 0) FROM ledger
+                            WHERE bankroll_id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'bankrolls: balance_cents may only be written by the ledger trigger');
+END;
+
+CREATE TRIGGER bankrolls_bi_balance_guard BEFORE INSERT ON bankrolls
+WHEN NEW.balance_cents <> 0
+BEGIN
+  SELECT RAISE(ABORT, 'bankrolls: balance_cents may only be written by the ledger trigger');
+END;
 ```
+
+**Why the two `bankrolls_*_balance_guard` triggers are not redundant.** Trigger
+(2) is the only thing that is _supposed_ to write `balance_cents`; (5) is what
+makes that true of every other statement in the system. It passes exactly when
+the post-update value equals `SUM(ledger)` for that bankroll — which is what
+(2)'s own `balance_cents + NEW.amount_cents` computes, since the ledger row has
+already landed by the time the `AFTER INSERT` fires — and aborts otherwise. So
+(2) sails through and a hand-written balance UPDATE aborts, with no way to tell
+the trigger "I meant it".
+
+(6) is the INSERT half, and it is deliberately `<> 0` rather than
+`<> SUM(ledger)`: a `BEFORE INSERT` fires _before_ `OR IGNORE` resolves a
+uniqueness conflict, so an idempotent insert aimed at an already-funded row would
+abort the whole batch under a SUM comparison. For a genuinely new id no ledger
+rows can exist (trigger (1a) guarantees it), so `<> 0` is equivalent for every
+real insert. A balance therefore always opens empty and is funded by a
+`deposit_initial` ledger row — never by an opening `balance_cents` literal.
 
 **Two triggers with distinct messages, not one with a compound `WHEN`.** They
 describe different faults that must reach the user differently:
@@ -526,9 +590,14 @@ SELECT ?4, ?1, 'deposit_initial', 'init', NULL, 100000, ?3, 'opening balance'
 ```
 
 The balance opens at `0` and the trigger raises it to `100000` — application code
-never writes a balance. Both statements are idempotent, so the same pair is the
-admin **repair** path (`ensureMainBalance`, for an account that somehow has no
-balance); nothing on the request path calls it.
+never writes a balance. Both statements are idempotent, so the same pair is also
+`ensureMainBalance()`, a **repair primitive for an account that somehow has no
+balance**. It is tested (`tests/worker/schema.spec.ts` runs it against an
+already-funded row and asserts a complete no-op) but **there is no endpoint for
+it**: signup opens the balance in its own batch, no account can reach production
+without one, and an admin route nobody can demonstrate a use for is a surface
+rather than a safety net. Nothing on any request path calls it. If a
+`POST /api/admin/users/:id/repair-balance` is ever added, it goes in §11.6.
 
 **What this deleted, and why it is a simplification rather than a loss.** `GET
 /api/bankroll`, `GET /api/games` and `POST /api/bets` each used to run the lazy
@@ -809,6 +878,14 @@ total over:  teased = lineTenths - points //   o45.5 (455) @6 -> o39.5 (395)
 total under: teased = lineTenths + points //   u45.5 (455) @6 -> u51.5 (515)
 moneyline:   REJECTED — there is no line to move
 ```
+
+`teasedLineTenths` checks the `(market, side)` pair **before** it branches on the
+market, so an incoherent leg — `('spread','over')`, `('total','home')` — throws
+`VALIDATION` rather than being answered by whichever branch it happened to reach.
+The schema forbids those legs outright
+(`CHECK ((market = 'total') = (side IN ('over','under')))`), so reaching the
+function with one is a caller bug, and returning a plausible number for a leg
+that cannot exist is the worst available response. Pinned by a test.
 
 The teased value goes into `bet_legs.line_tenths` and the book's into
 `bet_legs.original_line_tenths`. That is the single most important design choice
@@ -1115,17 +1192,73 @@ Corollaries, both stated so nothing downstream looks like a latent bug:
 Statement count per bet: `1 + legCount + (payout>0 ? 1 : 0)` ≤ 12 for a settled
 bet (10-leg parlay: 1 + 10 + 1). A **deferred** bet (§7.1) writes exactly **1**
 statement — the `settle_attempts` / `settle_attempted_at` / `settle_error` UPDATE —
-and no batch. A run therefore issues `1 (reset sweep) + 1 (select) + 1 (load legs)
-
-- ≤20 batches`= **23 D1 calls** if a batch counts as one, or **243 statements**
-worst case if it counts per-statement — which is why Spike **S2** must confirm
-the accounting before we raise`chunk` above 20. With ≤ 10 users the realistic
-  volume is a few bets per run.
+and no batch. A run therefore issues four fixed calls — reset sweep, select, stuck
+report, load legs — plus at most one per selected bet, i.e. `4 + ≤20 batches`:
+**24 D1 calls** at the chunk of 20 if a batch counts as one, or **244 statements**
+worst case if it counts per-statement (4 + 20 × 12). That is why Spike **S2** must
+confirm the accounting before we raise `chunk` above 20; `runSettle`'s docblock in
+`src/worker/settle.ts` carries the same two numbers. With ≤ 10 users the realistic
+volume is a few bets per run.
 
 **If the Worker dies mid-run**: each bet's transition + leg results + payout are one
 atomic batch, so every bet is either fully settled or fully pending. Bets not yet
 reached are simply picked up by the next run 15 minutes later. There is no
 "half-settled" state to repair. The lease (§9.2) expires on its own.
+
+**What "already settled" means, and why it is not just layer 1.** A run reports a
+bet as `skippedAlreadySettled` when it turns out not to be the run that paid, by
+any of the three routes above: it lost the conditional UPDATE, the payout
+`INSERT`'s `NOT EXISTS` found the ledger row already there, or the ledger UNIQUE
+fired and aborted the batch. None is an error and none moved money. Layer 2 is
+**not** redundant with layer 1: a bet pushed back to `pending` by hand — an
+operator repairing a game, or `retry-settlement` after a manual fix — wins the
+conditional UPDATE on the next run even though its `bet_payout` row already
+exists, so statement 1's `changes = 1` alone would have the run claim a second
+payment in `stats.settled`/`stats.paidCents` that the ledger correctly refused.
+When money is owed, the PAYOUT statement's `changes` is what decides whether this
+run paid. That statement is addressed by the INDEX the batch builder returns,
+never by `results.length - 1`, so appending a statement later cannot silently
+make every paying settlement read as already-settled. (`changes > 0`, not
+`=== 1`: D1 reports **2** for the payout insert — measured — because
+`ledger_ai_apply`'s `bankrolls` UPDATE is counted too.)
+
+**A bet whose BATCH THROWS is deferred as well as reported.** It goes into
+`stats.errors[]`, and it also takes the same single no-money
+`settle_attempts` UPDATE a `pending` outcome takes. Leaving the counter alone
+would pin twenty such bets at the head of `ORDER BY settle_attempts ASC`, where
+they would re-fail ahead of every healthy bet on every run forever — the exact
+head-of-line starvation §7.1's counter exists to prevent, entered through a
+different door. If even that UPDATE fails, it is logged and the chunk continues;
+the run is already reported through `errors`.
+
+**The run's recorded status.** `runSettle` throws `SettleRunError` when
+`stats.errors` is non-empty — **after** the whole chunk is processed, so a bad
+bet never costs the healthy ones their settlement. `withJobRun` decides
+`job_runs.status` purely on whether the body threw, so without this a run that
+failed to settle every bet it selected would be recorded `ok` and
+`GET /api/admin/jobs` — the one place an operator looks when money looks wrong —
+would show green. The error carries its `stats` (see §9.2's `carriedStats`), so
+the full per-bet detail is recorded alongside the one-line message.
+
+**`SettleStats`, as written to `job_runs.stats`:**
+
+| Field                      | Meaning                                                                                                                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `selected`                 | bets §7.1's query returned this run                                                                                                                                                                                       |
+| `settled`                  | bets THIS run transitioned and paid                                                                                                                                                                                       |
+| `deferred`                 | selected but graded `pending`; `settle_attempts` incremented                                                                                                                                                              |
+| `reset`                    | deferred bets handed a fresh budget by the opening sweep (`meta.changes`)                                                                                                                                                 |
+| `stuck[]`                  | ids parked at `MAX_SETTLE_ATTEMPTS`, capped at 50 — an alarm, not a work queue                                                                                                                                            |
+| `won`/`lost`/`push`/`void` | outcome counts among `settled`                                                                                                                                                                                            |
+| `paidCents`                | Σ payout among `settled`                                                                                                                                                                                                  |
+| `skippedAlreadySettled`    | see above                                                                                                                                                                                                                 |
+| `rowsWritten`              | D1 `meta.rows_written` summed over **every** statement the run issued, the opening reset sweep included — the unit the hard-enforced 100k/day cap counts, and the field `jobs.ts::dayRowsWritten` sums across jobs (§8.6) |
+| `errors[]`                 | `{betId, error}` per failed bet                                                                                                                                                                                           |
+
+`reset` and the sweep's `rowsWritten` are tracked separately on purpose: the
+sweep writes `settle_attempts`, which `idx_bets_pending` indexes, so the number
+the cap counts exceeds the bets touched — and omitting it would under-report the
+settle job's share of the budget.
 
 ### 7.5 Maintenance sweeps (job `maintenance`, daily `30 8 * * *`)
 
@@ -1633,6 +1766,18 @@ one, because the 10 ms CPU limit is per invocation and staggering them means the
 settle job never competes with a 1 MB `JSON.parse`. Settle runs 5 minutes after
 refresh so it grades against freshly written scores.
 
+**How much work each run does** is two `wrangler.jsonc` vars, not constants —
+they are the knobs Spikes S1 and S2 exist to justify, and `env.ts` bounds-checks
+both at startup:
+
+| Var                       | Value | What it caps                                                                   |
+| ------------------------- | ----- | ------------------------------------------------------------------------------ |
+| `REFRESH_TARGETS_PER_RUN` | `2`   | ET-date targets ingested per `refresh` run (§8.4). Spike S1 blocks raising it. |
+| `SETTLE_CHUNK`            | `20`  | bets settled per `settle` run (§7.1). Spike S2 blocks raising it.              |
+
+`docs/OPERATIONS.md` lists the same three cron expressions from the operator's
+side, and `tests/unit/docs.spec.ts` asserts all of it against `wrangler.jsonc`.
+
 ### 9.2 Lease
 
 ```sql
@@ -1659,6 +1804,25 @@ batches. None of these is a multi-step non-atomic mutation, so "died halfway" is
 always recoverable by simply running again. See §7.4 for the settlement case
 specifically.
 
+**The body contract: throwing is how a job says "record me as `error`".**
+`withJobRun` always resolves — an error in the body, or in any of the three
+`job_runs` writes, is recorded or logged and never rethrown, so one bad job (or a
+D1 hiccup while recording it) cannot take the `scheduled()` handler down.
+`acquireLease` is the single call left unguarded, deliberately: if the lock table
+itself is unreachable there is nothing to run and nowhere to record it, and the
+caller should see that.
+
+A body that did real work and **then** failed may hang a plain `stats` object off
+the thrown error; `carriedStats(err)` picks it up and it is recorded in
+`job_runs.stats` alongside the message. That is how a settle run with one failed
+bet is reported as `error` **and** keeps its full per-bet detail (§7.4's
+`SettleRunError`) — and it is why `dayRowsWritten` can sum `stats.rowsWritten`
+over failed runs too, rather than under-counting the write budget exactly when
+something is going wrong. `carriedStats` is job-agnostic on purpose: `jobs.ts`
+knows nothing about settlement, only that an error MAY carry a plain object.
+Anything else — an array, a primitive, a cycle — yields `null`, and the JSON
+encoder still has the final say on whether it can be serialised.
+
 ### 9.3 Manual trigger
 
 `POST /api/admin/jobs/:job` (`refresh | settle | maintenance`) runs the identical
@@ -1666,13 +1830,19 @@ function with `trigger='admin'`, takes the same lease, and returns the `job_runs
 including stats. This is how we test in production without waiting 15 minutes, and
 it is the documented recovery action if a job wedges.
 
-CPU caution: the admin trigger runs in an HTTP invocation with the same 10 ms
-budget. It returns `202` with the run id and does the work in `ctx.waitUntil()`
-**only if** S1 shows it does not fit inline; otherwise it runs inline and returns
-`200` with stats. Default implementation: inline, with `REFRESH_TARGETS_PER_RUN`
-forced to 1 for admin runs. (`ctx.waitUntil` does not grant extra CPU — it grants
-extra wall time — so if S1 comes back bad the real remedy is the R1 ladder, not
-`waitUntil`.)
+**What ships: INLINE, returning `200` with the run.** The admin trigger runs in
+an HTTP invocation with the same 10 ms budget, so `refreshTargetsPerRun()` drops
+an admin `refresh` to ONE target. `ctx.waitUntil` was considered and rejected: it
+grants extra wall time, not extra CPU, so if S1 comes back bad the remedy is
+R1's fallback ladder, not `waitUntil`. There is no `202` path in the code.
+
+**A job whose BODY threw still returns `200`, with `run.status === 'error'` and
+the message in `run.error`.** That is deliberate. The HTTP status answers "did
+the trigger work", and it did: the lease was taken, the run was recorded, and the
+failure is now visible in `GET /api/admin/jobs` exactly as a failed CRON run
+would be. Mapping it to a 500 would throw away the run id and the stats — which,
+for `settle`, are the whole point (§7.4). The only non-`200` here is
+`409 JOB_LOCKED`, meaning the lease is held by the cron or by another admin.
 
 ---
 
@@ -1805,6 +1975,22 @@ Documented here so nobody has to invent it under pressure.
 - No user enumeration anywhere: signup with a taken username returns the same
   `409 USERNAME_TAKEN` (this one is unavoidable and acceptable for a 10-person
   invite-only app — documented, not hidden); login/unknown-user is indistinguishable.
+- **Disabling an account EVICTS its live sessions**, in the same `batch()` as the
+  flag. Disabling is a containment tool ("this account is compromised"), and a
+  flag that leaves a 30-day cookie working is not containment. Re-enabling
+  therefore requires a fresh login. `resolveSession` additionally joins on
+  `is_disabled = 0`, belt to braces. The eviction `DELETE` is guarded on the flag
+  actually having been written, so a refused disable evicts nothing.
+- **You cannot disable the LAST enabled admin**, and you cannot disable
+  yourself. `is_admin` is only ever written by the first-signup `CASE` — there is
+  no promotion path — so locking out the last admin would be unrecoverable
+  without `wrangler d1 execute`. The guard is a `WHERE` conjunct inside the same
+  UPDATE, not a read-then-write, and a refusal is reported as a distinct
+  `400 VALIDATION` on `disabled` rather than a silent no-op:
+
+  ```sql
+  … OR (SELECT COUNT(*) FROM users WHERE is_admin = 1 AND is_disabled = 0) > 1
+  ```
 
 ### 10.6 Admin password reset
 
@@ -1821,7 +2007,47 @@ browser derivations agree on a fixed vector.
 All responses are JSON. All errors are
 `{ "error": { "code": "<STABLE_CODE>", "message": "<human>", "details"?: {...} } }`
 with codes enumerated in `src/shared/errors.ts`. All state-changing routes require the
-`X-SBS-Client: 1` header. `Content-Type: application/json` required on bodies.
+`X-SBS-Client: 1` header. **`Content-Type: application/json` is REQUIRED on any
+request with a body** — a wrong or missing media type is `400 VALIDATION` on
+field `content-type`, before the body is even parsed. That is defence in depth on
+top of the custom header (a cross-site `text/plain` form can set neither) and it
+stops a proxy from ever mis-parsing us. A body that is absent or unparseable is
+`400 MALFORMED_JSON`, never a 500.
+
+**THE WHOLE VOCABULARY.** Every code in `ERROR_CODES`, where it comes from, and
+its canonical status. The list is the wire contract: a code is never repurposed
+and never removed, only added.
+
+| Code                       | Status | Raised by                                                                                                                                                                                                                                 |
+| -------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VALIDATION`               | 400    | any malformed field, and a wrong `Content-Type`                                                                                                                                                                                           |
+| `MALFORMED_JSON`           | 400    | a body that is absent or not valid JSON                                                                                                                                                                                                   |
+| `TEASER_INVALID`           | 400    | a teaser with no tier, or a tier on a non-teaser (§5.8)                                                                                                                                                                                   |
+| `UNAUTHENTICATED`          | 401    | no session on a private route                                                                                                                                                                                                             |
+| `INVALID_CREDENTIALS`      | 401    | login; identical for an unknown user (§10.2)                                                                                                                                                                                              |
+| `BAD_INVITE_CODE`          | 401    | signup when `INVITE_CODE` is set and wrong                                                                                                                                                                                                |
+| `ACCOUNT_DISABLED`         | 403    | login by a disabled account                                                                                                                                                                                                               |
+| `CSRF_BLOCKED`             | 403    | missing `X-SBS-Client`, or a cross-origin `Origin` (§10.5)                                                                                                                                                                                |
+| `NOT_FOUND`                | 404    | any unclaimed `/api/*` path, and an unknown `:job`                                                                                                                                                                                        |
+| `GAME_NOT_FOUND`           | 404    | a leg or board lookup naming a game that does not exist                                                                                                                                                                                   |
+| `BET_NOT_FOUND`            | 404    | a bet that is not yours OR does not exist — never 403 (§11.4)                                                                                                                                                                             |
+| `BANKROLL_NOT_FOUND`       | 404    | a balance that is not yours OR does not exist (§4.4)                                                                                                                                                                                      |
+| `USERNAME_TAKEN`           | 409    | signup                                                                                                                                                                                                                                    |
+| `GAME_NOT_BETTABLE`        | 409    | `status <> 'scheduled'`                                                                                                                                                                                                                   |
+| `BETTING_CLOSED`           | 409    | past `lockAt`                                                                                                                                                                                                                             |
+| `MARKET_UNAVAILABLE`       | 409    | no line for that market, or `seenAt` stale                                                                                                                                                                                                |
+| `LINE_CHANGED`             | 409    | `expected` disagrees and `acceptLineChange` is not set                                                                                                                                                                                    |
+| `INSUFFICIENT_FUNDS`       | 409    | the `ledger_bi_sufficient_funds` trigger, mapped (§4.2) — never a pre-read                                                                                                                                                                |
+| `MIXED_LEAGUE_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span leagues                                                                                                                                                                                |
+| `MIXED_SEASON_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span seasons                                                                                                                                                                                |
+| `DUPLICATE_GAME_IN_PARLAY` | 409    | two legs on one game; also `UNIQUE(bet_id, game_id)` underneath                                                                                                                                                                           |
+| `PAYOUT_LIMIT_EXCEEDED`    | 409    | potential payout over `MAX_PAYOUT_CENTS` (§5.2b)                                                                                                                                                                                          |
+| `BET_LOCKED`               | 409    | cancel/edit after a leg's game locked (§14.2)                                                                                                                                                                                             |
+| `BET_NOT_PENDING`          | 409    | cancel/edit/retry on a bet that is not `pending`                                                                                                                                                                                          |
+| `JOB_LOCKED`               | 409    | an admin trigger while the lease is held (§9.3)                                                                                                                                                                                           |
+| `RATE_LIMITED`             | 429    | login/signup throttle, with `Retry-After` (§10.5)                                                                                                                                                                                         |
+| `UPSTREAM_UNAVAILABLE`     | 503    | **RESERVED — never thrown today.** An ESPN failure is a job-level event: it backs the target off and is recorded in `job_runs`, so no user request is waiting on it. The code is kept for the day a request path reads upstream directly. |
+| `INTERNAL`                 | 500    | anything unrecognised, deliberately generic — the original message may carry SQL or a stack                                                                                                                                               |
 
 ### 11.1 Public
 
@@ -1847,16 +2073,25 @@ hex chars.
 
 ### 11.3 Games
 
-| Method | Path             | Query                                                         | Response                                      |
-| ------ | ---------------- | ------------------------------------------------------------- | --------------------------------------------- |
-| GET    | `/api/games`     | `league` (req), `season?`, `week?`, `from?`, `to?`, `status?` | `200 {season, week, games: GameCard[]}`       |
-| GET    | `/api/games/:id` | —                                                             | `200 {game: GameCard}` / `404 GAME_NOT_FOUND` |
+| Method | Path             | Query                                                         | Response                                        |
+| ------ | ---------------- | ------------------------------------------------------------- | ----------------------------------------------- |
+| GET    | `/api/games`     | `league` (req), `season?`, `week?`, `from?`, `to?`, `status?` | `200 {league, season, week, games: GameCard[]}` |
+| GET    | `/api/games/:id` | —                                                             | `200 {game: GameCard}` / `404 GAME_NOT_FOUND`   |
+
+`?season=` here is **not** a public season filter in the §19-Q5 sense — it is a
+board narrowing over `games.season`, which survives internally for ingestion and
+the week default. No money endpoint takes one.
 
 ```ts
 GameCard = {
-  id, league, season, week, kickoffAt, status, statusDetail,
-  home: { teamId, abbr, name, logo, score }, away: {...},
+  id, league, season,
+  seasonType: number,             // ESPN: 1 pre, 2 regular, 3 post — labels "Week 1" vs "Wild Card"
+  week: number | null,
+  kickoffAt, status, statusDetail,
+  period: number | null,
+  displayClock: string | null,
   neutralSite: boolean,
+  home: { teamId, abbr, name, logo, rank, score }, away: {...},
   lockAt: number,                 // kickoffAt - cutoffBufferMs
   bettable: boolean,              // status==='scheduled' && now < lockAt && lines fresh
   lines: null | {
@@ -1870,6 +2105,15 @@ GameCard = {
   }
 }
 ```
+
+`rank` is `curatedRank.current` kept only for 1..25 (`null` otherwise, and always
+`null` for the NFL); it is in the card because on a CFB board the rank is the
+most visible thing about a matchup. `period`/`displayClock` render a live game's
+"Q3 07:12".
+
+**Reading the board WRITES NOTHING.** It used to run §4.4's lazy bankroll
+prelude, because a new season needed a new bankroll. A balance is account-level
+and opened at signup, so a GET is a GET again.
 
 Default window when `from`/`to` are absent: `now - 12h … now + 10d`, capped at 300
 games. Requires auth (this is a private app; the whole API is behind a session except
@@ -1968,7 +2212,7 @@ the `WHERE` of the UPDATE — §14.2).
 ('straight'|'parlay'|'teaser'), teaserPoints (tenths | null), stakeCents,
 americanPrice, decimalOdds (string, for display), potentialPayoutCents,
 toWinCents, status, payoutCents, placedAt, earliestKickoffAt, lockAt, settledAt,
-cancellable, replacesBetId, replacedByBetId, legs: BetLegView[] }`.
+cancelledAt, cancellable, replacesBetId, replacedByBetId, legs: BetLegView[] }`.
 
 `BetLegView` gains `league` (the LEG's own — always a real one, since
 `BetView.league` may be `'mixed'`) and `originalLineTenths` (the book's line
@@ -2058,18 +2302,37 @@ to sum, and `/all-time` is now literally the unfiltered board.)
 
 ### 11.6 Admin (requires `users.is_admin = 1`)
 
-| Method | Path                                   | Notes                                                                                                                                                                         |
-| ------ | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                      |
-| GET    | `/api/admin/jobs`                      | last 50 `job_runs`                                                                                                                                                            |
-| GET    | `/api/admin/users`                     | list                                                                                                                                                                          |
-| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets                                                                                                                                                               |
-| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}`                                                                                                                                                         |
-| POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check. |
-| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                |
-| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                       |
+| Method | Path                                   | Notes                                                                                                                                                                            |
+| ------ | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                         |
+| GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                         |
+| GET    | `/api/admin/users`                     | list                                                                                                                                                                             |
+| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets                                                                                                                                                                  |
+| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}` → `204`. Disabling EVICTS every live session in the same batch. Refused with `400 VALIDATION` for your own account, or for the last enabled admin (§10.5). |
+| POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check.    |
+| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                   |
+| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                          |
 
 Non-admins get `404` on `/api/admin/*` (not `403`), so the surface is invisible.
+Anonymous callers get `401`, like every other private route.
+
+**`stats.dayRowsWritten`** is the sum of `job_runs.stats.rowsWritten` over the
+last **rolling 24 hours**, across every job — the number to check against D1's
+hard-enforced 100,000-rows-per-day cap (§8.6), where past the cap D1 ERRORS and
+blocks bet placement and settlement, not just the board. It rides INSIDE `stats`
+rather than beside it because `api-types.ts` is frozen after M2d and
+`JobRunView.stats` is already `Record<string, unknown>`; the admin page reads it
+off any run. Rolling rather than a UTC day, because the operator's question is
+"are we running hot right now" and a UTC-day total is misleading at 00:05. Failed
+runs are summed too (§9.2's `carriedStats`), so a bad day is not under-reported.
+The query's `json_valid` guard is load-bearing: SQLite's `json_extract` RAISES on
+malformed JSON rather than returning NULL (verified — `D1_ERROR: malformed
+JSON`), so one corrupt `stats` blob would otherwise take down the whole admin
+jobs page, which is the one place you look when something is already wrong.
+
+**`POST /api/admin/users/:id/repair-balance` does NOT exist.** `ensureMainBalance`
+is implemented and tested as a repair primitive (§4.4) but is deliberately not
+routed; if that changes, it belongs in the table above.
 
 ---
 
@@ -2082,40 +2345,57 @@ bet slip bar at the bottom on small screens.
 
 ### 12.1 Component tree
 
+This is the tree as SHIPPED. A few named boxes in the original sketch turned out
+not to want their own file — `<DayGroup>`, `<WeekendGroup>`, `<BankrollSummary>`
+are a `map` over a pure grouping helper in `lib/grouping.ts`, and the three
+tab strips (`<BetFilterTabs>`, `<ScopeTabs>`, `<SlipModeToggle>`) collapsed into
+ONE generic `<Segmented<T>>`, which is why the slip's teaser tier picker is also
+a `<Segmented>`.
+
 ```
 main.tsx
 └── <App>                                   BrowserRouter + providers
     ├── <SessionProvider>                   { user, status, login, signup, logout }
     │   └── <ConfigProvider>                /api/config, cached for the session
-    │       └── <BetSlipProvider>           slip state, persisted to localStorage
-    │           ├── <AppShell>              header + <NavTabs> + <Outlet> + <BetSlipBar>
+    │       └── <BetSlipProvider>           ONE cross-league slip, localStorage `sbs.slip.v3`
+    │           ├── <AppShell>              header + <BankrollBadge> + <NavTabs> + <Outlet>
+    │           │   │                       + <BetSlipBar> + <BetSlip>; redirects anon to /login
     │           │   ├── route "/"           <GamesPage>
-    │           │   │   ├── <LeagueTabs league onChange>
+    │           │   │   ├── <LeagueTabs>    moves the BOARD only — never the slip
     │           │   │   ├── <WeekPicker>
-    │           │   │   └── <DayGroup date>            (grouped in the user's LOCAL tz)
-    │           │   │       └── <GameCard game>
+    │           │   │   └── groupGamesByLocalDate()   (viewer's LOCAL tz)
+    │           │   │       └── <GameCard game now>
     │           │   │           ├── <TeamRow team score rank>
     │           │   │           └── <MarketButton market side line price selected>   ×6
     │           │   ├── route "/bets"       <MyBetsPage>
-    │           │   │   ├── <BetFilterTabs open|settled>
-    │           │   │   └── <WeekendGroup>              (local-tz weekend grouping)
-    │           │   │       └── <BetCard bet>
-    │           │   │           ├── <BetLegRow leg projected>
-    │           │   │           └── <BetActions onCancel onEdit>   (hidden once locked)
+    │           │   │   ├── <Segmented<Filter> open|settled>
+    │           │   │   ├── groupBetsByWeek()
+    │           │   │   │   └── <BetCard bet>         cancel + edit live here
+    │           │   │   │       └── <BetLegRow leg projected>
+    │           │   │   └── <LoadMore paged>          usePages() cursor paging
     │           │   ├── route "/leaderboard" <LeaderboardPage>
-    │           │   │   ├── <ScopeTabs nfl|ncaaf|all-time>
-    │           │   │   └── <LeaderboardTable rows meDeltas>
+    │           │   │   ├── <Segmented<Scope> all|nfl|ncaaf>
+    │           │   │   └── <LeaderboardTable rows meUserId>
     │           │   ├── route "/account"    <AccountPage>
-    │           │   │   ├── <BankrollSummary>
-    │           │   │   └── <LedgerList entries>
-    │           │   └── route "/admin"      <AdminPage>      (admin only)
-    │           └── <BetSlip>               modal/sheet
-    │               ├── <SlipModeToggle straight|parlay>
-    │               ├── <SlipLegRow leg onRemove>
+    │           │   │   ├── (balances, inline)
+    │           │   │   ├── <LedgerList entries>
+    │           │   │   └── <LoadMore paged>
+    │           │   ├── route "/admin"      <AdminPage>      (admin only)
+    │           │   └── route "*"           <NotFoundPage>
+    │           └── <BetSlip>               role="dialog" sheet, useFocusTrap()
+    │               ├── <Segmented straight|parlay|teaser>
+    │               ├── <Segmented<number> 6 | 6.5 | 7>   (teaser mode only)
+    │               ├── leg rows w/ NFL·CFB badge and "-7.5 → -1.5" tease preview
     │               ├── <StakeInput cents quickChips>
-    │               └── <SlipSummary price toWin payout />
+    │               └── <SlipSummary preview stakeCents>
     └── route "/login"                      <AuthPage>  (login + signup tabs)
 ```
+
+`<ErrorBanner>` / `<EmptyState>` and `<Spinner>` are shared by every page.
+Pure, DOM-free helpers live in `src/web/lib/` (`grouping`, `datetime`, `labels`,
+`lines`, `paging`, `stake-text`) and in `src/web/state/` (`slip-reducer`,
+`slip-preview`, `edit-bet`) precisely so the `web` test project can exercise them
+in a node environment — see §13.
 
 ### 12.2 State
 
@@ -2154,10 +2434,38 @@ Three contexts, each a `useReducer`; no Redux, no react-query.
   Worker uses) so the UI can grey out an invalid slip before submitting — the
   server still re-validates, the client copy is purely for UX.
 
-- **Data fetching** — `useResource<T>(key, fetcher)` in `src/web/hooks/useResource.ts`:
-  a ~60-line hook with in-memory cache, `refetch()`, stale-while-revalidate and an
-  `invalidate(keyPrefix)` used after a successful bet mutation. Deliberately not a
-  dependency.
+- **Data fetching** — `useResource<T>(key, fetcher)` in `src/web/hooks/useResource.ts`,
+  over a plain module-level `resource-store.ts`: in-memory cache, `refetch()`,
+  stale-while-revalidate and an `invalidate(keyPrefix)` used after a successful
+  bet mutation. `hooks/useApi.ts` wraps it into the named calls
+  (`useGames`, `useBets`, `useBalances`, `useLedger`, `useLeaderboard`), and
+  `hooks/useNow.ts` supplies the ticking clock and the poll interval.
+  Deliberately not a dependency.
+
+- **Cursor paging** — `hooks/usePages.ts` over `lib/paging.ts`, for the two
+  endpoints that return a `nextCursor` (`/api/bets`, `/api/ledger`). Page 1 lives
+  in the `useResource` cache and is re-read by polling and by `invalidate()`;
+  pages 2..n sit next to it. A poll can therefore hand back a page 1 that
+  OVERLAPS what is already loaded — placing a bet shifts every row down by one —
+  so pages are **merged by id, first occurrence winning** (the freshest copy)
+  rather than concatenated, which would emit duplicate React keys.
+
+- **Editing a bet** re-prices against CURRENT lines, never the old snapshot
+  (§11.4). `state/edit-bet.ts` names the games to re-fetch and rebuilds the slip
+  legs from the fresh `GameCard`s, and `<BetCard>` does that before opening the
+  slip. Seeding from the snapshot instead meant the sheet quoted hours-old odds
+  AND resubmitted them as `expected`, so a stake-only edit drew a
+  `409 LINE_CHANGED` on a screen still showing the old number. A leg whose market
+  is no longer posted keeps its snapshot and is reported in `unrefreshed[]`, for
+  the server to refuse on its own terms (`409 MARKET_UNAVAILABLE`). The BALANCE
+  is fixed either way: `PUT` may not move a bet between balances.
+
+- **The slip sheet traps focus** (`hooks/useFocusTrap.ts`, §12.4): on open it
+  remembers what had focus and moves into the dialog, Tab/Shift+Tab cycle within
+  it, Escape closes, and on close focus returns to the element that opened it.
+  `onClose` is read through a ref so it is NOT an effect dependency — otherwise a
+  new callback identity on every render would re-arm the trap and yank focus back
+  to the first control mid-typing. `tests/web/focus-trap-deps.spec.ts` pins that.
 
 ### 12.3 Time handling in the UI
 
@@ -2192,8 +2500,14 @@ zoom-on-focus; the stake input is `inputMode="decimal"` and converted to cents b
 TDD is mandatory: for every task below, the test file is written and failing before
 the implementation.
 
-**Project 1 — `unit` (node env, `tests/unit/`)**: everything in `src/shared/`.
-No Workers runtime, instant feedback.
+**THREE vitest projects** (`vitest.config.ts` → `unit`, `worker`, `web`), and
+`npm test` runs all three. The `web` project was not in the original plan: it
+exists because the SPA's real logic — the slip reducer, the payout preview, the
+grouping and paging helpers, the edit re-pricer — is deliberately DOM-free, and
+`environment: 'node'` tests it without adding jsdom as a dependency.
+
+**Project 1 — `unit` (node env, `tests/unit/`)**: everything in `src/shared/`,
+plus the docs-drift guard. No Workers runtime, instant feedback.
 
 - `odds.spec.ts` — the §5.4 table verbatim; the `-110/+120/-105` dual-float
   regression (plus a test asserting the two float formulations disagree with each
@@ -2212,6 +2526,19 @@ No Workers runtime, instant feedback.
   market/side compatibility, dollar→cents parsing.
 - `time.spec.ts` — `etDateKey` across a DST boundary and across UTC midnight.
 - `kdf-parity.spec.ts` — Node WebCrypto derivation matches a hard-coded vector.
+- `errors.spec.ts` — every `ErrorCode` has a canonical status; the wire envelope
+  omits `details` when absent; `fromThrown` maps the trigger messages.
+- `docs.spec.ts` — **the docs-drift guard**. Reads `PLAN.md`, `CLAUDE.md`,
+  `README.md`, `wrangler.jsonc`, `package.json` and `migrations/0001_init.sql`
+  with `node:fs` and fails when the prose and the code disagree on a mechanical
+  fact: an `ERROR_CODES` entry missing from §11 (or a §11 code absent from the
+  enum), a constant quoted at a value `constants.ts` does not hold, a
+  `TEASER_PAYOUTS` cell §5.8's card renders differently, a cron expression in
+  `wrangler.jsonc` that §9.1 does not list, a route literal in
+  `src/worker/routes/*.ts` that §11 never mentions, a table in `0001_init.sql`
+  that §3 never names, a pre-PR gate in `CLAUDE.md` that is not what
+  `package.json` actually runs, or a banned stale phrase outside a history note.
+  See CLAUDE.md rule 11.
 
 **Project 2 — `worker` (`@cloudflare/vitest-pool-workers`, `tests/worker/`)**: real
 Miniflare D1 with `applyD1Migrations`, so the schema, the triggers and the `CHECK`
@@ -2252,7 +2579,39 @@ DDL, and a mock would not test them.
 - `jobs.spec.ts` — lease prevents overlap; expired lease is reclaimed; `job_runs`
   rows are written on success, skip and error.
 - `routes.spec.ts` — auth required on every non-public route; admin routes 404 for
-  non-admins; unknown `/api/*` returns the JSON 404 envelope.
+  non-admins; unknown `/api/*` returns the JSON 404 envelope; the seven canonical
+  leaderboard semantics of §11.5.
+- `leaderboard.spec.ts` — `GET /api/bankroll` creates NOTHING and returns the one
+  balance signup opened; ledger paging; `?league=` narrows record/ROI and never
+  the money; `/all-time` is byte-identical to the unfiltered board; **a
+  `kind='custom'` side pot is invisible to the ranking — equity is the MAIN
+  balance plus MAIN pending only**; `POST /api/admin/users/:id/adjust` both signs,
+  with the overdraft coming from the trigger.
+- `maintenance.spec.ts` — the §7.5 sweeps: postponed → auto-void past
+  `VOID_AFTER_MS`, a game stuck `in_progress` is reported and NOT voided, expired
+  sessions and old throttle rows pruned, `job_runs` trimmed per job.
+- `schema.spec.ts` — the §4.2 money invariants against a REAL D1: both
+  `ledger_bi_*` triggers and their distinct messages, `OR IGNORE` not suppressing
+  `RAISE(ABORT)`, the append-only blocks, the `balance_cents` write guards, the
+  partial `idx_bankrolls_main`, and `ensureMainBalance` as a complete no-op
+  against an already-funded row.
+
+**Project 3 — `web` (node env, `tests/web/`)**: the SPA's pure logic. No jsdom,
+no rendering — every module under test is deliberately DOM-free and React-free,
+which is what makes this project possible at all.
+
+- `slip-reducer.spec.ts` — ONE cross-league draft; switching the league tab moves
+  the BOARD and leaves the slip identical **by object identity**; storage key
+  `sbs.slip.v3` and the abandoned per-league v1/v2 keys named for cleanup; mode
+  follows the leg count and a teaser stays a teaser as legs are added.
+- `slip-preview.spec.ts` — parlay vs teaser pricing off the server's card, the
+  payout-cap pre-flight, the MAX chip.
+- `slip-edit-flow.spec.ts`, `edit-bet.spec.ts` — rebuilding a bet's legs from
+  CURRENT quotes, and `unrefreshed[]` when a market is gone.
+- `paging.spec.ts` — overlapping pages merge by id, first occurrence winning.
+- `focus-trap-deps.spec.ts` — `onClose` is not an effect dependency.
+- `grouping.spec.ts`, `datetime.spec.ts`, `lines.spec.ts`, `stake-text.spec.ts`,
+  `resource-store.spec.ts` — the remaining helpers.
 
 **Fixtures — two files, on purpose.** `tests/fixtures.ts` at the root would not
 work: `tsconfig.tests-worker.json` includes only `tests/worker/**`, and workerd has
@@ -2271,7 +2630,9 @@ the runtime.
   output parses to the same domain object as the equivalent real event, so the two
   fixture worlds cannot drift.
 
-**Coverage gate**: `src/shared/**` must be ≥ 90% lines. No gate on `src/web/**` in v1.
+**Coverage gate**: `src/shared/**` must be ≥ 90% lines / 90% functions / 90%
+statements / 85% branches (`vitest.config.ts`). No gate on `src/web/**` or
+`src/worker/**` in v1.
 
 ---
 
@@ -2628,7 +2989,38 @@ Each milestone lists: files owned, tests written **first**, and a definition of 
 "DoD" always implicitly includes: `npm run typecheck && npm run lint && npm run
 format:check && npm test && npm run build` all green.
 
-### M0 — Repo skeleton and toolchain _(no parallelism; everything depends on it)_
+**STATUS — v1 is feature-complete on `main` AND DEPLOYED.**
+Live at https://spicybetting.wardcrazy01894.workers.dev, first deployed
+2026-09-14, permanently. Runbook: `docs/OPERATIONS.md`.
+
+| Milestone                                     | Status                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------- |
+| M0 toolchain                                  | **DONE**                                                            |
+| M1 local dev loop                             | **DONE**                                                            |
+| M2a/b/c/d pure domain                         | **DONE**                                                            |
+| M3 auth                                       | **DONE**                                                            |
+| M4 ingestion                                  | **DONE**                                                            |
+| M5 betting                                    | **DONE**                                                            |
+| M5b account balances / cross-league / teasers | **DONE** — the one sanctioned contract change (§16.1)               |
+| M6 settlement                                 | **DONE**                                                            |
+| M7a–e frontend                                | **DONE**                                                            |
+| M8 deploy + operate                           | **DONE** — deployed 2026-09-14; see the two open measurements below |
+
+Two things follow from the deploy having happened:
+
+- **`migrations/0001_init.sql` is FROZEN.** It was applied to the remote D1 on
+  2026-09-14 and D1 recorded it in `d1_migrations`, so it will never be replayed
+  and an edit to it can never reach production. Every schema change is a new
+  numbered `000N_*.sql`. §16.1 and the file's own header say the same thing; all
+  three must move together.
+- **Spikes S1 and S2 are UNMEASURED, not blocked** (§18). Both were waiting for
+  a deployed Worker and now have one; they are two `wrangler tail` runs away
+  from an answer, and until somebody does them `REFRESH_TARGETS_PER_RUN` stays
+  at 2 and `SETTLE_CHUNK` at 20. S3 and S4(a)/(b) are resolved. The one item
+  still genuinely blocked on the calendar is **S4(c)**, the January postseason
+  reachability check, which is also a `docs/OPERATIONS.md` runbook item.
+
+### M0 — Repo skeleton and toolchain — **DONE** _(no parallelism; everything depends on it)_
 
 **Files**: `package.json`, `tsconfig*.json`, `vite.config.ts`, `vitest*.config.ts`,
 `eslint.config.js`, `.prettierrc`, `.prettierignore`, `.gitignore`, `wrangler.jsonc`,
@@ -2653,15 +3045,16 @@ constrained:
 If a dependency bump is proposed, check these three first — and note Alex's
 standing rule that dependency-bump PRs also get an adversarial review.
 
-**`tsconfig` layout.** Six projects wired as a `tsc -b` solution, not one config:
-`shared` (lib ES2023, `types: []`), `worker` (Workers types), `web` (DOM + JSX),
-`tests-unit`, `tests-worker`, `node` (config files). This is what keeps
+**`tsconfig` layout.** SEVEN projects wired as a `tsc -b` solution, not one
+config: `shared` (lib ES2023, `types: []`), `worker` (Workers types), `web`
+(DOM + JSX), `tests-unit`, `tests-worker`, `tests-web`, `node` (config files).
+(`tests-web` arrived with the third vitest project — §13.) This is what keeps
 `Request`/`Response` from meaning two different things in one program, and it is
 why `src/shared` must stay platform-free (§2.2). Referenced projects are
 `composite` + `emitDeclarationOnly` into `.tsbuild/`, which is gitignored — no
 JavaScript is emitted by the typecheck.
 
-### M1 — Runnable local dev loop with mocked ESPN
+### M1 — Runnable local dev loop with mocked ESPN — **DONE**
 
 **Files**: `migrations/0001_init.sql` (already written — apply it), `src/worker/env.ts`,
 `src/worker/index.ts` (health route + assets passthrough), `src/worker/db.ts`,
@@ -2688,7 +3081,7 @@ JavaScript is emitted by the typecheck.
   server and confirming the refresh job fails. Also resolve Spike S3 here.
   **This is the milestone that unblocks every parallel track below.**
 
-### M2 — Pure domain core
+### M2 — Pure domain core — **DONE**
 
 **M2d runs FIRST and is a prerequisite for the rest** — everything imports its
 types, error codes and constants, including `odds.ts` (§16).
@@ -2717,7 +3110,7 @@ types, error codes and constants, including `odds.ts` (§16).
   status maps; a pre-game score of the string `"0"` parses to `0` and not `null`;
   a truncated/garbage event is skipped with a warning.
 
-### M3 — Auth _(depends on M1; independent of M2 except constants)_
+### M3 — Auth — **DONE** _(depends on M1; independent of M2 except constants)_
 
 **Files**: `src/worker/crypto.ts`, `src/worker/session.ts`, `src/worker/auth.ts`,
 `src/worker/middleware.ts`, `src/worker/routes/auth.ts`, `src/web/api/kdf.ts`,
@@ -2726,7 +3119,7 @@ types, error codes and constants, including `odds.ts` (§16).
 first user is admin; invite gate enforced; 10 bad logins → 429; CSRF header required;
 `admin-hash.mjs` output actually logs in.
 
-### M4 — Ingestion _(depends on M1 + M2c)_
+### M4 — Ingestion — **DONE** _(depends on M1 + M2c)_
 
 **Files**: `src/worker/providers.ts`, `src/worker/espn.ts`, `src/worker/ingest.ts`,
 `src/worker/jobs.ts`, `tests/worker/ingest.spec.ts`, `tests/worker/jobs.spec.ts`.
@@ -2738,7 +3131,7 @@ write-budget regression assertion in `ingest.spec.ts` passes; a final game is no
 regressed; date targets reach a January postseason date; lease prevents overlap;
 every §8.4 backoff branch tested. **Run Spike S1 at the end of this milestone.**
 
-### M5 — Betting _(depends on M1 + M2a/b/d + M3)_
+### M5 — Betting — **DONE** _(depends on M1 + M2a/b/d + M3)_
 
 **Files**: `src/worker/bankroll.ts`, `src/worker/bets.ts`, `src/worker/routes/bets.ts`,
 `src/worker/routes/games.ts`, `src/worker/routes/bankroll.ts`,
@@ -2746,7 +3139,7 @@ every §8.4 backoff branch tested. **Run Spike S1 at the end of this milestone.*
 **DoD**: every error code in §11.4 has a test; the atomicity tests in §13 pass;
 `SUM(ledger) === balance_cents` asserted after each scenario.
 
-### M6 — Settlement _(depends on M4 + M5)_
+### M6 — Settlement — **DONE** _(depends on M4 + M5)_
 
 **Files**: `src/worker/settle.ts`, `src/worker/maintenance.ts`,
 `tests/worker/settle.spec.ts`.
@@ -2755,7 +3148,7 @@ post-placement `game_lines` mutation/deletion, and the head-of-line-blocking tes
 (20 undecidable bets must not prevent a settleable bet behind them from settling
 on the next run).
 
-### M7 — Frontend _(M7a–M7e parallelizable once M1 + the relevant API exists)_
+### M7 — Frontend — **DONE** _(M7a–M7e parallelizable once M1 + the relevant API exists)_
 
 - **M7a** shell/routing/session: `App.tsx`, `AppShell.tsx`, `AuthPage.tsx`,
   `SessionContext.tsx`, `api/client.ts`, `hooks/useResource.ts` — needs M3.
@@ -2767,17 +3160,28 @@ on the next run).
   **DoD**: mobile viewport (390×844) walk-through of place → view → edit → cancel with
   no horizontal scroll; every API error code renders a human message.
 
-### M8 — Deploy + operate
+### M8 — Deploy + operate — **DONE** _(deployed 2026-09-14)_
 
-**Files**: `README.md` deploy section, `CLAUDE.md` runbook, `scripts/reconcile.mjs`,
-`.github/workflows/ci.yml` (add a manual deploy job).
-**Tasks**: `wrangler d1 migrations apply --remote`; `wrangler secret put INVITE_CODE`;
-`wrangler secret put IP_HASH_SALT`; `wrangler deploy`; flip `ESPN_BASE_URL` to the real
-host; watch `GET /api/admin/jobs` for one full weekend.
+**Files**: `README.md` deploy section, `docs/OPERATIONS.md` (the runbook),
+`scripts/reconcile.mjs`.
+**Tasks** (all done): `wrangler d1 migrations apply --remote` — this is the
+moment `0001_init.sql` froze; `wrangler secret put INVITE_CODE`;
+`wrangler secret put IP_HASH_SALT`; `wrangler deploy`; `ESPN_BASE_URL` left at
+the real host in `wrangler.jsonc` (only `.dev.vars` overrides it).
 **DoD**: a real NFL week ingests, a real bet grades correctly, `reconcile` reports
 zero drift, and the free-tier dashboard shows usage within budget — specifically,
 check `job_runs.stats.rowsWritten` against the §8.6 model after the first full
 Saturday, since the D1 write cap is hard-enforced.
+
+**What M8 did NOT close**, stated plainly so it is not mistaken for done:
+
+- Spikes **S1** (ingest CPU) and **S2** (D1 statement accounting) are
+  **unmeasured**. They are no longer blocked — the Worker they needed exists —
+  and §18 gives the exact commands.
+- **S4(c)** (January postseason reachability) cannot be checked until January.
+- A manual deploy job in `.github/workflows/ci.yml` was dropped: deploy stays a
+  local `npm run deploy` (`docs/OPERATIONS.md`), because a deploy job would need
+  a Cloudflare API token in repository secrets for a two-command manual step.
 
 **Runbook items with a date attached** (do not let these be discovered by a
 friend who cannot find a game to bet):
@@ -2870,12 +3274,17 @@ meaning something afterwards:
   `@deprecated`, and never thrown. **A code is never repurposed or removed**, so a
   deployed client's copy of the vocabulary stays valid.
 
-**`migrations/0001_init.sql` is edited IN PLACE for the same reason.** Nothing is
-deployed yet, so a cross-cutting schema change is applied to the initial file
-rather than shipped as a `0002` that immediately rebuilds tables nobody has ever
-populated. From M8's first `wrangler d1 migrations apply --remote` onward the file
-is frozen for good and every change is a new numbered migration. The header of
-the file says so too.
+**`migrations/0001_init.sql` is now FROZEN.** M5b's schema half was folded into
+`0001` for the same "the contract re-opens exactly once" reason — at the time
+nothing had been deployed, so a `0002` would have immediately rebuilt tables
+nobody had ever populated. **That window closed on 2026-09-14**, when
+`wrangler d1 migrations apply spicybetting --remote` applied `0001` to the live
+D1 and D1 recorded it in `d1_migrations`. Since then the file is frozen for good
+and **every schema change is a new numbered `migrations/000N_*.sql`** — an edit
+to `0001` is never replayed, so it would silently desynchronise the repo from
+production. (Comment-only edits are fine; they change no DDL.) CLAUDE.md rule 9
+and the header of the file itself say the same thing, and
+`tests/unit/docs.spec.ts` fails if any of the four stops saying it.
 
 ## 17. Risks and mitigations
 
@@ -2899,7 +3308,29 @@ the file says so too.
 
 ## 18. Spikes
 
-**S1 — CPU cost of ingesting a full CFB Saturday (RE-SCOPED).**
+Status at a glance: **S1 UNMEASURED** (no longer blocked — the Worker is
+deployed; nobody has read the number yet), **S2 UNMEASURED** (same),
+**S3 RESOLVED**, **S4(a)/(b) RESOLVED**, **S4(c) OPEN until January**.
+
+**How to measure S1 and S2, now that there is a deployed Worker.** Both answers
+come off `wrangler tail`, which prints one JSON log line per invocation carrying
+a **`cpuTime`** field (milliseconds) alongside `outcome` and any exception:
+
+```bash
+npx wrangler tail --format json                 # leave running in one terminal
+# in another, as an admin, force one ingest:
+curl -X POST -b "$COOKIE" -H 'x-csrf: 1' https://spicybetting.wardcrazy01894.workers.dev/api/admin/jobs/refresh
+# then read `cpuTime` off the tailed line for that invocation (S1).
+```
+
+Do it on a Saturday ET date target (the 86-game CFB slate is the worst case) and
+take a handful of runs for a p95 rather than one sample. `GET /api/admin/jobs`
+gives the matching `stats.rowsWritten` for the same run, so CPU and rows are read
+together. For **S2**, the same tail shows whether a `batch()` of 60 statements
+returns an error — the probe below — and `outcome` says whether the invocation
+was killed for exceeding limits rather than failing in application code.
+
+**S1 — CPU cost of ingesting a full CFB Saturday (RE-SCOPED). UNMEASURED.**
 _Background_: an earlier version of this spike assumed `JSON.parse` was the risk.
 It is not. Measured locally, `JSON.parse` of the committed 1.3 MB CFB week file is
 **~2.0 ms** (20-run mean), and per-ET-date splitting barely helps anyway because
@@ -2914,17 +3345,17 @@ numbers. What remains is CPU.)
 _Note_: the A/B split is what makes it ~172 statements rather than ~86 — two per
 game plus one per line. That trade is deliberate: rows written are hard-enforced,
 statements per invocation are the open question of S2.
-_Method_: after M4, `POST /api/admin/jobs/refresh` against a deployed Worker on a
-real Saturday date; read CPU time from `wrangler tail` and the dashboard. Also
-instrument `performance.now()` around map/bind separately from parse in a
-pool-workers test.
+_Method_: `POST /api/admin/jobs/refresh` against the deployed Worker on a real
+Saturday date; read the `cpuTime` field off that invocation's `wrangler tail`
+line (see the recipe above) and cross-check the dashboard. Also instrument
+`performance.now()` around map/bind separately from parse in a pool-workers test.
 _Exit criterion_: a p95 CPU number for the worst target, plus a decision between (a) ship as is,
 (b) `REFRESH_TARGETS_PER_RUN=1`, (c) drop `display_clock` from the comparison
 tuple (§8.6), (d) split the mapping across two invocations via an internal
 self-`fetch`, (e) escalate to Alex re: Workers Paid.
 **Blocks raising `REFRESH_TARGETS_PER_RUN` above 2.**
 
-**S2 — D1 statement accounting per invocation.**
+**S2 — D1 statement accounting per invocation. UNMEASURED.**
 _Question_: does a `db.batch([...n])` count as 1 or n against the free-plan
 subrequest/query budget, and is the binding number 50 or 1000? The D1 limits page
 says 50; the 2026-02-11 changelog says Cloudflare-service subrequests are 1000 on
@@ -2940,7 +3371,16 @@ already over and the remedy is R1's "split the mapping across two invocations"
 rung, not a smaller chunk. `MAX_BATCH_STATEMENTS` is the size of ONE batch, not a
 per-invocation total, and db.ts now says so.
 
-**S3 — `@cloudflare/vitest-pool-workers` + D1 migrations ergonomics.**
+**S3 — `@cloudflare/vitest-pool-workers` + D1 migrations ergonomics. RESOLVED.**
+`readD1Migrations('./migrations')` + `applyD1Migrations` in
+`tests/worker/setup.ts` applies `0001_init.sql` in full — all seven triggers and
+every `CHECK` — and `tests/worker/schema.spec.ts` exercises them directly,
+including the `INSERT OR IGNORE` overdraft abort. The `better-sqlite3` fallback
+was not needed. The secondary question is answered too: the pool tolerates
+`assets.directory` pointing at a `dist/client` that `npm run pretest` creates, so
+`wrangler.configPath` stayed. (Pool 0.22 on vitest 4 exposes itself as the
+`cloudflareTest` Vite plugin rather than `defineWorkersProject`; same options,
+new location.) Original framing, kept for the record:
 _Question_: does `applyD1Migrations` from `cloudflare:test` apply
 `migrations/0001_init.sql` — **including the four `ledger` triggers and every
 `CHECK`** — cleanly per test, and is per-test isolation fast enough? Secondary:
@@ -3043,10 +3483,18 @@ Where an answer reversed an earlier default, the reversal is called out.
 
 ## 20. Out of scope for v1 (future work)
 
-Player props · live/in-play betting · teasers · round robins · futures ·
+Player props · live/in-play betting · round robins · futures ·
 multi-book line shopping (the schema is ready: `game_lines` is keyed by provider) ·
 line-movement history (`line_history` table) · email/push notifications ·
 password reset UI (admin script only) · private leagues/groups (one global friend
 group) · other sports (NBA, MLB, CBB) · custom domain · social feed / bet comments ·
-CSV export · mobile app · half-point buy · cash-out · season archives and pruning of
-old `games` rows · mixed-league parlays (see Q3).
+CSV export · mobile app · half-point buy · cash-out · pruning of old `games` rows ·
+side pots (`bankrolls.kind = 'custom'` — the schema is ready, nothing writes one) ·
+DK-style "Super"/"Monster" specialty teasers (10/13 points, ties LOSE — a
+materially different rule set, §5.8).
+
+**Moved OUT of this list by M5b, and shipped:** teasers (6 / 6.5 / 7 point, 2-10
+legs, spread and total, §5.8) and mixed-league parlays (§19 Q3 answered "one
+account balance", which is what made a cross-league leg legal). "Season archives"
+is gone from the list too — not because it shipped, but because §19 Q5 removed
+the concept of a season from the product entirely.

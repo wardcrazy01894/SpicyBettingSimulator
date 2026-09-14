@@ -11,12 +11,20 @@
 --     reaches 20+ digits and SQLite silently stores that as REAL (verified). See
 --     PLAN.md 5.2.
 --
--- THIS FILE IS EDITABLE UNTIL THE FIRST REMOTE DEPLOY (M8). Nothing is deployed
--- yet, so a cross-cutting schema change (M5b: account balances, cross-league
--- bets, teasers) is applied here IN PLACE rather than as a second migration that
--- immediately rewrites tables nobody has ever populated. From M8's first
--- `wrangler d1 migrations apply --remote` onward this file is frozen for good and
--- every change is a new numbered 0002_*.sql.
+-- THIS FILE IS FROZEN. It was applied to the REMOTE D1 on 2026-09-14 (M8's
+-- deploy) and D1 recorded it in the `d1_migrations` table, so
+-- `wrangler d1 migrations apply` will never replay it. EVERY schema change from
+-- here is a NEW numbered migration: `migrations/0002_*.sql`, `0003_*.sql`, ….
+-- Editing the DDL below changes nothing in production and leaves this file
+-- describing a database that does not exist. Comment-only edits (like this one)
+-- are fine.
+--
+-- HISTORY, so nobody re-derives the old rule: before that first remote deploy
+-- this file was the live schema and the M5b contract change (account balances,
+-- cross-league bets, teasers) was folded into it rather than shipped as a 0002
+-- that would have immediately rebuilt tables nobody had ever populated. That
+-- window is closed. PLAN.md §16.1 and CLAUDE.md rule 9 say the same thing; all
+-- three move together or none of them do.
 
 -- ---------------------------------------------------------------------------
 -- users
@@ -374,10 +382,11 @@ END;
 -- `OR IGNORE` resolves a uniqueness conflict, so an idempotent
 -- `INSERT OR IGNORE INTO bankrolls (..., 0, ...)` aimed at an already-FUNDED row
 -- would abort the whole batch under a SUM comparison. M5b moved balance creation
--- into the signup batch and deleted the per-request prelude, but the admin
--- repair path (`ensureMainBalance`) is still shaped that way, and the reasoning
--- must survive regardless: for a genuinely new id no ledger rows can exist
--- (ledger_bi_bankroll_exists), so `<> 0` is equivalent for every real insert.
+-- into the signup batch and deleted the per-request prelude, but
+-- `ensureMainBalance()` -- a tested repair primitive with no endpoint yet -- is
+-- still shaped that way, and the reasoning must survive regardless: for a
+-- genuinely new id no ledger rows can exist (ledger_bi_bankroll_exists), so
+-- `<> 0` is equivalent for every real insert.
 CREATE TRIGGER bankrolls_bi_balance_guard BEFORE INSERT ON bankrolls
 WHEN NEW.balance_cents <> 0
 BEGIN

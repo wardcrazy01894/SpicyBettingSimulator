@@ -143,12 +143,14 @@ export interface SettleLeg {
 }
 
 /**
- * How the surviving legs are priced. TODAY there is exactly one kind, and this
- * function is the ONE place that decides it.
+ * How the surviving legs are priced. TWO kinds since M5b, and this function is
+ * the ONE place that decides between them.
  *
- * Teasers (M5b): `bet_type = 'teaser'` carries `teaser_points_tenths`, and
- * `gradeBet` takes the matching `pricing` so a pushed leg drops to the next
- * payout tier and fewer than two survivors refunds the stake.
+ * It reads the BET ROW, never the legs: a teaser's legs are deliberately
+ * indistinguishable from a parlay's (the teased line is already in
+ * `line_tenths`, and `american_price` is a +100 placeholder), so `bet_type` and
+ * `teaser_points_tenths` are the only evidence there is. `gradeBet` then drops a
+ * pushed leg to the card's next tier, and refunds when fewer than two survive.
  */
 export type { BetPricing } from '../shared/grading.js';
 
@@ -480,10 +482,11 @@ export function gradeSettleableBet(bet: SettleableBet, legs: readonly SettleLeg[
 }
 
 /**
- * The ONE call site of `gradeBet` in the settlement path, isolated so the M5b
- * rebase is a one-line change: drop the underscore from `_pricing` and pass it
- * as `gradeBet`'s 4th argument. Nothing else in this module knows how a bet is
- * priced.
+ * The ONE call site of `gradeBet` in the settlement path. It stays a named
+ * function rather than being inlined so that "how a bet is priced" enters the
+ * settlement path through exactly one door: `pricingFor()` decides, this passes
+ * it, and nothing else in this module knows anything about pricing. A second
+ * call site is how a teaser would quietly get graded as a parlay.
  */
 function gradeWithPricing(
   stakeCents: number,

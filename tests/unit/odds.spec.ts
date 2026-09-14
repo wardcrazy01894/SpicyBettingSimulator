@@ -848,4 +848,15 @@ describe('teasedLineTenths', () => {
     expectAppError(() => teasedLineTenths('spread', 'home', -75, 6), 'VALIDATION');
     expectAppError(() => teasedLineTenths('spread', 'home', -7.5, 60), 'VALIDATION');
   });
+
+  it('refuses an INCOHERENT market/side pair instead of answering it', () => {
+    // The schema forbids these legs outright
+    // (`CHECK ((market = 'total') = (side IN ('over','under')))`), so reaching
+    // here with one is a caller bug. The market branch must not run first: a
+    // `('spread', 'over')` leg would otherwise come back as `lineTenths +
+    // points` — a perfectly plausible number for a leg that cannot exist.
+    expectAppError(() => teasedLineTenths('spread', 'over', -75, 60), 'VALIDATION');
+    expectAppError(() => teasedLineTenths('spread', 'under', -75, 60), 'VALIDATION');
+    expectAppError(() => teasedLineTenths('total', 'away', 455, 60), 'VALIDATION');
+  });
 });

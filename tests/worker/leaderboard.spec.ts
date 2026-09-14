@@ -11,6 +11,7 @@ import type { ApiErrorBody } from '../../src/shared/errors.js';
 import { INITIAL_BANKROLL_CENTS } from '../../src/shared/constants.js';
 import { buildApp } from '../../src/worker/index.js';
 import {
+  balanceOf,
   bankrollDrift,
   mainBankrollId,
   seedBankroll,
@@ -555,6 +556,67 @@ describe('GET /api/leaderboard', () => {
     expect(row?.pendingStakeCents).toBe(4000);
     expect(row?.equityCents).toBe(INITIAL_BANKROLL_CENTS + 2500 - 1000);
     expect(row?.record).toEqual({ won: 1, lost: 0, push: 0, void: 0 });
+  });
+
+  it('ignores a CUSTOM balance: equity is main balance + MAIN pending only', async () => {
+    const alex = await register('sidepot');
+    const s = scope();
+    const mainId = await mainBankrollId(env.DB, alex.id);
+
+    // A future side pot (`kind='custom'`), funded through the real triggers so
+    // `SUM(ledger) === balance_cents` still holds for it. v1 writes none of
+    // these; the point is that the leaderboard is already correct when one
+    // exists, rather than correct only because none does.
+    const customId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+         VALUES (?1, ?2, 'Bowl season', 'custom', 0, ?3, ?3)`,
+      ).bind(customId, alex.id, Date.now()),
+      env.DB.prepare(
+        `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
+         VALUES (?1, ?2, 'admin_adjust', ?1, NULL, 50000, ?3, 'side pot')`,
+      ).bind(crypto.randomUUID(), customId, Date.now()),
+    ]);
+
+    // One OPEN bet on the main balance, and one on the side pot.
+    const gid = s.gid(1);
+    await seedGameWithLine(env.DB, { id: gid, season: s.season, kickoffAt: Date.now() + HOUR });
+    await seedSettledBet(env.DB, {
+      id: `main-open-${String(s.season)}`,
+      userId: alex.id,
+      season: s.season,
+      status: 'pending',
+      stakeCents: 3000,
+    });
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO bets (id, user_id, bankroll_id, league, season, bet_type, leg_count,
+                           stake_cents, american_price, potential_payout_cents, status,
+                           placed_at, earliest_kickoff_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'nfl', ?4, 'straight', 1, 7000, -110, 13363, 'pending', ?5, ?5, ?5, ?5)`,
+      ).bind(`custom-open-${String(s.season)}`, alex.id, customId, s.season, Date.now()),
+      env.DB.prepare(
+        `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
+         VALUES (?1, ?2, 'bet_stake', ?3, ?3, -7000, ?4, 'side pot stake')`,
+      ).bind(crypto.randomUUID(), customId, `custom-open-${String(s.season)}`, Date.now()),
+    ]);
+
+    const body = await (await get('/api/leaderboard', alex.cookie)).json<LeaderboardResponse>();
+    const row = body.rows.find((r) => r.username === alex.name);
+
+    // balanceCents is the MAIN row only — the 50,000¢ side pot is invisible.
+    expect(row?.balanceCents).toBe(INITIAL_BANKROLL_CENTS - 3000);
+    // ...and so is the 7,000¢ riding on it. Counting that stake here would add
+    // money that was never deducted from balanceCents.
+    expect(row?.pendingStakeCents).toBe(3000);
+    expect(row?.equityCents).toBe(INITIAL_BANKROLL_CENTS);
+    expect(row?.equityCents).toBe((row?.balanceCents ?? 0) + (row?.pendingStakeCents ?? 0));
+
+    // Both balances still reconcile, so the fixture itself is honest.
+    expect(await bankrollDrift(env.DB)).toEqual([]);
+    expect(await balanceOf(env.DB, customId)).toBe(50000 - 7000);
+    expect(await balanceOf(env.DB, mainId)).toBe(INITIAL_BANKROLL_CENTS - 3000);
   });
 });
 
