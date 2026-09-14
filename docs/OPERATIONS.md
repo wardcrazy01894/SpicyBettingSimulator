@@ -167,8 +167,9 @@ review before merge; nothing auto-merges.
 
 Reviewing a Cloudflare-group PR means checking two constraints, both in PLAN §15: `compatibility_date`
 in `wrangler.jsonc` must not be newer than the workerd bundled with `@cloudflare/vitest-pool-workers`
-(the pool refuses it and `npm run test:worker` fails), and the pool's `peerDependencies` pin the
-`vitest` major. If a pool bump widens that peer to a vitest major we currently ignore, the PR
+(the pool refuses it with `ERR_RUNTIME_FAILURE` and `npm run test:worker` fails; a date later than
+today's fails differently, `ERR_FUTURE_COMPATIBILITY_DATE`), and the pool's `peerDependencies` pin
+the `vitest` major. If a pool bump widens that peer to a vitest major we currently ignore, the PR
 arrives red and the fix is to lift the `vitest` ceiling in BOTH `dependabot.yml` and PLAN §15 — not
 to rerun CI.
 

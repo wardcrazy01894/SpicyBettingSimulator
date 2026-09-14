@@ -5,7 +5,8 @@
 # auto-merges.
 #
 # Grouping keeps the PR count sane: one weekly PR for all minor/patch bumps,
-# one per major, one for all GitHub Actions. The Cloudflare toolchain
+# one per major (outside the two named groups, which take majors too), one for
+# all GitHub Actions. The Cloudflare toolchain
 # (`wrangler`, `@cloudflare/vitest-pool-workers`, `@cloudflare/workers-types`)
 # is its own group so it is REVIEWED in one place, because bumping it has a
 # rule attached: `compatibility_date` in wrangler.jsonc is pinned to the newest
