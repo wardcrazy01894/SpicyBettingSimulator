@@ -162,12 +162,20 @@ retried automatically (`settle_attempts`) and parked in `stats.stuck[]` after `M
 
 Dependabot (`.github/dependabot.yml`) opens bump PRs weekly on Monday morning ET: one grouped PR
 for minor/patch npm bumps, one per major, one for the Cloudflare toolchain (`wrangler` and
-`@cloudflare/*` move together), and one for GitHub Actions. Each is a normal PR — CI plus an
-adversarial review before merge; nothing auto-merges. Before merging a Cloudflare bump, confirm
-`npm run test:worker` still accepts `compatibility_date` in `wrangler.jsonc` (the pool refuses a
-date newer than its bundled workerd). The three version ceilings in PLAN §16 (vitest, typescript,
-@vitejs/plugin-react majors) are `ignore` rules in that file. Security-only updates are enabled
-separately in the repo settings and arrive the same way.
+`@cloudflare/*`), and one for all GitHub Actions. Each is a normal PR — CI plus an adversarial
+review before merge; nothing auto-merges.
+
+Reviewing a Cloudflare-group PR means checking two constraints, both in PLAN §15: `compatibility_date`
+in `wrangler.jsonc` must not be newer than the workerd bundled with `@cloudflare/vitest-pool-workers`
+(the pool refuses it and `npm run test:worker` fails), and the pool's `peerDependencies` pin the
+`vitest` major. If a pool bump widens that peer to a vitest major we currently ignore, the PR
+arrives red and the fix is to lift the `vitest` ceiling in BOTH `dependabot.yml` and PLAN §15 — not
+to rerun CI.
+
+Security-only updates are enabled separately in the repo settings. They arrive as their own
+ungrouped PRs, outside `open-pull-requests-limit`, and the `ignore` rules apply to them too: a
+vulnerability fixed only in an ignored major produces no PR and stays visible only in the Security
+tab, which is worth a look when the weekly PRs are reviewed.
 
 ## Open measurements (PLAN Spikes S1 / S2)
 

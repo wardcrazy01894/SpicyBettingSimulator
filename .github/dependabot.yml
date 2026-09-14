@@ -5,16 +5,26 @@
 # auto-merges.
 #
 # Grouping keeps the PR count sane: one weekly PR for all minor/patch bumps,
-# and one per major. The Cloudflare toolchain is its own group because
-# `wrangler` and `@cloudflare/vitest-pool-workers` bundle their own workerd and
-# MUST move together — the pool refuses a `compatibility_date` newer than its
-# workerd, so bumping wrangler alone breaks `npm run test:worker`
-# (see the comment on `compatibility_date` in wrangler.jsonc).
+# one per major, one for all GitHub Actions. The Cloudflare toolchain
+# (`wrangler`, `@cloudflare/vitest-pool-workers`, `@cloudflare/workers-types`)
+# is its own group so it is REVIEWED in one place, because bumping it has a
+# rule attached: `compatibility_date` in wrangler.jsonc is pinned to the newest
+# date the workerd bundled with the POOL supports, and the pool pins the vitest
+# major through its peerDependencies. The three are not required to move in
+# lockstep — the pool ships its own nested wrangler and is green today with a
+# different workerd than the top-level one — but a reviewer needs them side by
+# side to check those two constraints. See PLAN.md §15 and docs/OPERATIONS.md
+# "Dependencies".
 #
-# The `ignore` entries are the three ceilings documented in PLAN.md §16
-# ("Why not latest"): vitest 5 is unsupported by the pool, typescript 6+/7 is
-# outside typescript-eslint's range, and @vitejs/plugin-react 6 drags in peers
-# we do not use. Lift an ignore only when its constraint in PLAN.md is lifted.
+# The `ignore` entries encode the ceilings in PLAN.md §15's "Why not latest"
+# table — three ceilings, four entries: vitest 5 is unsupported by the pool
+# (`@vitest/*` rides with it because `@vitest/coverage-v8` peers on an EXACT
+# vitest version); typescript >= 6.1 is outside typescript-eslint's range
+# (6.0.x is inside it, so only 6.1+ is ignored); @vitejs/plugin-react 6 drags
+# in peers we do not use. `tests/unit/docs.spec.ts` asserts this list and that
+# table name the same packages, so lifting a ceiling means editing both.
+# NOTE: `ignore` also filters SECURITY updates — a CVE fixed only in an ignored
+# major produces no PR; the alert still shows in the Security tab.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -29,11 +39,13 @@ updates:
     commit-message:
       prefix: deps
     groups:
+      # First match wins, so this precedes the catch-all below.
       cloudflare:
         patterns:
           - wrangler
           - '@cloudflare/*'
       minor-and-patch:
+        patterns: ['*']
         update-types: [minor, patch]
     ignore:
       - dependency-name: vitest
@@ -41,7 +53,7 @@ updates:
       - dependency-name: '@vitest/*'
         update-types: [version-update:semver-major]
       - dependency-name: typescript
-        update-types: [version-update:semver-major]
+        versions: ['>=6.1.0']
       - dependency-name: '@vitejs/plugin-react'
         update-types: [version-update:semver-major]
 
@@ -55,3 +67,6 @@ updates:
     labels: [dependencies]
     commit-message:
       prefix: ci
+    groups:
+      actions:
+        patterns: ['*']

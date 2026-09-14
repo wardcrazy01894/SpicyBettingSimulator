@@ -687,6 +687,42 @@ describe('stale phrases', () => {
 // ---------------------------------------------------------------------------
 
 describe('claims the docs make about the repo', () => {
+  /**
+   * The dependency ceilings live in two places by necessity — PLAN §15's
+   * "Why not latest" table says WHY, `.github/dependabot.yml`'s `ignore` list
+   * makes Dependabot stop proposing them — and the PLAN sentence between them
+   * promises they name the same packages. This is that promise.
+   */
+  it('dependabot.yml ignores exactly the packages PLAN §15 pins, and vice versa', () => {
+    const dependabot = read('.github/dependabot.yml');
+    const ignored = [...dependabot.matchAll(/^\s+- dependency-name: '?([^'\n]+?)'?$/gm)].map(
+      (m) => m[1] ?? '',
+    );
+    expect(ignored.length, 'dependabot.yml has no ignore entries').toBeGreaterThan(0);
+
+    const m16 = section(PLAN, '15');
+    const tableStart = m16.indexOf('| Package');
+    expect(tableStart, 'PLAN §15 lost its "Why not latest" table').toBeGreaterThan(-1);
+    const table = m16.slice(tableStart).split('\n\n')[0] ?? '';
+    const pinned = [...table.matchAll(/^\| `([^`]+)`/gm)].map((m) => m[1] ?? '');
+    expect(pinned.length).toBeGreaterThan(0);
+
+    for (const name of ignored) {
+      expect(
+        m16.includes(`\`${name}\``),
+        `dependabot.yml ignores \`${name}\` but PLAN §15 never names it. Add the ceiling and ` +
+          'its reason to the "Why not latest" table (or the sentence under it).',
+      ).toBe(true);
+    }
+    for (const name of pinned) {
+      expect(
+        ignored.includes(name),
+        `PLAN §15 pins \`${name}\` but dependabot.yml does not ignore it, so Dependabot will ` +
+          'keep proposing the bump the table says we cannot take.',
+      ).toBe(true);
+    }
+  });
+
   it('CLAUDE.md carries rule 11 (docs ship with the change)', () => {
     expect(
       /^11\. \*\*Docs are part of the change/m.test(CLAUDE),
