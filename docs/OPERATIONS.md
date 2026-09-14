@@ -9,12 +9,28 @@ to the owner's Cloudflare account (`npx wrangler whoami`).
 ```bash
 npm ci
 npm run typecheck && npm run lint && npm run format:check && npm test && npm run build   # the gate
-npx wrangler d1 migrations apply spicybetting --remote   # only when migrations/ changed
+npx wrangler d1 migrations apply spicybetting --remote   # idempotent; applies anything pending
 npm run deploy                                           # vite build + wrangler deploy
 curl -s https://spicybetting.wardcrazy01894.workers.dev/api/health
 ```
 
-Every merge to `main` is NOT auto-deployed; deploy is a manual step (above). Rollback = `git checkout <previous sha> && npm run deploy`.
+**Automatic deploys:** `.github/workflows/deploy.yml` runs on every push to `main` (and via
+"Run workflow"): `npm ci` → build the SPA → `wrangler d1 migrations apply --remote` → `wrangler deploy`
+→ health check. It needs two repo secrets — `CLOUDFLARE_API_TOKEN` (dashboard: My Profile → API Tokens →
+"Edit Cloudflare Workers" template, plus Account → D1 → Edit) and `CLOUDFLARE_ACCOUNT_ID`
+(`npx wrangler whoami`) — set with `gh secret set <NAME>`. Until they exist the workflow fails at the
+first wrangler step and the manual deploy above is the path. The `production` GitHub environment is
+restricted to protected branches (only `main` can deploy), so "Run workflow" cannot ship an unreviewed
+branch.
+
+**Rollback rolls back CODE only.** `git checkout <previous sha> && npm run deploy` (or re-run the older
+Deploy run) restores the Worker, but `wrangler d1 migrations apply` never un-applies. Two rules follow:
+migrations must be **expand-only and backward-compatible** with the currently deployed code (add
+nullable columns/tables now; drop or rename in a later deploy once no live code reads the old shape),
+and a rollback leaves the newer schema in place, which the expand-only rule makes safe.
+
+**A red Deploy run past the "Deploy the Worker" step means the new version IS live** (only the smoke
+check failed). Roll back manually if the site is actually broken; the workflow does not auto-revert.
 
 ## Secrets (set once; rotate with the same command)
 
