@@ -68,6 +68,7 @@ import {
 const ORIGIN = 'https://example.com';
 const INVITE = 'test-invite'; // vitest.workers.config.ts
 const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 
 let NOW = 0;
 let testIndex = 0;
@@ -516,6 +517,23 @@ describe('placeBet — lines', () => {
     const res = await post('/api/bets', straight(g(1)), alex.cookie);
     expect(res.status).toBe(409);
     expect(await errorCode(res)).toBe('MARKET_UNAVAILABLE');
+  });
+
+  it('a game days away accepts a 10-hour-old line and refuses a 19-hour-old one', async () => {
+    // The window is 3 × the refresh cadence at the tier the line was seen in:
+    // a line confirmed 5 days out was on the 6 h discovery cadence → 18 h.
+    // Reverting placement to the flat 3 h LINE_STALE_MS fails the first half.
+    const alex = await register();
+    await seedGame(env.DB, { id: g(1), kickoffAt: NOW + 5 * DAY });
+    await seedLine(env.DB, fullLine(g(1), NOW - 10 * HOUR));
+    const ok = await post('/api/bets', straight(g(1)), alex.cookie);
+    expect(ok.status, await ok.clone().text()).toBe(201);
+
+    await seedGame(env.DB, { id: g(2), kickoffAt: NOW + 5 * DAY });
+    await seedLine(env.DB, fullLine(g(2), NOW - 19 * HOUR));
+    const stale = await post('/api/bets', straight(g(2)), alex.cookie);
+    expect(stale.status).toBe(409);
+    expect(await errorCode(stale)).toBe('MARKET_UNAVAILABLE');
   });
 
   it('409 LINE_CHANGED when `expected` disagrees, with details.legs[].current', async () => {

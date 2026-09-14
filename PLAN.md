@@ -1684,16 +1684,22 @@ game per day instead of 96, and staleness is still detected within 45 minutes
 against a 3-hour `LINE_STALE_MS` floor.
 
 **The staleness window scales with the refresh tier.** A line is stale once
-unconfirmed for `lineStaleAfterMs(kickoff, now)` =
-`max(LINE_STALE_MS, LINE_STALE_MULTIPLIER (3) × expectedRefreshMs)`: 3 h for a
-game inside 48 h of kickoff (cadence hourly or faster, so 3 h unconfirmed means
-ingestion is broken), **18 h** for a game further out (cadence 6 h). A flat 3 h
-window declared every far-off game's line stale for half of each early-week
-day — three of every six hours — and hid the whole Saturday slate on a Monday.
-The window exists to catch a broken ingest, not to police line movement; with
-fake money, a stale-by-an-hour price is nobody's loss. `toLinesView` (board) and
-`loadLinesFor` (placement) use the same function, so the board never offers a
-price the server then refuses as `MARKET_UNAVAILABLE`.
+`now - seen_at` exceeds `lineStaleAfterMs(kickoff, seen_at)` =
+`max(LINE_STALE_MS, LINE_STALE_MULTIPLIER (3) × expectedRefreshMs(kickoff, seen_at))`
+(both in `src/shared/time.ts`, next to the refresh tiers they read): 3 h for a
+line confirmed inside 48 h of kickoff (cadence hourly or faster, so 3 h
+unconfirmed means ingestion is broken), **18 h** for one confirmed further out
+(cadence 6 h). A flat 3 h window declared every far-off game's line stale for
+half of each early-week day — three of every six hours — and hid the whole
+Saturday slate on a Monday. The window exists to catch a broken ingest, not to
+police line movement; with fake money, a stale-by-an-hour price is nobody's
+loss. The tier is judged at `seen_at`, NOT at `now`, so the window is fixed
+the moment a line is confirmed and is monotone in wall-clock time: a line that
+is fresh cannot flip to stale merely because the game crossed the 48 h boundary
+since. That is also what lets `toLinesView` (board) and `resolveLegSnapshots`
+(placement, `bets.ts`) — which evaluate at different instants — agree: for a
+given row they compute the same window, so the board never offers a price the
+server then refuses as `MARKET_UNAVAILABLE`.
 
 Other upsert rules:
 
@@ -1734,8 +1740,8 @@ delete or null the row. The last known line stays; `seen_at` simply stops
 advancing. Bettability is decided by `games.status` + `kickoff_at`, not by line
 presence, so a vanished line changes nothing about an in-flight game. For a
 _still-scheduled_ game whose line the book pulled, `seen_at` goes stale and the
-board hides that market once `now - seen_at > lineStaleAfterMs(kickoff, now)`
-(3 h inside 48 h of kickoff, 18 h beyond — see L3 above) — rendering an explicit
+board hides that market once `now - seen_at > lineStaleAfterMs(kickoff, seen_at)`
+(3 h if confirmed inside 48 h of kickoff, 18 h if further out — see L3 above) — rendering an explicit
 "line unavailable" state rather than a silently missing button.
 
 ### 8.6 Request and write budget
@@ -2236,7 +2242,7 @@ GameCard = {
     provider: string,
     capturedAt: number,           // when the BOOK's price last CHANGED
     seenAt: number,               // when we last CONFIRMED the line exists
-    stale: boolean,               // now - seenAt > lineStaleAfterMs(kickoff, now)
+    stale: boolean,               // now - seenAt > lineStaleAfterMs(kickoff, seenAt)
     spread: null | { homeTenths, homePrice, awayTenths, awayPrice },
     total:  null | { tenths, overPrice, underPrice },
     moneyline: null | { homePrice, awayPrice }

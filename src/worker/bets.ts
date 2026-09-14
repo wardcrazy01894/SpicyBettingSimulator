@@ -59,7 +59,7 @@ import {
   MIN_ABS_AMERICAN_PRICE,
 } from '../shared/constants.js';
 import { AppError } from '../shared/errors.js';
-import { lineStaleAfterMs } from './ingest.js';
+import { lineStaleAfterMs } from '../shared/time.js';
 import { projectLeg } from '../shared/grading.js';
 import {
   PUSH_AMERICAN_PRICE,
@@ -532,7 +532,10 @@ export async function resolveLegSnapshots(
       });
     }
     const line = lines.get(leg.gameId);
-    if (line === undefined || now - line.seen_at > lineStaleAfterMs(game.kickoff_at, now)) {
+    if (
+      line === undefined ||
+      now - line.seen_at > lineStaleAfterMs(game.kickoff_at, line.seen_at)
+    ) {
       throw new AppError('MARKET_UNAVAILABLE', `No current line for ${leg.gameId}.`, {
         gameId: leg.gameId,
         market: leg.market,

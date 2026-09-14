@@ -51,10 +51,16 @@ import {
   GAME_SEEN_TOUCH_MS,
   INGEST_WINDOW_MS,
   LINE_SEEN_TOUCH_MS,
-  LINE_STALE_MS,
-  LINE_STALE_MULTIPLIER,
   RESERVED_DISCOVERY_SLOTS,
 } from '../shared/constants.js';
+import {
+  LIVE_HORIZON_MS,
+  REFRESH_DISCOVERY_MS,
+  REFRESH_DONE_MS,
+  REFRESH_LIVE_MS,
+  REFRESH_SOON_MS,
+  SOON_HORIZON_MS,
+} from '../shared/time.js';
 import { etDateKeyRange, etDayBounds } from '../shared/time.js';
 import { LEAGUES } from '../shared/types.js';
 import type { EpochMs, Game, GameLines, League } from '../shared/types.js';
@@ -118,39 +124,10 @@ const MIN_MS = 60_000;
 const HOUR_MS = 60 * MIN_MS;
 const DAY_MS = 24 * HOUR_MS;
 
-/** Reschedule tiers (PLAN.md §8.4). */
-const REFRESH_LIVE_MS = 15 * MIN_MS;
-const REFRESH_SOON_MS = 60 * MIN_MS;
-const REFRESH_DISCOVERY_MS = 6 * HOUR_MS;
-const REFRESH_DONE_MS = 24 * HOUR_MS;
-/** "kickoff within 3h" / "within 48h" — the two tier boundaries. */
-const LIVE_HORIZON_MS = 3 * HOUR_MS;
-/** How long a `scheduled` game past its kickoff still counts as live (see `within`). */
+/** Reschedule tiers live in src/shared/time.ts (PLAN.md §8.4) alongside the
+ * staleness window that is derived from them; `KICKOFF_GRACE_MS` is only
+ * meaningful to the planner and stays here. */
 const KICKOFF_GRACE_MS = 4 * 60 * 60 * 1000;
-const SOON_HORIZON_MS = 48 * HOUR_MS;
-/**
- * How often a still-scheduled game is expected to be refreshed, by distance
- * to kickoff — the same tiers `computeNextRunAt` uses, exposed so staleness
- * can be judged against what ingestion is actually promising for THAT game.
- */
-export function expectedRefreshMs(kickoffAt: EpochMs, now: EpochMs): number {
-  const ahead = kickoffAt - now;
-  if (ahead <= LIVE_HORIZON_MS) return REFRESH_LIVE_MS;
-  if (ahead <= SOON_HORIZON_MS) return REFRESH_SOON_MS;
-  return REFRESH_DISCOVERY_MS;
-}
-
-/**
- * A line is stale once it has gone unconfirmed for longer than this:
- * `LINE_STALE_MULTIPLIER` (3) refresh cycles for the game's tier, never less
- * than `LINE_STALE_MS` (3 h). So a game inside 48 h keeps the 3 h window
- * (cadence hourly or faster; 3 h unconfirmed means ingest is broken), and a
- * game further out gets 18 h (cadence 6 h). PLAN.md §8.5.
- */
-export function lineStaleAfterMs(kickoffAt: EpochMs, now: EpochMs): number {
-  return Math.max(LINE_STALE_MS, LINE_STALE_MULTIPLIER * expectedRefreshMs(kickoffAt, now));
-}
-
 /** Failure backoff: `min(15min * 2^consecutive_failures, 6h)`. */
 const BACKOFF_BASE_MS = REFRESH_LIVE_MS;
 const BACKOFF_CAP_MS = REFRESH_DISCOVERY_MS;

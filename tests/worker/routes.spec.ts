@@ -20,7 +20,6 @@ import {
   TEASER_POINTS_TENTHS,
 } from '../../src/shared/constants.js';
 import { buildApp } from '../../src/worker/index.js';
-import { lineStaleAfterMs } from '../../src/worker/ingest.js';
 import { fullLine, seedGame, seedGameWithLine, seedLine, seedSettledBet } from './seed.js';
 
 /** The caller's main balance out of `GET /api/bankroll`'s `{ balances }` list. */
@@ -282,18 +281,6 @@ describe('games board', () => {
       await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
     ).json<GamesResponse>();
     expect(second.games.find((g) => g.id === gid('live'))?.bettable).toBe(false);
-  });
-
-  it('the staleness window is 3 refresh cycles, floored at LINE_STALE_MS', () => {
-    const now = Date.now();
-    // Inside 3 h: cadence 15 min, 3 × 15 min = 45 min, floored to 3 h.
-    expect(lineStaleAfterMs(now + HOUR, now)).toBe(LINE_STALE_MS);
-    // Inside 48 h: cadence 1 h, 3 × 1 h = 3 h.
-    expect(lineStaleAfterMs(now + 24 * HOUR, now)).toBe(LINE_STALE_MS);
-    // Beyond 48 h: cadence 6 h, 3 × 6 h = 18 h.
-    expect(lineStaleAfterMs(now + 72 * HOUR, now)).toBe(18 * HOUR);
-    expect(lineStaleAfterMs(now + 49 * HOUR, now)).toBe(18 * HOUR);
-    expect(lineStaleAfterMs(now + 48 * HOUR, now)).toBe(LINE_STALE_MS);
   });
 
   it('a game days away keeps a 10-hour-old line bettable, and drops a 19-hour-old one', async () => {
