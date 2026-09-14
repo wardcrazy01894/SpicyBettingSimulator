@@ -171,7 +171,9 @@ the one failure mode the whole checklist has.
    `0001` is closed and is history, not precedent. PLAN.md §16.1.
    - `0002_users_deleted_at.sql` is the first of those new files,
      `0003_bug_reports.sql` (the `bug_reports` table) the second, and
-     `0004_games_conference.sql` adds `games.home/away_conference_id`. PLAN.md §16.2.
+     `0004_games_conference.sql` adds `games.home/away_conference_id`, and
+     `0005_bets_teaser_tiers.sql` REBUILDS `bets`/`bet_legs`/`ledger` children-first
+     to widen the teaser-tier CHECK (the only way on D1; proof in §16.2). PLAN.md §16.2.
    - A new migration is a deploy step. The Deploy workflow
      (`.github/workflows/deploy.yml`) applies pending migrations automatically on
      every merge to `main`, before it deploys. For a MANUAL deploy the order is
@@ -266,7 +268,7 @@ public/       static files vite copies into dist/client as-is: the site icon
 migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               every change is a new numbered 000N_*.sql (rule 9) — 0002 adds
               users.deleted_at, 0003 adds bug_reports, 0004 adds
-              games.home/away_conference_id
+              games.home/away_conference_id, 0005 rebuilds bets for 3–14-pt teasers
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES
@@ -280,7 +282,7 @@ docs/samples/ captured ESPN payloads (NFL 16 events, CFB 86) — read only by th
               parser is tested against the real thing
 docs/         teaser-odds.md — the sourcing behind TEASER_PAYOUTS
 scripts/      fixture server, admin password tool, ledger reconcile, branch
-              protection, icon rasteriser
+              protection, icon rasteriser, teaser card generator
 .github/      ci.yml (gate + gitleaks), deploy.yml, dependabot.yml (weekly grouped
               bumps; every one still gets CI + adversarial review), PR template
 ```

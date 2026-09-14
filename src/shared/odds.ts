@@ -242,7 +242,7 @@ export function teasedLineTenths(
   if (!isTeaserPoints(pointsTenths)) {
     throw new AppError(
       'VALIDATION',
-      `Teaser points must be 60, 65 or 70 tenths, got ${String(pointsTenths)}.`,
+      `Teaser points ${String(pointsTenths)} tenths is not on the card.`,
     );
   }
   // Coherence BEFORE the market branch, so an impossible pair can never take a
@@ -269,7 +269,7 @@ export function teasedLineTenths(
  * "the price a pushed-down teaser is paid at" a table read rather than a second
  * pricing rule that could drift from the first.
  *
- * @param pointsTenths 60 | 65 | 70 (6 / 6.5 / 7 points).
+ * @param pointsTenths one of TEASER_POINTS_TENTHS (3 … 14 points, in tenths).
  * @param legCount     2..10 — the SURVIVING leg count at settlement, which is
  *                     why a 1-leg lookup must throw rather than return a
  *                     straight-bet price: there is no such thing as a one-team
@@ -281,7 +281,7 @@ export function teaserPrice(pointsTenths: number, legCount: number): AmericanPri
   if (!isTeaserPoints(pointsTenths)) {
     throw new AppError(
       'VALIDATION',
-      `Teaser points must be 60, 65 or 70 tenths, got ${String(pointsTenths)}.`,
+      `Teaser points ${String(pointsTenths)} tenths is not on the card.`,
     );
   }
   const row: Readonly<Record<number, AmericanPrice>> = TEASER_PAYOUTS[pointsTenths];

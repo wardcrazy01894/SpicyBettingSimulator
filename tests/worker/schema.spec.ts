@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import { TEASER_POINTS_TENTHS } from '../../src/shared/constants.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 /**
@@ -261,15 +262,15 @@ describe('bets CHECK constraints (M5b)', () => {
     ).rejects.toThrow(/CHECK constraint failed/);
   });
 
-  it('only 60, 65 and 70 tenths are on the card', async () => {
-    for (const [i, tier] of [60, 65, 70].entries()) {
+  it('every tier in TEASER_POINTS_TENTHS is storable; off-grid values are not (0005)', async () => {
+    for (const [i, tier] of TEASER_POINTS_TENTHS.entries()) {
       await insertBet(`ok${String(i)}`, {
         betType: 'teaser',
         legCount: 2,
         teaserPointsTenths: tier,
       });
     }
-    for (const [i, tier] of [6, 55, 61, 75, 0].entries()) {
+    for (const [i, tier] of [6, 25, 61, 145, 0].entries()) {
       await expect(
         insertBet(`bad${String(i)}`, {
           betType: 'teaser',

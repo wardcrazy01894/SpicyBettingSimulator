@@ -53,7 +53,7 @@ export interface ConfigResponse {
    * a 409. Echoed by the server so a stale client cannot disagree with it.
    */
   readonly maxPayoutCents: Cents;
-  /** TEASER_POINTS_TENTHS — the tiers the slip's 6 / 6.5 / 7 selector offers. */
+  /** TEASER_POINTS_TENTHS — the tiers the slip's points selector offers (3 … 14 pt). */
   readonly teaserPoints: readonly number[];
   /**
    * TEASER_PAYOUTS, keyed `[pointsTenths][legCount]`. Echoed in full so the slip
@@ -200,11 +200,13 @@ export interface PlaceBetRequest {
   readonly stakeCents: Cents;
   readonly acceptLineChange?: boolean;
   /**
-   * Required iff `betType === 'teaser'`, rejected otherwise. TENTHS of a point:
-   * 60 / 65 / 70. Unlike a price, this IS a client instruction — it selects a
-   * row of the server's card, and the server re-reads the price from that card.
+   * Required iff `betType === 'teaser'`, rejected otherwise. TENTHS of a point,
+   * one of `TEASER_POINTS_TENTHS` (30 … 140 — 3 to 14 points, plus 65). Unlike
+   * a price, this IS a client instruction — it selects a row of the server's
+   * card, and the server re-reads the price from that card. Anything off the
+   * card is `400 TEASER_INVALID`.
    */
-  readonly teaserPoints?: 60 | 65 | 70;
+  readonly teaserPoints?: number;
   /**
    * Which account balance to charge. Absent means the caller's `main` balance.
    * A balance that is not the caller's is `404 BANKROLL_NOT_FOUND` — never 403,
@@ -271,7 +273,7 @@ export interface BetView {
   /** Season of the earliest-kickoff leg. Informational. */
   readonly season: number;
   readonly betType: BetType;
-  /** Tenths: 60 / 65 / 70 for a teaser, `null` for every other bet type. */
+  /** Tenths (one of TEASER_POINTS_TENTHS) for a teaser, `null` for every other bet type. */
   readonly teaserPoints: number | null;
   readonly stakeCents: Cents;
   /**

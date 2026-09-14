@@ -64,12 +64,13 @@ that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's
 
 Applied migrations, newest last:
 
-| File                        | What                                                         | Applied remotely                           |
-| --------------------------- | ------------------------------------------------------------ | ------------------------------------------ |
-| `0001_init.sql`             | the whole schema                                             | 2026-09-14                                 |
-| `0002_users_deleted_at.sql` | `users.deleted_at INTEGER NULL` — account soft delete        | on merge to `main`, by the Deploy workflow |
-| `0003_bug_reports.sql`      | `bug_reports` table + 2 indexes — in-app bug reports         | on merge to `main`, by the Deploy workflow |
-| `0004_games_conference.sql` | `games.home/away_conference_id TEXT NULL` — CFB board filter | on merge to `main`, by the Deploy workflow |
+| File                         | What                                                                                       | Applied remotely                                                                               |
+| ---------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `0001_init.sql`              | the whole schema                                                                           | 2026-09-14                                                                                     |
+| `0002_users_deleted_at.sql`  | `users.deleted_at INTEGER NULL` — account soft delete                                      | on merge to `main`, by the Deploy workflow                                                     |
+| `0003_bug_reports.sql`       | `bug_reports` table + 2 indexes — in-app bug reports                                       | on merge to `main`, by the Deploy workflow                                                     |
+| `0004_games_conference.sql`  | `games.home/away_conference_id TEXT NULL` — CFB board filter                               | on merge to `main`, by the Deploy workflow                                                     |
+| `0005_bets_teaser_tiers.sql` | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied) to widen the teaser CHECK to 3–14 pt | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards |
 
 (0003 and 0004 were written on parallel branches and numbered by reservation; wrangler applies
 whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)

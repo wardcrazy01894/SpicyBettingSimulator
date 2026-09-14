@@ -111,12 +111,27 @@ export function BetSlip(): ReactElement {
 
         {teasing && (
           <>
-            <Segmented<number>
-              label="Teaser points"
-              value={slip.teaserPointsTenths}
-              options={pointsOptions}
-              onChange={slip.setTeaserPoints}
-            />
+            {/* Thirteen tiers: a native <select>, like the week picker — a
+                segmented row cannot hold that many on a phone. */}
+            <div className="week-picker">
+              <label className="week-label" htmlFor="teaser-points">
+                Teaser points
+              </label>
+              <select
+                id="teaser-points"
+                className="week-select"
+                value={String(slip.teaserPointsTenths)}
+                onChange={(event) => {
+                  slip.setTeaserPoints(Number(event.target.value));
+                }}
+              >
+                {pointsOptions.map((option) => (
+                  <option key={option.value} value={String(option.value)}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <p className="muted slip-hint">
               Every line moves {teaserPointsLabel(slip.teaserPointsTenths)} your way. Spreads and
               totals only — moneylines cannot be teased.
