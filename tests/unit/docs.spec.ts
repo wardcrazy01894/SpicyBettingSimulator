@@ -23,7 +23,6 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -825,11 +824,24 @@ describe('claims the docs make about the repo', () => {
    * (override deleted while miniflare still wants the vulnerable version).
    */
   it("the sharp override exists exactly while the pool's miniflare needs it", () => {
-    const require = createRequire(import.meta.url);
-    const poolDir = dirname(require.resolve('@cloudflare/vitest-pool-workers/package.json'));
+    // Read by path, not require.resolve: the pool's package.json is behind an
+    // `exports` map. The pool's miniflare is nested when npm cannot hoist it
+    // and hoisted otherwise; whichever copy is found must be the version the
+    // pool declares, or this test is looking at the wrong miniflare.
+    const poolDir = join(ROOT, 'node_modules', '@cloudflare', 'vitest-pool-workers');
+    const pool = JSON.parse(readFileSync(join(poolDir, 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>;
+    };
+    const nested = join(poolDir, 'node_modules', 'miniflare', 'package.json');
     const miniflare = JSON.parse(
-      readFileSync(require.resolve('miniflare/package.json', { paths: [poolDir] }), 'utf8'),
+      readFileSync(
+        existsSync(nested) ? nested : join(ROOT, 'node_modules', 'miniflare', 'package.json'),
+        'utf8',
+      ),
     ) as { version: string; dependencies?: Record<string, string> };
+    expect(miniflare.version, 'not the miniflare the pool declares').toBe(
+      pool.dependencies['miniflare'],
+    );
     const wanted = /\d+\.\d+\.\d+/.exec(miniflare.dependencies?.['sharp'] ?? '')?.[0];
     expect(wanted, `miniflare ${miniflare.version} declares no sharp dependency`).toBeDefined();
     const cmp = (a: string, b: string): number => {
