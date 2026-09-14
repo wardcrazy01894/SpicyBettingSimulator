@@ -344,9 +344,13 @@ export interface BettingRecord {
  * which was keyed on (league, season) — a balance is neither, now.
  *
  * `balanceCents` is the whole account and is never filtered; `record`, `roi` and
- * `settledCount` ARE filterable by `?league=&season=`, because "how did I do in
- * college football this year" is a real question and "how much money do I have,
- * in college football" is not.
+ * `settledCount` ARE filterable by `?league=`, because "how did I do in college
+ * football" is a real question and "how much money do I have, in college
+ * football" is not.
+ *
+ * THERE IS NO `?season=` — on this endpoint or any other. The product has no
+ * concept of a season (PLAN.md §19 Q5): a balance never rolls over, so a
+ * per-season slice of one would describe a reset that never happened.
  */
 export interface BankrollView {
   readonly id: string;
@@ -354,9 +358,16 @@ export interface BankrollView {
   readonly kind: BankrollKind;
   /** Settled cash. Pending stakes are ALREADY DEDUCTED. */
   readonly balanceCents: Cents;
-  /** Sum of stakes on pending bets ("exposure"), within the filter. */
+  /**
+   * Sum of stakes on this balance's pending bets ("exposure").
+   *
+   * NOT filtered by `?league=` — deliberately, and it is the one field where
+   * that matters: `balanceCents` is never filtered either, so filtering the
+   * exposure alone would break `equityCents === balanceCents +
+   * pendingStakeCents` under every tab but "all".
+   */
   readonly pendingStakeCents: Cents;
-  /** balanceCents + pendingStakeCents. */
+  /** balanceCents + pendingStakeCents. Holds under every filter. */
   readonly equityCents: Cents;
   readonly record: BettingRecord;
   /** (Σ payout − Σ stake) / Σ stake over won+lost bets only. null when no action. */

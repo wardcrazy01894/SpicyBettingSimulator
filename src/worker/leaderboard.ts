@@ -5,8 +5,19 @@
  *   balanceCents      the user's MAIN account balance — settled cash, with
  *                     pending stakes ALREADY deducted. Never a subtotal, and
  *                     never touched by the filter (see below)
- *   pendingStakeCents Σ stake of pending bets ("exposure"), also unfiltered
+ *   pendingStakeCents Σ stake of pending bets STAKED AGAINST THAT SAME MAIN
+ *                     BALANCE ("exposure"). Also unfiltered by `?league=`
  *   equityCents       balanceCents + pendingStakeCents
+ *
+ * BOTH HALVES OF EQUITY ARE SCOPED TO THE **MAIN** BALANCE, and they have to be.
+ * `bankrolls` models balances as a list so side pots (`kind='custom'`) can exist
+ * later; v1 never writes one, but `bets.bankroll_id` already points at whichever
+ * balance was charged. An exposure figure summed over EVERY balance would add a
+ * stake that was never deducted from `balanceCents`, so `equityCents` would
+ * count that money twice and the ranked column would be wrong the day a second
+ * pot exists. `record` and `roi` are deliberately NOT scoped that way: they are
+ * performance statistics over everything the user bet, not a money column, and
+ * no identity depends on them.
  *   record            settled bets only; cancelled bets are excluded entirely
  *   roi               (Σ payout − Σ stake) over bets with status ∈ {won, lost};
  *                     push and void are excluded from BOTH sides; null when the
@@ -183,14 +194,21 @@ export async function leaderboardFor(
           GROUP BY b.user_id, b.status`,
       ).bind(...values),
     ),
-    // Exposure is a property of the ACCOUNT, so it is deliberately not filtered:
+    // Exposure is deliberately NOT narrowed by `?league=`:
     // `equityCents = balanceCents + pendingStakeCents` has to stay true under
-    // every tab, and both halves of it are account-level.
+    // every tab, and `balanceCents` is never filtered.
+    //
+    // It IS narrowed to the MAIN balance, by the same join the balance row uses.
+    // `balanceCents` above is `bk.kind = 'main'` only, so a stake charged to a
+    // future `kind='custom'` side pot was never deducted from it — adding that
+    // stake here would count the money twice and inflate the ranked column.
     queryAll<StatRow>(
       env.DB.prepare(
         `SELECT b.user_id AS user_id, 'pending' AS status, COUNT(*) AS n,
                 COALESCE(SUM(b.stake_cents), 0) AS stake, 0 AS payout
-           FROM bets b WHERE b.status = 'pending'
+           FROM bets b
+           JOIN bankrolls bk ON bk.id = b.bankroll_id AND bk.kind = 'main'
+          WHERE b.status = 'pending'
           GROUP BY b.user_id`,
       ),
     ),

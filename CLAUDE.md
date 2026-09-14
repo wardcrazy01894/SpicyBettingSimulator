@@ -7,6 +7,12 @@ few friends. Real lines, real odds, real payouts, **no real money**.
 data model, odds math, settlement algorithm, ingestion design, milestones and the
 parallel-execution map.
 
+**Status: v1 is feature-complete on `main`** — M0–M7 plus M5b (account balances,
+cross-league bets, teasers) are done; **M8 (deploy + operate) is in progress and
+nothing is deployed yet**. Two rules below hang off that last fact: rule 9
+(`migrations/0001_init.sql` is still editable) and Spikes S1/S2, which need a
+deployed Worker to close (PLAN.md §18).
+
 ---
 
 ## Commands
@@ -17,14 +23,17 @@ npm install                 # first time only
 npm run dev                 # fixture ESPN server + wrangler dev (:8787) + vite (:5173)
 npm run db:migrate:local    # apply migrations/ to the local D1
 
-npm run typecheck           # tsc -b across all six TS projects
+npm run typecheck           # tsc -b across all seven referenced TS projects
 npm run lint                # eslint
 npm run format:check        # prettier
-npm test                    # vitest: `unit` + `worker` projects
-npm run test:unit           # pure logic only (fast)
+npm test                    # vitest: `unit` + `worker` + `web` projects
+npm run test:unit           # pure logic + the docs-drift guard (fast)
 npm run test:worker         # Worker + real D1 via vitest-pool-workers
+npm run coverage            # vitest --coverage; gate is on src/shared/** only
 npm run build               # vite build + wrangler dry-run bundle
 
+npm run db:reconcile        # SUM(ledger) === balance_cents for every bankroll
+npm run admin:hash          # derive a `dk` for an admin password reset
 npm run deploy              # build the SPA then wrangler deploy
 ```
 
@@ -35,16 +44,19 @@ npm run typecheck && npm run lint && npm run format:check && npm test && npm run
 ```
 
 Do not open a PR with any of these red. Green CI is necessary, not sufficient —
-every PR also gets an adversarial review before merge.
+every PR also gets an adversarial review before merge. The checklist in
+`.github/pull_request_template.md` is that gate written down; fill it in rather
+than deleting it.
 
 ---
 
 ## Non-negotiable conventions
 
 1. **TDD.** Tests first for all pure logic: odds math, grading, parlay pricing,
-   the ESPN parser, validation. `tests/**/*.spec.ts` currently hold `it.todo`
-   contracts — turn the relevant ones into real failing tests _before_ writing
-   the implementation, and delete none of them without saying why.
+   the ESPN parser, validation, the slip reducer. The `it.todo` contracts M0
+   seeded are all discharged — the suite is real and green — so the rule now
+   reads forward: write the failing test before the implementation, and delete an
+   existing test only with a reason in the PR description.
 2. **Money is integer cents. Lines are integer tenths of a point. Prices are
    integer American; exact decimal odds are BigInt rationals held only in
    memory.** No float ever appears in a code path that produces a cent.
@@ -88,9 +100,13 @@ every PR also gets an adversarial review before merge.
      anyway.
      (`OR IGNORE` on `bankrolls` is allowed in general — it is not the ledger —
      but the balance-opening statements use `INSERT … SELECT … WHERE NOT EXISTS`
-     anyway: the id is a uuid, so a duplicate collides on the PARTIAL unique index
-     `idx_bankrolls_main`, `OR IGNORE` swallows that, and the deposit that follows
-     then fires against a bankroll id that does not exist. PLAN.md §4.4.)
+     anyway, and the reason is specifically the **uuid**: `bankrolls.id` is a
+     fresh uuid, so a duplicate would NOT collide on the primary key. It collides
+     on the PARTIAL unique index `idx_bankrolls_main`, `OR IGNORE` swallows that
+     silently, and the `deposit_initial` that follows then fires against a
+     bankroll id that does not exist — aborting the whole batch on
+     `ledger_bi_bankroll_exists`. The explicit `NOT EXISTS (… kind = 'main')`
+     states the real intent and makes a second run a complete no-op. PLAN.md §4.4.)
 7. **Grading reads the line from the `bet_legs` snapshot, never from
    `game_lines`.** `settle.ts` must not import a `game_lines` accessor.
 8. **The server is the only authority on whether a bet may be placed.** The
@@ -106,8 +122,11 @@ every PR also gets an adversarial review before merge.
    legs span both — so neither constrains what a bet may contain.
    `PlaceBetRequest.league` is advisory and the server never compares it.
    **`season` is INTERNAL ONLY**: it exists for ingestion and the board's `week`
-   default, and appears in no public filter and no UI copy, because the product
-   has no concept of a season (PLAN.md §19 Q5). Do not add one back.
+   default, and appears in no public MONEY filter and no UI copy, because the
+   product has no concept of a season (PLAN.md §19 Q5). `GET /api/games?season=`
+   is the one exception and is a board narrowing, not a money slice; there is no
+   `?season=` on `/api/bankroll`, `/api/bets` or `/api/leaderboard`, and
+   `LeaderboardResponse` has no `season` field. Do not add any of them back.
    PLAN.md §4.4.
    8d. **Money is ACCOUNT-level: one balance per user, opened in the SIGNUP
    batch, never per league, per season or lazily.** Nothing on a read path
@@ -129,6 +148,31 @@ every PR also gets an adversarial review before merge.
    shipping a `0002` that immediately rebuilds empty tables. PLAN.md §16.1.
 10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE` and
     `IP_HASH_SALT`; there is no ESPN key.
+11. **Docs are part of the change.** Any PR that changes behaviour updates
+    `PLAN.md` / `CLAUDE.md` / `README.md` **in the same PR** — not in a follow-up,
+    because a follow-up is a promise and this file is supposed to be the thing
+    you can trust without reading the code. `npm test` runs
+    `tests/unit/docs.spec.ts`, which FAILS when the docs disagree with the code
+    on the mechanical facts below:
+    - every `ERROR_CODES` entry appears in PLAN §11, and every code named in §11
+      exists in the enum;
+    - `MAX_PAYOUT_CENTS`, `MIN_STAKE_CENTS`, `INITIAL_BANKROLL_CENTS`,
+      `MAX_SETTLE_ATTEMPTS`, `LINE_STALE_MS`, `BET_CUTOFF_BUFFER_MS` and
+      `SESSION_TTL_MS` match PLAN §3.1's constants-of-record table;
+    - PLAN §5.8's teaser card equals `TEASER_PAYOUTS` **cell for cell**;
+    - every cron expression in `wrangler.jsonc` appears in PLAN §9.1;
+    - every route literal in `src/worker/routes/*.ts`, at its mounted prefix,
+      appears in PLAN §11;
+    - every table in `migrations/0001_init.sql` is named in PLAN §3;
+    - the pre-PR gate command above is exactly what `package.json` runs;
+    - the stale phrases `per-league bankroll`, `season rollover`,
+      `ensureBankroll prelude` and `MIXED_LEAGUE_PARLAY is thrown` appear nowhere
+      in PLAN/CLAUDE/README except inside an explicit history or "superseded"
+      note.
+      The guard is deliberately mechanical. It cannot tell you the prose is
+      _wrong_, only that a number, a code, a route or a table no longer exists —
+      which is the drift that actually happens. Judgement is still the reviewer's
+      job; see `.github/pull_request_template.md`.
 
 ---
 
@@ -156,14 +200,25 @@ errors. That is the ONLY transaction you get.
 src/shared/   pure domain: types, odds, grading, espn parser, validation, time
 src/worker/   Hono API + cron jobs + D1 access
 src/worker/routes/  one file per API area; index.ts holds the route table
-src/web/      React SPA (pages, components, contexts, api client)
-migrations/   D1 schema (0001 is frozen)
-tests/unit/   node-env tests for src/shared; fixtures.ts reads docs/samples via fs
+src/web/      React SPA: pages/, components/, state/ (contexts + pure reducers),
+              hooks/ (useResource, usePages, useFocusTrap, useNow), lib/ (pure,
+              DOM-free helpers), api/ (client, kdf, error copy)
+migrations/   D1 schema. 0001 is EDITABLE until M8's first remote deploy, then
+              frozen for good (rule 9)
+tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
+              fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES
               small slates (workerd has no fs, and the tsconfig project boundary
               does not span tests/unit)
-docs/samples/ captured ESPN payloads — read only by the unit project
-scripts/      fixture server, admin password tool, ledger reconcile
+tests/web/    node-env tests for src/web's PURE logic — slip reducer, payout
+              preview, grouping, paging, edit re-pricing. No jsdom: the modules
+              under test are deliberately DOM-free
+docs/samples/ captured ESPN payloads (NFL 16 events, CFB 86) — read only by the
+              unit project, and deliberately committed (PLAN.md §19 Q8) so the
+              parser is tested against the real thing
+docs/         teaser-odds.md — the sourcing behind TEASER_PAYOUTS
+scripts/      fixture server, admin password tool, ledger reconcile, branch protection
+.github/      ci.yml (gate + gitleaks) and pull_request_template.md
 ```
 
 **Local dev gotcha**: `wrangler.jsonc` defaults `ESPN_BASE_URL` to real ESPN.

@@ -221,8 +221,16 @@ export function priceToAmerican(price: Price): AmericanPrice {
  * A moneyline has no line to move and is rejected upstream by `validatePlaceBet`;
  * passing one here throws rather than inventing a number.
  *
- * @throws AppError('VALIDATION') for a moneyline, a non-integer line, or a tier
- *   that is not on the card.
+ * THE (market, side) PAIR IS CHECKED FIRST, before either branch. `spread` owns
+ * `home`/`away` and `total` owns `over`/`under` — the schema says so
+ * (`CHECK ((market = 'total') = (side IN ('over','under')))`) and so does the
+ * docblock above. Branching on `market` first would quietly accept
+ * `('spread', 'over')` and return `lineTenths + points`, which is a real number
+ * for a leg that cannot exist; an incoherent pair is a caller bug and must
+ * throw, exactly as this function documents.
+ *
+ * @throws AppError('VALIDATION') for a moneyline, an incoherent market/side
+ *   pair, a non-integer line, or a tier that is not on the card.
  */
 export function teasedLineTenths(
   market: 'spread' | 'total',
@@ -237,10 +245,18 @@ export function teasedLineTenths(
       `Teaser points must be 60, 65 or 70 tenths, got ${String(pointsTenths)}.`,
     );
   }
+  // Coherence BEFORE the market branch, so an impossible pair can never take a
+  // branch that would answer it with a plausible number.
+  // `market` is typed `'spread' | 'total'`, so the else branch IS total — and an
+  // untyped caller that smuggled in `'moneyline'` lands there too and fails the
+  // over/under test, which is the answer that function documents.
+  const coherent =
+    market === 'spread' ? side === 'home' || side === 'away' : side === 'over' || side === 'under';
+  if (!coherent) {
+    throw new AppError('VALIDATION', `Cannot tease a ${market}/${side} leg.`);
+  }
   if (market === 'spread') return lineTenths + pointsTenths;
-  if (side === 'over') return lineTenths - pointsTenths;
-  if (side === 'under') return lineTenths + pointsTenths;
-  throw new AppError('VALIDATION', `Cannot tease a ${market}/${side} leg.`);
+  return side === 'over' ? lineTenths - pointsTenths : lineTenths + pointsTenths;
 }
 
 /**

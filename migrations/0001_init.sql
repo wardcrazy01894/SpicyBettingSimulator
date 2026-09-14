@@ -11,12 +11,14 @@
 --     reaches 20+ digits and SQLite silently stores that as REAL (verified). See
 --     PLAN.md 5.2.
 --
--- THIS FILE IS EDITABLE UNTIL THE FIRST REMOTE DEPLOY (M8). Nothing is deployed
--- yet, so a cross-cutting schema change (M5b: account balances, cross-league
--- bets, teasers) is applied here IN PLACE rather than as a second migration that
--- immediately rewrites tables nobody has ever populated. From M8's first
+-- THIS FILE IS EDITABLE UNTIL THE FIRST REMOTE DEPLOY (M8, IN PROGRESS AS OF
+-- THIS COMMIT — nothing is deployed yet). A cross-cutting schema change (M5b:
+-- account balances, cross-league bets, teasers) was therefore applied here IN
+-- PLACE rather than as a second migration that immediately rewrites tables
+-- nobody has ever populated. From M8's first
 -- `wrangler d1 migrations apply --remote` onward this file is frozen for good and
--- every change is a new numbered 0002_*.sql.
+-- every change is a new numbered 0002_*.sql. PLAN.md §16.1 and CLAUDE.md rule 9
+-- say the same thing; all three move together or none of them do.
 
 -- ---------------------------------------------------------------------------
 -- users
@@ -374,8 +376,9 @@ END;
 -- `OR IGNORE` resolves a uniqueness conflict, so an idempotent
 -- `INSERT OR IGNORE INTO bankrolls (..., 0, ...)` aimed at an already-FUNDED row
 -- would abort the whole batch under a SUM comparison. M5b moved balance creation
--- into the signup batch and deleted the per-request prelude, but the admin
--- repair path (`ensureMainBalance`) is still shaped that way, and the reasoning
+-- into the signup batch and deleted the per-request prelude, but
+-- `ensureMainBalance()` -- a tested repair primitive with no endpoint yet -- is
+-- still shaped that way, and the reasoning
 -- must survive regardless: for a genuinely new id no ledger rows can exist
 -- (ledger_bi_bankroll_exists), so `<> 0` is equivalent for every real insert.
 CREATE TRIGGER bankrolls_bi_balance_guard BEFORE INSERT ON bankrolls
