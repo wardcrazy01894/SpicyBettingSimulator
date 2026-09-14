@@ -81,13 +81,20 @@ PR as the behaviour change; see `.github/pull_request_template.md`.
 
 ## Icons
 
-`public/favicon.svg` is the site icon and the only file you edit. The PNG and
-ICO copies next to it (tab icon, iOS home-screen icon, manifest icons) are
+`public/favicon.svg` is the site icon and the only file you edit: a gold "$"
+coin with a flame, in the app's accent orange on its dark background. The PNG
+and ICO copies next to it (tab icon, iOS home-screen icon, manifest icons) are
 generated from it and committed, so after changing the SVG run:
 
 ```bash
 npm run icons
 ```
+
+Keep the SVG free of `<text>`: the "$" is a stroked path precisely so the
+rasters do not depend on the fonts of whichever machine regenerates them.
+`tests/unit/docs.spec.ts` checks that every icon `index.html` and the manifest
+point at exists in `public/`, because the SPA fallback serves index.html for a
+missing asset with a 200, so a broken link would otherwise fail silently.
 
 ## Deploy
 

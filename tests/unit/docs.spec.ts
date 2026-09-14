@@ -22,7 +22,7 @@
  * Runs in the `unit` project (node env) so it can use `node:fs`.
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -687,6 +687,32 @@ describe('stale phrases', () => {
 // ---------------------------------------------------------------------------
 
 describe('claims the docs make about the repo', () => {
+  /**
+   * Site icons. The assets binding serves index.html with a 200 for ANY unknown
+   * path (`not_found_handling: single-page-application`), so a `<link>` to an
+   * icon that is not in public/ fails silently: the browser downloads HTML as an
+   * image and no request ever 404s. This is the only place it can be caught.
+   */
+  it('every icon index.html and site.webmanifest reference exists in public/', () => {
+    const html = read('index.html');
+    const hrefs = [
+      ...html.matchAll(/<link rel="(?:icon|apple-touch-icon|manifest)" href="([^"]+)"/g),
+    ].map((m) => m[1] ?? '');
+    expect(hrefs.length, 'index.html has no icon/manifest <link>s').toBeGreaterThanOrEqual(3);
+    const manifest = JSON.parse(read('public/site.webmanifest')) as {
+      icons?: readonly { src: string }[];
+    };
+    const srcs = (manifest.icons ?? []).map((icon) => icon.src);
+    expect(srcs.length, 'site.webmanifest lists no icons').toBeGreaterThan(0);
+    for (const ref of [...hrefs, ...srcs]) {
+      expect(ref.startsWith('/'), `${ref} must be site-root-relative`).toBe(true);
+      expect(
+        existsSync(join(ROOT, 'public', ref.slice(1))),
+        `${ref} is linked from index.html or site.webmanifest but public/${ref.slice(1)} does not exist`,
+      ).toBe(true);
+    }
+  });
+
   it('CLAUDE.md carries rule 11 (docs ship with the change)', () => {
     expect(
       /^11\. \*\*Docs are part of the change/m.test(CLAUDE),
