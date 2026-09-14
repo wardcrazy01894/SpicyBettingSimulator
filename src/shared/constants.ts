@@ -236,10 +236,12 @@ export const BOARD_MAX_GAMES = 300;
 
 /**
  * FBS conferences by ESPN `team.conferenceId`, for the CFB board filter
- * (PLAN.md §12.1). Ids confirmed against docs/samples/espn-cfb-scoreboard.json
- * (every member listed there sits under its id). A game whose teams carry an
- * id NOT in this list is an FCS opponent; the filter groups those under
- * "Other". Order is display order.
+ * (PLAN.md §12.1). Ids are as ESPN reports them, confirmed against
+ * docs/samples/espn-cfb-scoreboard.json (the 17 Big Ten teams sit under 5, the
+ * 16 SEC teams under 8, and so on). ESPN occasionally files an FCS opponent
+ * under an FBS id (the sample has North Dakota State under 17 and Sacramento
+ * State under 15), so the filter's "Other" bucket — any id not in this list —
+ * is best-effort, not a guarantee of FCS. Order is display order.
  */
 export const CFB_CONFERENCES: readonly { readonly id: string; readonly name: string }[] = [
   { id: '8', name: 'SEC' },

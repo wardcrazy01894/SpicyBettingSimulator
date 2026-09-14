@@ -464,6 +464,12 @@ const GAMES_LIVE_OLD = `(period, display_clock,
    COALESCE(home_logo, ''), COALESCE(away_logo, ''),
    name, short_name, home_name, away_name)`;
 
+// Conference is COALESCEd against the stored value like a score: a CFB payload
+// that omits it is an absence, never "this team left its conference", so an
+// ESPN flap must not clear the column, bump updated_at, and hand every pending
+// bet on the game a fresh settle budget (§7.1). Rank is NOT treated this way —
+// for a rank, NULL means "dropped out of the poll" and is a fact.
+
 /**
  * The bound counterpart of `GAMES_LIVE_OLD`. Scores are COALESCEd against the
  * stored value first, exactly as the SET list does, so a payload that omits a
@@ -472,7 +478,7 @@ const GAMES_LIVE_OLD = `(period, display_clock,
 const GAMES_LIVE_NEW = `(?, ?,
    COALESCE(COALESCE(?, home_score), -1), COALESCE(COALESCE(?, away_score), -1),
    COALESCE(?, -1), COALESCE(?, -1),
-   COALESCE(?, ''), COALESCE(?, ''),
+   COALESCE(COALESCE(?, home_conference_id), ''), COALESCE(COALESCE(?, away_conference_id), ''),
    COALESCE(?, ''), COALESCE(?, ''),
    ?, ?, ?, ?)`;
 
@@ -526,8 +532,8 @@ UPDATE games SET
   status_detail = ?,
   home_rank     = ?,
   away_rank     = ?,
-  home_conference_id = ?,
-  away_conference_id = ?,
+  home_conference_id = COALESCE(?, home_conference_id),
+  away_conference_id = COALESCE(?, away_conference_id),
   home_logo     = ?,
   away_logo     = ?,
   name          = ?,
@@ -625,8 +631,8 @@ function gameStatement(env: Env, game: Game, now: EpochMs): D1PreparedStatement 
 
 /**
  * The 14 values of `GAMES_LIVE_NEW`, in its exact column order. Built once and
- * spliced into the bind list three times (the `updated_at` CASE, the `WHERE`
- * compare, and nothing else) so the SQL and the bindings cannot drift.
+ * spliced into the bind list twice (the `updated_at` CASE and the `WHERE`
+ * compare) so the SQL and the bindings cannot drift.
  */
 function liveTupleArgs(game: Game): readonly unknown[] {
   return [

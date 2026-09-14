@@ -790,6 +790,24 @@ describe('claims the docs make about the repo', () => {
     ).toEqual([...pinned].sort());
   });
 
+  /**
+   * The runbook's "Applied migrations" table is the operator's record of what
+   * the live database has. A migration file nobody added to it is exactly the
+   * one somebody will be surprised by at 2am.
+   */
+  it('every file in migrations/ is in the docs/OPERATIONS.md migrations table', () => {
+    const files = readdirSync(join(ROOT, 'migrations'))
+      .filter((name) => name.endsWith('.sql'))
+      .sort();
+    expect(files.length).toBeGreaterThan(1);
+    for (const file of files) {
+      expect(
+        OPERATIONS.includes(`\`${file}\``),
+        `migrations/${file} is not in docs/OPERATIONS.md's "Applied migrations" table.`,
+      ).toBe(true);
+    }
+  });
+
   it('CLAUDE.md carries rule 11 (docs ship with the change)', () => {
     expect(
       /^11\. \*\*Docs are part of the change/m.test(CLAUDE),

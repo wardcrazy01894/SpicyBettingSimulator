@@ -1371,9 +1371,23 @@ describe('A/B split: rows written per kind of change (PLAN.md §8.5)', () => {
       expect(assigned.has(column), `${column} must not be SET by the live update`).toBe(false);
     }
     // ...and it MUST still carry the columns that used to be INSERT-only.
-    for (const column of ['home_rank', 'away_rank', 'home_logo', 'away_logo', 'name']) {
+    for (const column of [
+      'home_rank',
+      'away_rank',
+      'home_conference_id',
+      'away_conference_id',
+      'home_logo',
+      'away_logo',
+      'name',
+    ]) {
       expect(assigned.has(column), `${column} must be SET by the live update`).toBe(true);
     }
+  });
+
+  it("GAME_LIVE_SQL stays under D1's 100 bound parameters per statement", () => {
+    // Every column added to (B) costs THREE placeholders (SET + two tuple
+    // splices); this turns the platform wall into a test failure.
+    expect((GAME_LIVE_SQL.match(/\?/g) ?? []).length).toBeLessThanOrEqual(100);
   });
 });
 
@@ -1863,8 +1877,19 @@ describe('conference id (migration 0004)', () => {
     await ingestSlate([game('151')], T0 + 2 * MIN, cfb);
     expect((await read('ncaaf:990001'))?.updated_at).toBe(second?.updated_at);
 
+    // A payload that OMITS the id is an absence, not a change: the stored
+    // value sticks and updated_at does not move.
+    await ingestSlate(
+      [spec({ eventId: '990001', league: 'ncaaf', homeAbbr: 'UGA', awayAbbr: 'KENT' })],
+      T0 + 3 * MIN,
+      cfb,
+    );
+    const third = await read('ncaaf:990001');
+    expect(third).toMatchObject({ home_conference_id: '8', away_conference_id: '151' });
+    expect(third?.updated_at).toBe(second?.updated_at);
+
     // The NFL shape carries no conferenceId at all.
-    await ingestSlate([spec({ eventId: '990002' })], T0 + 3 * MIN);
+    await ingestSlate([spec({ eventId: '990002' })], T0 + 4 * MIN);
     expect(await read('nfl:990002')).toMatchObject({
       home_conference_id: null,
       away_conference_id: null,

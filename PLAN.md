@@ -3467,7 +3467,10 @@ deleted_at INTEGER NULL`, for the soft delete (§3.2 / §10.5 / §11.6). One nul
   §8.3 / §12.1). Two nullable `ADD COLUMN`s; the parser, the ingest live update
   (B) and `GameTeamView.conferenceId` are the code half. Applied by the Deploy
   workflow on merge; the old Worker neither reads nor writes the columns, so the
-  order is harmless in both directions.
+  order is harmless in both directions. After the apply every existing `games`
+  row has NULL in both until the next refresh's (B) pass fills it — a few
+  minutes in which every CFB game sits under the board filter's "Other" — at a
+  one-time cost of about one row write per active game.
 
 ## 17. Risks and mitigations
 

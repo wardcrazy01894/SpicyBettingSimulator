@@ -11,7 +11,7 @@
 import { CFB_CONFERENCES } from '../../shared/constants.js';
 import type { GameCard } from '../../shared/api-types.js';
 
-/** `all`, `top25`, `conf:<espn id>`, or `conf:other` (an FCS opponent). */
+/** `all`, `top25`, `conf:<espn id>`, or `conf:other` (an id not in `CFB_CONFERENCES`). */
 export type BoardFilter = 'all' | 'top25' | `conf:${string}`;
 
 export const OTHER_CONFERENCE = 'conf:other';
@@ -29,7 +29,7 @@ export function boardFilterOptions(): readonly BoardFilterOption[] {
     { value: 'all', label: 'All games' },
     { value: 'top25', label: 'Top 25' },
     ...CFB_CONFERENCES.map((c) => ({ value: `conf:${c.id}` as const, label: c.name })),
-    { value: OTHER_CONFERENCE, label: 'Other (FCS)' },
+    { value: OTHER_CONFERENCE, label: 'Other' },
   ];
 }
 
@@ -40,6 +40,8 @@ export function isBoardFilter(value: string): value is BoardFilter {
 function teamMatches(team: GameCard['home'], filter: BoardFilter): boolean {
   if (filter === 'top25') return team.rank !== null;
   const id = filter.slice('conf:'.length);
+  // Best-effort: ESPN sometimes files an FCS team under an FBS id (see
+  // CFB_CONFERENCES), so "Other" is "not a listed conference", not "FCS".
   if (id === 'other') return team.conferenceId === null || !FBS_IDS.has(team.conferenceId);
   return team.conferenceId === id;
 }
