@@ -482,7 +482,7 @@ export function buildSettleBatch(
   outcome: BetOutcome,
   runId: string,
   now: EpochMs,
-): readonly D1PreparedStatement[] {
+): SettleBatch {
   const american = effectiveAmericanPrice(outcome);
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(SETTLE_BET_UPDATE_SQL).bind(
@@ -499,7 +499,9 @@ export function buildSettleBatch(
       env.DB.prepare(SETTLE_LEG_UPDATE_SQL).bind(bet.id, leg.legIndex, leg.grade, now, runId),
     );
   }
+  let payoutIndex: number | null = null;
   if (outcome.payoutCents > 0) {
+    payoutIndex = statements.length;
     statements.push(
       env.DB.prepare(SETTLE_PAYOUT_INSERT_SQL).bind(
         bet.id,
@@ -512,7 +514,18 @@ export function buildSettleBatch(
       ),
     );
   }
-  return statements;
+  return { statements, payoutIndex };
+}
+
+/**
+ * The per-bet batch plus the INDEX of its payout INSERT (null when the bet
+ * owes nothing). `settleOneBet` reads the payout result by this index, never
+ * by `results.length - 1`, so appending a statement later cannot silently
+ * make every paying settlement read as "already-settled".
+ */
+export interface SettleBatch {
+  readonly statements: readonly D1PreparedStatement[];
+  readonly payoutIndex: number | null;
 }
 
 export interface SettleOneResult {
@@ -544,7 +557,7 @@ export async function settleOneBet(
   runId: string,
   now: EpochMs,
 ): Promise<SettleOneResult> {
-  const statements = buildSettleBatch(env, bet, outcome, runId, now);
+  const { statements, payoutIndex } = buildSettleBatch(env, bet, outcome, runId, now);
 
   // `runBatch` enforces the 40-statement budget for us (12 is the worst case).
   let results: readonly D1Result[];
@@ -563,14 +576,15 @@ export async function settleOneBet(
   for (let i = 0; i < results.length; i += 1) rowsWritten += rowsWrittenAt(results, i);
 
   const transitioned = changesAt(results, 0) === 1;
-  // The payout INSERT is the LAST statement, and only present when money is
-  // owed. A bet that owes nothing (a loss) is settled by statement 1 alone.
+  // The payout INSERT is addressed by the index the builder returned, and is
+  // only present when money is owed. A bet that owes nothing (a loss) is
+  // settled by statement 1 alone.
   //
   // `> 0`, NOT `=== 1`: D1 reports `changes = 2` for this statement (measured),
   // because the `ledger_ai_apply` AFTER INSERT trigger's `bankrolls` update is
   // counted too. Zero still means "the `NOT EXISTS` blocked it", which is the
   // only thing being asked.
-  const paidNow = outcome.payoutCents > 0 ? changesAt(results, results.length - 1) > 0 : true;
+  const paidNow = payoutIndex === null ? true : changesAt(results, payoutIndex) > 0;
   return {
     result: transitioned && paidNow ? 'settled' : 'already-settled',
     rowsWritten,

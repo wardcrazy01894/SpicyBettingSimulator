@@ -1251,7 +1251,10 @@ describe('runSettle — idempotency', () => {
       })),
       effectivePrice: americanToPrice(-110),
     };
-    expect(buildSettleBatch(env, bet, outcome, 'run', NOW)).toHaveLength(12);
+    const batch = buildSettleBatch(env, bet, outcome, 'run', NOW);
+    expect(batch.statements).toHaveLength(12);
+    // The payout INSERT is addressed by index, never by "last statement".
+    expect(batch.payoutIndex).toBe(11);
   });
 
   it('crash mid-run: every bet is fully settled or fully pending, never half', async () => {

@@ -208,7 +208,10 @@ export async function pruneAuthThrottle(env: Env, now: EpochMs): Promise<SweepRe
 export async function pruneJobRuns(env: Env, keepPerJob: number): Promise<SweepResult> {
   const res = await env.DB.prepare(
     `DELETE FROM job_runs
-      WHERE status <> 'running'
+      WHERE (status <> 'running'
+             -- an orphaned 'running' row (job died before finalize) is reclaimed
+             -- once it is far older than any lease TTL (max 10 min)
+             OR started_at < ?2)
         AND id IN (
         SELECT id FROM (
           SELECT id, ROW_NUMBER() OVER (PARTITION BY job ORDER BY started_at DESC, rowid DESC) AS rn
@@ -216,10 +219,13 @@ export async function pruneJobRuns(env: Env, keepPerJob: number): Promise<SweepR
         ) WHERE rn > ?1
       )`,
   )
-    .bind(keepPerJob)
+    .bind(keepPerJob, Date.now() - ORPHAN_RUN_MS)
     .run();
   return sweepResult(res);
 }
+
+/** A `running` job_runs row older than this can only be an orphan. */
+const ORPHAN_RUN_MS = 24 * 60 * 60 * 1000;
 
 /** `meta.changes` + `meta.rows_written` for a single-statement sweep. */
 function sweepResult(res: D1Result): SweepResult {
