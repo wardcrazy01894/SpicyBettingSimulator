@@ -346,17 +346,11 @@ export function parseStoredSlip(raw: string | null): Slip | null {
   if (mode !== 'straight' && mode !== 'parlay' && mode !== 'teaser') return null;
   if (typeof stake !== 'number' || !Number.isSafeInteger(stake) || stake < 0) return null;
   if (!Array.isArray(rawLegs)) return null;
-  // An entry written before teasers existed has no tier at all; that is not
-  // corruption, so it takes the default rather than losing the whole slip.
-  // A tier that is no longer on the card (or never was) is not corruption
-  // either: the legs and stake are still the person's draft, so it takes the
+  // An entry written before teasers existed has no tier at all, and a tier
+  // that is no longer on the card (or never was) is not corruption either: the
+  // legs and stake are still the person's draft, so either case takes the
   // default rather than losing the whole slip.
-  const teaserPointsTenths =
-    points === undefined
-      ? DEFAULT_TEASER_POINTS_TENTHS
-      : isTeaserPoints(points)
-        ? points
-        : DEFAULT_TEASER_POINTS_TENTHS;
+  const teaserPointsTenths = isTeaserPoints(points) ? points : DEFAULT_TEASER_POINTS_TENTHS;
   const legs: SlipLeg[] = [];
   const seen = new Set<string>();
   for (const rawLeg of rawLegs) {

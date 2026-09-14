@@ -34,8 +34,8 @@ The one exception so far is `0005_bets_teaser_tiers.sql`, which recreates `bets`
 gentler route exists on D1). It is still backward-compatible in the sense that matters: the new CHECK
 accepts everything the old Worker writes, so rolling the code back after it is safe. **If
 `npm run db:reconcile -- --remote` reports drift after a rebuild-style migration, do not hand-fix —
-restore the database** with D1 Time Travel, which keeps 30 days of point-in-time history on every
-plan:
+restore the database** with D1 Time Travel — point-in-time history that Cloudflare keeps for **7
+days on the free plan** (30 on Workers Paid), so do it the same week:
 
 ```bash
 npx wrangler d1 time-travel info spicybetting                         # current bookmark
