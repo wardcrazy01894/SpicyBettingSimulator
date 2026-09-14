@@ -23,7 +23,12 @@ import { StakeInput } from './StakeInput.js';
 import { useFocusTrap } from '../hooks/useFocusTrap.js';
 import { formatAmerican, teasedLineTenths } from '../../shared/odds.js';
 import { formatCents, formatLineTenths } from '../../shared/validate.js';
-import { LEAGUE_BADGE, MARKET_LABEL, teaserPointsLabel } from '../lib/labels.js';
+import {
+  LEAGUE_BADGE,
+  MARKET_LABEL,
+  teaserPointsLabel,
+  teaserTierOptionLabel,
+} from '../lib/labels.js';
 import { useBetSlip } from '../state/bet-slip.js';
 import { useConfig } from '../state/config.js';
 import type { SlipLeg, SlipMode } from '../state/slip-reducer.js';
@@ -80,9 +85,11 @@ export function BetSlip(): ReactElement {
     option.value !== 'straight' && slip.legs.length < 2 ? { ...option, disabled: true } : option,
   );
   const teasing = slip.mode === 'teaser';
+  // Each tier shows its price for THIS slip's leg count, straight off the
+  // server's card, so the dropdown doubles as the card.
   const pointsOptions = config.teaserPoints.map((tenths) => ({
     value: tenths,
-    label: teaserPointsLabel(tenths),
+    label: teaserTierOptionLabel(tenths, slip.legs.length, config.teaserPayouts),
   }));
 
   return (
