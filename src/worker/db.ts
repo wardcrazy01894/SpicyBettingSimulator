@@ -149,6 +149,45 @@ export interface BankrollDrift {
   readonly ledgerSumCents: number;
 }
 
-export function reconcileBankrolls(_env: Env): Promise<readonly BankrollDrift[]> {
-  throw new Error('not implemented: M7');
+export interface ReconcileResult {
+  /** How many bankrolls were checked — the denominator of "0 with drift". */
+  readonly checked: number;
+  readonly drift: readonly BankrollDrift[];
+}
+
+/**
+ * PLAN.md §4.1's headline invariant, checked for every bankroll:
+ * `bankrolls.balance_cents === SUM(ledger.amount_cents)`.
+ *
+ * READ-ONLY, and deliberately so: `balance_cents` is written by exactly one
+ * thing, the `ledger_ai_apply` trigger, and the `bankrolls_b*_balance_guard`
+ * triggers reject any other writer. A drift therefore means a bug in the DDL or
+ * a manual write, and "repairing" it would destroy the evidence and could mask
+ * a missing (or extra) ledger row. It is reported to a human instead —
+ * `POST /api/admin/reconcile` and `npm run db:reconcile`.
+ *
+ * The comparison is done IN SQL so it never depends on this process reading
+ * every ledger row: `SUM` over `idx_ledger_sum` is an index-only scan.
+ */
+export async function reconcileBankrolls(env: Env): Promise<ReconcileResult> {
+  const res = await env.DB.prepare(
+    `SELECT b.id            AS bankroll_id,
+            b.balance_cents AS balance_cents,
+            COALESCE((SELECT SUM(amount_cents) FROM ledger WHERE bankroll_id = b.id), 0)
+                            AS ledger_sum_cents
+       FROM bankrolls b
+      ORDER BY b.id`,
+  ).all<{ bankroll_id: string; balance_cents: number; ledger_sum_cents: number }>();
+
+  const drift: BankrollDrift[] = [];
+  for (const row of res.results) {
+    if (row.balance_cents !== row.ledger_sum_cents) {
+      drift.push({
+        bankrollId: row.bankroll_id,
+        balanceCents: row.balance_cents,
+        ledgerSumCents: row.ledger_sum_cents,
+      });
+    }
+  }
+  return { checked: res.results.length, drift };
 }
