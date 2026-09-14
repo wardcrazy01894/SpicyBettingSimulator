@@ -846,7 +846,12 @@ describe('claims the docs make about the repo', () => {
       pool.dependencies['miniflare'],
     );
     const wanted = /\d+\.\d+\.\d+/.exec(miniflare.dependencies?.['sharp'] ?? '')?.[0];
-    expect(wanted, `miniflare ${miniflare.version} declares no sharp dependency`).toBeDefined();
+    expect(
+      wanted,
+      `miniflare ${miniflare.version} declares no sharp in dependencies — if sharp is gone ` +
+        `for good, delete the overrides entry (PLAN §15); if it moved to optional/peer ` +
+        `dependencies, widen this lookup.`,
+    ).toBeDefined();
     const cmp = (a: string, b: string): number => {
       const [a1, a2, a3] = a.split('.').map(Number);
       const [b1, b2, b3] = b.split('.').map(Number);
@@ -856,7 +861,9 @@ describe('claims the docs make about the repo', () => {
     const pkg = JSON.parse(read('package.json')) as {
       overrides?: { '@cloudflare/vitest-pool-workers'?: { miniflare?: { sharp?: string } } };
     };
-    const override = pkg.overrides?.['@cloudflare/vitest-pool-workers']?.miniflare?.sharp;
+    const overrideRaw = pkg.overrides?.['@cloudflare/vitest-pool-workers']?.miniflare?.sharp;
+    // Parsed the same way as miniflare's spec, so a caret range compares sanely.
+    const override = overrideRaw === undefined ? undefined : /\d+\.\d+\.\d+/.exec(overrideRaw)?.[0];
     if (cmp(wanted ?? '0.0.0', PATCHED) >= 0) {
       expect(
         override,
