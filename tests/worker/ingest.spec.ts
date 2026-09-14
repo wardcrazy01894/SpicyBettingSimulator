@@ -10,7 +10,12 @@ import {
 import { parseScoreboard } from '../../src/shared/espn.js';
 import { etDateKey, etDateKeyRange } from '../../src/shared/time.js';
 import type { Game, GameLines, League } from '../../src/shared/types.js';
-import { buildScoreboardUrl, EspnProvider } from '../../src/worker/espn.js';
+import {
+  buildScoreboardUrl,
+  EspnProvider,
+  ESPN_USER_AGENT,
+  fetchScoreboard,
+} from '../../src/worker/espn.js';
 import {
   claimDueTargets,
   computeNextRunAt,
@@ -267,6 +272,30 @@ function probeBatchRows(): BatchProbe {
 /* ------------------------------------------------------------------ *
  * fixture conformance (PLAN.md §13)
  * ------------------------------------------------------------------ */
+
+describe('ESPN request headers', () => {
+  it('sends the exact ESPN_USER_AGENT and an application/json accept on every upstream call', async () => {
+    // ESPN's edge returns 403 for an empty User-Agent and for several other
+    // shapes (see src/worker/espn.ts); this pins that the constant reaches fetch.
+    const espn = stubEspn({ '20260913': [] });
+    try {
+      await fetchScoreboard(
+        'https://espn.test',
+        'nfl',
+        { kind: 'date', dateKey: '20260913' },
+        1_789_300_000_000,
+      );
+      expect(espn.requestHeaders).toHaveLength(1);
+      expect(espn.requestHeaders[0]?.['user-agent']).toBe(ESPN_USER_AGENT);
+      expect(espn.requestHeaders[0]?.['accept']).toBe('application/json');
+      expect(ESPN_USER_AGENT).toMatch(
+        /^SpicyBettingSimulator\/\d+\.\d+ \(\+https:\/\/github\.com\//,
+      );
+    } finally {
+      espn.restore();
+    }
+  });
+});
 
 describe('fixture conformance', () => {
   it('buildScoreboard -> parseScoreboard yields exactly the hand-written Game', () => {
