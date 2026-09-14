@@ -2506,7 +2506,7 @@ is about one bet's status and says the opposite thing, and `VALIDATION` is a 400
 | POST   | `/api/bugs/client-errors` | `{diagnostics}` → `204`. The uncaught-error beacon: logged as one `[client-error]` line, never stored. Signed-in only; ≤ `CLIENT_ERROR_BEACON_MAX` (2,000) chars.  |
 
 The in-app "Report a bug" form, reachable from the header button on EVERY
-page (and from `/account`); the open/close state lives in `AppShell` above the
+page; the open/close state lives in `AppShell` above the
 router (`state/bug-report.tsx`). The person types a title and a description;
 the client adds the SPA path they are on (`page`, path + query, never the
 origin) and the **diagnostics log**: the browser's own record of the last 60

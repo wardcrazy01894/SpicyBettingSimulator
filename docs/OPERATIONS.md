@@ -177,7 +177,7 @@ page path + query string and uuid-redacted API paths, which is the point of it.
 
 ## Bug reports
 
-Users file bugs from the "Report a bug" button in the header (every page) or from `/account`. Each
+Users file bugs from the "Report a bug" button in the header, present on every page once signed in. Each
 one is a `bug_reports` row AND a GitHub issue in this repo, labelled `bug` + `user-report`, titled
 `[user report] …`, with the reporter's username, page, app version, time, browser and the browser's
 diagnostics log (recent errors, API calls with status, page changes) in the body (PLAN §11.7). Five
