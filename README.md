@@ -48,8 +48,8 @@ no top-up button, so bet like it's real.
    once you're signed in. It files an issue in
    [this repo](https://github.com/wardcrazy01894/SpicyBettingSimulator/issues)
    with your username, the page you were on, the app version, your browser and
-   a log of recent errors and requests attached. The form shows you exactly
-   what it's sending first. (The button only appears when the admin has set
+   a log of recent errors and requests attached. The form shows you the
+   diagnostics it attaches before you send. (The button only appears when the admin has set
    the `GITHUB_TOKEN` secret; it is set on the live site.)
 
 ## Under the hood
@@ -69,7 +69,7 @@ Needs Node 24+. Everything runs against a local, in-process copy of D1, so
 you don't need a Cloudflare account until you deploy your own copy.
 
 ```bash
-git clone git@github-wardcrazy:wardcrazy01894/SpicyBettingSimulator.git
+git clone https://github.com/wardcrazy01894/SpicyBettingSimulator.git
 cd SpicyBettingSimulator
 npm install
 
