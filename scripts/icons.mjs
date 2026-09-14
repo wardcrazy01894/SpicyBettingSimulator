@@ -12,8 +12,10 @@
 // it to a devDependency the day that happens.
 //
 // The SVG contains no <text>: the "$" is a stroked path, so the rasters do not
-// depend on which fonts the machine running this has installed, and the file
-// can be regenerated anywhere with byte-identical results.
+// depend on which fonts the machine running this has installed. Output is
+// byte-stable for a given lockfile and platform (libvips/zlib versions can
+// shift bytes across bumps), which is why the PNGs are committed rather than
+// built in CI.
 //
 //   favicon-32.png / favicon-192.png / favicon-512.png  manifest + tab icons
 //   apple-touch-icon.png (180x180)                       iOS home screen. iOS
@@ -33,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
-const svg = readFileSync(new URL('favicon.svg', `file://${publicDir}`), 'utf8');
+const svg = readFileSync(`${publicDir}favicon.svg`, 'utf8');
 // The same artwork on a square background: only the rounded corners differ.
 const squareSvg = svg.replace(/ rx="14"/, '');
 if (squareSvg === svg)
