@@ -212,6 +212,12 @@ the `vitest` major. If a pool bump widens that peer to a vitest major we current
 arrives red and the fix is to lift the `vitest` ceiling in BOTH `dependabot.yml` and PLAN §15 — not
 to rerun CI.
 
+`package.json` carries one `overrides` entry (`sharp: 0.35.4`) to patch a
+dev-only vulnerability in a package the vitest pool's miniflare pins exactly
+(PLAN §15). When a `@cloudflare/vitest-pool-workers` bump lands, check
+`npm ls sharp`: once the nested miniflare wants ≥ 0.35.4 on its own, delete the
+override in the same PR.
+
 Security-only updates are enabled separately in the repo settings. They arrive as their own
 ungrouped PRs, outside `open-pull-requests-limit`, and the `ignore` rules apply to them too: a
 vulnerability fixed only in an ignored major produces no PR and stays visible only in the Security
