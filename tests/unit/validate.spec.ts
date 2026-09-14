@@ -5,6 +5,7 @@ import {
   formatLineTenths,
   isCoherentMarketSide,
   parseDollarsToCents,
+  validateBugReport,
   validateDerivedKeyHex,
   validateLogin,
   validatePlaceBet,
@@ -14,6 +15,9 @@ import {
 import type { PlaceBetInput } from '../../src/shared/validate.js';
 import type { PlaceBetRequest } from '../../src/shared/api-types.js';
 import {
+  BUG_REPORT_DESCRIPTION_MAX,
+  BUG_REPORT_PAGE_MAX,
+  BUG_REPORT_TITLE_MAX,
   MAX_ABS_LINE_TENTHS,
   MAX_PARLAY_LEGS,
   MIN_STAKE_CENTS,
@@ -547,5 +551,71 @@ describe('formatters', () => {
     expect(formatLineTenths(0, true)).toBe('PK');
     expect(formatLineTenths(0, false)).toBe('0');
     expect(formatLineTenths(440, false)).toBe('44');
+  });
+});
+
+describe('validateBugReport', () => {
+  const ok = { title: 'Slip stuck open', description: 'Tapped close and it stayed put.' };
+
+  it('accepts a title + description and normalises a missing page to null', () => {
+    const r = validateBugReport(ok);
+    expect(r).toEqual({ ok: true, value: { ...ok, page: null } });
+  });
+
+  it('trims and keeps a path-shaped page', () => {
+    const r = validateBugReport({
+      title: '  t i t l e  ',
+      description: `  ${ok.description}  `,
+      page: ' /bets ',
+    });
+    expect(r).toEqual({
+      ok: true,
+      value: { title: 't i t l e', description: ok.description, page: '/bets' },
+    });
+  });
+
+  it('treats an empty or null page as absent', () => {
+    expect(validateBugReport({ ...ok, page: '' })).toMatchObject({
+      ok: true,
+      value: { page: null },
+    });
+    expect(validateBugReport({ ...ok, page: null })).toMatchObject({
+      ok: true,
+      value: { page: null },
+    });
+  });
+
+  it.each([
+    ['non-object', 'nope', undefined],
+    ['missing title', { description: ok.description }, 'title'],
+    ['title of spaces', { ...ok, title: '    ' }, 'title'],
+    ['title too short', { ...ok, title: 'ab' }, 'title'],
+    ['title too long', { ...ok, title: 'x'.repeat(BUG_REPORT_TITLE_MAX + 1) }, 'title'],
+    ['title with a newline', { ...ok, title: 'one\ntwo' }, 'title'],
+    ['missing description', { title: ok.title }, 'description'],
+    ['description too short', { ...ok, description: 'short' }, 'description'],
+    [
+      'description too long',
+      { ...ok, description: 'x'.repeat(BUG_REPORT_DESCRIPTION_MAX + 1) },
+      'description',
+    ],
+    ['page not a string', { ...ok, page: 3 }, 'page'],
+    ['page is a URL', { ...ok, page: 'https://evil.example/x' }, 'page'],
+    ['page is protocol-relative', { ...ok, page: '//evil.example' }, 'page'],
+    ['page with whitespace', { ...ok, page: '/bets and stuff' }, 'page'],
+    ['page too long', { ...ok, page: `/${'p'.repeat(BUG_REPORT_PAGE_MAX)}` }, 'page'],
+  ])('rejects %s', (_label, body, field) => {
+    const r = validateBugReport(body);
+    expect(r.ok).toBe(false);
+    if (!r.ok && field !== undefined) expect(r.field).toBe(field);
+  });
+
+  it('accepts the exact maximum lengths', () => {
+    const r = validateBugReport({
+      title: 't'.repeat(BUG_REPORT_TITLE_MAX),
+      description: 'd'.repeat(BUG_REPORT_DESCRIPTION_MAX),
+      page: `/${'p'.repeat(BUG_REPORT_PAGE_MAX - 1)}`,
+    });
+    expect(r.ok).toBe(true);
   });
 });

@@ -7,6 +7,7 @@
  */
 
 import {
+  getAdminBugReports,
   getAdminJobs,
   getAdminUsers,
   getBalances,
@@ -19,6 +20,7 @@ import {
 import { useResource } from './useResource.js';
 import type { Resource } from './useResource.js';
 import type {
+  AdminBugReportsResponse,
   AdminUsersResponse,
   BankrollsResponse,
   BetsResponse,
@@ -80,4 +82,8 @@ export function useAdminJobs(): Resource<JobRunsResponse> {
 
 export function useAdminUsers(): Resource<AdminUsersResponse> {
   return useResource('admin:users', getAdminUsers);
+}
+
+export function useAdminBugReports(): Resource<AdminBugReportsResponse> {
+  return useResource('admin:bugs', getAdminBugReports);
 }

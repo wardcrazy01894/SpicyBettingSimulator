@@ -22,6 +22,7 @@ import { JOB_NAMES, MAX_PAYOUT_CENTS } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { validateDerivedKeyHex } from '../../shared/validate.js';
 import { deleteUser, listUsers, setDisabled, setPassword } from '../auth.js';
+import { listBugReports } from '../bugs.js';
 import { reconcileBankrolls } from '../db.js';
 import { retrySettlement } from '../settle.js';
 import { adminAdjust } from '../bankroll.js';
@@ -230,6 +231,15 @@ export function adminRoutes(): Hono<AppContext> {
     return c.json(body, 200);
   });
   // --- end reconcile (M8) -------------------------------------------------
+
+  // --- bug reports (§11.7) ------------------------------------------------
+  // Every row, including the ones GitHub refused (`issueNumber: null`, `error`
+  // set) — those are the reason the list exists, since the reporter only ever
+  // saw a 503 for them.
+  app.get('/bugs', async (c) => {
+    return c.json(await listBugReports(c.env), 200);
+  });
+  // --- end bug reports (§11.7) --------------------------------------------
 
   return app;
 }

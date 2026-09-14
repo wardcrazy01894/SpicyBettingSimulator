@@ -129,6 +129,46 @@ describe('migration 0001', () => {
     expect(row?.deleted_at).toBeNull();
   });
 
+  it('0003 created bug_reports with its two indexes', async () => {
+    const cols = await env.DB.prepare('PRAGMA table_info(bug_reports)').all<{
+      name: string;
+      type: string;
+      notnull: number;
+    }>();
+    expect(cols.results.map((c) => c.name)).toEqual([
+      'id',
+      'user_id',
+      'title',
+      'description',
+      'page',
+      'user_agent',
+      'app_version',
+      'created_at',
+      'issue_number',
+      'issue_url',
+      'error',
+    ]);
+    const byName = new Map(cols.results.map((c) => [c.name, c]));
+    expect(byName.get('created_at')).toMatchObject({ type: 'INTEGER', notnull: 1 });
+    expect(byName.get('issue_number')).toMatchObject({ type: 'INTEGER', notnull: 0 });
+    const idx = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'bug_reports' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    ).all<{ name: string }>();
+    expect(idx.results.map((i) => i.name)).toEqual([
+      'idx_bug_reports_created',
+      'idx_bug_reports_user_created',
+    ]);
+  });
+
+  it('bug_reports.user_id must reference an existing user', async () => {
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO bug_reports (id, user_id, title, description, app_version, created_at)
+         VALUES ('orphan', 'no-such-user', 't', 'd', 'test', 1)`,
+      ).run(),
+    ).rejects.toThrow(/FOREIGN KEY/);
+  });
+
   it('seeds the three job_locks rows', async () => {
     const rows = await env.DB.prepare('SELECT name FROM job_locks ORDER BY name').all<{
       name: string;

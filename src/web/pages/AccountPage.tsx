@@ -11,12 +11,13 @@
 import { useState } from 'react';
 import type { ReactElement } from 'react';
 
+import { BugReportSheet } from '../components/BugReportSheet.js';
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
 import { LedgerList } from '../components/LedgerList.js';
 import { LoadMore } from '../components/LoadMore.js';
 import { Spinner } from '../components/Spinner.js';
 import { getLedger } from '../api/client.js';
-import { LEDGER_PAGE_SIZE, useBalances, useLedger } from '../hooks/useApi.js';
+import { LEDGER_PAGE_SIZE, useBalances, useHealth, useLedger } from '../hooks/useApi.js';
 import { usePages } from '../hooks/usePages.js';
 import { formatRoi } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
@@ -66,6 +67,12 @@ export function AccountPage(): ReactElement {
   const balances = useBalances();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  // The button appears only when the server can actually file an issue
+  // (`GITHUB_TOKEN` set). Health unreachable => hide it; a form that always 503s
+  // is worse than no form.
+  const health = useHealth();
+  const bugReportsEnabled = health.data?.bugReportsEnabled === true;
+  const [reporting, setReporting] = useState(false);
 
   // The main balance's history. `null` asks the server for its default, which is
   // the main balance — so the first render needs no round-trip to find an id.
@@ -128,6 +135,33 @@ export function AccountPage(): ReactElement {
             <LoadMore paged={paged} label="Load older entries" />
           </>
         ))}
+
+      {bugReportsEnabled && (
+        <>
+          <h3 className="section-title">Something broken?</h3>
+          <p className="muted page-note">
+            Reports go straight to the project's issue tracker with your username and the page you
+            were on.
+          </p>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn btn-quiet"
+              onClick={() => {
+                setReporting(true);
+              }}
+            >
+              Report a bug
+            </button>
+          </div>
+          <BugReportSheet
+            open={reporting}
+            onClose={() => {
+              setReporting(false);
+            }}
+          />
+        </>
+      )}
 
       <h3 className="section-title">Session</h3>
       {error !== null && <ErrorBanner error={error} />}

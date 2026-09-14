@@ -226,6 +226,11 @@ describe('ERROR_CODES vs PLAN.md §11', () => {
     'KDF_VERSION',
     'CLIENT_KDF',
     'REFRESH_TARGETS_PER_RUN',
+    // §11.7 bug reports: two vars, a secret and a limit.
+    'GITHUB_REPO',
+    'GITHUB_API_BASE_URL',
+    'GITHUB_TOKEN',
+    'BUG_REPORTS_PER_WINDOW',
   ]);
   /** Suffixes that make a token a quantity, never a wire code. */
   const QUANTITY = /_(CENTS|MS|TENTHS|LEGS|BYTES|ITERATIONS|ATTEMPTS|GAMES|GROUP)$/;

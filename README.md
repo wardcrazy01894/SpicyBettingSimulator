@@ -67,6 +67,9 @@ To seed some games, sign up (first user becomes admin) and hit
 6. **Watch it grade.** Scores are ingested every 15 minutes and bets settle 5
    minutes after that, automatically. `/account` has the full ledger;
    `/leaderboard` ranks everyone by equity.
+7. **Something broken?** `/account` → "Report a bug" files a GitHub issue in
+   this repo with your username, the page and the app version attached. (Only
+   shown when the admin has set `GITHUB_TOKEN`; see `docs/OPERATIONS.md`.)
 
 ## Before you open a PR
 
@@ -88,5 +91,6 @@ Live at https://spicybetting.wardcrazy01894.workers.dev (Cloudflare free plan). 
 npx wrangler d1 migrations apply spicybetting --remote
 npx wrangler secret put INVITE_CODE
 npx wrangler secret put IP_HASH_SALT
+npx wrangler secret put GITHUB_TOKEN   # optional: in-app bug reports → GitHub issues
 npm run deploy
 ```

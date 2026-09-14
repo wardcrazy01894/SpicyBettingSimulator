@@ -24,12 +24,28 @@ export interface Env {
   /** Integer as a string. See Spike S2 before raising above 20. */
   readonly SETTLE_CHUNK: string;
   readonly APP_VERSION: string;
+  /** `owner/name` of the GitHub repo that `POST /api/bugs` files issues in. */
+  readonly GITHUB_REPO: string;
+  /** GitHub REST base, e.g. "https://api.github.com"; a stub host in tests. */
+  readonly GITHUB_API_BASE_URL: string;
 
   // --- secrets (wrangler secret put) -------------------------------------
   /** Shared signup gate. When unset, signup is open (reported by /api/health). */
   readonly INVITE_CODE?: string;
   /** Salt for hashing client IPs before they are written to auth_throttle. */
   readonly IP_HASH_SALT?: string;
+  /**
+   * Fine-grained PAT with Issues: read+write on `GITHUB_REPO` only. When unset,
+   * bug reporting is OFF: `/api/health` says so and `POST /api/bugs` is 503.
+   */
+  readonly GITHUB_TOKEN?: string;
+}
+
+/** Where and how `POST /api/bugs` files issues. `null` = feature off. */
+export interface GitHubConfig {
+  readonly repo: string;
+  readonly apiBaseUrl: string;
+  readonly token: string;
 }
 
 /** Typed, validated view of the numeric/boolean vars. */
@@ -40,6 +56,7 @@ export interface RuntimeConfig {
   readonly settleChunk: number;
   readonly appVersion: string;
   readonly inviteRequired: boolean;
+  readonly github: GitHubConfig | null;
 }
 
 /**
@@ -54,7 +71,29 @@ export function readConfig(env: Env): RuntimeConfig {
     settleChunk: requireInt('SETTLE_CHUNK', env.SETTLE_CHUNK, 1, 100),
     appVersion: requireNonEmpty('APP_VERSION', env.APP_VERSION),
     inviteRequired: typeof env.INVITE_CODE === 'string' && env.INVITE_CODE.length > 0,
+    github:
+      typeof env.GITHUB_TOKEN === 'string' && env.GITHUB_TOKEN.trim() !== ''
+        ? {
+            repo: requireRepo('GITHUB_REPO', env.GITHUB_REPO),
+            apiBaseUrl: requireUrl('GITHUB_API_BASE_URL', env.GITHUB_API_BASE_URL),
+            token: env.GITHUB_TOKEN.trim(),
+          }
+        : null,
   };
+}
+
+/**
+ * `owner/name`, each a GitHub-legal slug: owners are alphanumerics and hyphens,
+ * repo names may also carry `_` and `.`, and neither may START with a dot or a
+ * hyphen — which is also what keeps `../x` out of the URL path this is
+ * interpolated into.
+ */
+function requireRepo(name: string, raw: string | undefined): string {
+  const value = requireNonEmpty(name, raw);
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(value)) {
+    throw new Error(`config: ${name} must be "owner/name"`);
+  }
+  return value;
 }
 
 function requireNonEmpty(name: string, raw: string | undefined): string {

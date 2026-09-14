@@ -233,3 +233,17 @@ export const MAX_ABS_AMERICAN_PRICE = 100_000;
 /** Board query defaults. */
 export const BOARD_LOOKBACK_MS = 12 * 60 * 60 * 1000;
 export const BOARD_MAX_GAMES = 300;
+
+/**
+ * Bug reports (PLAN.md §11.7). A report is stored in `bug_reports` and filed as
+ * a GitHub issue. The limits bound what one signed-in user can push into the
+ * issue tracker: a title, a description, the page they were on, and at most
+ * `BUG_REPORTS_PER_WINDOW` reports per `BUG_REPORT_WINDOW_MS`.
+ */
+export const BUG_REPORT_TITLE_MIN = 3;
+export const BUG_REPORT_TITLE_MAX = 120;
+export const BUG_REPORT_DESCRIPTION_MIN = 10;
+export const BUG_REPORT_DESCRIPTION_MAX = 4_000;
+export const BUG_REPORT_PAGE_MAX = 200;
+export const BUG_REPORTS_PER_WINDOW = 5;
+export const BUG_REPORT_WINDOW_MS = 60 * 60 * 1000;

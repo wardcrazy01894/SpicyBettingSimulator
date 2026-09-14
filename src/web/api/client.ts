@@ -18,12 +18,15 @@ import { ERROR_STATUS } from '../../shared/errors.js';
 import type { ErrorCode } from '../../shared/errors.js';
 import type {
   AdminAdjustRequest,
+  AdminBugReportsResponse,
   AdminSetDisabledRequest,
   AdminSetPasswordRequest,
   AdminUsersResponse,
   BankrollsResponse,
   BetResponse,
   BetsResponse,
+  BugReportRequest,
+  BugReportResponse,
   ConfigResponse,
   GameCard,
   GamesResponse,
@@ -381,6 +384,18 @@ export function postAdminRetrySettlement(betId: string): Promise<void> {
   return apiVoid('POST', `/api/admin/bets/${encodeURIComponent(betId)}/retry-settlement`);
 }
 
+export function getAdminBugReports(): Promise<AdminBugReportsResponse> {
+  return apiGet<AdminBugReportsResponse>('/api/admin/bugs');
+}
+
 export function postAdminReconcile(): Promise<ReconcileResponse> {
   return apiSend<ReconcileResponse>('POST', '/api/admin/reconcile');
+}
+
+// ---------------------------------------------------------------------------
+// §11.7 bug reports
+// ---------------------------------------------------------------------------
+
+export function postBugReport(body: BugReportRequest): Promise<BugReportResponse> {
+  return apiSend<BugReportResponse>('POST', '/api/bugs', body);
 }
