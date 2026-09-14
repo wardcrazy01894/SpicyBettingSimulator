@@ -71,15 +71,30 @@ export function readConfig(env: Env): RuntimeConfig {
     settleChunk: requireInt('SETTLE_CHUNK', env.SETTLE_CHUNK, 1, 100),
     appVersion: requireNonEmpty('APP_VERSION', env.APP_VERSION),
     inviteRequired: typeof env.INVITE_CODE === 'string' && env.INVITE_CODE.length > 0,
-    github:
-      typeof env.GITHUB_TOKEN === 'string' && env.GITHUB_TOKEN.trim() !== ''
-        ? {
-            repo: requireRepo('GITHUB_REPO', env.GITHUB_REPO),
-            apiBaseUrl: requireUrl('GITHUB_API_BASE_URL', env.GITHUB_API_BASE_URL),
-            token: env.GITHUB_TOKEN.trim(),
-          }
-        : null,
+    github: readGitHub(env),
   };
+}
+
+/**
+ * The bug-report feature is OPTIONAL, so a broken half-configuration must not
+ * take the app down: `readConfig` runs on every request, and `wrangler secret
+ * put GITHUB_TOKEN` takes effect immediately against whatever vars are live. If
+ * the secret lands before the deploy that ships `GITHUB_REPO`, throwing here
+ * would 500 every request including /api/health. Instead the feature stays OFF
+ * and the reason is logged, so `wrangler tail` says why the button is missing.
+ */
+function readGitHub(env: Env): GitHubConfig | null {
+  if (typeof env.GITHUB_TOKEN !== 'string' || env.GITHUB_TOKEN.trim() === '') return null;
+  try {
+    return {
+      repo: requireRepo('GITHUB_REPO', env.GITHUB_REPO),
+      apiBaseUrl: requireUrl('GITHUB_API_BASE_URL', env.GITHUB_API_BASE_URL),
+      token: env.GITHUB_TOKEN.trim(),
+    };
+  } catch (err) {
+    console.error('[config] GITHUB_TOKEN is set but bug reports are OFF:', String(err));
+    return null;
+  }
 }
 
 /**

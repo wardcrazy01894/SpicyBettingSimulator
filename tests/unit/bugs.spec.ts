@@ -33,7 +33,7 @@ describe('formatBugIssue', () => {
     expect(issue.body).toContain('| Page | `/games?league=nfl` |');
     expect(issue.body).toContain('| App version | `0.1.0` |');
     expect(issue.body).toContain('| Reported at | 2026-09-14T15:30:00.000Z |');
-    expect(issue.body).toContain('| User agent | Mozilla/5.0 (iPhone) |');
+    expect(issue.body).toContain('| User agent | `Mozilla/5.0 (iPhone)` |');
   });
 
   it('neutralises a closing fence inside the description', () => {
@@ -46,12 +46,35 @@ describe('formatBugIssue', () => {
     expect(issue.body).toContain('` ` `');
   });
 
-  it('renders a missing page and user agent as a dash, and strips pipes from cells', () => {
+  it('renders a missing page and user agent as a bare dash, and escapes pipes in cells', () => {
     const issue = formatBugIssue(
       { title: 't', description: 'y'.repeat(10), page: null },
       { ...META, userAgent: 'a|b' },
     );
-    expect(issue.body).toContain('| Page | `—` |');
-    expect(issue.body).toContain('| User agent | a\\|b |');
+    expect(issue.body).toContain('| Page | — |');
+    expect(issue.body).toContain('| User agent | `a\\|b` |');
+  });
+
+  it('puts the user agent in a code span and swaps its backticks, so it cannot become markup', () => {
+    // The User-Agent header is attacker-controlled: a curl caller can send anything.
+    const issue = formatBugIssue(
+      { title: 't', description: 'y'.repeat(10), page: null },
+      { ...META, userAgent: 'x` cc @someone see #1 [pay](https://evil.example) `y' },
+    );
+    expect(issue.body).toContain(
+      "| User agent | `x' cc @someone see #1 [pay](https://evil.example) 'y` |",
+    );
+    // No backtick from the input survives — only the two the cell adds.
+    const line = issue.body.split('\n').find((l) => l.startsWith('| User agent |')) ?? '';
+    expect(line.match(/`/g)).toHaveLength(2);
+  });
+
+  it('swaps backticks in page and username the same way', () => {
+    const issue = formatBugIssue(
+      { title: 't', description: 'y'.repeat(10), page: '/bets`@x`y' },
+      { ...META, username: 'al`ex' },
+    );
+    expect(issue.body).toContain("| Page | `/bets'@x'y` |");
+    expect(issue.body).toContain("| Reported by | `al'ex` |");
   });
 });

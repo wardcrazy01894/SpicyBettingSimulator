@@ -2,9 +2,11 @@
  * Bug report → GitHub issue, the pure half. PLAN.md §11.7.
  *
  * Platform-free so the unit project pins the exact issue text; the Worker's
- * `bugs.ts` only adds the HTTP call. Everything a reporter typed lands in a
- * fenced block or a table cell, so a `#` or a `@mention` in their text is
- * rendered as text rather than as GitHub markup.
+ * `bugs.ts` only adds the HTTP call. Everything a reporter (or their browser)
+ * supplied lands in a fenced block or an inline-code table cell, so a `#123`
+ * or a `@mention` in it is rendered as text rather than as GitHub markup. The
+ * one exception is the TITLE, which GitHub renders as plain text everywhere
+ * and which therefore needs no escaping.
  */
 
 import type { BugReportInput } from './validate.js';
@@ -34,10 +36,20 @@ function fence(text: string): string {
   return text.replace(/```/g, '` ` `');
 }
 
-/** A table cell: no pipes, no newlines. */
+/**
+ * A table cell rendered as an inline code span: no pipes, no newlines, and no
+ * backticks (a backtick would close the span and let what follows render as
+ * markup — a mention, an issue reference, a link). Backslash cannot escape a
+ * backtick inside a code span, so it is swapped for an apostrophe. A missing
+ * value is a plain dash, outside any span.
+ */
 function cell(text: string | null): string {
   if (text === null || text === '') return '—';
-  return text.replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
+  const safe = text
+    .replace(/`/g, "'")
+    .replace(/\|/g, '\\|')
+    .replace(/[\r\n]+/g, ' ');
+  return `\`${safe}\``;
 }
 
 export function formatBugIssue(input: BugReportInput, meta: BugIssueMeta): BugIssue {
@@ -52,9 +64,9 @@ export function formatBugIssue(input: BugReportInput, meta: BugIssueMeta): BugIs
     '',
     '| | |',
     '| --- | --- |',
-    `| Reported by | \`${cell(meta.username)}\` |`,
-    `| Page | \`${cell(input.page)}\` |`,
-    `| App version | \`${cell(meta.appVersion)}\` |`,
+    `| Reported by | ${cell(meta.username)} |`,
+    `| Page | ${cell(input.page)} |`,
+    `| App version | ${cell(meta.appVersion)} |`,
     `| Reported at | ${new Date(meta.reportedAt).toISOString()} |`,
     `| User agent | ${cell(meta.userAgent)} |`,
     '',

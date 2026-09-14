@@ -245,5 +245,7 @@ export const BUG_REPORT_TITLE_MAX = 120;
 export const BUG_REPORT_DESCRIPTION_MIN = 10;
 export const BUG_REPORT_DESCRIPTION_MAX = 4_000;
 export const BUG_REPORT_PAGE_MAX = 200;
+/** The request's User-Agent is stored and filed too; anything past this is cut. */
+export const BUG_REPORT_USER_AGENT_MAX = 300;
 export const BUG_REPORTS_PER_WINDOW = 5;
 export const BUG_REPORT_WINDOW_MS = 60 * 60 * 1000;

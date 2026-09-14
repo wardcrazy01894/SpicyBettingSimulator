@@ -140,8 +140,13 @@ username, page, app version, time and browser in the body (PLAN §11.7). Five pe
   on its own.
 - **Feature off**: unset `GITHUB_TOKEN` (`npx wrangler secret delete GITHUB_TOKEN`) and the button
   disappears on the next page load; the route returns 503 to anyone who still has the form open.
-- **Spam**: it is signed-in users only and rate-limited in the INSERT itself, so the worst a
-  hostile account can do is five issues an hour until you disable it (`/admin` → Users).
+- **Spam**: it is signed-in users only and rate-limited in the INSERT itself, PER ACCOUNT — so the
+  ceiling is five issues an hour per account, times however many accounts the invite code has let
+  in. Disable the account (`/admin` → Users) and, if it was a leaked invite code, rotate the code.
+- **Ordering on first setup**: `secret put GITHUB_TOKEN` is safe to run before or after the deploy
+  that ships the `GITHUB_REPO` var — with the token set and the var missing, the Worker logs
+  `[config] GITHUB_TOKEN is set but bug reports are OFF` on every request and keeps serving. Check
+  `wrangler tail` if the button never appears.
 
 ```bash
 npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user_id, title, issue_number, error FROM bug_reports ORDER BY created_at DESC LIMIT 20"

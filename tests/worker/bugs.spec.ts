@@ -11,7 +11,11 @@ import type {
   HealthResponse,
 } from '../../src/shared/api-types.js';
 import { BUG_ISSUE_LABELS, BUG_ISSUE_TITLE_PREFIX } from '../../src/shared/bugs.js';
-import { BUG_REPORTS_PER_WINDOW, BUG_REPORT_WINDOW_MS } from '../../src/shared/constants.js';
+import {
+  BUG_REPORTS_PER_WINDOW,
+  BUG_REPORT_USER_AGENT_MAX,
+  BUG_REPORT_WINDOW_MS,
+} from '../../src/shared/constants.js';
 import type { ApiErrorBody } from '../../src/shared/errors.js';
 import { GITHUB_USER_AGENT } from '../../src/worker/bugs.js';
 import { readConfig } from '../../src/worker/env.js';
@@ -192,10 +196,13 @@ describe('readConfig', () => {
     });
   });
 
-  it('refuses a GITHUB_REPO that is not owner/name', () => {
-    expect(() => readConfig(envWith({ GITHUB_REPO: 'not a repo' }))).toThrow(/GITHUB_REPO/);
-    expect(() => readConfig(envWith({ GITHUB_REPO: 'a/b/c' }))).toThrow(/GITHUB_REPO/);
-    expect(() => readConfig(envWith({ GITHUB_REPO: '../x' }))).toThrow(/GITHUB_REPO/);
+  it('degrades to OFF (never throws) when the token is set but GITHUB_REPO is bad', () => {
+    // readConfig runs on EVERY request; a throw here would 500 the whole app.
+    for (const repo of ['not a repo', 'a/b/c', '../x', '-x/y', 'x/.y', '']) {
+      expect(readConfig(envWith({ GITHUB_REPO: repo })).github, repo).toBeNull();
+    }
+    // …and the rest of the config is untouched.
+    expect(readConfig(envWith({ GITHUB_REPO: '' })).appVersion).toBe('test');
   });
 });
 
@@ -248,7 +255,7 @@ describe('POST /api/bugs', () => {
     expect(call.body.body).toContain(`| Reported by | \`${me.name}\` |`);
     expect(call.body.body).toContain('| Page | `/bets` |');
     expect(call.body.body).toContain('| App version | `test` |');
-    expect(call.body.body).toContain('| User agent | Mozilla/5.0 (test) |');
+    expect(call.body.body).toContain('| User agent | `Mozilla/5.0 (test)` |');
 
     const row = await env.DB.prepare('SELECT * FROM bug_reports WHERE id = ?1')
       .bind(body.id)
@@ -309,6 +316,37 @@ describe('POST /api/bugs', () => {
       "SELECT COUNT(*) AS n FROM bug_reports WHERE user_id = ?1 AND error = 'fetch failed'",
     )
       .bind(me.id)
+      .first<{ n: number }>();
+    expect(n?.n).toBe(1);
+  });
+
+  it('cuts an oversized User-Agent before storing or filing it', async () => {
+    const me = await register();
+    const huge = 'U'.repeat(BUG_REPORT_USER_AGENT_MAX * 4);
+    const res = await post(GOOD, me.cookie, { 'user-agent': huge });
+    expect(res.status).toBe(201);
+    const body = await res.json<BugReportResponse>();
+    const row = await env.DB.prepare('SELECT user_agent FROM bug_reports WHERE id = ?1')
+      .bind(body.id)
+      .first<{ user_agent: string }>();
+    expect(row?.user_agent).toHaveLength(BUG_REPORT_USER_AGENT_MAX);
+    expect(github.calls[0]?.body.body).toContain(`\`${'U'.repeat(BUG_REPORT_USER_AGENT_MAX)}\``);
+    expect(github.calls[0]?.body.body).not.toContain('U'.repeat(BUG_REPORT_USER_AGENT_MAX + 1));
+  });
+
+  it('refuses a non-https issue URL from GitHub', async () => {
+    const me = await register();
+    github.respond = () =>
+      new Response(JSON.stringify({ number: 7, html_url: 'javascript:alert(1)' }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    const res = await post(GOOD, me.cookie);
+    expect(res.status).toBe(503);
+    const n = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM bug_reports WHERE user_id = ?1 AND issue_url IS NULL AND error LIKE ?2',
+    )
+      .bind(me.id, '%non-https%')
       .first<{ n: number }>();
     expect(n?.n).toBe(1);
   });

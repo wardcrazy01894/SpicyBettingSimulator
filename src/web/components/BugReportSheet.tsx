@@ -32,7 +32,14 @@ export function BugReportSheet(props: {
   const [error, setError] = useState<unknown>(null);
   const [filed, setFiled] = useState<BugReportResponse | null>(null);
 
+  // Closing forgets everything, so re-opening never lands on a stale
+  // "filed as #N" screen or a stale error. The setters are stable, so this
+  // callback is too, which is what keeps the focus trap from re-arming.
   const close = useCallback(() => {
+    setFiled(null);
+    setError(null);
+    setTitle('');
+    setDescription('');
     onClose();
   }, [onClose]);
   useFocusTrap(dialogRef, open, close);
@@ -44,12 +51,15 @@ export function BugReportSheet(props: {
   // should not be the place we find out).
   const page = `${location.pathname}${location.search}`;
   const draft = validateBugReport({ title, description, page });
-  // Only surface the validation message once the person has typed something
-  // in that field; an empty form is not yet "wrong".
+  // Only surface a title/description message once the person has typed
+  // something in that field — an empty form is not yet "wrong". A `page`
+  // problem is not theirs to fix, so it is shown at once rather than leaving a
+  // silently disabled Send button.
   const problem =
     !draft.ok &&
     ((draft.field === 'title' && title !== '') ||
-      (draft.field === 'description' && description !== ''))
+      (draft.field === 'description' && description !== '') ||
+      draft.field === 'page')
       ? draft.message
       : null;
 

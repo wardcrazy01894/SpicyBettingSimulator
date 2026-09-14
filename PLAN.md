@@ -2468,7 +2468,9 @@ timeout). If GitHub fails for any reason the row is kept with `error` set and th
 caller gets `503 UPSTREAM_UNAVAILABLE` with `details.reportId`; the report is
 then visible on `GET /api/admin/bugs` for an admin to file by hand. Nothing
 retries automatically — the volume is a few reports a season and a retry loop
-against a revoked token would only spend subrequests.
+against a revoked token would only spend subrequests. (The flip side: if the
+8 s timeout fires on a request GitHub actually completed, a client retry files
+a duplicate and spends a second rate-limit slot. Accepted at this volume.)
 
 **Rate limit: `BUG_REPORTS_PER_WINDOW` (5) per `BUG_REPORT_WINDOW_MS` (1 h) per
 user**, enforced INSIDE the INSERT
@@ -2482,10 +2484,15 @@ unbounded write stream.
 `src/shared/bugs.ts` (unit-tested): title `[user report] <title>`, labels
 `bug` + `user-report`, and a body with the description in a fenced `text` block
 and a context table (reporter, page, version, time as ISO-8601 UTC, user agent).
-Reporter text only ever lands inside a fence or a table cell — a `#123` or an
-`@mention` typed into the form is rendered as text, not as GitHub markup — and
-the fence itself is neutralised (` ``` ` → `` ` ` ` ``) so a description cannot
-close it.
+Every request-supplied string in the BODY — description, page, and the
+`User-Agent` header, which is attacker-controlled — lands inside the fence or
+inside an inline-code table cell, so a `#123` or an `@mention` is rendered as
+text, not as GitHub markup. The fence is neutralised (` ``` ` → `` ` ` ` ``) so
+a description cannot close it, and cells swap backticks for apostrophes so
+nothing can close a code span (`validateBugReport` also refuses backticks in
+`page`). The TITLE is the one string filed raw: GitHub renders issue titles as
+plain text everywhere, so it needs no escaping. `User-Agent` is cut at
+`BUG_REPORT_USER_AGENT_MAX` (300) before it is stored or filed.
 
 **Configuration** (`src/worker/env.ts`): vars `GITHUB_REPO` (`owner/name`,
 validated as two GitHub-legal slugs so it can be interpolated into a URL path)
@@ -2493,8 +2500,12 @@ and `GITHUB_API_BASE_URL` (`https://api.github.com`; a stub host in tests), and
 the secret `GITHUB_TOKEN` — a fine-grained PAT with **Issues: read and write on
 that one repository and nothing else**. With the token unset the feature is OFF:
 `/api/health` reports `bugReportsEnabled: false`, the account page hides the
-button, and `POST /api/bugs` is `503`. No new error code: the four outcomes map
-onto codes that already mean exactly those things.
+button, and `POST /api/bugs` is `503`. The same OFF state applies when the token
+IS set but either var is missing or malformed — `readConfig` runs on every
+request, so that case logs and degrades rather than 500ing the whole app (which
+is what would otherwise happen if the secret were put before the deploy that
+ships the vars). No new error code: the four outcomes map onto codes that
+already mean exactly those things.
 
 Limits are in `constants.ts`: title 3–120 chars, description 10–4,000, page ≤
 200 and path-shaped (must start with a single `/`, no whitespace).
@@ -3232,7 +3243,7 @@ constrained:
 | `@vitejs/plugin-react` | `^5.2.0`  | 5.2.0 is the first v5 that accepts `vite@^8`. v6 accepts vite 8 too but pulls in extra optional peers (`oxc-transform-react`, `@rolldown/plugin-babel`) we do not need.                                                       |
 
 `vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.131` are current and unconstrained.
-If a dependency bump is proposed, check these three first — and note Alex's
+If a dependency bump is proposed, check these four first — and note Alex's
 standing rule that dependency-bump PRs also get an adversarial review.
 `.github/dependabot.yml` proposes the bumps (weekly, Monday 06:00 ET): minor and
 patch bumps arrive as ONE grouped PR, majors one PR each, GitHub Actions as one

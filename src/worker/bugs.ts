@@ -152,6 +152,11 @@ async function fileIssue(
     throw new Error('GitHub responded without an issue number');
   }
   const body = parsed as { number: number; html_url: string };
+  // The URL is rendered as an <a href> in two places; a hostile or misconfigured
+  // GITHUB_API_BASE_URL must not be able to hand the browser a javascript: link.
+  if (!body.html_url.startsWith('https://')) {
+    throw new Error('GitHub responded with a non-https issue URL');
+  }
   return { number: body.number, url: body.html_url };
 }
 
@@ -169,13 +174,16 @@ interface BugReportRow {
   readonly error: string | null;
 }
 
-/** Newest first, capped at `ADMIN_BUG_HISTORY`. Includes rows GitHub refused. */
+/**
+ * Newest first, capped at `ADMIN_BUG_HISTORY`. Includes rows GitHub refused.
+ * `rowid` breaks same-millisecond ties in insertion order (the id is a uuid).
+ */
 export async function listBugReports(env: Env): Promise<AdminBugReportsResponse> {
   const rows = await env.DB.prepare(
     `SELECT b.id, b.user_id, u.username, b.title, b.description, b.page, b.app_version,
             b.created_at, b.issue_number, b.issue_url, b.error
        FROM bug_reports b JOIN users u ON u.id = b.user_id
-      ORDER BY b.created_at DESC, b.id DESC
+      ORDER BY b.created_at DESC, b.rowid DESC
       LIMIT ?1`,
   )
     .bind(ADMIN_BUG_HISTORY)

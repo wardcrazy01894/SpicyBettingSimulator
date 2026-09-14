@@ -2,6 +2,7 @@
 
 import { Hono } from 'hono';
 import type { BugReportResponse } from '../../shared/api-types.js';
+import { BUG_REPORT_USER_AGENT_MAX } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { validateBugReport } from '../../shared/validate.js';
 import { createBugReport } from '../bugs.js';
@@ -26,7 +27,7 @@ export function bugsRoutes(): Hono<AppContext> {
     const body: BugReportResponse = await createBugReport(c.env, c.var.config, {
       user,
       input: parsed.value,
-      userAgent: c.req.header('user-agent') ?? null,
+      userAgent: c.req.header('user-agent')?.slice(0, BUG_REPORT_USER_AGENT_MAX) ?? null,
       now: c.var.now,
     });
     return c.json(body, 201);

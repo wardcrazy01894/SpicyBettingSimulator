@@ -603,6 +603,7 @@ describe('validateBugReport', () => {
     ['page is a URL', { ...ok, page: 'https://evil.example/x' }, 'page'],
     ['page is protocol-relative', { ...ok, page: '//evil.example' }, 'page'],
     ['page with whitespace', { ...ok, page: '/bets and stuff' }, 'page'],
+    ['page with a backtick', { ...ok, page: '/bets`@x' }, 'page'],
     ['page too long', { ...ok, page: `/${'p'.repeat(BUG_REPORT_PAGE_MAX)}` }, 'page'],
   ])('rejects %s', (_label, body, field) => {
     const r = validateBugReport(body);

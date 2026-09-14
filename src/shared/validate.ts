@@ -461,7 +461,9 @@ export function validateBugReport(body: unknown): ValidationResult<BugReportInpu
       if (trimmed.length > BUG_REPORT_PAGE_MAX) {
         return bad(`page must be at most ${String(BUG_REPORT_PAGE_MAX)} characters.`, 'page');
       }
-      if (/[\s]/.test(trimmed)) return bad('page must not contain whitespace.', 'page');
+      if (/[\s`]/.test(trimmed)) {
+        return bad('page must not contain whitespace or backticks.', 'page');
+      }
       page = trimmed;
     }
   }
