@@ -276,7 +276,8 @@ docs/samples/ captured ESPN payloads (NFL 16 events, CFB 86) — read only by th
 docs/         teaser-odds.md — the sourcing behind TEASER_PAYOUTS
 scripts/      fixture server, admin password tool, ledger reconcile, branch
               protection, icon rasteriser
-.github/      ci.yml (gate + gitleaks) and pull_request_template.md
+.github/      ci.yml (gate + gitleaks), deploy.yml, dependabot.yml (weekly grouped
+              bumps; every one still gets CI + adversarial review), PR template
 ```
 
 **Local dev gotcha**: `wrangler.jsonc` defaults `ESPN_BASE_URL` to real ESPN.
