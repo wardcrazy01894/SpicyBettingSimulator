@@ -618,6 +618,93 @@ describe('GET /api/leaderboard', () => {
     expect(await balanceOf(env.DB, customId)).toBe(50000 - 7000);
     expect(await balanceOf(env.DB, mainId)).toBe(INITIAL_BANKROLL_CENTS - 3000);
   });
+
+  /**
+   * The board is the scoreboard of people who are PLAYING. A throwaway test
+   * account that has been disabled — the case this was built for — was still
+   * being ranked, which is the bug. Disabled AND soft-deleted accounts are both
+   * off it now; the admin list still shows them.
+   */
+  it('excludes DISABLED and soft-DELETED accounts', async () => {
+    const alex = await register();
+    const disabled = await register();
+    const deleted = await register();
+    const s = scope();
+    // Give both of them a settled win, so they would otherwise rank ABOVE alex
+    // and the filter cannot be passing by accident.
+    for (const [i, who] of [disabled, deleted].entries()) {
+      await seedSettledBet(env.DB, {
+        id: `hide-${String(s.season)}-${String(i)}`,
+        userId: who.id,
+        season: s.season,
+        status: 'won',
+        stakeCents: 1000,
+        payoutCents: 50_000,
+      });
+    }
+
+    const before = await (await get('/api/leaderboard', alex.cookie)).json<LeaderboardResponse>();
+    expect(before.rows.map((r) => r.username)).toEqual(
+      expect.arrayContaining([disabled.name, deleted.name]),
+    );
+
+    await env.DB.prepare('UPDATE users SET is_disabled = 1 WHERE id = ?1').bind(disabled.id).run();
+    await env.DB.prepare('UPDATE users SET is_disabled = 1, deleted_at = ?2 WHERE id = ?1')
+      .bind(deleted.id, Date.now())
+      .run();
+
+    const after = await (await get('/api/leaderboard', alex.cookie)).json<LeaderboardResponse>();
+    const names = after.rows.map((r) => r.username);
+    expect(names).not.toContain(disabled.name);
+    expect(names).not.toContain(deleted.name);
+    expect(names).toContain(alex.name);
+    // The board is still a contiguous 1..n after the removals.
+    expect(after.rows.map((r) => r.rank)).toEqual(after.rows.map((_, i) => i + 1));
+    // ...and nobody else's numbers moved.
+    const mine = (u: LeaderboardResponse) => u.rows.find((r) => r.username === alex.name);
+    expect(mine(after)).toMatchObject({
+      balanceCents: mine(before)?.balanceCents ?? -1,
+      equityCents: mine(before)?.equityCents ?? -1,
+    });
+
+    // A league tab is the same query with a narrower stats filter — same exclusion.
+    const nfl = await (
+      await get('/api/leaderboard?league=nfl', alex.cookie)
+    ).json<LeaderboardResponse>();
+    expect(nfl.rows.map((r) => r.username)).not.toContain(disabled.name);
+    expect(nfl.rows.map((r) => r.username)).not.toContain(deleted.name);
+
+    // Money is untouched — this is a visibility filter, not a delete.
+    expect(await bankrollDrift(env.DB)).toEqual([]);
+  });
+
+  it('puts a re-enabled account straight back on the board, unchanged', async () => {
+    const alex = await register();
+    const paused = await register();
+    const s = scope();
+    await seedSettledBet(env.DB, {
+      id: `pause-${String(s.season)}`,
+      userId: paused.id,
+      season: s.season,
+      status: 'won',
+      stakeCents: 1000,
+      payoutCents: 3000,
+    });
+    const board = async (): Promise<LeaderboardResponse> =>
+      (await get('/api/leaderboard', alex.cookie)).json<LeaderboardResponse>();
+    const before = (await board()).rows.find((r) => r.username === paused.name);
+
+    await env.DB.prepare('UPDATE users SET is_disabled = 1 WHERE id = ?1').bind(paused.id).run();
+    expect((await board()).rows.map((r) => r.username)).not.toContain(paused.name);
+
+    await env.DB.prepare('UPDATE users SET is_disabled = 0 WHERE id = ?1').bind(paused.id).run();
+    const after = (await board()).rows.find((r) => r.username === paused.name);
+    expect(after).toMatchObject({
+      balanceCents: before?.balanceCents ?? -1,
+      equityCents: before?.equityCents ?? -1,
+      record: before?.record ?? {},
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

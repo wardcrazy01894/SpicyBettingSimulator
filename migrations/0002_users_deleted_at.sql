@@ -1,0 +1,22 @@
+-- SpicyBettingSimulator — 0002: soft delete for user accounts
+-- D1 (SQLite). Applied with: wrangler d1 migrations apply spicybetting [--local|--remote]
+--
+-- THE FIRST NUMBERED MIGRATION AFTER 0001. `migrations/0001_init.sql` was applied
+-- to the remote D1 on 2026-09-14 and is frozen for good (CLAUDE.md rule 9,
+-- docs/OPERATIONS.md "Schema changes"), so this lands as a new file rather than
+-- an edit.
+--
+-- WHY SOFT, NOT HARD. A hard delete is impossible by design and that is not an
+-- oversight: `bankrolls.user_id` and `ledger.bankroll_id` are ON DELETE RESTRICT
+-- and `ledger_bd_block` refuses `DELETE FROM ledger` outright, so money can never
+-- evaporate (PLAN.md §4.1). `deleted_at` is therefore the delete: the account is
+-- disabled, evicted, renamed out of the way and hidden from the leaderboard,
+-- while its settled bets and every ledger row stay exactly where they are so
+-- `SUM(ledger) = balance_cents` still reconciles. PLAN.md §10.5 / §11.6.
+--
+-- NULL = a live account. A non-NULL value is the epoch-ms instant of the delete,
+-- like every other timestamp in the schema (CLAUDE.md rule 3). SQLite's
+-- `ALTER TABLE ... ADD COLUMN` with a NULL default is a metadata-only rewrite, so
+-- this is safe on a populated remote table.
+
+ALTER TABLE users ADD COLUMN deleted_at INTEGER NULL;

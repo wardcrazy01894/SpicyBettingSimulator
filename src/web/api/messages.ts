@@ -48,6 +48,8 @@ export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   PAYOUT_LIMIT_EXCEEDED: 'That would pay out more than the $1,000,000 cap. Lower the stake.',
   BET_LOCKED: 'Too late — a game in this bet has already kicked off.',
   BET_NOT_PENDING: 'That bet has already been settled or cancelled.',
+  ACCOUNT_HAS_PENDING_BETS:
+    'That account still has open bets — cancel or settle them first, then delete it.',
   JOB_LOCKED: 'That job is already running. Give it a minute.',
 
   RATE_LIMITED: 'Too many attempts. Wait 15 minutes and try again.',
@@ -82,10 +84,16 @@ function codeOf(error: unknown): ErrorCode | null {
 export function messageForError(error: unknown): string {
   const code = codeOf(error);
   if (code !== null) {
-    // For these two the server's message carries the specific, useful detail
-    // (which field failed / how long the lockout is) and is safe to show.
+    // For these three the server's message carries the specific, useful detail
+    // (which field failed / how long the lockout is / WHICH username is in the
+    // way) and is safe to show. `USERNAME_TAKEN` is here because it arrives from
+    // two places with different advice: signup (the server's message says the
+    // name is taken) and a soft delete whose tombstone names are both occupied
+    // (PLAN §10.5), where "Pick another one" would be nonsense advice to an
+    // admin deleting somebody. In both cases the server's message is shown.
     const message = error instanceof Error ? error.message : '';
-    if ((code === 'VALIDATION' || code === 'RATE_LIMITED') && message !== '') return message;
+    const verbatim = code === 'VALIDATION' || code === 'RATE_LIMITED' || code === 'USERNAME_TAKEN';
+    if (verbatim && message !== '') return message;
     return ERROR_MESSAGES[code];
   }
   if (error instanceof Error && error.message !== '') return error.message;

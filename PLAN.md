@@ -192,9 +192,19 @@ matching every other line quantity in the system (§5.8); also
 **`users`** — one row per friend.
 `id, username` (lowercased, `UNIQUE`), `display_name` (original case), `kdf_version`,
 `client_iterations`, `server_salt BLOB(16)`, `server_iterations`, `password_hash BLOB(32)`,
-`is_admin`, `is_disabled`, `created_at`, `updated_at`.
+`is_admin`, `is_disabled`, `created_at`, `updated_at`,
+`deleted_at INTEGER NULL` (**migration `0002_users_deleted_at.sql`**).
 Storing the KDF parameters per row is what makes a future parameter bump migratable
 without a forced reset (§10.4).
+
+`deleted_at` is the SOFT DELETE stamp and the first post-0001 schema change: `NULL`
+means a live account, a value is the epoch-ms instant it was deleted. It exists
+because a HARD delete is impossible by design — `bankrolls.user_id` and
+`ledger.bankroll_id` are `ON DELETE RESTRICT` and `ledger_bd_block` refuses
+`DELETE FROM ledger`, so there is no statement order that removes a user without
+destroying the money history `POST /api/admin/reconcile` exists to check (§4.1).
+A deleted row is disabled, renamed, evicted and off the leaderboard; its bets and
+ledger rows stay exactly where they are. §10.5 and §11.6.
 
 **`sessions`** — `id` is the **SHA-256 hex of the session token**, never the token
 itself, so a D1 dump does not hand an attacker live sessions. Plus `user_id`,
@@ -1992,6 +2002,80 @@ Documented here so nobody has to invent it under pressure.
   … OR (SELECT COUNT(*) FROM users WHERE is_admin = 1 AND is_disabled = 0) > 1
   ```
 
+**Deleted accounts** (`users.deleted_at IS NOT NULL`, migration 0002). `DELETE
+/api/admin/users/:id` (§11.6) soft-deletes: in ONE batch it sets `is_disabled = 1`
+and `deleted_at = now`, renames `username` to `deleted_<first 12 hex of the id>`,
+sets `display_name = 'Deleted user'`, and deletes every `sessions` row for the user.
+What that buys, in order:
+
+- **Cannot log in.** `login`'s lookup is `WHERE username = ?1 AND deleted_at IS NULL`,
+  so a deleted account falls into the unknown-user branch: dummy PBKDF2 against the
+  decoy salt and the identical `401 INVALID_CREDENTIALS`. It is _not_
+  `ACCOUNT_DISABLED` — that would confirm both the (renamed) username and the
+  password, which is exactly the oracle the rest of this section exists to avoid.
+- **Sessions are dead** twice over: the rows are gone, and `resolveSession`'s JOIN
+  carries `u.deleted_at IS NULL` as well as `u.is_disabled = 0`.
+- **Off the leaderboard** (§11.5), which is the reason the feature exists: a
+  throwaway test account was still being ranked after being disabled.
+- **The old username is free.** The rename is what releases it, so somebody else can
+  register it; the deleted row keeps `deleted_<hex>` (20 chars, inside the
+  `length(username) BETWEEN 3 AND 24` CHECK) forever.
+- **Still in `GET /api/admin/users`**, with `isDeleted: true` and `deletedAt`. That is
+  the one surface that shows them, so an operator can see the row and understand the
+  renamed username.
+- **`POST /users/:id/disabled`, `/users/:id/password` and `/users/:id/adjust` all
+  return 404** for a deleted account. A re-enable would be a half-resurrection with no
+  visible effect except a confusing chip; an adjustment would move money into or out
+  of a balance nobody can reach again, which is either money that can never be spent
+  or a silent rewrite of the history `db:reconcile` vouches for. `/adjust`'s guard is
+  a `WHERE EXISTS (… deleted_at IS NULL)` inside the ledger INSERT — a money path
+  gets no read-then-write (rule 5), and `INSERT … SELECT … WHERE` rather than
+  `INSERT OR IGNORE`, which rule 6 bans from `ledger` outright.
+
+**THE TOMBSTONE NAME IS RESERVED, AND THE RENAME CAN STILL COLLIDE.**
+`deleted_<12 hex>` satisfies every rule in `validateUsername`, and
+`GET /api/leaderboard` hands every authenticated user everybody else's uuid — so it
+was, until this was fixed, a username anybody could register. A squatter who did so
+made the targeted account permanently undeletable: the rename lost to
+`UNIQUE(users.username)` and the route answered `500 INTERNAL` forever, on
+attacker-chosen input. Two changes, because one is not enough:
+
+1. **`validateUsername` rejects the `deleted_` prefix** (`RESERVED_USERNAME_PREFIX`),
+   with `400 VALIDATION` and "that prefix is reserved". It is in `src/shared`, so the
+   browser refuses it before spending a second on the KDF, and it applies on LOGIN as
+   well as signup — a purely syntactic refusal, identical for a tombstone that exists
+   and one that never will, so it is no enumeration oracle. This closes the reachable
+   half.
+2. **`deleteUser` retries once at 16 hex** (`deleted_` + 16 = 24 characters, exactly
+   the CHECK's ceiling) when the 12-hex name collides anyway — another DELETED row
+   sharing the first 12 hex digits of a uuid. Astronomically unlikely and not
+   attacker-controlled, but it is still a collision, and a second value for the same
+   id cannot lose to the row that just beat it. If even that collides the answer is
+   `409 USERNAME_TAKEN` naming the tombstone, never a bare `INTERNAL`: an operator who
+   is told which name is in the way can rename it and retry.
+
+**Nothing else is deleted and no money moves** — not one ledger row, not one
+`balance_cents` write. Settled bets, cancelled bets and the whole ledger stay, because
+the ledger is append-only by DDL and `SUM(ledger) = balance_cents` has to keep
+reconciling for that bankroll after the delete exactly as it did before.
+
+Guards, all expressed as `WHERE` clauses inside the UPDATE (CLAUDE.md rule 5), with a
+single follow-up read used only to _diagnose_ a zero-change write:
+
+| Guard                                                  | Result                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| target is the caller                                   | `400 VALIDATION`                                                                                                                                                                                                                                                                                                                |
+| target is an admin and only one _enabled_ admin exists | `400 VALIDATION`, "Cannot delete an admin while only one enabled admin remains." — the same subquery `setDisabled` uses. Conservative on purpose: a disabled admin is the recovery path if the enabled one is lost, which is also why the message does not say "the last _enabled_ admin": the account refused is often not one |
+| target has any `status = 'pending'` bet                | `409 ACCOUNT_HAS_PENDING_BETS`                                                                                                                                                                                                                                                                                                  |
+| no such id                                             | `404 NOT_FOUND`                                                                                                                                                                                                                                                                                                                 |
+| already deleted                                        | `204` — idempotent no-op, not an error                                                                                                                                                                                                                                                                                          |
+| both tombstone names taken                             | `409 USERNAME_TAKEN` — never `500 INTERNAL`; see the reservation note above                                                                                                                                                                                                                                                     |
+
+The pending-bet refusal is about open money: the stake has already left the balance
+and settlement would credit a payout to an account nobody can reach. Cancel or settle
+first. There is no promotion path for `is_admin` (it is only ever written by the
+first-signup CASE), so deleting the last admin is as unrecoverable as disabling them.
+
 ### 10.6 Admin password reset
 
 `scripts/admin-hash.mjs <username> <password>` runs the _identical_ client KDF in Node
@@ -2026,13 +2110,14 @@ and never removed, only added.
 | `UNAUTHENTICATED`          | 401    | no session on a private route                                                                                                                                                                                                             |
 | `INVALID_CREDENTIALS`      | 401    | login; identical for an unknown user (§10.2)                                                                                                                                                                                              |
 | `BAD_INVITE_CODE`          | 401    | signup when `INVITE_CODE` is set and wrong                                                                                                                                                                                                |
-| `ACCOUNT_DISABLED`         | 403    | login by a disabled account                                                                                                                                                                                                               |
-| `CSRF_BLOCKED`             | 403    | missing `X-SBS-Client`, or a cross-origin `Origin` (§10.5)                                                                                                                                                                                |
-| `NOT_FOUND`                | 404    | any unclaimed `/api/*` path, and an unknown `:job`                                                                                                                                                                                        |
+| `ACCOUNT_DISABLED`         | 403    | login by a disabled account; also placement/edit when the account is disabled or soft-deleted BETWEEN authentication and the batch (§14.2's account-state guard)                                                                          |
+| `CSRF_BLOCKED`             | 403    | missing `X-SBS-Client`, or a cross-origin `Origin` (§10.5) — on every state-changing method, `DELETE` included                                                                                                                            |
+| `NOT_FOUND`                | 404    | any unclaimed `/api/*` path, an unknown `:job`, and an admin user route naming an unknown OR soft-deleted account (§10.5)                                                                                                                 |
 | `GAME_NOT_FOUND`           | 404    | a leg or board lookup naming a game that does not exist                                                                                                                                                                                   |
 | `BET_NOT_FOUND`            | 404    | a bet that is not yours OR does not exist — never 403 (§11.4)                                                                                                                                                                             |
 | `BANKROLL_NOT_FOUND`       | 404    | a balance that is not yours OR does not exist (§4.4)                                                                                                                                                                                      |
-| `USERNAME_TAKEN`           | 409    | signup                                                                                                                                                                                                                                    |
+| `USERNAME_TAKEN`           | 409    | signup; also a soft delete whose 12- AND 16-hex tombstone names are both taken (§10.5) — a coded, actionable refusal instead of an `INTERNAL`                                                                                             |
+| `ACCOUNT_HAS_PENDING_BETS` | 409    | `DELETE /api/admin/users/:id` while the target holds an open bet (§10.5). A NEW code, not a reused one: `BET_NOT_PENDING` is about one bet's status and says the opposite thing, and `VALIDATION` is a 400                                |
 | `GAME_NOT_BETTABLE`        | 409    | `status <> 'scheduled'`                                                                                                                                                                                                                   |
 | `BETTING_CLOSED`           | 409    | past `lockAt`                                                                                                                                                                                                                             |
 | `MARKET_UNAVAILABLE`       | 409    | no line for that market, or `seenAt` stale                                                                                                                                                                                                |
@@ -2230,12 +2315,12 @@ what the slip promised); `payoutCents` is what was actually paid.
 
 ### 11.5 Balances, ledger, leaderboard
 
-| Method | Path                                      | Response                                                                                         |
-| ------ | ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| GET    | `/api/bankroll?league=`                   | `200 {balances: BankrollView[]}` — every balance the caller owns, `main` first. Creates nothing. |
-| GET    | `/api/ledger?bankrollId=&limit=&cursor=`  | `200 {entries: LedgerEntry[], nextCursor}`. `bankrollId` defaults to the main balance.           |
-| GET    | `/api/leaderboard?league=all\|nfl\|ncaaf` | `200 {league, rows: LeaderboardRow[]}`. `league` optional; `all` / absent is the default.        |
-| GET    | `/api/leaderboard/all-time`               | `200 {league:'all', rows}` — an ALIAS of the unfiltered board, kept for the shipped client.      |
+| Method | Path                                      | Response                                                                                                                                      |
+| ------ | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/bankroll?league=`                   | `200 {balances: BankrollView[]}` — every balance the caller owns, `main` first. Creates nothing.                                              |
+| GET    | `/api/ledger?bankrollId=&limit=&cursor=`  | `200 {entries: LedgerEntry[], nextCursor}`. `bankrollId` defaults to the main balance.                                                        |
+| GET    | `/api/leaderboard?league=all\|nfl\|ncaaf` | `200 {league, rows: LeaderboardRow[]}`. `league` optional; `all` / absent is the default. **Enabled, non-deleted accounts only** — see below. |
+| GET    | `/api/leaderboard/all-time`               | `200 {league:'all', rows}` — an ALIAS of the unfiltered board, kept for the shipped client.                                                   |
 
 `BankrollView = { id, name, kind ('main'|'custom'), balanceCents,
 pendingStakeCents, equityCents, record:{w,l,p,v}, roi, settledCount }`.
@@ -2243,6 +2328,16 @@ pendingStakeCents, equityCents, record:{w,l,p,v}, roi, settledCount }`.
 A LIST even though v1 always returns exactly one, because the schema models
 balances as a list for future side pots and a single-object response would have
 to be replaced rather than extended the day a second one exists.
+
+**Who is ON the leaderboard: `users.is_disabled = 0 AND users.deleted_at IS NULL`.**
+The board is the scoreboard of people who are playing; a disabled throwaway test
+account is neither competing nor able to answer for its ranking, and leaving it there
+is the bug this rule fixes. The predicate lives on the row-producing
+`bankrolls JOIN users` query, so an excluded user's bets never reach an accumulator
+either — none of their stake or ROI leaks into anybody else's numbers. It is a
+VISIBILITY filter: nothing is deleted, no money moves, and re-enabling an account puts
+it straight back on the board with the same balance and the same record.
+`GET /api/admin/users` still lists everyone (§11.6).
 
 **Semantics (explicit, because this is the classic ambiguity):**
 
@@ -2302,16 +2397,17 @@ to sum, and `/all-time` is now literally the unfiltered board.)
 
 ### 11.6 Admin (requires `users.is_admin = 1`)
 
-| Method | Path                                   | Notes                                                                                                                                                                            |
-| ------ | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                         |
-| GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                         |
-| GET    | `/api/admin/users`                     | list                                                                                                                                                                             |
-| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets                                                                                                                                                                  |
-| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}` → `204`. Disabling EVICTS every live session in the same batch. Refused with `400 VALIDATION` for your own account, or for the last enabled admin (§10.5). |
-| POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check.    |
-| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                   |
-| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                          |
+| Method | Path                                   | Notes                                                                                                                                                                                                         |
+| ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                                                      |
+| GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                                                      |
+| GET    | `/api/admin/users`                     | list — `AdminUserView[]`, **including deleted accounts** (`isDeleted`, `deletedAt`). The only surface that still shows them.                                                                                  |
+| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets. `404` for a deleted account.                                                                                                                                                                 |
+| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}` → `204`. Disabling EVICTS every live session in the same batch. Refused with `400 VALIDATION` for your own account, or for the last enabled admin (§10.5). `404` for a deleted account. |
+| DELETE | `/api/admin/users/:id`                 | **SOFT delete** → `204` (also `204` when already deleted). Guards: `400` self, or an admin while only one enabled admin remains, `404` unknown, `409 ACCOUNT_HAS_PENDING_BETS`. Full semantics in §10.5.      |
+| POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check. `404` for a deleted account.    |
+| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                                                |
+| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                                                       |
 
 Non-admins get `404` on `/api/admin/*` (not `403`), so the surface is invisible.
 Anonymous callers get `401`, like every other private route.
@@ -2333,6 +2429,14 @@ jobs page, which is the one place you look when something is already wrong.
 **`POST /api/admin/users/:id/repair-balance` does NOT exist.** `ensureMainBalance`
 is implemented and tested as a repair primitive (§4.4) but is deliberately not
 routed; if that changes, it belongs in the table above.
+
+`DELETE /api/admin/users/:id` is the ONE destructive admin route, and it is destructive
+only to identity, never to money: the whole change is one `db.batch()` that disables,
+stamps `deleted_at`, renames the username out of the way, blanks the display name and
+drops the session rows. It writes no ledger row and no `balance_cents`, so
+`POST /api/admin/reconcile` gives the same answer before and after. `ACCOUNT_HAS_PENDING_BETS`
+is a NEW code in `src/shared/errors.ts` (409) rather than a reused one — `BET_NOT_PENDING`
+is about one bet's status and says the opposite thing, and `VALIDATION` is a 400.
 
 ---
 
@@ -2689,7 +2793,9 @@ SELECT :betId, :userId, :bankrollId, :league, :season, :betType,
            AND status = 'scheduled'
            AND kickoff_at > :nowPlusBuffer) = :n
    AND EXISTS (SELECT 1 FROM bankrolls
-                WHERE id = :bankrollId AND user_id = :userId);
+                WHERE id = :bankrollId AND user_id = :userId)
+   AND EXISTS (SELECT 1 FROM users
+                WHERE id = :userId AND is_disabled = 0 AND deleted_at IS NULL);
 
 -- 2..n+1. legs, each guarded on the bet existing. For a teaser, `line_tenths`
 --         is the TEASED line and `original_line_tenths` the book's (§5.8).
@@ -2709,13 +2815,32 @@ re-checked inside the batch is that the named balance belongs to the caller.
 `404 BANKROLL_NOT_FOUND` — a read followed by an unguarded write is exactly the
 read-then-write the house rules forbid, so the guard lives in the `WHERE` too.
 
+**THE ACCOUNT-STATE `EXISTS` is the third guard, and it is about the window rather
+than the market.** `requireAuth` resolved the session at the top of the request;
+by the time the batch runs, several D1 reads have gone by, and
+`POST /api/admin/users/:id/disabled` and `DELETE /api/admin/users/:id` both fit in
+that gap — both of them things an admin does precisely BECAUSE they want the
+account to stop betting. Without the conjunct the bet commits anyway and the stake
+lands in a balance nobody can reach again; worse, since a soft delete is refused
+while a pending bet exists (§10.5), the bet the delete was racing makes the account
+undeletable. It is on the EDIT's cancel half too — see the edit batch below — so a
+cancel + refund cannot land alone for an account whose replacement INSERT is
+refused.
+
 `:league` and `:season` are computed from the resolved legs in process
 (`betLeagueOf` / `betSeasonOf`) and are informational labels, not guards.
 
 Then `results[0].meta.changes === 1`? → `201`. If `0`, nothing else in the batch
 matched either (every subsequent statement is guarded on the bet row existing), so
 the batch is a clean no-op; we re-query the games to produce a _specific_ error
-(`BETTING_CLOSED` vs `GAME_NOT_BETTABLE` vs `GAME_NOT_FOUND`). Insufficient funds
+(`BETTING_CLOSED` vs `GAME_NOT_BETTABLE` vs `GAME_NOT_FOUND`) — **checking the
+account first**, because no amount of staring at the games would explain a refusal
+that came from the account-state conjunct, and "betting closed" about a wide-open
+game is a lie. That read happens AFTER a batch which has already declined to write
+anything, so it diagnoses a completed write rather than gating one; the guard
+itself never leaves the `WHERE`. A disabled or deleted account gets
+`403 ACCOUNT_DISABLED` (deleted reports as disabled: it IS disabled, and the
+alternative tells a caller holding a stale cookie more than it should). Insufficient funds
 surfaces as the `ledger_bi_sufficient_funds` `RAISE(ABORT)` (§4.2), which throws
 and rolls the batch back → `409 INSUFFICIENT_FUNDS`. `PAYOUT_LIMIT_EXCEEDED` is
 checked in-process before the batch is built, and again by the `CHECK` on
@@ -2781,7 +2906,8 @@ any more, so the hazard is gone rather than avoided.)
 --      (a) the SAME leg->game lock guard as the plain cancel above, over the
 --          OLD bet's legs' CURRENT game rows, and
 --      (b) the PLACEMENT guard — the identical `COUNT(*) … = :n` that statement
---          3's INSERT carries, over the NEW legs' games.
+--          3's INSERT carries, over the NEW legs' games, and
+--      (c) the ACCOUNT-STATE guard, for the same symmetry reason.
 UPDATE bets
    SET status = 'cancelled', cancelled_at = :now,
        replaced_by_bet_id = :newBetId, updated_at = :now
@@ -2793,7 +2919,9 @@ UPDATE bets
    AND (SELECT COUNT(*) FROM games
          WHERE id IN (:g1,…,:gn)
            AND status = 'scheduled'
-           AND kickoff_at > :nowPlusBuffer) = :n;
+           AND kickoff_at > :nowPlusBuffer) = :n
+   AND EXISTS (SELECT 1 FROM users
+                WHERE id = :userId AND is_disabled = 0 AND deleted_at IS NULL);
 
 -- 2. refund, guarded on this call having won it
 INSERT INTO ledger (...)
@@ -3285,6 +3413,23 @@ to `0001` is never replayed, so it would silently desynchronise the repo from
 production. (Comment-only edits are fine; they change no DDL.) CLAUDE.md rule 9
 and the header of the file itself say the same thing, and
 `tests/unit/docs.spec.ts` fails if any of the four stops saying it.
+
+### 16.2 Post-deploy additions
+
+The freeze held. Everything after M8's first `--remote` apply is additive and lands
+as its own numbered file:
+
+- **`migrations/0002_users_deleted_at.sql`** — `ALTER TABLE users ADD COLUMN
+deleted_at INTEGER NULL`, for the soft delete (§3.2 / §10.5 / §11.6). One nullable
+  column, no table rebuild, nothing in 0001 touched. Deploying it needs
+  `npx wrangler d1 migrations apply spicybetting --remote` BEFORE `npm run deploy` —
+  see docs/OPERATIONS.md.
+- **`api-types.ts`** — `AdminUserView` gains `deletedAt: EpochMs | null` and
+  `isDeleted: boolean`. Purely additive: a field appearing on a response cannot
+  break a deployed client.
+- **`errors.ts`** — `ACCOUNT_HAS_PENDING_BETS` (409) added, under the same rule as
+  M5b's additions: a code is never repurposed or removed, so an existing 409 could
+  not be borrowed for a meaning it does not have.
 
 ## 17. Risks and mitigations
 

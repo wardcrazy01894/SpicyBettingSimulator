@@ -103,6 +103,32 @@ describe('migration 0001', () => {
     }
   });
 
+  /**
+   * `readD1Migrations('./migrations')` in vitest.workers.config.ts hands the pool
+   * EVERY file in order, so this asserts 0002 applied ON TOP of 0001 — the same
+   * thing `wrangler d1 migrations apply --remote` will do to the live database.
+   */
+  it('0002 added users.deleted_at as a nullable INTEGER, defaulting to NULL', async () => {
+    const res = await env.DB.prepare('PRAGMA table_info(users)').all<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>();
+    const column = res.results.find((c) => c.name === 'deleted_at');
+    expect(column).toBeDefined();
+    expect(column?.type).toBe('INTEGER');
+    expect(column?.notnull).toBe(0);
+    expect(column?.dflt_value).toBeNull();
+
+    // A freshly inserted user is NOT deleted.
+    await seedUserAndBankroll();
+    const row = await env.DB.prepare('SELECT deleted_at FROM users WHERE id = ?1')
+      .bind(U)
+      .first<{ deleted_at: number | null }>();
+    expect(row?.deleted_at).toBeNull();
+  });
+
   it('seeds the three job_locks rows', async () => {
     const rows = await env.DB.prepare('SELECT name FROM job_locks ORDER BY name').all<{
       name: string;

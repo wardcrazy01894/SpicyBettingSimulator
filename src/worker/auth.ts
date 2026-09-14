@@ -16,8 +16,10 @@ import {
   SERVER_KDF_ITERATIONS,
 } from '../shared/constants.js';
 import { AppError, isAppError } from '../shared/errors.js';
+import type { AdminUserView } from '../shared/api-types.js';
 import type { EpochMs, UserSummary } from '../shared/types.js';
 import type { LoginInput, SignupInput } from '../shared/validate.js';
+import { RESERVED_USERNAME_PREFIX } from '../shared/validate.js';
 import type { Env } from './env.js';
 import { mainBalanceStatements } from './bankroll.js';
 import {
@@ -47,6 +49,8 @@ interface UserRow {
   readonly is_admin: number;
   readonly is_disabled: number;
   readonly created_at: number;
+  /** Migration 0002. NULL for a live account. */
+  readonly deleted_at: number | null;
 }
 
 interface CredentialRow extends UserRow {
@@ -129,7 +133,8 @@ export async function signup(env: Env, input: SignupInput, now: EpochMs): Promis
       ...mainBalanceStatements(env, userId, newId(), now),
       insertSessionStatement(env, session),
       env.DB.prepare(
-        'SELECT id, username, display_name, is_admin, is_disabled, created_at FROM users WHERE id = ?1',
+        `SELECT id, username, display_name, is_admin, is_disabled, created_at, deleted_at
+           FROM users WHERE id = ?1`,
       ).bind(userId),
     ]);
   } catch (err) {
@@ -159,9 +164,14 @@ export async function login(
 
   const row = await queryOne<CredentialRow>(
     env.DB.prepare(
-      `SELECT id, username, display_name, is_admin, is_disabled, created_at,
+      // `deleted_at IS NULL` is part of the LOOKUP, not a post-check, on purpose:
+      // a deleted account has to be indistinguishable from an account that never
+      // existed, so it falls into the dummy-verify branch below and gets the
+      // identical 401 INVALID_CREDENTIALS. Revealing ACCOUNT_DISABLED for it
+      // would confirm both the (renamed) username AND its password (PLAN §10.5).
+      `SELECT id, username, display_name, is_admin, is_disabled, created_at, deleted_at,
               server_salt, server_iterations, password_hash
-         FROM users WHERE username = ?1`,
+         FROM users WHERE username = ?1 AND deleted_at IS NULL`,
     ).bind(input.username),
   );
 
@@ -231,7 +241,7 @@ export async function setPassword(
       `UPDATE users
             SET kdf_version = ?2, client_iterations = ?3, server_salt = ?4,
                 server_iterations = ?5, password_hash = ?6, updated_at = ?7
-          WHERE id = ?1`,
+          WHERE id = ?1 AND deleted_at IS NULL`,
     ).bind(
       userId,
       KDF_VERSION,
@@ -246,6 +256,8 @@ export async function setPassword(
     env.DB.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
   ]);
   if (changesAt(results, 0) === 0) {
+    // Unknown id and DELETED id are the same answer here: a deleted account has
+    // no password worth setting, and `login` cannot see it anyway.
     throw new AppError('NOT_FOUND', 'No such user.');
   }
 }
@@ -265,10 +277,17 @@ export async function setDisabled(
   // because `is_admin` is only ever written by the first-signup CASE — there
   // is no promotion path, so locking out the last admin is unrecoverable
   // without `wrangler d1 execute`. Reported as a distinct error.
+  //
+  // `deleted_at IS NULL` keeps the toggle off deleted accounts entirely: a
+  // re-enable there would be a half-resurrection (still unable to log in, still
+  // off the board) whose only visible effect is a confusing chip. 404 instead.
+  // It also keeps the last-admin subquery honest — a deleted admin is disabled
+  // by construction, so it never counts toward the `> 1`.
   const results = await runBatch(env.DB, [
     env.DB.prepare(
       `UPDATE users SET is_disabled = ?2, updated_at = ?3
         WHERE id = ?1
+          AND deleted_at IS NULL
           AND (?2 = 0
                OR is_admin = 0
                OR (SELECT COUNT(*) FROM users WHERE is_admin = 1 AND is_disabled = 0) > 1)`,
@@ -286,7 +305,9 @@ export async function setDisabled(
   ]);
   if (changesAt(results, 0) === 0) {
     const exists = await queryOne<{ n: number }>(
-      env.DB.prepare('SELECT COUNT(*) AS n FROM users WHERE id = ?1').bind(userId),
+      env.DB.prepare('SELECT COUNT(*) AS n FROM users WHERE id = ?1 AND deleted_at IS NULL').bind(
+        userId,
+      ),
     );
     if ((exists?.n ?? 0) === 0) throw new AppError('NOT_FOUND', 'No such user.');
     throw new AppError('VALIDATION', 'Cannot disable the last enabled admin.', {
@@ -295,17 +316,177 @@ export async function setDisabled(
   }
 }
 
-/** Everyone, for `GET /api/admin/users`. Never exposes credential material. */
-export async function listUsers(
+/**
+ * SOFT-DELETE an account. PLAN.md §10.5 / §11.6.
+ *
+ * A HARD delete is impossible by design, and deliberately so: `bankrolls.user_id`
+ * and `ledger.bankroll_id` are `ON DELETE RESTRICT` and `ledger_bd_block` refuses
+ * `DELETE FROM ledger`, so there is no statement order that removes a user
+ * without destroying the money history that `npm run db:reconcile` checks
+ * (PLAN.md §4.1). What "delete" means here is therefore: disabled forever,
+ * stamped, evicted, renamed out of the way, and invisible on the board.
+ *
+ * ONE BATCH (CLAUDE.md rule 5), and every guard is a WHERE clause inside the
+ * write rather than a read-then-write:
+ *   * `deleted_at IS NULL`  — makes the call idempotent instead of re-stamping
+ *   * last-enabled-admin    — the SAME subquery `setDisabled` uses; deleting the
+ *                             only admin is as unrecoverable as disabling them
+ *   * no PENDING bets       — an open bet's stake is already out of the balance
+ *                             and its payout is owed to an account nobody can
+ *                             reach; settlement would credit a ghost. Refuse and
+ *                             make the operator cancel or settle first.
+ * The self-delete guard lives in the route, where `c.var.user` is (like the
+ * self-disable guard next to it).
+ *
+ * The rename is what frees the username for re-registration:
+ * `deleted_<first 12 hex of the uuid>` is 20 characters, inside the
+ * `length(username) BETWEEN 3 AND 24` CHECK, lowercase like every stored
+ * username, and derived from the id so it is stable. It is NOT collision-proof,
+ * and the two ways it can collide are handled differently:
+ *
+ *   * SOMEBODY REGISTERED THE TOMBSTONE NAME. `deleted_<12 hex>` is a legal
+ *     username under `validateUsername`'s charset rules, and every authenticated
+ *     user can read every other user's uuid off `GET /api/leaderboard` — so
+ *     without a rule this is a squat anybody can perform, on any account, and the
+ *     admin's delete then fails forever on a `UNIQUE` violation with no way out
+ *     but hand-editing the database. `validateUsername` now REJECTS the
+ *     `deleted_` prefix outright (`RESERVED_USERNAME_PREFIX`), which is what
+ *     actually closes it.
+ *   * ANOTHER DELETED ACCOUNT SHARES THE FIRST 12 HEX DIGITS. Astronomically
+ *     unlikely (2^48 per pair) but not attacker-controlled, and it is still a
+ *     collision. The retry below widens the suffix to 16 hex digits — 24
+ *     characters, exactly the CHECK's upper bound — which is a different value
+ *     for the same id, so it cannot collide with the same row it just lost to.
+ *
+ * If even that collides, the answer is `409 USERNAME_TAKEN` naming the tombstone,
+ * never a bare `500 INTERNAL`: an operator who is told which name is in the way
+ * can rename that row and retry, whereas INTERNAL is a dead end.
+ *
+ * `display_name` becomes 'Deleted user' so nothing that renders a name has to
+ * know about any of this.
+ *
+ * NO MONEY MOVES. Not one ledger row, not one `balance_cents` write: the bankroll
+ * and its history stay exactly as they were, which is why `SUM(ledger) = balance`
+ * still holds for the row afterwards and reconcile keeps passing.
+ *
+ * @returns 'deleted' on the delete, 'already-deleted' when it was a no-op
+ * @throws AppError NOT_FOUND | VALIDATION | ACCOUNT_HAS_PENDING_BETS |
+ *                  USERNAME_TAKEN
+ */
+export async function deleteUser(
   env: Env,
-): Promise<readonly (UserSummary & { isDisabled: boolean })[]> {
+  userId: string,
+  now: EpochMs,
+): Promise<'deleted' | 'already-deleted'> {
+  let results: readonly D1Result[];
+  try {
+    results = await runBatch(env.DB, deleteStatements(env, userId, now, 12));
+  } catch (err) {
+    if (!isUniqueViolation(err, 'users.username')) throw err;
+    // The 12-hex tombstone is taken. Retry ONCE at the full 16 — a different
+    // string for this id, so it cannot lose to the same row twice.
+    try {
+      results = await runBatch(env.DB, deleteStatements(env, userId, now, 16));
+    } catch (retryErr) {
+      if (!isUniqueViolation(retryErr, 'users.username')) throw retryErr;
+      throw new AppError(
+        'USERNAME_TAKEN',
+        `Both tombstone names for this account (${RESERVED_USERNAME_PREFIX}<12 or 16 hex ` +
+          `of its id>) are already in use. Rename the account holding them, then delete again.`,
+        { userId },
+      );
+    }
+  }
+  if (changesAt(results, 0) > 0) return 'deleted';
+
+  // Nothing changed: ONE read tells us which guard spoke. This is a diagnosis of
+  // an already-completed write, not a check that gates one, so it is not the
+  // read-then-write rule 5 forbids.
+  const row = await queryOne<{ deleted_at: number | null; is_admin: number; pending: number }>(
+    env.DB.prepare(
+      `SELECT u.deleted_at AS deleted_at,
+              u.is_admin   AS is_admin,
+              (SELECT COUNT(*) FROM bets WHERE user_id = u.id AND status = 'pending') AS pending
+         FROM users u WHERE u.id = ?1`,
+    ).bind(userId),
+  );
+  if (row === null) throw new AppError('NOT_FOUND', 'No such user.');
+  if (row.deleted_at !== null) return 'already-deleted';
+  if (row.pending > 0) {
+    throw new AppError(
+      'ACCOUNT_HAS_PENDING_BETS',
+      'That account still has open bets — cancel or settle them first, then delete it.',
+      { pendingBets: row.pending },
+    );
+  }
+  // The admin guard counts ENABLED admins, and the target need not be one of
+  // them: deleting an already-disabled admin is refused too, because that row is
+  // the only thing that could be re-enabled if the last enabled admin is lost.
+  // "the last enabled admin" would therefore be a lie about who was refused.
+  throw new AppError('VALIDATION', 'Cannot delete an admin while only one enabled admin remains.', {
+    field: 'id',
+  });
+}
+
+/**
+ * The soft-delete batch, with the tombstone suffix width as a parameter so the
+ * collision retry is the SAME two statements and not a second, divergent copy.
+ *
+ * `hexDigits` is 12 or 16, both interpolated from this module's own call sites —
+ * never from a request — and both inside `length(username) BETWEEN 3 AND 24`
+ * (`deleted_` is 8 characters).
+ */
+function deleteStatements(
+  env: Env,
+  userId: string,
+  now: EpochMs,
+  hexDigits: 12 | 16,
+): readonly D1PreparedStatement[] {
+  return [
+    env.DB.prepare(
+      `UPDATE users
+          SET is_disabled  = 1,
+              deleted_at   = ?2,
+              username     = '${RESERVED_USERNAME_PREFIX}' ||
+                             substr(replace(id, '-', ''), 1, ${String(hexDigits)}),
+              display_name = 'Deleted user',
+              updated_at   = ?2
+        WHERE id = ?1
+          AND deleted_at IS NULL
+          AND (is_admin = 0
+               OR (SELECT COUNT(*) FROM users WHERE is_admin = 1 AND is_disabled = 0) > 1)
+          AND NOT EXISTS (SELECT 1 FROM bets WHERE user_id = ?1 AND status = 'pending')`,
+    ).bind(userId, now),
+    // Conditional on the UPDATE above having applied, exactly like `setDisabled`:
+    // if any guard refused it, `deleted_at` is still NULL and nobody is evicted.
+    env.DB.prepare(
+      `DELETE FROM sessions WHERE user_id = ?1
+         AND EXISTS (SELECT 1 FROM users WHERE id = ?1 AND deleted_at IS NOT NULL)`,
+    ).bind(userId),
+  ];
+}
+
+/**
+ * Everyone, for `GET /api/admin/users`. Never exposes credential material.
+ *
+ * DELETED ACCOUNTS ARE INCLUDED, with `isDeleted: true`. This is the one surface
+ * that still shows them — they are off the leaderboard and cannot log in, but an
+ * operator has to be able to see the row and understand why a username now reads
+ * `deleted_<hex>`.
+ */
+export async function listUsers(env: Env): Promise<readonly AdminUserView[]> {
   const rows = await queryAll<UserRow>(
     env.DB.prepare(
-      `SELECT id, username, display_name, is_admin, is_disabled, created_at
+      `SELECT id, username, display_name, is_admin, is_disabled, created_at, deleted_at
          FROM users ORDER BY username ASC`,
     ),
   );
-  return rows.map((r) => ({ ...toSummary(r), isDisabled: r.is_disabled === 1 }));
+  return rows.map((r) => ({
+    ...toSummary(r),
+    isDisabled: r.is_disabled === 1,
+    deletedAt: r.deleted_at,
+    isDeleted: r.deleted_at !== null,
+  }));
 }
 
 // --- throttling -----------------------------------------------------------

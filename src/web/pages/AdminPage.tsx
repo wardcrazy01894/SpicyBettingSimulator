@@ -5,6 +5,7 @@ import type { ReactElement } from 'react';
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
 import { Spinner } from '../components/Spinner.js';
 import {
+  deleteAdminUser,
   postAdminJob,
   postAdminReconcile,
   postAdminUserDisabled,
@@ -46,15 +47,38 @@ function StatsCell(props: { readonly run: JobRunView }): ReactElement {
   );
 }
 
+/**
+ * The delete button is refused by the server for the caller's own account and for
+ * the last enabled admin; disabling it here as well is only so the operator finds
+ * out before clicking. The server guards are the authority (CLAUDE.md §8) — this
+ * is a list the browser happens to be holding, and it can be stale.
+ *
+ * "Last enabled admin" mirrors the SQL subquery in `auth.ts`: admins that are
+ * neither disabled nor deleted. A deleted account is disabled by construction, so
+ * the two definitions cannot drift.
+ */
+function isLastEnabledAdmin(user: AdminUserView, all: readonly AdminUserView[]): boolean {
+  if (!user.isAdmin || user.isDisabled || user.isDeleted) return false;
+  return all.filter((u) => u.isAdmin && !u.isDisabled && !u.isDeleted).length <= 1;
+}
+
 function UserRow(props: {
   readonly user: AdminUserView;
   readonly meId: string | null;
+  readonly lastAdmin: boolean;
 }): ReactElement {
-  const { user, meId } = props;
+  const { user, meId, lastAdmin } = props;
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [done, setDone] = useState<string | null>(null);
+  // An INLINE two-step confirm rather than `window.confirm`: a native dialog is
+  // unstyleable, untestable and blocks the whole tab, and this is the only
+  // irreversible button on the page.
+  const [confirming, setConfirming] = useState(false);
+
+  const isSelf = user.id === meId;
+  const deletable = !isSelf && !lastAdmin && !user.isDeleted;
 
   const run = (action: () => Promise<void>, message: string): void => {
     setBusy(true);
@@ -80,15 +104,26 @@ function UserRow(props: {
           {user.displayName} <span className="muted">@{user.username}</span>
         </span>
         {user.isAdmin && <span className="chip chip-quiet">admin</span>}
-        {user.isDisabled && <span className="chip chip-loss">disabled</span>}
-        {user.id === meId && <span className="chip chip-quiet">you</span>}
+        {user.isDeleted ? (
+          <span className="chip chip-loss">deleted</span>
+        ) : (
+          user.isDisabled && <span className="chip chip-loss">disabled</span>
+        )}
+        {isSelf && <span className="chip chip-quiet">you</span>}
       </div>
+
+      {user.isDeleted && (
+        <p className="muted">
+          Deleted {user.deletedAt === null ? '' : formatDateTime(user.deletedAt)}. Settled bets and
+          ledger history are kept; the old username is free again.
+        </p>
+      )}
 
       <div className="row-actions">
         <button
           type="button"
           className="btn btn-quiet"
-          disabled={busy || user.id === meId}
+          disabled={busy || isSelf || user.isDeleted}
           onClick={() => {
             run(
               () => postAdminUserDisabled(user.id, !user.isDisabled),
@@ -98,6 +133,54 @@ function UserRow(props: {
         >
           {user.isDisabled ? 'Enable' : 'Disable'}
         </button>
+
+        {!confirming && (
+          <button
+            type="button"
+            className="btn btn-quiet"
+            disabled={busy || !deletable}
+            title={
+              isSelf
+                ? 'You cannot delete your own account.'
+                : lastAdmin
+                  ? 'This is the last enabled admin.'
+                  : undefined
+            }
+            onClick={() => {
+              setConfirming(true);
+              setDone(null);
+              setError(null);
+            }}
+          >
+            Delete
+          </button>
+        )}
+        {confirming && (
+          <>
+            <span className="muted">Delete {user.username}? This cannot be undone.</span>
+            <button
+              type="button"
+              className="btn btn-quiet tone-loss"
+              disabled={busy}
+              onClick={() => {
+                setConfirming(false);
+                run(() => deleteAdminUser(user.id), 'Deleted.');
+              }}
+            >
+              {busy ? 'Deleting…' : 'Yes, delete'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              disabled={busy}
+              onClick={() => {
+                setConfirming(false);
+              }}
+            >
+              Cancel
+            </button>
+          </>
+        )}
       </div>
 
       <div className="admin-reset">
@@ -116,7 +199,7 @@ function UserRow(props: {
         <button
           type="button"
           className="btn btn-quiet"
-          disabled={busy || password === ''}
+          disabled={busy || password === '' || user.isDeleted}
           onClick={() => {
             // Runs the IDENTICAL browser KDF as login, salted with the TARGET
             // user's name, and posts only `dk` — the admin's browser never sends
@@ -138,8 +221,28 @@ function UserRow(props: {
   );
 }
 
+/** Split out of AdminPage so the `users.data !== undefined` narrowing survives. */
+function UserList(props: {
+  readonly users: readonly AdminUserView[];
+  readonly meId: string | null;
+}): ReactElement {
+  return (
+    <ul className="admin-users">
+      {props.users.map((user) => (
+        <UserRow
+          key={user.id}
+          user={user}
+          meId={props.meId}
+          lastAdmin={isLastEnabledAdmin(user, props.users)}
+        />
+      ))}
+    </ul>
+  );
+}
+
 export function AdminPage(): ReactElement {
   const session = useSession();
+  const meId = session.user?.id ?? null;
   const jobs = useAdminJobs();
   const users = useAdminUsers();
   const [busyJob, setBusyJob] = useState<AdminJob | null>(null);
@@ -266,13 +369,7 @@ export function AdminPage(): ReactElement {
         <ErrorBanner error={users.error} onRetry={users.refetch} />
       )}
       {users.loading && users.data === undefined && <Spinner label="Loading users…" />}
-      {users.data !== undefined && (
-        <ul className="admin-users">
-          {users.data.users.map((user) => (
-            <UserRow key={user.id} user={user} meId={session.user?.id ?? null} />
-          ))}
-        </ul>
-      )}
+      {users.data !== undefined && <UserList users={users.data.users} meId={meId} />}
     </section>
   );
 }

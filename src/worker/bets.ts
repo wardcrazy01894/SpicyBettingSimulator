@@ -223,6 +223,21 @@ async function runHook(hooks: BetHooks | undefined): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
+ * "The account placing this bet is enabled and not deleted", as a conjunct for a
+ * `WHERE` clause. `?2` is the user id in BOTH statements that carry it
+ * (`betInsertSql` and `editCancelSql`), which is why it can be a constant.
+ *
+ * ONE STRING, TWO STATEMENTS, ON PURPOSE. An edit is a cancel + a placement in
+ * one batch, and the two halves are conditioned on each other (see
+ * `editCancelSql`): guarding only the INSERT would let the cancel and its refund
+ * commit alone for a deleted user — the bet vanishes, the money comes back, and
+ * the replacement silently never exists. Both halves refuse together or neither
+ * does.
+ */
+const USER_STATE_GUARD = `AND EXISTS (SELECT 1 FROM users
+                WHERE id = ?2 AND is_disabled = 0 AND deleted_at IS NULL)`;
+
+/**
  * Statement 1 of placement, guarded INSIDE the batch so a reschedule cannot race
  * between the read and the write (PLAN.md §14.1).
  *
@@ -247,6 +262,17 @@ async function runHook(hooks: BetHooks | undefined): Promise<void> {
  *                          only to produce a specific 404, and a read followed
  *                          by an unguarded write is the read-then-write CLAUDE.md
  *                          rule 5 forbids.
+ *   the `users` EXISTS     THE ACCOUNT IS STILL PLAYABLE (`USER_STATE_GUARD`).
+ *                          Authentication happened in the middleware, an unknown
+ *                          number of milliseconds and at least three D1 reads
+ *                          ago; `POST /api/admin/users/:id/disabled` and
+ *                          `DELETE /api/admin/users/:id` can both land in that
+ *                          window. Without this conjunct the bet commits anyway
+ *                          and the stake leaves a balance nobody can reach again
+ *                          — and a soft delete is REFUSED while a bet is pending
+ *                          (`ACCOUNT_HAS_PENDING_BETS`), so that bet would also
+ *                          make the account undeletable. `?2` is the user id the
+ *                          row is being written for, so no extra binding.
  *
  * Exported for those assertions; nothing outside this module calls it.
  */
@@ -260,7 +286,8 @@ SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?12, ?13, ?15, ?
          WHERE id IN (${placeholders(legCount, 16)})
            AND status = 'scheduled'
            AND kickoff_at > ?14) = ?7
-   AND EXISTS (SELECT 1 FROM bankrolls WHERE id = ?3 AND user_id = ?2)${extraGuard}`;
+   AND EXISTS (SELECT 1 FROM bankrolls WHERE id = ?3 AND user_id = ?2)
+   ${USER_STATE_GUARD}${extraGuard}`;
 }
 
 /** Statements 2..n+1: one per leg, each guarded on the bet row existing. */
@@ -314,6 +341,10 @@ const CANCEL_UPDATE_SQL = `UPDATE bets
  * symmetric guard, each half is conditioned on the other and the batch is either
  * a complete swap or a clean no-op.
  *
+ * (3) is `USER_STATE_GUARD`, and it is here for the SAME symmetry reason: the
+ * replacement INSERT carries it, so without it a disabled-or-deleted user's edit
+ * would cancel and refund the old bet while the new one matched nothing.
+ *
  * `?1` old bet, `?2` user, `?3` now, `?4` nowPlusBuffer, `?5` new bet id,
  * `?6…` new leg game ids, then `:n` last. The `league`/`season` conjuncts M5
  * carried are gone for the same reason they left `betInsertSql`: an edit is
@@ -335,7 +366,8 @@ export function editCancelSql(legCount: number): string {
    AND (SELECT COUNT(*) FROM games
          WHERE id IN (${placeholders(legCount, 6)})
            AND status = 'scheduled'
-           AND kickoff_at > ?4) = ?${String(6 + legCount)}`;
+           AND kickoff_at > ?4) = ?${String(6 + legCount)}
+   ${USER_STATE_GUARD}`;
 }
 
 /**
@@ -786,7 +818,7 @@ export async function placeBet(
   if (changesAt(results, plan.betStatementIndex) !== 1) {
     // Every later statement is guarded on the bet row, so the batch was a clean
     // no-op. Re-query to say precisely WHY (PLAN.md §14.2).
-    await rejectPlacement(env, input, now);
+    await rejectPlacement(env, userId, input, now);
   }
   return { bet: await requireBet(env, userId, plan.betId, now) };
 }
@@ -823,8 +855,33 @@ async function runPlacementBatch(
  * in PLAN.md §14.2's order, and fall back to BETTING_CLOSED — reaching here at
  * all means the world changed under us between the pre-flight read and the
  * batch, and "you were too late" is the only honest generic answer.
+ *
+ * THE ACCOUNT IS CHECKED FIRST, because `USER_STATE_GUARD` can be the conjunct
+ * that refused and no amount of staring at the games would say so — the caller
+ * would be told "betting closed" about a game that is wide open. Reading it
+ * HERE, after a batch that has already declined to write anything, is diagnosis
+ * and not a gate: the guard itself stayed in the `WHERE` (CLAUDE.md rule 5), and
+ * nothing this read returns can let the bet through.
  */
-async function rejectPlacement(env: Env, input: PlaceBetInput, now: EpochMs): Promise<never> {
+async function rejectPlacement(
+  env: Env,
+  userId: string,
+  input: PlaceBetInput,
+  now: EpochMs,
+): Promise<never> {
+  const account = await queryOne<{ n: number }>(
+    env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM users
+        WHERE id = ?1 AND is_disabled = 0 AND deleted_at IS NULL`,
+    ).bind(userId),
+  );
+  if ((account?.n ?? 0) === 0) {
+    // Deleted accounts report as disabled too. They ARE disabled (the soft
+    // delete sets `is_disabled = 1`), the session is already dead, and the
+    // alternative would tell a caller holding a stale cookie that their account
+    // is gone rather than merely off.
+    throw new AppError('ACCOUNT_DISABLED', 'This account can no longer place bets.');
+  }
   const gameIds = input.legs.map((l) => l.gameId);
   const games = await loadGames(env, gameIds);
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
@@ -1000,7 +1057,7 @@ export async function editBet(
     }
     if (await stillCancellable(env, betId, nowPlusBuffer)) {
       // The old bet is fine; it is the replacement that cannot be placed.
-      await rejectPlacement(env, input, now);
+      await rejectPlacement(env, userId, input, now);
     }
     throw new AppError('BET_LOCKED', 'One of this bet’s games has locked.');
   }

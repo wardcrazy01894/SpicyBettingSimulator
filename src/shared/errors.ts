@@ -43,6 +43,14 @@ export const ERROR_CODES = [
   'PAYOUT_LIMIT_EXCEEDED',
   'BET_LOCKED',
   'BET_NOT_PENDING',
+  /**
+   * `DELETE /api/admin/users/:id` refused because the account still has PENDING
+   * bets. ADDED, never repurposed, per the rule at the top of this file: the
+   * outcome is a 409 ("the account is not in a deletable state"), and no existing
+   * 409 means that — `BET_NOT_PENDING` is about ONE bet's status and says the
+   * opposite thing, and `VALIDATION` is a 400 about a malformed field.
+   */
+  'ACCOUNT_HAS_PENDING_BETS',
   'JOB_LOCKED',
   // 429 / 5xx
   'RATE_LIMITED',
@@ -86,6 +94,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   PAYOUT_LIMIT_EXCEEDED: 409,
   BET_LOCKED: 409,
   BET_NOT_PENDING: 409,
+  ACCOUNT_HAS_PENDING_BETS: 409,
   JOB_LOCKED: 409,
   RATE_LIMITED: 429,
   UPSTREAM_UNAVAILABLE: 503,

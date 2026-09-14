@@ -1210,6 +1210,12 @@ describe('in-batch guards — the generated SQL', () => {
     // implied — legs imply no bankroll now.
     expect(sql).toContain('AND EXISTS (SELECT 1 FROM bankrolls WHERE id = ?3 AND user_id = ?2)');
     expect(sql).not.toContain('AND league = ?4 AND season = ?5');
+    // The ACCOUNT STATE guard. Auth happened in the middleware several D1 reads
+    // ago; a disable or a soft delete can land in that window, and without this
+    // the stake leaves a balance nobody can reach again.
+    expect(sql.replace(/\s+/g, ' ')).toContain(
+      'AND EXISTS (SELECT 1 FROM users WHERE id = ?2 AND is_disabled = 0 AND deleted_at IS NULL)',
+    );
   });
 
   it('editCancelSql carries BOTH the lock guard and the placement COUNT guard', () => {
@@ -1229,6 +1235,13 @@ describe('in-batch guards — the generated SQL', () => {
     // immutable), never to a league — so no league/season conjunct remains.
     expect(sql).not.toContain('AND league =');
     expect(sql).not.toContain('AND season =');
+    // 3. the ACCOUNT STATE guard, on the cancel half too. The replacement INSERT
+    // carries it; if this half did not, a deleted user's edit would cancel and
+    // refund the old bet while the new one matched nothing — the position gone,
+    // the money back, and a 409 reported.
+    expect(sql.replace(/\s+/g, ' ')).toContain(
+      'AND EXISTS (SELECT 1 FROM users WHERE id = ?2 AND is_disabled = 0 AND deleted_at IS NULL)',
+    );
   });
 });
 
@@ -1321,6 +1334,46 @@ describe('placeBet — the game changes BETWEEN the read and the batch', () => {
     expect(code).toBe('GAME_NOT_FOUND');
     await expectNothingWritten(state);
   });
+
+  /**
+   * THE ACCOUNT, not the game, changes mid-flight.
+   *
+   * `requireAuth` resolved the session at the top of the request; several D1
+   * reads later the batch runs. `POST /api/admin/users/:id/disabled` and
+   * `DELETE /api/admin/users/:id` both fit in that window, and both are things
+   * an admin does precisely BECAUSE they want the account to stop betting. A bet
+   * that commits afterwards puts the stake into a balance nobody can reach —
+   * and, since a soft delete is refused while a bet is pending, makes the
+   * account undeletable by the very row the delete was racing.
+   */
+  it('the account is DISABLED mid-flight → ACCOUNT_DISABLED, nothing written', async () => {
+    const state = await armed(NOW + 4 * HOUR);
+    const code = await codeOf(() =>
+      placeWith(state, async () => {
+        await env.DB.prepare('UPDATE users SET is_disabled = 1 WHERE id = ?1')
+          .bind(state.alex.id)
+          .run();
+      }),
+    );
+    expect(code).toBe('ACCOUNT_DISABLED');
+    await expectNothingWritten(state);
+  });
+
+  it('the account is soft-DELETED mid-flight → ACCOUNT_DISABLED, nothing written', async () => {
+    const state = await armed(NOW + 4 * HOUR);
+    const code = await codeOf(() =>
+      placeWith(state, async () => {
+        await env.DB.prepare('UPDATE users SET is_disabled = 1, deleted_at = ?2 WHERE id = ?1')
+          .bind(state.alex.id, NOW)
+          .run();
+      }),
+    );
+    // Same code as a plain disable, deliberately: a deleted account IS disabled,
+    // and telling a caller holding a stale cookie "your account is gone" says
+    // more than "your account is off".
+    expect(code).toBe('ACCOUNT_DISABLED');
+    await expectNothingWritten(state);
+  });
 });
 
 describe('editBet — the game changes BETWEEN the read and the batch', () => {
@@ -1399,6 +1452,44 @@ describe('editBet — the game changes BETWEEN the read and the batch', () => {
       }),
     );
     expect(code).toBe('BET_LOCKED');
+    await expectCleanNoOp(state);
+  });
+
+  /**
+   * The account-state guard is on BOTH halves, and this is why. The refund is
+   * conditioned on the cancel, and the replacement on the cancel too — but the
+   * cancel is conditioned on nothing except its own `WHERE`. Guard only the
+   * INSERT and this test would find the old bet `cancelled`, a `bet_refund` row
+   * in the ledger, and no replacement: the user's position deleted and their
+   * stake handed back, reported as a 409.
+   */
+  it('the account is DISABLED mid-flight → clean no-op, both halves refused', async () => {
+    const state = await pending();
+    const code = await codeOf(() =>
+      editBet(env, state.alex.id, state.oldId, straight(g(2), 4000), NOW, {
+        beforeBatch: async () => {
+          await env.DB.prepare('UPDATE users SET is_disabled = 1 WHERE id = ?1')
+            .bind(state.alex.id)
+            .run();
+        },
+      }),
+    );
+    expect(code).toBe('ACCOUNT_DISABLED');
+    await expectCleanNoOp(state);
+  });
+
+  it('the account is soft-DELETED mid-flight → clean no-op, both halves refused', async () => {
+    const state = await pending();
+    const code = await codeOf(() =>
+      editBet(env, state.alex.id, state.oldId, straight(g(2), 4000), NOW, {
+        beforeBatch: async () => {
+          await env.DB.prepare('UPDATE users SET is_disabled = 1, deleted_at = ?2 WHERE id = ?1')
+            .bind(state.alex.id, NOW)
+            .run();
+        },
+      }),
+    );
+    expect(code).toBe('ACCOUNT_DISABLED');
     await expectCleanNoOp(state);
   });
 });
