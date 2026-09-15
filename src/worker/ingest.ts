@@ -187,6 +187,13 @@ export function targetId(league: League, key: string): string {
  * honest answer — there is nothing left to pull. A stuck (postponed, never
  * parsed) game keeps its slate alive and CAN be re-pulled however old it is;
  * the upsert re-creates the target row in case it is gone. `null` = no such game.
+ *
+ * ACCEPTED RACE: the bump and the caller's `runJob` are two round trips. A cron
+ * tick that takes the lease in between claims the bumped target itself (it is
+ * the most due for slot 1 there too), and the admin's run then refreshes the
+ * next most due slate — the game IS refreshed, by the cron, but the admin's
+ * `job_runs` row describes a different slate. Closing it would need the bump
+ * inside the lease; at one cron tick per 15 min the window is not worth that.
  */
 export async function bumpTargetForGame(
   env: Env,

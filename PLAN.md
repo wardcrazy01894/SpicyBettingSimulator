@@ -1919,6 +1919,11 @@ touched, because the run starts with `planTargets`, which would delete the
 bumped row and then quietly refresh something else. Same lease, same
 `409 JOB_LOCKED`, same `job_runs` row; `404 GAME_NOT_FOUND` for an unknown id.
 The button lives on the board's game card and is rendered only for admins.
+ACCEPTED RACE: the bump and the run are two round trips, so a cron tick that
+takes the lease in between claims the bumped slate itself and the admin's own
+run refreshes the next most due one — the game is refreshed either way, but
+that run's `job_runs` row describes a different slate. Rare (one tick per 15
+min) and not worth moving the bump inside the lease.
 
 **A job whose BODY threw still returns `200`, with `run.status === 'error'` and
 the message in `run.error`.** That is deliberate. The HTTP status answers "did
