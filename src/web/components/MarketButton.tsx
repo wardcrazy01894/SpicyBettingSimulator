@@ -27,8 +27,9 @@ export interface MarketButtonProps {
 
 /**
  * The top line is the LINE (spread/total) and the bottom line is the PRICE.
- * Moneyline has no line, so the price sits alone and the slot is kept for
- * vertical rhythm.
+ * Moneyline has no line, so the price is the ONLY text and is rendered at the
+ * line's size and weight (`market-price-solo`) so it fills the box instead of
+ * sitting as small dim text under an empty slot — the odds ARE the pick there.
  */
 export function MarketButton(props: MarketButtonProps): ReactElement {
   const { market, lineTenths, price, disabled, selected, ariaLabel, disabledReason, onToggle } =
@@ -36,6 +37,7 @@ export function MarketButton(props: MarketButtonProps): ReactElement {
   const unavailable = price === null;
   const off = disabled || unavailable;
   const reason = off && disabledReason !== undefined ? disabledReason : undefined;
+  const solo = market === 'moneyline';
   return (
     <button
       type="button"
@@ -46,14 +48,18 @@ export function MarketButton(props: MarketButtonProps): ReactElement {
       disabled={off}
       onClick={onToggle}
     >
-      <span className="market-line">
-        {unavailable
-          ? '—'
-          : market === 'moneyline' || lineTenths === null
-            ? ' '
-            : formatLineTenths(lineTenths, market === 'spread')}
+      {!solo && (
+        <span className="market-line">
+          {unavailable
+            ? '—'
+            : lineTenths === null
+              ? ' '
+              : formatLineTenths(lineTenths, market === 'spread')}
+        </span>
+      )}
+      <span className={solo ? 'market-price market-price-solo' : 'market-price'}>
+        {price === null ? 'n/a' : formatAmerican(price)}
       </span>
-      <span className="market-price">{price === null ? 'n/a' : formatAmerican(price)}</span>
     </button>
   );
 }

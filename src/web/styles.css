@@ -481,6 +481,14 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* A moneyline has no line, so its price is the whole button: line-sized, bold,
+   full-contrast, and it fills the two-row slot on its own. */
+.market-price-solo {
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text);
+}
+
 /* -------------------------------------------------------------- bet cards */
 
 .bet-head {
