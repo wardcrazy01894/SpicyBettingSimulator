@@ -514,7 +514,7 @@ export function AdminPage(): ReactElement {
       <h2 className="page-title">Admin</h2>
       <Tabs id="admin" label="Admin sections" tabs={ADMIN_TABS} value={tab} onChange={setTab} />
       {ADMIN_TABS.map((t) => (
-        <TabPanel key={t.id} id="admin" tab={t.id} hidden={t.id !== tab}>
+        <TabPanel key={t.id} id="admin" tab={t.id} label={t.label} hidden={t.id !== tab}>
           {panelFor(t.id, meId)}
         </TabPanel>
       ))}

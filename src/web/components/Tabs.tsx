@@ -11,10 +11,17 @@
  * and passes `hidden` for the inactive ones:
  *
  *   <Tabs id="admin" label="Admin sections" tabs={TABS} value={tab} onChange={setTab} />
- *   {TABS.map((t) => <TabPanel key={t.id} id="admin" tab={t.id} hidden={t.id !== tab}>…</TabPanel>)}
+ *   {TABS.map((t) => (
+ *     <TabPanel key={t.id} id="admin" tab={t.id} label={t.label} hidden={t.id !== tab}>…</TabPanel>
+ *   ))}
  *
- * The panel carries no `tabindex`: every panel here starts with a focusable
- * control, so Tab from the tablist already lands inside it.
+ * The panel is `tabindex="0"` (the APG fallback): a panel can be empty — "No
+ * bug reports yet." is two paragraphs — and without it Tab from the tablist
+ * would skip the whole panel and land in the bet slip.
+ *
+ * Each panel also gets a visually-hidden `<h3>` naming it, because a tab label
+ * is a region name, not a heading, and heading navigation was how the old
+ * one-long-scroll page was traversed.
  */
 import { useRef } from 'react';
 import type { KeyboardEvent, ReactElement, ReactNode } from 'react';
@@ -90,10 +97,12 @@ export function Tabs<T extends string>(props: {
 export function TabPanel(props: {
   readonly id: string;
   readonly tab: string;
+  /** The tab's label, repeated as the panel's hidden heading. */
+  readonly label: string;
   readonly hidden: boolean;
   readonly children: ReactNode;
 }): ReactElement {
-  const { id, tab, hidden, children } = props;
+  const { id, tab, label, hidden, children } = props;
   return (
     <div
       className="tabpanel"
@@ -101,7 +110,9 @@ export function TabPanel(props: {
       id={panelId(id, tab)}
       aria-labelledby={tabId(id, tab)}
       hidden={hidden}
+      tabIndex={0}
     >
+      <h3 className="sr-only">{label}</h3>
       {children}
     </div>
   );
