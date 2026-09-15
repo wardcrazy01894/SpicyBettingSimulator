@@ -23,6 +23,7 @@ import { AppError } from '../../shared/errors.js';
 import { validateDerivedKeyHex } from '../../shared/validate.js';
 import { deleteUser, listUsers, setDisabled, setPassword } from '../auth.js';
 import { listBugReports } from '../bugs.js';
+import { bumpTargetForGame } from '../ingest.js';
 import { reconcileBankrolls } from '../db.js';
 import { retrySettlement } from '../settle.js';
 import { adminAdjust } from '../bankroll.js';
@@ -183,6 +184,28 @@ export function adminRoutes(): Hono<AppContext> {
     if (run.status === 'skipped') {
       // The lease is held — by the cron, or by another admin hitting the button.
       throw new AppError('JOB_LOCKED', `The ${name} job is already running.`, { job: name });
+    }
+    const body: JobRunResponse = { run };
+    return c.json(body, 200);
+  });
+
+  // PLAN.md §9.3: refresh ONE game — really its date slate, the unit of an ESPN
+  // request — by making its target the most due thing and running one admin
+  // refresh. Same lease, same 409, same run record as the Run refresh button.
+  app.post('/games/:id/refresh', async (c) => {
+    const gameId = c.req.param('id');
+    const bumped = await bumpTargetForGame(c.env, gameId, c.var.now);
+    if (bumped === null) throw new AppError('GAME_NOT_FOUND', `No game ${gameId}.`, { gameId });
+    if (bumped === 'retired') {
+      throw new AppError(
+        'VALIDATION',
+        'Every game on that date has been final for more than two days; there is nothing left to pull.',
+        { gameId },
+      );
+    }
+    const run = await runJob(c.env, 'refresh', 'admin', c.var.now);
+    if (run.status === 'skipped') {
+      throw new AppError('JOB_LOCKED', 'The refresh job is already running.', { job: 'refresh' });
     }
     const body: JobRunResponse = { run };
     return c.json(body, 200);

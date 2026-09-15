@@ -322,7 +322,9 @@ wrangler tail                      # live logs
 npm run db:reconcile -- --remote   # assert SUM(ledger) === balance for every bankroll
 ```
 
-Jobs can be kicked manually as an admin: `POST /api/admin/jobs/{refresh|settle|maintenance}`.
+Jobs can be kicked manually as an admin: `POST /api/admin/jobs/{refresh|settle|maintenance}`,
+and one game's slate with `POST /api/admin/games/:id/refresh` (the Refresh button admins see on
+each game card).
 `GET /api/admin/jobs` shows the last 50 runs with stats, parser warnings and
 auto-void decisions — check it first when something looks wrong.
 `GET /api/admin/bugs` (and the Bug reports section of `/admin`) lists what users

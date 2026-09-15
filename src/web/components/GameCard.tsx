@@ -9,14 +9,19 @@
  * clock to `lockAt` to decide anything; it reads `game.bettable` and only uses
  * `lockAt` for the cosmetic countdown.
  */
+import { useState } from 'react';
 import type { ReactElement } from 'react';
 
+import { ErrorBanner } from './ErrorBanner.js';
 import { MarketButton } from './MarketButton.js';
 import { TeamRow } from './TeamRow.js';
 import { formatCountdown, formatTime } from '../lib/datetime.js';
 import { gameClockLabel, pickLabel } from '../lib/labels.js';
 import { MARKET_CELLS, quoteFor } from '../lib/lines.js';
+import { postAdminGameRefresh } from '../api/client.js';
+import { invalidate } from '../hooks/useResource.js';
 import { useBetSlip } from '../state/bet-slip.js';
+import { useSession } from '../state/session.js';
 import type { GameCard as GameCardData } from '../../shared/api-types.js';
 
 export interface GameCardProps {
@@ -28,9 +33,49 @@ export interface GameCardProps {
 /** Shown on a greyed moneyline cell while the slip is building a teaser. */
 const UNTEASABLE_HINT = 'moneylines cannot be teased';
 
+/**
+ * Admin-only: pull this game's slate from ESPN right now (PLAN.md §9.3). The
+ * board refetches afterwards so the card shows what came back. Rendered inside
+ * the card header only for admins; everyone else never sees the control.
+ */
+function AdminRefreshButton(props: { readonly gameId: string }): ReactElement {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  return (
+    <>
+      <button
+        type="button"
+        className="btn btn-quiet game-refresh"
+        disabled={busy}
+        title="Admin: pull this game's slate from ESPN now"
+        onClick={() => {
+          setBusy(true);
+          setError(null);
+          void postAdminGameRefresh(props.gameId)
+            .then(() => {
+              invalidate('games:');
+              invalidate('admin:jobs');
+            })
+            .catch((thrown: unknown) => {
+              setError(thrown);
+            })
+            .finally(() => {
+              setBusy(false);
+            });
+        }}
+      >
+        {busy ? 'Refreshing…' : 'Refresh'}
+      </button>
+      {error !== null && <ErrorBanner error={error} />}
+    </>
+  );
+}
+
 export function GameCard(props: GameCardProps): ReactElement {
   const { game, now } = props;
   const slip = useBetSlip();
+  const session = useSession();
+  const isAdmin = session.user?.isAdmin === true;
   const teasing = slip.mode === 'teaser';
 
   const final = game.status === 'final';
@@ -54,6 +99,7 @@ export function GameCard(props: GameCardProps): ReactElement {
         {!game.bettable && game.status === 'scheduled' && (
           <span className="chip chip-quiet">Locked</span>
         )}
+        {isAdmin && <AdminRefreshButton gameId={game.id} />}
       </header>
 
       <div className="game-teams">
