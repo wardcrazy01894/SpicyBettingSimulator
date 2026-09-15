@@ -286,7 +286,10 @@ button:disabled {
 
 /* -------------------------------------------------------------- segmented */
 
-.segmented {
+/* `.tabs` / `.tab` (components/Tabs.tsx) share this recipe; their overrides are
+   in the tabs block below. */
+.segmented,
+.tabs {
   display: inline-flex;
   gap: 2px;
   padding: 2px;
@@ -295,7 +298,8 @@ button:disabled {
   border: 1px solid var(--border);
 }
 
-.segment {
+.segment,
+.tab {
   border: 1px solid transparent;
   background: transparent;
   padding: 0 12px;
@@ -1265,27 +1269,24 @@ select:focus-visible,
 
 /* ------------------------------------------------------------------- tabs */
 
-/* A real tablist (components/Tabs.tsx). Looks like `.segmented` but stretches
-   to the page width and scrolls sideways rather than wrapping, so four tabs
-   stay one row on a phone. */
+/* A real tablist (components/Tabs.tsx): the `.segmented` recipe, stretched to
+   the page width and scrolling sideways rather than wrapping, so four tabs stay
+   one row on a phone. */
 .tabs {
   display: flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--surface-2);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
   overflow-x: auto;
   scrollbar-width: none;
 }
 
 .tab {
   flex: 1 0 auto;
-  border: 1px solid transparent;
-  background: transparent;
-  padding: 0 12px;
-  font-size: 15px;
   white-space: nowrap;
+}
+
+/* The scroll container clips anything outside it, so the global 2px-offset
+   focus ring would be cut off; draw it inside the button instead. */
+.tab:focus-visible {
+  outline-offset: -2px;
 }
 
 .tabpanel {
@@ -1294,10 +1295,9 @@ select:focus-visible,
   gap: var(--gap);
 }
 
-.tabpanel:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 4px;
-  border-radius: var(--radius);
+/* `display: flex` above would otherwise beat the `hidden` attribute. */
+.tabpanel[hidden] {
+  display: none;
 }
 
 .job-list {

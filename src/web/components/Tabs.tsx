@@ -7,10 +7,14 @@
  * tab role because its switches filter the page around them rather than pick a
  * panel. Use this one when there is a panel to point at, `<Segmented>` otherwise.
  *
- * The caller renders the panel itself, wrapped in `<TabPanel>` so the ids match:
+ * The caller renders ONE `<TabPanel>` per tab, so every `aria-controls` resolves,
+ * and passes `hidden` for the inactive ones:
  *
  *   <Tabs id="admin" label="Admin sections" tabs={TABS} value={tab} onChange={setTab} />
- *   <TabPanel id="admin" tab={tab}>…</TabPanel>
+ *   {TABS.map((t) => <TabPanel key={t.id} id="admin" tab={t.id} hidden={t.id !== tab}>…</TabPanel>)}
+ *
+ * The panel carries no `tabindex`: every panel here starts with a focusable
+ * control, so Tab from the tablist already lands inside it.
  */
 import { useRef } from 'react';
 import type { KeyboardEvent, ReactElement, ReactNode } from 'react';
@@ -42,6 +46,8 @@ export function Tabs<T extends string>(props: {
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    // Leave browser/OS chords alone (Cmd+Left is "back" in Safari).
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     const current = tabs.findIndex((tab) => tab.id === value);
     const next = nextTabIndex(event.key, current, tabs.length);
     if (next === null) return;
@@ -84,16 +90,17 @@ export function Tabs<T extends string>(props: {
 export function TabPanel(props: {
   readonly id: string;
   readonly tab: string;
+  readonly hidden: boolean;
   readonly children: ReactNode;
 }): ReactElement {
-  const { id, tab, children } = props;
+  const { id, tab, hidden, children } = props;
   return (
     <div
       className="tabpanel"
       role="tabpanel"
       id={panelId(id, tab)}
       aria-labelledby={tabId(id, tab)}
-      tabIndex={0}
+      hidden={hidden}
     >
       {children}
     </div>

@@ -2654,7 +2654,7 @@ main.tsx
     │           │   │   └── <LoadMore paged>
     │           │   ├── route "/admin"      <AdminPage>      (admin only)
     │           │   │   ├── <Tabs> jobs|reconcile|users|bugs   role="tablist"; active tab in ?tab=
-    │           │   │   └── <TabPanel>            one panel mounted at a time, each owning its data hook
+    │           │   │   └── <TabPanel> ×4         all mounted, inactive ones `hidden`; each owns its data hook
     │           │   └── route "*"           <NotFoundPage>
     │           └── <BetSlip>               role="dialog" sheet, useFocusTrap()
     │               ├── <Segmented straight|parlay|teaser>

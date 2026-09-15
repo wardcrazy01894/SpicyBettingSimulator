@@ -1,8 +1,11 @@
 /**
  * Four tabs — Jobs, Ledger, Users, Bug reports — with the active one in the URL
  * (`/admin?tab=users`) so a reload or a pasted link lands on the same section.
- * Each panel owns its own data hook, so a section is fetched the first time it
- * is opened and served from the resource cache after that.
+ *
+ * All four panels are mounted from the start and the inactive ones are `hidden`
+ * — the same three fetches the one-long-scroll page made. Staying mounted is
+ * what keeps a running job's "Running…", a reconcile report or a half-typed
+ * password reset alive across a tab switch.
  */
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -36,24 +39,26 @@ import type {
 
 /**
  * The three cron jobs, in the order they matter, each with what pressing the
- * button does. The schedules are `wrangler.jsonc` `triggers.crons` (PLAN.md §9.1);
- * a manual run is the identical code path with `trigger = 'admin'`.
+ * button does. A manual run is the identical code path with `trigger = 'admin'`
+ * (PLAN.md §9.3) — except `refresh`, which the HTTP CPU budget cuts to ONE
+ * target per press. The schedules themselves are deliberately NOT restated
+ * here: `wrangler.jsonc` + PLAN §9.1 + OPERATIONS are the guarded copies.
  */
 const JOBS: readonly { readonly job: AdminJob; readonly blurb: string }[] = [
   {
     job: 'refresh',
     blurb:
-      'Pulls games, scores and lines from ESPN and updates the board. Runs every 15 minutes on its own.',
+      'Pulls games, scores and lines from ESPN for the single most overdue slate. The cron keeps every slate on its own cadence; press this to jump the queue.',
   },
   {
     job: 'settle',
     blurb:
-      'Grades every pending bet whose games are all final and pays winners. Runs at :05, :20, :35 and :50.',
+      'Grades every pending bet whose games are all final and pays winners. Safe to press again — a bet can never be paid twice.',
   },
   {
     job: 'maintenance',
     blurb:
-      'Voids games stuck postponed or gone from ESPN so stakes come back, and prunes old sessions and job runs. Runs daily at 08:30 UTC.',
+      'Cancels games stuck postponed or dropped from ESPN so the next settle run refunds their legs, and prunes old sessions and job runs.',
   },
 ];
 
@@ -508,9 +513,11 @@ export function AdminPage(): ReactElement {
     <section className="page">
       <h2 className="page-title">Admin</h2>
       <Tabs id="admin" label="Admin sections" tabs={ADMIN_TABS} value={tab} onChange={setTab} />
-      <TabPanel id="admin" tab={tab}>
-        {panelFor(tab, meId)}
-      </TabPanel>
+      {ADMIN_TABS.map((t) => (
+        <TabPanel key={t.id} id="admin" tab={t.id} hidden={t.id !== tab}>
+          {panelFor(t.id, meId)}
+        </TabPanel>
+      ))}
     </section>
   );
 }
