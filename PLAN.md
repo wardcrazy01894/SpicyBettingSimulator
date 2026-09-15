@@ -2203,13 +2203,14 @@ and never removed, only added.
 
 ### 11.2 Auth
 
-| Method | Path                   | Body                                        | Success                                              | Errors                                                                                  |
-| ------ | ---------------------- | ------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| POST   | `/api/auth/signup`     | `{username, displayName?, dk, inviteCode?}` | `201 {user}` + cookie                                | `400 VALIDATION`, `401 BAD_INVITE_CODE`, `409 USERNAME_TAKEN`, `429 RATE_LIMITED`       |
-| POST   | `/api/auth/login`      | `{username, dk}`                            | `200 {user}` + cookie                                | `400 VALIDATION`, `401 INVALID_CREDENTIALS`, `403 ACCOUNT_DISABLED`, `429 RATE_LIMITED` |
-| POST   | `/api/auth/logout`     | —                                           | `204`                                                | —                                                                                       |
-| POST   | `/api/auth/logout-all` | —                                           | `204` — revokes every session for the caller (§10.5) | `401 UNAUTHENTICATED`                                                                   |
-| GET    | `/api/auth/me`         | —                                           | `200 {user}`                                         | `401 UNAUTHENTICATED`                                                                   |
+| Method | Path                     | Body                                        | Success                                                                                             | Errors                                                                                  |
+| ------ | ------------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| POST   | `/api/auth/signup`       | `{username, displayName?, dk, inviteCode?}` | `201 {user}` + cookie                                                                               | `400 VALIDATION`, `401 BAD_INVITE_CODE`, `409 USERNAME_TAKEN`, `429 RATE_LIMITED`       |
+| POST   | `/api/auth/login`        | `{username, dk}`                            | `200 {user}` + cookie                                                                               | `400 VALIDATION`, `401 INVALID_CREDENTIALS`, `403 ACCOUNT_DISABLED`, `429 RATE_LIMITED` |
+| POST   | `/api/auth/logout`       | —                                           | `204`                                                                                               | —                                                                                       |
+| POST   | `/api/auth/logout-all`   | —                                           | `204` — revokes every session for the caller (§10.5)                                                | `401 UNAUTHENTICATED`                                                                   |
+| POST   | `/api/auth/display-name` | `{displayName}`                             | `200 {user}` — renames the caller; leaderboard and admin list read the new name on their next fetch | `400 VALIDATION` (blank, >40 code points, invisible chars), `401 UNAUTHENTICATED`       |
+| GET    | `/api/auth/me`           | —                                           | `200 {user}`                                                                                        | `401 UNAUTHENTICATED`                                                                   |
 
 `user = {id, username, displayName, isAdmin, createdAt}`.
 `username`: 3–24 chars, `^[a-z0-9_]+$` after lowercasing. `dk`: exactly 64 lowercase
@@ -2649,6 +2650,7 @@ main.tsx
     │           │   │   ├── <Segmented<Scope> all|nfl|ncaaf>
     │           │   │   └── <LeaderboardTable rows meUserId>
     │           │   ├── route "/account"    <AccountPage>
+    │           │   │   ├── <DisplayNameForm>      POST /api/auth/display-name, session.setDisplayName()
     │           │   │   ├── (balances, inline)
     │           │   │   ├── <LedgerList entries>
     │           │   │   └── <LoadMore paged>

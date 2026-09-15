@@ -95,6 +95,11 @@ export interface LoginRequest {
   readonly dk: string;
 }
 
+/** `POST /api/auth/display-name` — the caller renames themself. */
+export interface DisplayNameRequest {
+  readonly displayName: string;
+}
+
 export interface UserResponse {
   readonly user: UserSummary;
 }

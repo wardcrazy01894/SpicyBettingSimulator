@@ -22,6 +22,8 @@ export interface SessionApi extends SessionState {
   readonly logout: () => Promise<void>;
   /** Revokes every session for this user (PLAN.md §10.5). */
   readonly logoutAll: () => Promise<void>;
+  /** Renames the caller; the header updates in place, no reload. */
+  readonly setDisplayName: (displayName: string) => Promise<void>;
 }
 
 export const SessionContext = createContext<SessionApi | null>(null);

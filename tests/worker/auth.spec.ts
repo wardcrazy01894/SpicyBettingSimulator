@@ -23,6 +23,7 @@ import {
   hashDerivedKey,
   sha256Hex,
 } from '../../src/worker/crypto.js';
+import { setDisplayName } from '../../src/worker/auth.js';
 import { buildApp } from '../../src/worker/index.js';
 import { DK_VECTORS, WRONG_DK } from './setup.js';
 import {
@@ -652,6 +653,68 @@ describe('sessions', () => {
 
   it('logout-all requires a session (401 UNAUTHENTICATED)', async () => {
     const res = await post('/api/auth/logout-all', undefined);
+    expect(res.status).toBe(401);
+    expect((await res.json<ApiErrorBody>()).error.code).toBe('UNAUTHENTICATED');
+  });
+});
+
+describe('display name', () => {
+  it('POST /api/auth/display-name renames the caller and every read reflects it', async () => {
+    const alex = await register('alex');
+    const res = await post(
+      '/api/auth/display-name',
+      { displayName: '  Big Al  ' },
+      { cookie: alex.cookie },
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json<UserResponse>()).user.displayName).toBe('Big Al');
+
+    const me = await (await get('/api/auth/me', { cookie: alex.cookie })).json<UserResponse>();
+    expect(me.user.displayName).toBe('Big Al');
+    // The admin list is a different query over the same row (alex is the first
+    // signup, so an admin).
+    const users = await (
+      await get('/api/admin/users', { cookie: alex.cookie })
+    ).json<AdminUsersResponse>();
+    expect(users.users.find((u) => u.id === alex.id)?.displayName).toBe('Big Al');
+  });
+
+  it('an empty name is 400 VALIDATION on displayName and the row is untouched', async () => {
+    const alex = await register('alex');
+    const res = await post(
+      '/api/auth/display-name',
+      { displayName: '   ' },
+      { cookie: alex.cookie },
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json<ApiErrorBody>();
+    expect(body.error.code).toBe('VALIDATION');
+    expect(body.error.details?.['field']).toBe('displayName');
+    const me = await (await get('/api/auth/me', { cookie: alex.cookie })).json<UserResponse>();
+    expect(me.user.displayName).toBe('alex');
+  });
+
+  it('renames only the caller, and a disabled account cannot be renamed at all', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    await post('/api/auth/display-name', { displayName: 'Bobby' }, { cookie: bob.cookie });
+    const me = await (await get('/api/auth/me', { cookie: alex.cookie })).json<UserResponse>();
+    expect(me.user.displayName).toBe('alex');
+
+    // The WHERE guard, exercised below the HTTP layer: `resolveSession` already
+    // refuses a disabled user's cookie, so this is the race the guard exists for.
+    await env.DB.prepare('UPDATE users SET is_disabled = 1 WHERE id = ?').bind(bob.id).run();
+    await expect(setDisplayName(env, bob.id, 'Sneaky', Date.now())).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+    const row = await env.DB.prepare('SELECT display_name FROM users WHERE id = ?')
+      .bind(bob.id)
+      .first<{ display_name: string }>();
+    expect(row?.display_name).toBe('Bobby');
+  });
+
+  it('requires a session (401 UNAUTHENTICATED)', async () => {
+    const res = await post('/api/auth/display-name', { displayName: 'Nobody' });
     expect(res.status).toBe(401);
     expect((await res.json<ApiErrorBody>()).error.code).toBe('UNAUTHENTICATED');
   });

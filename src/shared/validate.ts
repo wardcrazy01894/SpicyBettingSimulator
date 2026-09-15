@@ -197,6 +197,26 @@ export function validateSignup(body: unknown): ValidationResult<SignupInput> {
   });
 }
 
+export interface DisplayNameInput {
+  readonly displayName: string;
+}
+
+/**
+ * `POST /api/auth/display-name`. The same character rules as signup, but NO
+ * fallback: signup defaults a blank name to the username, whereas an update
+ * that arrives blank is a mistake and is a 400, not a silent reset.
+ */
+export function validateDisplayNameUpdate(body: unknown): ValidationResult<DisplayNameInput> {
+  if (!isRecord(body)) return bad('body must be a JSON object');
+  const raw = body['displayName'];
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return bad('displayName is required', 'displayName');
+  }
+  const name = validateDisplayName(raw, '');
+  if (!name.ok) return name;
+  return good({ displayName: name.value });
+}
+
 export function validateLogin(body: unknown): ValidationResult<LoginInput> {
   if (!isRecord(body)) return bad('body must be a JSON object');
   const username = validateUsername(body['username']);

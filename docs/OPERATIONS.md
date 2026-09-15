@@ -118,6 +118,8 @@ previous sha leaves the column in place and unused.
 ## Accounts
 
 - The FIRST signup becomes admin. Signup needs the invite code.
+- Users rename themselves under Profile on `/account` (`POST /api/auth/display-name`). The
+  display name is what the leaderboard shows; the username never changes (it salts the KDF).
 - Admin page: `/admin` in the SPA, four tabs — **Jobs** (run refresh / settle / maintenance by
   hand, last 50 runs), **Ledger** (reconcile), **Users** (disable, password reset, delete),
   **Bug reports**. The tab is in the URL (`/admin?tab=users`), so links to a section work.
