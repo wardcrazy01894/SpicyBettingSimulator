@@ -37,6 +37,7 @@ import type {
   KdfParamsResponse,
   LeaderboardResponse,
   LedgerResponse,
+  DisplayNameRequest,
   LoginRequest,
   PlaceBetRequest,
   ReconcileResponse,
@@ -240,6 +241,10 @@ export function postLogout(): Promise<void> {
 
 export function postLogoutAll(): Promise<void> {
   return apiVoid('POST', '/api/auth/logout-all');
+}
+
+export function postDisplayName(body: DisplayNameRequest): Promise<UserResponse> {
+  return apiSend<UserResponse>('POST', '/api/auth/display-name', body);
 }
 
 export function getMe(): Promise<UserResponse> {

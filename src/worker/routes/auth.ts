@@ -11,7 +11,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { UserResponse } from '../../shared/api-types.js';
 import { AppError, isAppError } from '../../shared/errors.js';
-import { validateLogin, validateSignup } from '../../shared/validate.js';
+import { validateDisplayNameUpdate, validateLogin, validateSignup } from '../../shared/validate.js';
 import {
   checkThrottle,
   clearFailures,
@@ -19,6 +19,7 @@ import {
   login,
   rateLimited,
   recordFailure,
+  setDisplayName,
   signup,
 } from '../auth.js';
 import { clientIp, requireAuth } from '../middleware.js';
@@ -92,6 +93,16 @@ export function authRoutes(): Hono<AppContext> {
     if (user !== null) await deleteAllSessionsForUser(c.env, user.id);
     c.header('Set-Cookie', buildClearedSessionCookie(c.var.config.cookieSecure));
     return c.body(null, 204);
+  });
+
+  app.post('/display-name', requireAuth(), async (c) => {
+    const user = c.var.user;
+    if (user === null) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
+    const parsed = validateDisplayNameUpdate(await readJson(c));
+    if (!parsed.ok) throw validationError(parsed);
+    const renamed = await setDisplayName(c.env, user.id, parsed.value.displayName, c.var.now);
+    const body: UserResponse = { user: renamed };
+    return c.json(body, 200);
   });
 
   app.get('/me', requireAuth(), (c) => {

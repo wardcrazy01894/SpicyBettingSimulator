@@ -228,6 +228,30 @@ export function isRateLimited(err: unknown): err is AppError {
 }
 
 /** Admin-only password reset; takes an already-derived key, never a password. */
+/**
+ * Self-service rename (PLAN.md §11.2). One statement: the liveness guard is
+ * in the WHERE (rule 5) and RETURNING hands back the row, so a deleted or
+ * disabled account — whose session `requireAuth` has already refused — cannot
+ * be renamed by a racing request either. `null` therefore means "no such live
+ * user", which is the same 401 the session check would have produced.
+ */
+export async function setDisplayName(
+  env: Env,
+  userId: string,
+  displayName: string,
+  now: EpochMs,
+): Promise<UserSummary> {
+  const row = await env.DB.prepare(
+    `UPDATE users SET display_name = ?1, updated_at = ?2
+      WHERE id = ?3 AND deleted_at IS NULL AND is_disabled = 0
+      RETURNING id, username, display_name, is_admin, is_disabled, created_at, deleted_at`,
+  )
+    .bind(displayName, now, userId)
+    .first<UserRow>();
+  if (row === null) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
+  return toSummary(row);
+}
+
 export async function setPassword(
   env: Env,
   userId: string,

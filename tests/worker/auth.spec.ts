@@ -657,6 +657,49 @@ describe('sessions', () => {
   });
 });
 
+describe('display name', () => {
+  it('POST /api/auth/display-name renames the caller and every read reflects it', async () => {
+    const alex = await register('alex');
+    const res = await post(
+      '/api/auth/display-name',
+      { displayName: '  Big Al  ' },
+      { cookie: alex.cookie },
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json<UserResponse>()).user.displayName).toBe('Big Al');
+
+    const me = await (await get('/api/auth/me', { cookie: alex.cookie })).json<UserResponse>();
+    expect(me.user.displayName).toBe('Big Al');
+    // The admin list is a different query over the same row (alex is the first
+    // signup, so an admin).
+    const users = await (
+      await get('/api/admin/users', { cookie: alex.cookie })
+    ).json<AdminUsersResponse>();
+    expect(users.users.find((u) => u.id === alex.id)?.displayName).toBe('Big Al');
+  });
+
+  it('an empty name is 400 VALIDATION on displayName and the row is untouched', async () => {
+    const alex = await register('alex');
+    const res = await post(
+      '/api/auth/display-name',
+      { displayName: '   ' },
+      { cookie: alex.cookie },
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json<ApiErrorBody>();
+    expect(body.error.code).toBe('VALIDATION');
+    expect(body.error.details?.['field']).toBe('displayName');
+    const me = await (await get('/api/auth/me', { cookie: alex.cookie })).json<UserResponse>();
+    expect(me.user.displayName).toBe('alex');
+  });
+
+  it('requires a session (401 UNAUTHENTICATED)', async () => {
+    const res = await post('/api/auth/display-name', { displayName: 'Nobody' });
+    expect(res.status).toBe(401);
+    expect((await res.json<ApiErrorBody>()).error.code).toBe('UNAUTHENTICATED');
+  });
+});
+
 describe('CSRF', () => {
   it('a POST without X-SBS-Client is 403 CSRF_BLOCKED', async () => {
     const res = await send(

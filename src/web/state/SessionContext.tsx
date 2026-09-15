@@ -16,13 +16,14 @@ import {
   getMe,
   postLogin,
   postLogout,
+  postDisplayName,
   postLogoutAll,
   postSignup,
   setUnauthenticatedHandler,
 } from '../api/client.js';
 import { deriveKey } from '../api/kdf.js';
 import { diagnostics, setBeaconEnabled } from '../diagnostics.js';
-import { clearCache } from '../hooks/useResource.js';
+import { clearCache, invalidate } from '../hooks/useResource.js';
 import { SessionContext } from './session.js';
 import type { SessionApi, SessionState } from './session.js';
 import type { LoginRequest, SignupRequest } from '../../shared/api-types.js';
@@ -121,9 +122,18 @@ export function SessionProvider(props: { children: ReactNode }): ReactElement {
     dispatch({ type: 'ANON' });
   }, []);
 
+  const setDisplayName = useCallback(async (displayName: string): Promise<void> => {
+    const { user } = await postDisplayName({ displayName });
+    // The name is read by two other pages; drop their cached copies rather than
+    // the whole cache — the board and the ledger did not change.
+    invalidate('leaderboard:');
+    invalidate('admin:users');
+    dispatch({ type: 'AUTHED', user });
+  }, []);
+
   const value = useMemo<SessionApi>(
-    () => ({ ...state, login, signup, logout, logoutAll }),
-    [state, login, signup, logout, logoutAll],
+    () => ({ ...state, login, signup, logout, logoutAll, setDisplayName }),
+    [state, login, signup, logout, logoutAll, setDisplayName],
   );
 
   return <SessionContext value={value}>{props.children}</SessionContext>;

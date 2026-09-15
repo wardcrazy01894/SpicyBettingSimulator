@@ -7,6 +7,7 @@ import {
   parseDollarsToCents,
   validateBugReport,
   validateDerivedKeyHex,
+  validateDisplayNameUpdate,
   validateLogin,
   validatePlaceBet,
   validateSignup,
@@ -642,5 +643,28 @@ describe('validateBugReport', () => {
       page: `/${'p'.repeat(BUG_REPORT_PAGE_MAX - 1)}`,
     });
     expect(r.ok).toBe(true);
+  });
+});
+
+describe('validateDisplayNameUpdate', () => {
+  it('trims and accepts a name', () => {
+    expect(ok(validateDisplayNameUpdate({ displayName: '  Big Al  ' })).displayName).toBe('Big Al');
+  });
+
+  it('rejects a missing, empty or whitespace-only name — an update has no fallback', () => {
+    expect(fail(validateDisplayNameUpdate({})).field).toBe('displayName');
+    expect(fail(validateDisplayNameUpdate({ displayName: '   ' })).field).toBe('displayName');
+    expect(fail(validateDisplayNameUpdate({ displayName: 7 })).field).toBe('displayName');
+  });
+
+  it('applies the signup rules: length and invisible characters', () => {
+    expect(validateDisplayNameUpdate({ displayName: 'x'.repeat(41) }).ok).toBe(false);
+    expect(validateDisplayNameUpdate({ displayName: 'al\u200bex' }).ok).toBe(false);
+    expect(validateDisplayNameUpdate({ displayName: 'x'.repeat(40) }).ok).toBe(true);
+  });
+
+  it('rejects a non-object body', () => {
+    expect(validateDisplayNameUpdate('Big Al').ok).toBe(false);
+    expect(validateDisplayNameUpdate(null).ok).toBe(false);
   });
 });

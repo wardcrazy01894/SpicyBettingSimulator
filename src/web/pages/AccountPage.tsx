@@ -21,6 +21,7 @@ import { usePages } from '../hooks/usePages.js';
 import { formatRoi } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
+import { DISPLAY_NAME_MAX } from '../../shared/validate.js';
 import type { BankrollView, LedgerEntry } from '../../shared/api-types.js';
 
 function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
@@ -58,6 +59,66 @@ function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
         </div>
       </dl>
     </div>
+  );
+}
+
+/**
+ * Self-service rename. The username is fixed (it is the KDF salt, PLAN.md
+ * §10.2); the display name is what the leaderboard and the admin list show.
+ * A real <form> so Enter submits; the server is the authority on what a valid
+ * name is and its VALIDATION message is shown as-is.
+ */
+function DisplayNameForm(): ReactElement {
+  const session = useSession();
+  const current = session.user?.displayName ?? '';
+  const [name, setName] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const [saved, setSaved] = useState(false);
+  const unchanged = name.trim() === current || name.trim() === '';
+
+  return (
+    <form
+      className="admin-reset"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (unchanged) return;
+        setBusy(true);
+        setError(null);
+        setSaved(false);
+        void session
+          .setDisplayName(name)
+          .then(() => {
+            setSaved(true);
+          })
+          .catch((thrown: unknown) => {
+            setError(thrown);
+          })
+          .finally(() => {
+            setBusy(false);
+          });
+      }}
+    >
+      <label className="field">
+        <span className="field-label">Display name</span>
+        <input
+          className="field-input"
+          type="text"
+          autoComplete="nickname"
+          maxLength={DISPLAY_NAME_MAX}
+          value={name}
+          onChange={(e) => {
+            setSaved(false);
+            setName(e.target.value);
+          }}
+        />
+      </label>
+      <button type="submit" className="btn btn-quiet" disabled={busy || unchanged}>
+        {busy ? 'Saving…' : 'Save'}
+      </button>
+      {saved && <p className="muted">Saved.</p>}
+      {error !== null && <ErrorBanner error={error} />}
+    </form>
   );
 }
 
@@ -128,6 +189,9 @@ export function AccountPage(): ReactElement {
             <LoadMore paged={paged} label="Load older entries" />
           </>
         ))}
+
+      <h3 className="section-title">Profile</h3>
+      <DisplayNameForm />
 
       <h3 className="section-title">Session</h3>
       {error !== null && <ErrorBanner error={error} />}
