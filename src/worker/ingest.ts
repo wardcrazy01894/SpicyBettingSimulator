@@ -60,6 +60,7 @@ import {
   REFRESH_LIVE_MS,
   REFRESH_SOON_MS,
   SOON_HORIZON_MS,
+  etDateKey,
   etDateKeyRange,
   etDayBounds,
 } from '../shared/time.js';
@@ -168,6 +169,58 @@ function etDaysInWindow(from: EpochMs, to: EpochMs): readonly EtDay[] {
 
 export function targetId(league: League, key: string): string {
   return `${league}:date:${key}`;
+}
+
+/**
+ * PLAN.md §9.3: an admin's "refresh this game". The unit of an ESPN request is a
+ * DATE slate, so the game's own target is made the most due thing in the queue
+ * — `next_run_at = 0`, which `claimDueTargets` orders first among equal
+ * priorities — and the caller then runs one admin refresh, which takes exactly
+ * one target. `priority` is deliberately untouched: the reschedule after the run
+ * writes `next_run_at` only, so a lowered priority would pin the target at the
+ * head of every later run.
+ *
+ * `'retired'` mirrors `planTargets`' retire rule EXACTLY (window ended more than
+ * TARGET_RETIRE_AFTER_MS ago and nothing in it can still move): the run begins
+ * with `planTargets`, which would delete the bumped row before it could be
+ * claimed and then quietly refresh something else. Refusing up front is the
+ * honest answer — there is nothing left to pull. A stuck (postponed, never
+ * parsed) game keeps its slate alive and CAN be re-pulled however old it is;
+ * the upsert re-creates the target row in case it is gone. `null` = no such game.
+ */
+export async function bumpTargetForGame(
+  env: Env,
+  gameId: string,
+  now: EpochMs,
+): Promise<{ readonly targetId: string } | 'retired' | null> {
+  const game = await env.DB.prepare('SELECT league, kickoff_at FROM games WHERE id = ?1')
+    .bind(gameId)
+    .first<{ league: League; kickoff_at: number }>();
+  if (game === null) return null;
+  const key = etDateKey(game.kickoff_at);
+  const bounds = etDayBounds(game.kickoff_at);
+  const id = targetId(game.league, key);
+  if (bounds.endAt < now - TARGET_RETIRE_AFTER_MS) {
+    const live = await env.DB.prepare(
+      `SELECT 1 AS x FROM games
+        WHERE league = ?1 AND kickoff_at >= ?2 AND kickoff_at < ?3
+          AND status NOT IN ('final', 'canceled')
+        LIMIT 1`,
+    )
+      .bind(game.league, bounds.startAt, bounds.endAt)
+      .first<{ x: number }>();
+    if (live === null) return 'retired';
+  }
+  await env.DB.prepare(
+    `INSERT INTO ingest_targets
+       (id, league, kind, key, window_start_at, window_end_at, priority,
+        next_run_at, consecutive_failures, games_seen, created_at, updated_at)
+     VALUES (?1, ?2, 'date', ?3, ?4, ?5, 100, 0, 0, 0, ?6, ?6)
+     ON CONFLICT(id) DO UPDATE SET next_run_at = 0, updated_at = excluded.updated_at`,
+  )
+    .bind(id, game.league, key, bounds.startAt, bounds.endAt, now)
+    .run();
+  return { targetId: id };
 }
 
 /**

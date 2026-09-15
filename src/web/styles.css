@@ -372,6 +372,15 @@ button:disabled {
   color: var(--text-dim);
 }
 
+/* Admin-only per-game refresh (GameCard.tsx). Compact on purpose: it sits in a
+   13px header, and the 44px tap floor would double the header's height. */
+.game-refresh {
+  margin-left: auto;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .game-time {
   font-weight: 650;
   color: var(--text);

@@ -15,7 +15,8 @@ import { buildApp } from '../../src/worker/index.js';
 import { DK_VECTORS } from './setup.js';
 import { stubEspn } from './fixtures.js';
 import type { EspnStub } from './fixtures.js';
-import { wipeAccounts } from './seed.js';
+import { seedGame, wipeAccounts } from './seed.js';
+import { etDateKey, etDayBounds } from '../../src/shared/time.js';
 
 /** TDD contract for M4 (leases) — PLAN.md §9.2. */
 
@@ -361,6 +362,122 @@ async function registerPlain(username: keyof typeof DK_VECTORS): Promise<string>
   const m = new RegExp(`${SESSION_COOKIE_NAME}=([^;]*)`).exec(raw);
   return `${SESSION_COOKIE_NAME}=${m?.[1] ?? ''}`;
 }
+
+describe('per-game refresh (PLAN.md §9.3)', () => {
+  it("POST /api/admin/games/:id/refresh pulls that game's slate now, even when it is not due", async () => {
+    const cookie = await registerAdmin('alex');
+    const kickoff = Date.now() + 3 * 24 * 60 * 60_000;
+    const key = etDateKey(kickoff);
+    const bounds = etDayBounds(kickoff);
+    await seedGame(env.DB, { id: 'g-far', league: 'ncaaf', kickoffAt: kickoff });
+    // Its target exists and is NOT due for an hour; nothing but a bump can win it slot 1.
+    await env.DB.prepare(
+      `INSERT INTO ingest_targets (id, league, kind, key, window_start_at, window_end_at, priority,
+                                   next_run_at, consecutive_failures, games_seen, created_at, updated_at)
+       VALUES (?1, 'ncaaf', 'date', ?2, ?3, ?4, 100, ?5, 0, 0, ?6, ?6)
+       ON CONFLICT(id) DO UPDATE SET next_run_at = excluded.next_run_at`,
+    )
+      .bind(
+        `ncaaf:date:${key}`,
+        key,
+        bounds.startAt,
+        bounds.endAt,
+        Date.now() + 60 * 60_000,
+        Date.now(),
+      )
+      .run();
+    espn.set(key, [
+      {
+        eventId: 'e-far',
+        league: 'ncaaf',
+        kickoffAt: kickoff,
+        status: 'pre',
+        homeAbbr: 'MICH',
+        awayAbbr: 'OSU',
+      },
+    ]);
+
+    const res = await send('/api/admin/games/g-far/refresh', {
+      method: 'POST',
+      headers: { 'X-SBS-Client': '1', cookie },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json<JobRunResponse>();
+    expect(body.run.job).toBe('refresh');
+    expect(body.run.trigger).toBe('admin');
+    expect(body.run.status).toBe('ok');
+    // An admin refresh takes ONE target, and it was this game's.
+    expect(espn.callCount).toBe(1);
+    expect(espn.urls[0]).toContain(`dates=${key}`);
+    expect(espn.urls[0]).toContain('college-football');
+    // Priority is untouched, so the reschedule put it back on its normal tier.
+    const target = await env.DB.prepare(
+      'SELECT priority, next_run_at FROM ingest_targets WHERE id = ?',
+    )
+      .bind(`ncaaf:date:${key}`)
+      .first<{ priority: number; next_run_at: number }>();
+    expect(target?.priority).toBe(100);
+    expect(target?.next_run_at).toBeGreaterThan(Date.now());
+  });
+
+  it('re-creates a retired target for an old STUCK game, so it can be re-pulled', async () => {
+    const cookie = await registerAdmin('alex');
+    const kickoff = Date.now() - 5 * 24 * 60 * 60_000;
+    const key = etDateKey(kickoff);
+    await seedGame(env.DB, { id: 'g-old', league: 'nfl', kickoffAt: kickoff, status: 'postponed' });
+    const res = await send('/api/admin/games/g-old/refresh', {
+      method: 'POST',
+      headers: { 'X-SBS-Client': '1', cookie },
+    });
+    expect(res.status).toBe(200);
+    expect(espn.urls[0]).toContain(`dates=${key}`);
+    expect(espn.urls[0]).toContain('/nfl/');
+  });
+
+  it('refuses an old slate where everything is final: 400, nothing fetched, no run', async () => {
+    const cookie = await registerAdmin('alex');
+    // A different day AND league from the stuck-game test above, so that slate's
+    // postponed game cannot keep this one alive.
+    const kickoff = Date.now() - 9 * 24 * 60 * 60_000;
+    await seedGame(env.DB, { id: 'g-done', league: 'ncaaf', kickoffAt: kickoff, status: 'final' });
+    const res = await send('/api/admin/games/g-done/refresh', {
+      method: 'POST',
+      headers: { 'X-SBS-Client': '1', cookie },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json<ApiErrorBody>()).error.code).toBe('VALIDATION');
+    expect(espn.callCount).toBe(0);
+    const runs = await env.DB.prepare('SELECT COUNT(*) AS n FROM job_runs').first<{ n: number }>();
+    expect(runs?.n).toBe(0);
+  });
+
+  it('is 404 GAME_NOT_FOUND for an unknown game and makes no upstream call', async () => {
+    const cookie = await registerAdmin('alex');
+    const res = await send('/api/admin/games/nope/refresh', {
+      method: 'POST',
+      headers: { 'X-SBS-Client': '1', cookie },
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json<ApiErrorBody>()).error.code).toBe('GAME_NOT_FOUND');
+    expect(espn.callCount).toBe(0);
+  });
+
+  it('is 409 JOB_LOCKED while the refresh lease is held', async () => {
+    const cookie = await registerAdmin('alex');
+    await seedGame(env.DB, { id: 'g-lock', kickoffAt: Date.now() + 60 * 60_000 });
+    await env.DB.prepare(
+      'UPDATE job_locks SET lease_until = ?, run_id = ?, updated_at = ? WHERE name = ?',
+    )
+      .bind(Date.now() + 5 * 60_000, 'somebody-else', Date.now(), 'refresh')
+      .run();
+    const res = await send('/api/admin/games/g-lock/refresh', {
+      method: 'POST',
+      headers: { 'X-SBS-Client': '1', cookie },
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json<ApiErrorBody>()).error.code).toBe('JOB_LOCKED');
+  });
+});
 
 describe('admin trigger', () => {
   it('POST /api/admin/jobs/refresh runs the same function with trigger=admin', async () => {

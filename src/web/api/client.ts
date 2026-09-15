@@ -360,6 +360,11 @@ export function postAdminJob(job: AdminJob): Promise<JobRunResponse> {
   return apiSend<JobRunResponse>('POST', `/api/admin/jobs/${job}`);
 }
 
+/** PLAN.md §9.3: pulls the slate this game is on, now. */
+export function postAdminGameRefresh(gameId: string): Promise<JobRunResponse> {
+  return apiSend<JobRunResponse>('POST', `/api/admin/games/${encodeURIComponent(gameId)}/refresh`);
+}
+
 export function getAdminJobs(): Promise<JobRunsResponse> {
   return apiGet<JobRunsResponse>('/api/admin/jobs');
 }

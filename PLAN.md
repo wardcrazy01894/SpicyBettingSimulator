@@ -1905,6 +1905,21 @@ an admin `refresh` to ONE target. `ctx.waitUntil` was considered and rejected: i
 grants extra wall time, not extra CPU, so if S1 comes back bad the remedy is
 R1's fallback ladder, not `waitUntil`. There is no `202` path in the code.
 
+**Per-game refresh.** `POST /api/admin/games/:id/refresh` is "refresh this
+game" for an operator staring at a stale card. The unit of an ESPN request is a
+DATE slate (§8.2), so it does not fetch one event: `bumpTargetForGame` sets the
+game's own target to `next_run_at = 0` (re-creating it if `planTargets` retired
+it, so an old STUCK game can be re-pulled), then the identical admin `refresh`
+runs — ONE target, and that target is now the most due thing in the queue.
+`priority` is untouched, because the post-run reschedule writes `next_run_at`
+only and a lowered priority would pin the target at the head of every later run.
+A slate `planTargets` would retire — ended more than two days ago with every
+game final or canceled — is refused with `400 VALIDATION` before anything is
+touched, because the run starts with `planTargets`, which would delete the
+bumped row and then quietly refresh something else. Same lease, same
+`409 JOB_LOCKED`, same `job_runs` row; `404 GAME_NOT_FOUND` for an unknown id.
+The button lives on the board's game card and is rendered only for admins.
+
 **A job whose BODY threw still returns `200`, with `run.status === 'error'` and
 the message in `run.error`.** That is deliberate. The HTTP status answers "did
 the trigger work", and it did: the lease was taken, the run was recorded, and the
@@ -2463,6 +2478,7 @@ to sum, and `/all-time` is now literally the unfiltered board.)
 
 | Method | Path                                   | Notes                                                                                                                                                                                                         |
 | ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/admin/games/:id/refresh`         | pulls the slate this game is on, now (§9.3) → `200 {run}`; `404 GAME_NOT_FOUND`, `400 VALIDATION` (slate retired: all final > 2 days), `409 JOB_LOCKED`                                                       |
 | POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                                                      |
 | GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                                                      |
 | GET    | `/api/admin/users`                     | list — `AdminUserView[]`, **including deleted accounts** (`isDeleted`, `deletedAt`). The only surface that still shows them.                                                                                  |
