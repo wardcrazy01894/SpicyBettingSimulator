@@ -12,7 +12,8 @@
  * arrow-key movement between them; none of these three switches has a panel to
  * point at (they filter the page around them), and implementing a half tablist
  * is worse than not claiming the role. `aria-pressed` toggle buttons describe
- * exactly what these are.
+ * exactly what these are. `<Tabs>` (components/Tabs.tsx) is the real tablist,
+ * for the one place that does have panels: the admin page.
  */
 import type { ReactElement } from 'react';
 

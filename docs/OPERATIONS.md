@@ -118,7 +118,9 @@ previous sha leaves the column in place and unused.
 ## Accounts
 
 - The FIRST signup becomes admin. Signup needs the invite code.
-- Admin pages: `/admin` in the SPA (jobs, users, disable, password reset, reconcile).
+- Admin page: `/admin` in the SPA, four tabs — **Jobs** (run refresh / settle / maintenance by
+  hand, last 50 runs), **Ledger** (reconcile), **Users** (disable, password reset, delete),
+  **Bug reports**. The tab is in the URL (`/admin?tab=users`), so links to a section work.
 - Reset a password from the CLI: `node scripts/admin-hash.mjs <username> <new-password>` prints a
   `wrangler d1 execute` statement to run with `--remote`.
 - Adjust a balance: `POST /api/admin/users/:id/adjust {amountCents, memo}` (ledger row; cannot

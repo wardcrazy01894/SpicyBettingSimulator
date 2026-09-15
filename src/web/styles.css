@@ -286,7 +286,10 @@ button:disabled {
 
 /* -------------------------------------------------------------- segmented */
 
-.segmented {
+/* `.tabs` / `.tab` (components/Tabs.tsx) share this recipe; their overrides are
+   in the tabs block below. */
+.segmented,
+.tabs {
   display: inline-flex;
   gap: 2px;
   padding: 2px;
@@ -295,7 +298,8 @@ button:disabled {
   border: 1px solid var(--border);
 }
 
-.segment {
+.segment,
+.tab {
   border: 1px solid transparent;
   background: transparent;
   padding: 0 12px;
@@ -1261,4 +1265,83 @@ select:focus-visible,
   max-height: 240px;
   overflow: auto;
   font-size: 12px;
+}
+
+/* ------------------------------------------------------------------- tabs */
+
+/* A real tablist (components/Tabs.tsx): the `.segmented` recipe, stretched to
+   the page width and scrolling sideways rather than wrapping, so four tabs stay
+   one row on a phone. */
+.tabs {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tab {
+  flex: 1 0 auto;
+  white-space: nowrap;
+}
+
+/* The scroll container clips anything outside it, so the global 2px-offset
+   focus ring would be cut off; draw it inside the button instead. */
+.tab:focus-visible {
+  outline-offset: -2px;
+}
+
+.tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.tabpanel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius);
+}
+
+/* Screen-reader-only text (the standard clip recipe). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* `display: flex` above would otherwise beat the `hidden` attribute. */
+.tabpanel[hidden] {
+  display: none;
+}
+
+.job-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.job-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.job-item .btn {
+  flex: 0 0 auto;
+  min-width: 9.5em;
+}
+
+.job-blurb {
+  flex: 1 1 16em;
+  font-size: 13px;
+  margin: 0;
 }

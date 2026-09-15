@@ -1,8 +1,18 @@
-/** Manual job triggers, recent job runs with stats/warnings, users, reconcile. */
+/**
+ * Four tabs — Jobs, Ledger, Users, Bug reports — with the active one in the URL
+ * (`/admin?tab=users`) so a reload or a pasted link lands on the same section.
+ *
+ * All four panels are mounted from the start and the inactive ones are `hidden`
+ * — the same three fetches the one-long-scroll page made. Staying mounted is
+ * what keeps a running job's "Running…", a reconcile report or a half-typed
+ * password reset alive across a tab switch.
+ */
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import type { ReactElement } from 'react';
 
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
+import { TabPanel, Tabs } from '../components/Tabs.js';
 import { Spinner } from '../components/Spinner.js';
 import {
   deleteAdminUser,
@@ -14,6 +24,8 @@ import {
 import { deriveKey } from '../api/kdf.js';
 import { useAdminBugReports, useAdminJobs, useAdminUsers } from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
+import { ADMIN_TABS, parseAdminTab } from '../lib/admin-tabs.js';
+import type { AdminTab } from '../lib/admin-tabs.js';
 import { formatDateTime } from '../lib/datetime.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
@@ -25,7 +37,30 @@ import type {
   ReconcileResponse,
 } from '../../shared/api-types.js';
 
-const JOBS: readonly AdminJob[] = ['refresh', 'settle', 'maintenance'];
+/**
+ * The three cron jobs, in the order they matter, each with what pressing the
+ * button does. A manual run is the identical code path with `trigger = 'admin'`
+ * (PLAN.md §9.3) — except `refresh`, which the HTTP CPU budget cuts to ONE
+ * target per press. The schedules themselves are deliberately NOT restated
+ * here: `wrangler.jsonc` + PLAN §9.1 + OPERATIONS are the guarded copies.
+ */
+const JOBS: readonly { readonly job: AdminJob; readonly blurb: string }[] = [
+  {
+    job: 'refresh',
+    blurb:
+      'Pulls games, scores and lines from ESPN for the single most overdue slate. The cron keeps every slate on its own cadence; press this to jump the queue.',
+  },
+  {
+    job: 'settle',
+    blurb:
+      'Grades every pending bet whose games are all final and pays winners. Safe to press again — a bet can never be paid twice.',
+  },
+  {
+    job: 'maintenance',
+    blurb:
+      'Cancels games stuck postponed or dropped from ESPN so the next settle run refunds their legs, and prunes old sessions and job runs.',
+  },
+];
 
 /**
  * `JobRunView.stats` is `Record<string, unknown>` — the ingest/settle jobs decide
@@ -285,50 +320,44 @@ function UserList(props: {
   );
 }
 
-export function AdminPage(): ReactElement {
-  const session = useSession();
-  const meId = session.user?.id ?? null;
+function JobsPanel(): ReactElement {
   const jobs = useAdminJobs();
-  const users = useAdminUsers();
-  const bugs = useAdminBugReports();
   const [busyJob, setBusyJob] = useState<AdminJob | null>(null);
   const [jobError, setJobError] = useState<unknown>(null);
-  const [reconcile, setReconcile] = useState<ReconcileResponse | null>(null);
-  const [reconciling, setReconciling] = useState(false);
 
   return (
-    <section className="page">
-      <h2 className="page-title">Admin</h2>
-
-      <h3 className="section-title">Jobs</h3>
-      <div className="row-actions">
-        {JOBS.map((job) => (
-          <button
-            key={job}
-            type="button"
-            className="btn btn-quiet"
-            disabled={busyJob !== null}
-            onClick={() => {
-              setBusyJob(job);
-              setJobError(null);
-              void postAdminJob(job)
-                .then(() => {
-                  invalidate('admin:jobs');
-                })
-                .catch((thrown: unknown) => {
-                  setJobError(thrown);
-                })
-                .finally(() => {
-                  setBusyJob(null);
-                });
-            }}
-          >
-            {busyJob === job ? 'Running…' : `Run ${job}`}
-          </button>
+    <>
+      <ul className="job-list">
+        {JOBS.map(({ job, blurb }) => (
+          <li key={job} className="job-item">
+            <button
+              type="button"
+              className="btn btn-quiet"
+              disabled={busyJob !== null}
+              onClick={() => {
+                setBusyJob(job);
+                setJobError(null);
+                void postAdminJob(job)
+                  .then(() => {
+                    invalidate('admin:jobs');
+                  })
+                  .catch((thrown: unknown) => {
+                    setJobError(thrown);
+                  })
+                  .finally(() => {
+                    setBusyJob(null);
+                  });
+              }}
+            >
+              {busyJob === job ? 'Running…' : `Run ${job}`}
+            </button>
+            <p className="job-blurb muted">{blurb}</p>
+          </li>
         ))}
-      </div>
+      </ul>
       {jobError !== null && <ErrorBanner error={jobError} />}
 
+      <h3 className="section-title">Recent runs</h3>
       {jobs.error !== undefined && jobs.data === undefined && (
         <ErrorBanner error={jobs.error} onRetry={jobs.refetch} />
       )}
@@ -367,8 +396,17 @@ export function AdminPage(): ReactElement {
             </table>
           </div>
         ))}
+    </>
+  );
+}
 
-      <h3 className="section-title">Ledger reconciliation</h3>
+function ReconcilePanel(): ReactElement {
+  const [reconcile, setReconcile] = useState<ReconcileResponse | null>(null);
+  const [reconciling, setReconciling] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+
+  return (
+    <>
       <p className="muted page-note">
         Recomputes SUM(ledger) against balance_cents for every bankroll. Read-only — it never
         auto-fixes.
@@ -380,10 +418,12 @@ export function AdminPage(): ReactElement {
           disabled={reconciling}
           onClick={() => {
             setReconciling(true);
+            setError(null);
             void postAdminReconcile()
               .then(setReconcile)
-              .catch(() => {
+              .catch((thrown: unknown) => {
                 setReconcile(null);
+                setError(thrown);
               })
               .finally(() => {
                 setReconciling(false);
@@ -393,6 +433,7 @@ export function AdminPage(): ReactElement {
           {reconciling ? 'Checking…' : 'Reconcile'}
         </button>
       </div>
+      {error !== null && <ErrorBanner error={error} />}
       {reconcile !== null && (
         <div className={reconcile.drift.length === 0 ? 'banner' : 'banner banner-error'}>
           <p className="banner-text">
@@ -409,20 +450,74 @@ export function AdminPage(): ReactElement {
           </ul>
         </div>
       )}
+    </>
+  );
+}
 
-      <h3 className="section-title">Users</h3>
+function UsersPanel(props: { readonly meId: string | null }): ReactElement {
+  const users = useAdminUsers();
+  return (
+    <>
       {users.error !== undefined && users.data === undefined && (
         <ErrorBanner error={users.error} onRetry={users.refetch} />
       )}
       {users.loading && users.data === undefined && <Spinner label="Loading users…" />}
-      {users.data !== undefined && <UserList users={users.data.users} meId={meId} />}
+      {users.data !== undefined && <UserList users={users.data.users} meId={props.meId} />}
+    </>
+  );
+}
 
-      <h3 className="section-title">Bug reports</h3>
+function BugsPanel(): ReactElement {
+  const bugs = useAdminBugReports();
+  return (
+    <>
       {bugs.error !== undefined && bugs.data === undefined && (
         <ErrorBanner error={bugs.error} onRetry={bugs.refetch} />
       )}
       {bugs.loading && bugs.data === undefined && <Spinner label="Loading bug reports…" />}
       {bugs.data !== undefined && <BugReportList reports={bugs.data.reports} />}
+    </>
+  );
+}
+
+function panelFor(tab: AdminTab, meId: string | null): ReactElement {
+  switch (tab) {
+    case 'jobs':
+      return <JobsPanel />;
+    case 'reconcile':
+      return <ReconcilePanel />;
+    case 'users':
+      return <UsersPanel meId={meId} />;
+    case 'bugs':
+      return <BugsPanel />;
+  }
+}
+
+export function AdminPage(): ReactElement {
+  const session = useSession();
+  const meId = session.user?.id ?? null;
+  const [params, setParams] = useSearchParams();
+  const tab = parseAdminTab(params.get('tab'));
+
+  const setTab = (next: AdminTab): void => {
+    // `replace`, so the back button leaves the admin page rather than replaying
+    // every tab the operator clicked through. Jobs is the default and stays out
+    // of the URL so `/admin` and `/admin?tab=jobs` are one address.
+    const nextParams = new URLSearchParams(params);
+    if (next === 'jobs') nextParams.delete('tab');
+    else nextParams.set('tab', next);
+    setParams(nextParams, { replace: true });
+  };
+
+  return (
+    <section className="page">
+      <h2 className="page-title">Admin</h2>
+      <Tabs id="admin" label="Admin sections" tabs={ADMIN_TABS} value={tab} onChange={setTab} />
+      {ADMIN_TABS.map((t) => (
+        <TabPanel key={t.id} id="admin" tab={t.id} label={t.label} hidden={t.id !== tab}>
+          {panelFor(t.id, meId)}
+        </TabPanel>
+      ))}
     </section>
   );
 }
