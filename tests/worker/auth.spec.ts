@@ -23,6 +23,7 @@ import {
   hashDerivedKey,
   sha256Hex,
 } from '../../src/worker/crypto.js';
+import { setDisplayName } from '../../src/worker/auth.js';
 import { buildApp } from '../../src/worker/index.js';
 import { DK_VECTORS, WRONG_DK } from './setup.js';
 import {
@@ -691,6 +692,25 @@ describe('display name', () => {
     expect(body.error.details?.['field']).toBe('displayName');
     const me = await (await get('/api/auth/me', { cookie: alex.cookie })).json<UserResponse>();
     expect(me.user.displayName).toBe('alex');
+  });
+
+  it('renames only the caller, and a disabled account cannot be renamed at all', async () => {
+    const alex = await register('alex');
+    const bob = await register('bob');
+    await post('/api/auth/display-name', { displayName: 'Bobby' }, { cookie: bob.cookie });
+    const me = await (await get('/api/auth/me', { cookie: alex.cookie })).json<UserResponse>();
+    expect(me.user.displayName).toBe('alex');
+
+    // The WHERE guard, exercised below the HTTP layer: `resolveSession` already
+    // refuses a disabled user's cookie, so this is the race the guard exists for.
+    await env.DB.prepare('UPDATE users SET is_disabled = 1 WHERE id = ?').bind(bob.id).run();
+    await expect(setDisplayName(env, bob.id, 'Sneaky', Date.now())).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+    const row = await env.DB.prepare('SELECT display_name FROM users WHERE id = ?')
+      .bind(bob.id)
+      .first<{ display_name: string }>();
+    expect(row?.display_name).toBe('Bobby');
   });
 
   it('requires a session (401 UNAUTHENTICATED)', async () => {
