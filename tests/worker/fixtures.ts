@@ -25,6 +25,14 @@ export interface EventSpecOdds {
   readonly underPrice?: number;
   readonly mlHome?: number;
   readonly mlAway?: number;
+  /**
+   * Emit the market with every field set to the literal string "OFF" — the
+   * shape DraftKings serves for a market it has pulled (a live capture is in
+   * tests/unit/espn.spec.ts). Wins over `total` / `mlHome` when both are set.
+   */
+  readonly spreadOff?: true;
+  readonly totalOff?: true;
+  readonly moneylineOff?: true;
   /** Defaults to DraftKings / "100" — the entry `selectOddsEntry` prefers. */
   readonly providerId?: string;
   readonly providerName?: string;
@@ -163,7 +171,15 @@ function buildOdds(odds: EventSpecOdds): Record<string, unknown> {
     },
   };
 
-  if (odds.spreadHome !== undefined) {
+  if (odds.spreadOff === true) {
+    const off = { line: 'OFF', odds: 'OFF' };
+    entry['spread'] = null;
+    entry['pointSpread'] = {
+      displayName: 'Spread',
+      home: { close: { ...off }, open: { ...off } },
+      away: { close: { ...off }, open: { ...off } },
+    };
+  } else if (odds.spreadHome !== undefined) {
     const homePrice = odds.spreadHomePrice ?? -110;
     const awayPrice = odds.spreadAwayPrice ?? -110;
     // `details` is deliberately a display string: PLAN §8.3 forbids parsing it.
@@ -182,7 +198,15 @@ function buildOdds(odds: EventSpecOdds): Record<string, unknown> {
     };
   }
 
-  if (odds.total !== undefined) {
+  if (odds.totalOff === true) {
+    const off = { line: 'OFF', odds: 'OFF' };
+    entry['overUnder'] = null;
+    entry['total'] = {
+      displayName: 'Total',
+      over: { close: { ...off }, open: { ...off } },
+      under: { close: { ...off }, open: { ...off } },
+    };
+  } else if (odds.total !== undefined) {
     const overPrice = odds.overPrice ?? -110;
     const underPrice = odds.underPrice ?? -110;
     entry['overUnder'] = odds.total;
@@ -199,7 +223,13 @@ function buildOdds(odds: EventSpecOdds): Record<string, unknown> {
     };
   }
 
-  if (odds.mlHome !== undefined && odds.mlAway !== undefined) {
+  if (odds.moneylineOff === true) {
+    entry['moneyline'] = {
+      displayName: 'Moneyline',
+      home: { close: { odds: 'OFF' }, open: { odds: 'OFF' } },
+      away: { close: { odds: 'OFF' }, open: { odds: 'OFF' } },
+    };
+  } else if (odds.mlHome !== undefined && odds.mlAway !== undefined) {
     entry['moneyline'] = {
       displayName: 'Moneyline',
       home: { close: { odds: fmtPrice(odds.mlHome) }, open: { odds: fmtPrice(odds.mlHome) } },

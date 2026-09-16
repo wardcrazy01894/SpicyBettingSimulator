@@ -53,6 +53,7 @@ import {
   LINE_SEEN_TOUCH_MS,
   RESERVED_DISCOVERY_SLOTS,
 } from '../shared/constants.js';
+import type { ParseWarning } from '../shared/espn.js';
 import {
   LIVE_HORIZON_MS,
   REFRESH_DISCOVERY_MS,
@@ -85,7 +86,7 @@ export interface IngestTargetRow {
   readonly consecutiveFailures: number;
 }
 
-export interface IngestStats {
+export interface IngestStats extends LineGapStats {
   readonly targetsProcessed: number;
   /** `games` rows that actually changed (one per game, however many statements). */
   readonly gamesUpserted: number;
@@ -101,9 +102,46 @@ export interface IngestStats {
   readonly rowsSkipped: number;
   readonly warnings: readonly string[];
   readonly failures: readonly { readonly targetId: string; readonly error: string }[];
+  /**
+   * The `LineGapStats` counts per target, because the run total conflates two
+   * different things: the live date's board (what a bettor sees today) and the
+   * discovery slot's future date (up to 10 days out, where the book has often
+   * posted nothing yet). Only the per-target rows are comparable run to run.
+   */
+  readonly coverage: readonly TargetCoverage[];
 }
 
-export interface IngestTargetResult {
+export interface TargetCoverage {
+  readonly targetId: string;
+  readonly upcomingGames: number;
+  readonly lineGaps: number;
+}
+
+/**
+ * How much of the board the odds feed actually covers — the measurement that
+ * decides whether a second odds provider is worth building (PLAN.md §8.3).
+ *
+ * `upcomingGames` is every game that is SCHEDULED and whose kickoff is still
+ * ahead of `now` — `lineRowsWorthWriting` keys on status alone, and the extra
+ * clock test is deliberate: writing a line for a game ESPN still calls "pre" a
+ * minute after kickoff is harmless, but counting its just-pulled market as a
+ * coverage gap is noise. `lineGaps` is how many of those have no line at all or
+ * are missing a market, and the per-market counters say WHICH — a missing
+ * moneyline on a heavy favourite is normal at every book (PLAN.md §14.9), so
+ * `noMoneyline` is the one to discount. `lineGapDetails` names them; the
+ * counts are never capped and the details are capped once, in `runRefresh`.
+ */
+export interface LineGapStats {
+  readonly upcomingGames: number;
+  readonly lineGaps: number;
+  readonly noLine: number;
+  readonly noSpread: number;
+  readonly noTotal: number;
+  readonly noMoneyline: number;
+  readonly lineGapDetails: readonly string[];
+}
+
+export interface IngestTargetResult extends LineGapStats {
   readonly gamesUpserted: number;
   readonly linesUpserted: number;
   /** See `IngestStats.rowsWritten`. Includes this target's own reschedule write. */
@@ -116,6 +154,9 @@ export interface IngestTargetResult {
    * they must travel back with the counts rather than being swallowed here.
    */
   readonly warnings: readonly string[];
+  // The LineGapStats fields measure the PARSED slate, like `warnings`: zeros
+  // when the fetch or parse failed (no slate), but a slate whose upsert threw
+  // is still measured, and reported alongside its `error`.
 }
 
 /* ------------------------------------------------------------------ *
@@ -939,8 +980,53 @@ export function computeNextRunAt(
  * One target
  * ------------------------------------------------------------------ */
 
-function warningText(w: { readonly eventId: string | null; readonly reason: string }): string {
-  return w.eventId === null ? w.reason : `${w.eventId}: ${w.reason}`;
+function warningText(w: ParseWarning): string {
+  if (w.eventId === null) return w.reason;
+  const who = w.label === null ? w.eventId : `${w.eventId} (${w.label})`;
+  return `${who}: ${w.reason}`;
+}
+
+const EMPTY_SLATE: Pick<ProviderSlate, 'games' | 'lines'> = { games: [], lines: [] };
+
+/**
+ * Pure: the `LineGapStats` of one slate at instant `now`, in the slate's own
+ * game order, each game counted once however many times the payload lists it.
+ * Details are NOT capped here — the cap is applied once, in `runRefresh`.
+ */
+export function lineGapsOf(
+  slate: Pick<ProviderSlate, 'games' | 'lines'>,
+  now: EpochMs,
+): LineGapStats {
+  const linesByGame = new Map(slate.lines.map((l) => [l.gameId, l]));
+  const seen = new Set<string>();
+  const counts = { upcomingGames: 0, noLine: 0, noSpread: 0, noTotal: 0, noMoneyline: 0 };
+  const details: string[] = [];
+  for (const game of slate.games) {
+    if (game.status !== 'scheduled' || game.kickoffAt <= now || seen.has(game.id)) continue;
+    seen.add(game.id);
+    counts.upcomingGames += 1;
+    const lines = linesByGame.get(game.id);
+    const missing: string[] = [];
+    if (lines === undefined) {
+      counts.noLine += 1;
+      missing.push('no line');
+    } else {
+      if (lines.spread === null) {
+        counts.noSpread += 1;
+        missing.push('no spread');
+      }
+      if (lines.total === null) {
+        counts.noTotal += 1;
+        missing.push('no total');
+      }
+      if (lines.moneyline === null) {
+        counts.noMoneyline += 1;
+        missing.push('no moneyline');
+      }
+    }
+    if (missing.length > 0) details.push(`${game.shortName}: ${missing.join(', ')}`);
+  }
+  return { ...counts, lineGaps: details.length, lineGapDetails: details };
 }
 
 /** A short, safe rendering of a thrown value. Never leaks a stack. */
@@ -1017,6 +1103,7 @@ export async function ingestTarget(
     rowsSkipped: skipped,
     error,
     warnings: (slate?.warnings ?? []).map(warningText),
+    ...lineGapsOf(slate ?? EMPTY_SLATE, now),
   };
 }
 
@@ -1044,6 +1131,16 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
   let rowsWritten = 0;
   const warnings: string[] = [];
   const failures: { targetId: string; error: string }[] = [];
+  const gaps = {
+    upcomingGames: 0,
+    lineGaps: 0,
+    noLine: 0,
+    noSpread: 0,
+    noTotal: 0,
+    noMoneyline: 0,
+  };
+  const lineGapDetails: string[] = [];
+  const coverage: TargetCoverage[] = [];
 
   for (const target of targets) {
     const result = await ingestTarget(env, provider, target, now);
@@ -1052,6 +1149,13 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
     rowsSkipped += result.rowsSkipped;
     rowsWritten += result.rowsWritten;
     warnings.push(...result.warnings);
+    for (const key of Object.keys(gaps) as (keyof typeof gaps)[]) gaps[key] += result[key];
+    lineGapDetails.push(...result.lineGapDetails);
+    coverage.push({
+      targetId: target.id,
+      upcomingGames: result.upcomingGames,
+      lineGaps: result.lineGaps,
+    });
     if (result.error !== null) failures.push({ targetId: target.id, error: result.error });
   }
 
@@ -1064,6 +1168,9 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
     // The cap governs what is RECORDED, never what is parsed (PLAN.md §8.3).
     warnings: warnings.slice(0, ESPN_MAX_WARNINGS_RECORDED),
     failures,
+    ...gaps,
+    lineGapDetails: lineGapDetails.slice(0, ESPN_MAX_WARNINGS_RECORDED),
+    coverage,
   };
 }
 

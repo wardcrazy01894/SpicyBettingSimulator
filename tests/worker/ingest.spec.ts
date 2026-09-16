@@ -21,6 +21,7 @@ import {
   computeNextRunAt,
   GAME_LIVE_SQL,
   ingestTarget,
+  lineGapsOf,
   lineRowsWorthWriting,
   planTargets,
   runRefresh,
@@ -925,6 +926,146 @@ describe('upstream failures leave the database untouched', () => {
     const warnings = run.stats?.['warnings'] as readonly string[] | undefined;
     expect(warnings?.length).toBeGreaterThan(0);
     expect(warnings?.length).toBeLessThanOrEqual(ESPN_MAX_WARNINGS_RECORDED);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * line gaps — the board-coverage measurement (PLAN.md §8.3)
+ * ------------------------------------------------------------------ */
+
+describe('line gaps', () => {
+  const gaps = (specs: readonly EventSpec[]): ReturnType<typeof lineGapsOf> =>
+    lineGapsOf(makeSlate(specs, 'nfl', T0), T0);
+
+  it('counts upcoming games with no line or a missing market, per market, naming each', () => {
+    expect(
+      gaps([
+        BASE_SPEC,
+        spec({ eventId: '2', homeAbbr: 'BUF', awayAbbr: 'NYJ', odds: undefined }),
+        spec({ eventId: '3', homeAbbr: 'DAL', awayAbbr: 'PHI', odds: { spreadHome: -3.5 } }),
+        spec({
+          eventId: '4',
+          homeAbbr: 'SEA',
+          awayAbbr: 'LAR',
+          odds: { mlHome: -150, mlAway: 130 },
+        }),
+      ]),
+    ).toEqual({
+      upcomingGames: 4,
+      lineGaps: 3,
+      noLine: 1,
+      noSpread: 1,
+      noTotal: 2,
+      noMoneyline: 1,
+      lineGapDetails: [
+        'NYJ @ BUF: no line',
+        'PHI @ DAL: no total, no moneyline',
+        'LAR @ SEA: no spread, no total',
+      ],
+    });
+  });
+
+  it('only SCHEDULED games are on the board: live and final games are neither counted nor gaps', () => {
+    expect(
+      gaps([
+        spec({ eventId: '5', status: 'post', homeScore: 27, awayScore: 24, odds: undefined }),
+        spec({ eventId: '6', status: 'in', homeScore: 7, awayScore: 3, odds: undefined }),
+      ]),
+    ).toMatchObject({ upcomingGames: 0, lineGaps: 0, lineGapDetails: [] });
+  });
+
+  it('a game ESPN still calls "pre" after its kickoff has passed is not counted (status lag)', () => {
+    const lagging = spec({ eventId: '7', kickoffAt: T0 - MIN, odds: undefined });
+    expect(gaps([lagging])).toMatchObject({ upcomingGames: 0, lineGaps: 0 });
+  });
+
+  it('an event listed twice is counted once', () => {
+    const twice = spec({ eventId: '8', homeAbbr: 'BUF', awayAbbr: 'NYJ', odds: undefined });
+    expect(gaps([twice, twice])).toMatchObject({
+      upcomingGames: 1,
+      lineGaps: 1,
+      lineGapDetails: ['NYJ @ BUF: no line'],
+    });
+  });
+
+  it('a pulled ("OFF") market is a gap, and its warning names the matchup', async () => {
+    const t = await sundayNflTarget();
+    espn.set(t.key, [spec({ odds: { ...BASE_ODDS, totalOff: true, moneylineOff: true } })]);
+    const res = await ingestTarget(env, new EspnProvider(env), t, T0);
+    expect(res.error).toBeNull();
+    expect(res.linesUpserted).toBe(1); // the spread still lands
+    expect(res.warnings).toEqual([
+      '401872925 (TB @ CIN): DraftKings: total: off the board; moneyline: off the board',
+    ]);
+    expect(res).toMatchObject({
+      upcomingGames: 1,
+      lineGaps: 1,
+      noTotal: 1,
+      noMoneyline: 1,
+      lineGapDetails: ['TB @ CIN: no total, no moneyline'],
+    });
+  });
+
+  it('a line the book withdraws ENTIRELY is nulled on the next refresh, not left bettable', async () => {
+    const t = await sundayNflTarget();
+    await ingestSlate([BASE_SPEC], T0, t);
+    const before = await lineRow('nfl:401872925');
+    expect(before?.spread_home_tenths).toBe(-35);
+
+    espn.set(t.key, [spec({ odds: { spreadOff: true, totalOff: true, moneylineOff: true } })]);
+    const res = await ingestTarget(env, new EspnProvider(env), t, T0 + MIN);
+    expect(res.error).toBeNull();
+    expect(res.linesUpserted).toBe(1);
+    const after = await lineRow('nfl:401872925');
+    expect(after).toMatchObject({
+      spread_home_tenths: null,
+      spread_home_price: null,
+      total_tenths: null,
+      ml_home_price: null,
+      seen_at: T0 + MIN,
+    });
+    expect(res.lineGapDetails).toEqual(['TB @ CIN: no spread, no total, no moneyline']);
+  });
+
+  it('a fetch failure reports no board at all, not a board of zero gaps', async () => {
+    const t = await sundayNflTarget();
+    espn.setResponder(t.key, () => new Response('nope', { status: 503 }));
+    const res = await ingestTarget(env, new EspnProvider(env), t, T0);
+    expect(res.error).not.toBeNull();
+    expect(res).toMatchObject({ upcomingGames: 0, lineGaps: 0, lineGapDetails: [] });
+  });
+
+  it('runRefresh sums them, breaks them down per target, and caps only the details', async () => {
+    const key = etDateKey(T0);
+    const many = Array.from({ length: ESPN_MAX_WARNINGS_RECORDED + 10 }, (_, i) =>
+      spec({ eventId: `g${String(i)}`, homeAbbr: `H${String(i)}`, odds: undefined }),
+    );
+    espn.set(key, [BASE_SPEC, ...many]);
+    const stats = await runRefresh(env, T0, 2);
+    // One row per target processed. Which two of the 22 equally-due targets are
+    // claimed is decided by the deterministic `priority, next_run_at, id` order
+    // and only some of them fetch `key`, so assert on the rows, not on which.
+    expect(stats.coverage).toHaveLength(2);
+    const hit = stats.coverage.filter((c) => c.upcomingGames > 0);
+    expect(hit.length).toBeGreaterThanOrEqual(1);
+    for (const c of hit) {
+      expect(c.targetId).toMatch(/^(nfl|ncaaf):date:/);
+      expect(c.upcomingGames).toBe(ESPN_MAX_WARNINGS_RECORDED + 11);
+      expect(c.lineGaps).toBe(ESPN_MAX_WARNINGS_RECORDED + 10);
+    }
+    expect(stats.upcomingGames).toBe(hit.length * (ESPN_MAX_WARNINGS_RECORDED + 11));
+    expect(stats.lineGaps).toBe(hit.length * (ESPN_MAX_WARNINGS_RECORDED + 10));
+    expect(stats.noLine).toBe(stats.lineGaps);
+    // The per-target count is uncapped; the run's details list is capped once.
+    expect(stats.lineGapDetails).toHaveLength(ESPN_MAX_WARNINGS_RECORDED);
+
+    await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?')
+      .bind(T0 + MIN)
+      .run();
+    const run = await runJob(env, 'refresh', 'cron', T0 + MIN);
+    expect(run.status).toBe('ok');
+    expect(run.stats?.['lineGaps']).toBeTypeOf('number');
+    expect(Array.isArray(run.stats?.['coverage'])).toBe(true);
   });
 });
 

@@ -77,14 +77,34 @@ function StatsCell(props: { readonly run: JobRunView }): ReactElement {
     <ul className="stats-list">
       {entries.map(([key, value]) => (
         <li key={key}>
-          <span className="stats-key">{key}</span>{' '}
-          <span className="stats-value">
-            {typeof value === 'string' ? value : JSON.stringify(value)}
-          </span>
+          <span className="stats-key">{key}</span> <StatsValue name={key} value={value} />
         </li>
       ))}
     </ul>
   );
+}
+
+/**
+ * A list of strings (parser warnings, line-gap details) reads one per line and
+ * an empty one as a dash; anything else is shown as its JSON, which is what the
+ * job wrote.
+ */
+function StatsValue(props: { readonly name: string; readonly value: unknown }): ReactElement {
+  const { name, value } = props;
+  if (typeof value === 'string') return <span className="stats-value">{value}</span>;
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+    if (value.length === 0) return <span className="muted">—</span>;
+    return (
+      <ul className="stats-lines">
+        {value.map((line, i) => (
+          <li key={`${name}-${String(i)}`} className="stats-value">
+            {line}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  return <span className="stats-value">{JSON.stringify(value)}</span>;
 }
 
 /**
