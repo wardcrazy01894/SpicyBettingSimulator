@@ -129,7 +129,7 @@ CREATE INDEX idx_games_week   ON games(league, season, season_type, week);
 -- ---------------------------------------------------------------------------
 CREATE TABLE game_lines (
   game_id            TEXT    NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-  provider           TEXT    NOT NULL,                -- 'draftkings'
+  provider           TEXT    NOT NULL,                -- 'DraftKings' (ESPN's provider name; LINE_PROVIDER_PRIMARY)
   spread_home_tenths INTEGER,
   spread_home_price  INTEGER,
   spread_away_tenths INTEGER,

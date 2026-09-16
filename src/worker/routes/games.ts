@@ -167,9 +167,9 @@ export function gamesRoutes(): Hono<AppContext> {
   // never queryOne, which would keep whichever row D1 returned first.
   app.get('/:id', async (c) => {
     const rows = await queryAll<BoardRow>(
-      c.env.DB.prepare(`SELECT ${BOARD_COLUMNS} FROM games g ${LINES_JOIN} WHERE g.id = ?1`).bind(
-        c.req.param('id'),
-      ),
+      c.env.DB.prepare(
+        `SELECT ${BOARD_COLUMNS} FROM games g ${LINES_JOIN} WHERE g.id = ?1 ORDER BY l.provider ASC`,
+      ).bind(c.req.param('id')),
     );
     const grouped = groupByGame(rows)[0];
     if (grouped === undefined) throw new AppError('GAME_NOT_FOUND', 'No such game.');

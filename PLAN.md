@@ -416,8 +416,7 @@ the GitHub issue is filed so a GitHub outage loses nothing; `issue_number` /
 `issue_url` are set on success, `error` on failure. The `(user_id, created_at)`
 index is the rate-limit guard. §11.7.
 
-**`secondary_budget`** (migration `0007_secondary_odds.sql`, **shipped in M9b
-writes it from §21.3; nothing under `migrations/` yet**) — `id (CHECK id = 1),
+**`secondary_budget`** (migration `0007_secondary_odds.sql`, shipped in M9b from §21.3) — `id (CHECK id = 1),
 remaining_credits, checked_at, last_attempt_at, nfl_last_sweep_at,
 ncaaf_last_sweep_at, cooldown_until, consecutive_failures, last_status,
 last_error, updated_at`. **Exactly one row.** It holds The Odds API's credit
@@ -3728,7 +3727,7 @@ market (§21.4). `bettable` is unaffected in both cases (no market → not
 bettable), and the correction is the point: the banner means "ingestion has gone
 quiet", and a game nobody has priced is not a broken ingest. Everything else must
 be byte-identical while only primary rows exist, and
-`tests/worker/lines-parity.spec.ts` is the proof. M9c is the only PR that spends
+the parity test in `tests/worker/bets.spec.ts` (and the list/detail case in `tests/worker/routes.spec.ts`) is the proof. M9c is the only PR that spends
 money (credits), and it is off entirely without `ODDS_API_KEY`.
 
 ---
@@ -4587,6 +4586,12 @@ exist, no market survived") would flip that card to the stale banner and tell th
 operator ingestion is broken when it is working perfectly. A card with one
 surviving market renders that one button and no banner, as before.
 
+One consequence to know before it looks like a bug: once M9c writes secondary
+rows, a game with a FRESH all-null primary row and a STALE complete secondary row
+renders the stale banner — some row DID offer a complete market and every such
+row is stale. That is the definition doing its job (the secondary's market was
+real and has gone unconfirmed), and it is unreachable until M9c ships.
+
 **The rejected alternative: ingestion writes a merged `provider='board'` row.**
 Its appeal is real — board and placement would each read one row and could not
 disagree. It loses on three counts:
@@ -4605,7 +4610,7 @@ disagree. It loses on three counts:
 The pure function's own risk is that two call sites feed it different inputs. It
 is closed by contract and by test: every call site selects ALL rows for the game
 (`WHERE game_id IN (…)`, never `ORDER BY … LIMIT 1`), and
-`tests/worker/lines-parity.spec.ts` asserts that the board's `GameCard.lines`,
+the parity test in `tests/worker/bets.spec.ts` (and the list/detail case in `tests/worker/routes.spec.ts`) asserts that the board's `GameCard.lines`,
 the DETAIL route's card and placement's resolved snapshot agree for a crafted
 three-row set — including a row that is fresh for one market's window and stale
 for another's.
@@ -5094,21 +5099,21 @@ the run's existing `rowsWritten` total so the §8.6 write budget stays one numbe
 
 **New**
 
-| File                                                   | Contents                                                                            |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| `migrations/0007_secondary_odds.sql`                   | §21.3 verbatim — written by **M9b**; the plan PR ships no migration (§15)           |
-| `src/shared/odds-api.ts`                               | `parseOddsApi`, `normaliseTeamName`, `mascotOf`, `matchOddsApiEvents`               |
-| `src/shared/lines.ts`                                  | `mergeEffectiveLine`, `marketProvider`, `providerRank`, `missingMarkets`            |
-| `src/worker/odds-api.ts`                               | `TheOddsApiProvider`, `buildOddsUrl`, `redactUrl`, `readCredits`, `fetchCredits`    |
-| `src/worker/secondary.ts`                              | `runSecondary`, `sweepSecondary`, the secondary's own upsert SQL, the budget claims |
-| `docs/samples/odds-api-{nfl,ncaaf}.json`               | the captured payloads (committed, §19 Q8)                                           |
-| `docs/samples/espn-nfl-scoreboard-2026-09-17..28.json` | ESPN, 6 ET dates MERGED — every date the NFL API sample spans (§21.7)               |
-| `docs/samples/espn-cfb-scoreboard-2026-09-17..26.json` | ESPN, 4 ET dates MERGED — every date the CFB API sample spans (§21.7)               |
-| `scripts/capture-espn-range.mjs`                       | the one-shot that produced them, driven off the API samples' own dates (§21.7)      |
-| `tests/unit/odds-api.spec.ts`                          | parse + match, against the samples                                                  |
-| `tests/unit/lines.spec.ts`                             | the merge and `missingMarkets`                                                      |
-| `tests/worker/secondary.spec.ts`                       | the sweep, the budget, the three refresh paths                                      |
-| `tests/worker/lines-parity.spec.ts`                    | board, detail route and placement agree                                             |
+| File                                                                                                       | Contents                                                                            |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `migrations/0007_secondary_odds.sql`                                                                       | §21.3 verbatim — written by **M9b**; the plan PR ships no migration (§15)           |
+| `src/shared/odds-api.ts`                                                                                   | `parseOddsApi`, `normaliseTeamName`, `mascotOf`, `matchOddsApiEvents`               |
+| `src/shared/lines.ts`                                                                                      | `mergeEffectiveLine`, `marketProvider`, `providerRank`, `missingMarkets`            |
+| `src/worker/odds-api.ts`                                                                                   | `TheOddsApiProvider`, `buildOddsUrl`, `redactUrl`, `readCredits`, `fetchCredits`    |
+| `src/worker/secondary.ts`                                                                                  | `runSecondary`, `sweepSecondary`, the secondary's own upsert SQL, the budget claims |
+| `docs/samples/odds-api-{nfl,ncaaf}.json`                                                                   | the captured payloads (committed, §19 Q8)                                           |
+| `docs/samples/espn-nfl-scoreboard-2026-09-17..28.json`                                                     | ESPN, 6 ET dates MERGED — every date the NFL API sample spans (§21.7)               |
+| `docs/samples/espn-cfb-scoreboard-2026-09-17..26.json`                                                     | ESPN, 4 ET dates MERGED — every date the CFB API sample spans (§21.7)               |
+| `scripts/capture-espn-range.mjs`                                                                           | the one-shot that produced them, driven off the API samples' own dates (§21.7)      |
+| `tests/unit/odds-api.spec.ts`                                                                              | parse + match, against the samples                                                  |
+| `tests/unit/lines.spec.ts`                                                                                 | the merge and `missingMarkets`                                                      |
+| `tests/worker/secondary.spec.ts`                                                                           | the sweep, the budget, the three refresh paths                                      |
+| the parity test in `tests/worker/bets.spec.ts` (and the list/detail case in `tests/worker/routes.spec.ts`) | board, detail route and placement agree                                             |
 
 **Changed**
 
@@ -5147,7 +5152,7 @@ which returns the FIRST row D1 hands back — so the detail card would render on
 provider's markets while `resolveLegSnapshots` merges both. That is exactly the
 "screen said −110, charged −115" divergence §21.4 exists to kill, reintroduced on
 a route nobody was looking at. It must use `queryAll` + `mergeEffectiveLine`, and
-`tests/worker/lines-parity.spec.ts` asserts the DETAIL route against placement,
+the parity test in `tests/worker/bets.spec.ts` (and the list/detail case in `tests/worker/routes.spec.ts`) asserts the DETAIL route against placement,
 not only the list route.
 
 `settle.ts` is NOT in either list, and must not be: grading reads the `bet_legs`

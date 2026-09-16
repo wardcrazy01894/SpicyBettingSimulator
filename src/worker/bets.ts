@@ -53,13 +53,9 @@ import type {
   Market,
   Side,
 } from '../shared/types.js';
-import {
-  BET_CUTOFF_BUFFER_MS,
-  MAX_ABS_AMERICAN_PRICE,
-  MIN_ABS_AMERICAN_PRICE,
-} from '../shared/constants.js';
+import { BET_CUTOFF_BUFFER_MS } from '../shared/constants.js';
 import { AppError } from '../shared/errors.js';
-import { mergeEffectiveLine } from '../shared/lines.js';
+import { mergeEffectiveLine, usablePrice, usableTenths } from '../shared/lines.js';
 import type { EffectiveLine, LineRowView, MarketSource } from '../shared/lines.js';
 import { projectLeg } from '../shared/grading.js';
 import {
@@ -405,13 +401,6 @@ interface MarketQuote {
   readonly lineTenths: LineTenths | null;
 }
 
-/** A price we are willing to write into `bet_legs` (whose CHECK bounds it). */
-function usablePrice(value: number | null): value is number {
-  if (value === null || !Number.isSafeInteger(value)) return false;
-  const magnitude = Math.abs(value);
-  return magnitude >= MIN_ABS_AMERICAN_PRICE && magnitude <= MAX_ABS_AMERICAN_PRICE;
-}
-
 /**
  * The one quote a (market, side) pair refers to, or null when the book does not
  * offer it. `line_tenths` comes back FROM THE BETTOR'S SIDE: home −3.5 is −35,
@@ -442,7 +431,7 @@ function quoteFor(
       if (m === null) return null;
       const price = side === 'home' ? m.homePrice : m.awayPrice;
       const tenths = side === 'home' ? m.homeTenths : m.awayTenths;
-      if (!usablePrice(price) || !Number.isSafeInteger(tenths)) return null;
+      if (!usablePrice(price) || !usableTenths(tenths)) return null;
       return {
         americanPrice: price,
         lineTenths: tenths,
@@ -455,7 +444,7 @@ function quoteFor(
       const m = line.total;
       if (m === null) return null;
       const price = side === 'over' ? m.overPrice : m.underPrice;
-      if (!usablePrice(price) || !Number.isSafeInteger(m.tenths)) return null;
+      if (!usablePrice(price) || !usableTenths(m.tenths)) return null;
       return {
         americanPrice: price,
         lineTenths: m.tenths,

@@ -230,13 +230,18 @@ export function mergeEffectiveLine(
   };
 }
 
-/* A market is COMPLETE only when every one of its numbers is a usable integer. */
+/*
+ * A market is COMPLETE only when every one of its numbers is a usable integer.
+ * EXPORTED so placement (src/worker/bets.ts) applies the SAME predicate when it
+ * re-reads a quote off the merged line: two copies of "usable" that drift is a
+ * board/placement divergence waiting to happen.
+ */
 
-function usableTenths(value: LineTenths | null): value is LineTenths {
+export function usableTenths(value: LineTenths | null): value is LineTenths {
   return value !== null && Number.isSafeInteger(value) && Math.abs(value) <= MAX_ABS_LINE_TENTHS;
 }
 
-function usablePrice(value: AmericanPrice | null): value is AmericanPrice {
+export function usablePrice(value: AmericanPrice | null): value is AmericanPrice {
   return (
     value !== null &&
     Number.isSafeInteger(value) &&
