@@ -3669,7 +3669,7 @@ Deploy workflow applies to production on merge.
 **DoD**: the five gate commands green; every stub throws with a milestone
 reference; `git status` shows no file under `migrations/`.
 
-### M9-0 — The board window ends on Monday — **PLANNED** _(ships FIRST of the code changes)_
+### M9-0 — The board window ends on Monday — **DONE** _(2026-09-16; shipped FIRST of the code changes)_
 
 The product owner's rule, and the only milestone here that changes what a user
 sees without adding a feature: the board and the ingest planner stop at the end
@@ -3688,7 +3688,7 @@ constants, so M9-0 is the code):
 | `tests/unit/time.spec.ts`         | §22.5's pure cases, including both DST Sundays                                                        |
 | `tests/worker/ingest.spec.ts`     | §22.5's planner cases (Tue 14 / Sun 9+2 / Mon 8 each) and the re-based slot soak                      |
 | `tests/worker/routes.spec.ts`     | the board's default window, and the §22.5 rollover burst                                              |
-| `CLAUDE.md`                       | rule 3 loses its "(planned — M9-0)" marker                                                            |
+| `CLAUDE.md`                       | rule 3 loses its "(planned — M9-0)" marker (done)                                                     |
 | `docs/OPERATIONS.md`, `README.md` | §22.6's two operator effects and the rollover-burst answer                                            |
 
 **Depends on**: the plan PR. **Blocks**: M9b (§21's candidate bound is this

@@ -6,9 +6,9 @@
  */
 
 import { Hono } from 'hono';
-import { lineStaleAfterMs } from '../../shared/time.js';
+import { boardWindowEnd, lineStaleAfterMs } from '../../shared/time.js';
 import type { GameCard, GameLinesView, GamesResponse } from '../../shared/api-types.js';
-import { BOARD_LOOKBACK_MS, BOARD_MAX_GAMES, INGEST_WINDOW_MS } from '../../shared/constants.js';
+import { BOARD_LOOKBACK_MS, BOARD_MAX_GAMES } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { lockAtFor } from '../../shared/time.js';
 import type { BetLeague, EpochMs, GameStatus, League } from '../../shared/types.js';
@@ -110,12 +110,10 @@ export function gamesRoutes(): Hono<AppContext> {
     const week = readInt(c.req.query('week'), 'week');
     const status = readStatus(c.req.query('status'));
     const now = c.var.now;
-    // PLAN.md §11.3: now − 12 h … now + 10 d unless the caller narrows it.
+    // PLAN.md §11.3 / §22: now − 12 h … the end of the Monday that closes the
+    // football week for THIS league, unless the caller narrows or widens it.
     const from = readInt(c.req.query('from'), 'from') ?? now - BOARD_LOOKBACK_MS;
-    // TODO(M9-0, PLAN.md §22): the default `to` becomes
-    // `boardWindowEnd(league, now)` — the end of the Monday that closes the
-    // football week, per league. The route already knows the league.
-    const to = readInt(c.req.query('to'), 'to') ?? now + INGEST_WINDOW_MS;
+    const to = readInt(c.req.query('to'), 'to') ?? boardWindowEnd(league, now);
 
     const clauses = ['g.league = ?1', 'g.kickoff_at >= ?2', 'g.kickoff_at <= ?3'];
     const values: unknown[] = [league, from, to];

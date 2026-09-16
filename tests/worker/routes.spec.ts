@@ -19,6 +19,7 @@ import {
   MIN_STAKE_CENTS,
   TEASER_POINTS_TENTHS,
 } from '../../src/shared/constants.js';
+import { boardWindowEnd } from '../../src/shared/time.js';
 import { buildApp } from '../../src/worker/index.js';
 import { fullLine, seedGame, seedGameWithLine, seedLine, seedSettledBet } from './seed.js';
 
@@ -245,6 +246,42 @@ describe('routing', () => {
       expect(res.status, body).toBe(400);
       expect((await res.json<ApiErrorBody>()).error.code, body).toBe('MALFORMED_JSON');
     }
+  });
+});
+
+describe('games board window (PLAN.md §22)', () => {
+  it('the default `to` is the Monday that closes the week: a game on that Monday is listed, the Tuesday after is not', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const now = Date.now();
+    const end = boardWindowEnd('nfl', now);
+    await seedGameWithLine(env.DB, { id: gid('monday'), season, kickoffAt: end - HOUR });
+    await seedGameWithLine(env.DB, { id: gid('tuesday'), season, kickoffAt: end + 2 * HOUR });
+    const board = await (
+      await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
+    ).json<GamesResponse>();
+    const ids = board.games.map((g) => g.id);
+    expect(ids).toContain(gid('monday'));
+    expect(ids).not.toContain(gid('tuesday'));
+
+    // An explicit ?to= still overrides the default, unchanged.
+    const wider = await (
+      await get(
+        `/api/games?league=nfl&season=${String(season)}&to=${String(end + 3 * HOUR)}`,
+        alex.cookie,
+      )
+    ).json<GamesResponse>();
+    expect(wider.games.map((g) => g.id)).toContain(gid('tuesday'));
+  });
+
+  it('GET /api/games/:id is UNWINDOWED: a game past the Monday still resolves (§22.7)', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const end = boardWindowEnd('nfl', Date.now());
+    await seedGameWithLine(env.DB, { id: gid('later'), season, kickoffAt: end + 2 * HOUR });
+    const res = await get(`/api/games/${encodeURIComponent(gid('later'))}`, alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect((await res.json<{ game: { id: string } }>()).game.id).toBe(gid('later'));
   });
 });
 

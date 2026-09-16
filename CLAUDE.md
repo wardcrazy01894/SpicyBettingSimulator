@@ -95,11 +95,10 @@ the one failure mode the whole checklist has.
      spot-checking one stake proves nothing.
 3. **Timestamps are epoch milliseconds, UTC, everywhere** — DB, API, code. A
    timezone appears in exactly three places, all of them CALENDAR questions:
-   `etDateKey()` (ESPN's `dates=` parameter), `boardWindowEnd()` (**planned —
-   M9-0**; the stub is in `src/shared/time.ts` and throws. The board and ingest
-   window will end on the Monday that closes the football week, rolling over at
-   an ET instant on Sunday — PLAN.md §22), and display formatting in the
-   browser. Both server-side ones live in `src/shared/time.ts` and go through
+   `etDateKey()` (ESPN's `dates=` parameter), `boardWindowEnd()` (the board and
+   ingest window END on the Monday that closes the football week, rolling over
+   to next week at Sunday 00:00 ET for CFB and Sunday 20:00 ET for the NFL —
+   PLAN.md §22), and display formatting in the browser. Both server-side ones live in `src/shared/time.ts` and go through
    `Intl.DateTimeFormat` with an explicit `America/New_York`; nothing anywhere
    hard-codes −4 or −5 hours, and nothing adds `7 * 86_400_000` to cross a week.
 4. **`src/shared/` is platform-free.** No `fetch`, no `Request`/`Response`, no

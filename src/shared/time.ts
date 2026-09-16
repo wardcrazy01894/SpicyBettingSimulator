@@ -21,7 +21,12 @@
  * DST-correct for free. Nothing here hard-codes -4 or -5 hours.
  */
 
-import { BET_CUTOFF_BUFFER_MS, LINE_STALE_MS, LINE_STALE_MULTIPLIER } from './constants.js';
+import {
+  BET_CUTOFF_BUFFER_MS,
+  LINE_STALE_MS,
+  LINE_STALE_MULTIPLIER,
+  WEEK_ROLLOVER_ET_HOUR,
+} from './constants.js';
 import type { EpochMs, League } from './types.js';
 
 export const ET_TIME_ZONE = 'America/New_York';
@@ -185,10 +190,21 @@ export function etDateKeyRange(from: EpochMs, to: EpochMs): readonly string[] {
  * Total: never throws. A non-finite `now` yields `now` unchanged, so a caller
  * that somehow has no clock plans nothing rather than looping.
  *
- * M9-0 — throws until then. PLAN.md §22.
+ * PLAN.md §22.
  */
-export function boardWindowEnd(_league: League, _now: EpochMs): EpochMs {
-  throw new Error('not implemented (M9-0: PLAN.md §22)');
+export function boardWindowEnd(league: League, now: EpochMs): EpochMs {
+  if (!Number.isFinite(now)) return now;
+  const p = etParts(now);
+  // Weekday of the ET calendar date, 0 = Sunday … 6 = Saturday. Built from the
+  // ET parts with Date.UTC so no second Intl formatter is constructed.
+  const weekday = new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay();
+  // Days until the next Monday on or after today: Mon → 0, Tue → 6, Sun → 1.
+  let daysToMonday = (1 - weekday + 7) % 7;
+  const rolledOver = weekday === 1 || (weekday === 0 && p.hour >= WEEK_ROLLOVER_ET_HOUR[league]);
+  if (rolledOver) daysToMonday += 7;
+  // `etMidnight` normalises the day overflow and re-measures the DST offset, so
+  // this is calendar arithmetic, never `n * MS_PER_DAY`.
+  return etMidnight(p.year, p.month, p.day + daysToMonday + 1) - 1;
 }
 
 /** Parse an ESPN ISO timestamp ("2026-09-13T17:00Z") to epoch ms, or null. */
