@@ -306,16 +306,27 @@ export function jobForCron(cron: string): JobName | null {
 }
 
 /** Runs a named job. Shared by the cron handler and POST /api/admin/jobs/:job. */
+export interface RunJobOptions {
+  /**
+   * The admin's per-game Refresh (PLAN.md §21.2): the one game whose
+   * secondary-sweep retry backoff is waived. Only the `refresh` job reads it.
+   */
+  readonly forceSecondaryGameId?: string;
+}
+
 export function runJob(
   env: Env,
   job: JobName,
   trigger: 'cron' | 'admin',
   now: EpochMs,
+  options: RunJobOptions = {},
 ): Promise<JobRun> {
   return withJobRun(env, job, trigger, now, async () => {
     switch (job) {
       case 'refresh': {
-        const stats = await runRefresh(env, now, refreshTargetsPerRun(env, trigger));
+        const stats = await runRefresh(env, now, refreshTargetsPerRun(env, trigger), {
+          forceSecondaryGameId: options.forceSecondaryGameId ?? null,
+        });
         return { ...stats };
       }
       case 'settle': {

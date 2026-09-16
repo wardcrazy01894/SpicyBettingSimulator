@@ -13,6 +13,15 @@
  * Routes:
  *   /apis/site/v2/sports/football/nfl/scoreboard?dates=YYYYMMDD
  *   /apis/site/v2/sports/football/college-football/scoreboard?groups=80&dates=YYYYMMDD
+ *   /v4/sports                                          The Odds API's FREE probe
+ *   /v4/sports/americanfootball_{nfl|ncaaf}/odds        The Odds API's odds (PLAN.md §21)
+ *
+ * The Odds API routes serve docs/samples/odds-api-*.json with the real credit
+ * headers (`x-requests-remaining` etc.), honour `commenceTimeFrom/To`, and shift
+ * `commence_time` into the current week by the same rule as the ESPN events —
+ * from their OWN anchor (that sample is the week of 2026-09-17, one week after
+ * the ESPN capture), so the two feeds still describe the same games. Any
+ * `apiKey` is accepted; nothing is spent.
  *
  * Query handling: `dates=` is honoured by filtering events to that US-Eastern
  * calendar day (same bucketing as real ESPN, verified 2026-09-13); `groups=` and
@@ -39,6 +48,18 @@ const FILES = {
   nfl: 'espn-nfl-scoreboard.json',
   'college-football': 'espn-cfb-scoreboard.json',
 };
+const ODDS_FILES = {
+  americanfootball_nfl: 'odds-api-nfl.json',
+  americanfootball_ncaaf: 'odds-api-ncaaf.json',
+};
+/** The Odds API samples were captured 2026-09-16 for the week of the 17th. */
+const ODDS_ANCHOR_MS = Date.parse('2026-09-17T00:00:00Z');
+const ODDS_HEADERS = {
+  'content-type': 'application/json',
+  'cache-control': 'no-store',
+  'x-requests-used': '3',
+  'x-requests-remaining': '497',
+};
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 /** All sample kickoffs fall in this week; used to compute the shift. */
@@ -49,9 +70,25 @@ function loadSample(league) {
 }
 
 /** Whole weeks needed to move the sample week into the week containing `now`. */
-function weeksToShift(now) {
-  const diff = now - SAMPLE_ANCHOR_MS;
+function weeksToShift(now, anchor = SAMPLE_ANCHOR_MS) {
+  const diff = now - anchor;
   return diff <= 0 ? 0 : Math.floor(diff / WEEK_MS);
+}
+
+/** The Odds API body for one sport key, shifted and bounded like the real API. */
+function oddsBody(sportKey, url) {
+  const raw = JSON.parse(readFileSync(join(SAMPLES, ODDS_FILES[sportKey]), 'utf8'));
+  const weeks =
+    url.searchParams.get('shift') === '0' ? 0 : weeksToShift(Date.now(), ODDS_ANCHOR_MS);
+  const from = Date.parse(url.searchParams.get('commenceTimeFrom') ?? '') || -Infinity;
+  const to = Date.parse(url.searchParams.get('commenceTimeTo') ?? '') || Infinity;
+  const out = [];
+  for (const event of raw) {
+    const at = Date.parse(event.commence_time) + weeks * WEEK_MS;
+    if (at < from || at > to) continue;
+    out.push({ ...event, commence_time: new Date(at).toISOString().replace(/\.\d{3}Z$/, 'Z') });
+  }
+  return { body: out, weeks };
 }
 
 /** YYYYMMDD of an instant in America/New_York (ESPN's `dates=` bucket). */
@@ -142,6 +179,28 @@ function filterByDate(payload, dateKey) {
 
 function handle(req, res) {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
+
+  // The Odds API (PLAN.md §21): the free probe and the per-sport odds.
+  if (url.pathname === '/v4/sports') {
+    res.writeHead(200, { ...ODDS_HEADERS, 'x-requests-last': '0' });
+    res.end(JSON.stringify(Object.keys(ODDS_FILES).map((key) => ({ key, active: true }))));
+    console.log('[fixtures] odds-api probe -> 0 credits');
+    return;
+  }
+  const o = /^\/v4\/sports\/([a-z_]+)\/odds$/.exec(url.pathname);
+  if (o) {
+    if (!(o[1] in ODDS_FILES)) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ message: `fixture-server: unknown sport ${o[1]}` }));
+      return;
+    }
+    const { body, weeks } = oddsBody(o[1], url);
+    res.writeHead(200, { ...ODDS_HEADERS, 'x-requests-last': '3' });
+    res.end(JSON.stringify(body));
+    console.log(`[fixtures] odds-api ${o[1]} shift=${weeks}w -> ${body.length} events`);
+    return;
+  }
+
   const m = /^\/apis\/site\/v2\/sports\/football\/(nfl|college-football)\/scoreboard$/.exec(
     url.pathname,
   );

@@ -21,7 +21,9 @@ no top-up button, so bet like it's real.
   that's still days away is re-checked every few hours. The board runs through
   the Monday that closes the week: next week's college slate shows up Sunday
   morning, the NFL's on Sunday night after the late games, and both stay up
-  through Monday night.
+  through Monday night. When DraftKings is missing a spread, total or moneyline
+  on an NFL game or a ranked college game, the board fills it from another book
+  via The Odds API and says which book on that market.
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 10 legs, and the legs
   can mix Saturday and Sunday.

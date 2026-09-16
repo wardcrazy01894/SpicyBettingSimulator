@@ -3701,7 +3701,7 @@ bettors, it touches two hot read paths, and it has nothing to do with a second
 odds provider. Bundling it into M9a–c would mean a rollback of the provider work
 also rolls back the owner's window, or vice versa.
 
-### M9a / M9b / M9c — Secondary odds provider — **M9a, M9b DONE** _(2026-09-16)_, **M9c PLANNED**
+### M9a / M9b / M9c — Secondary odds provider — **DONE** _(2026-09-16)_
 
 Three PRs, each independently mergeable and green on its own; the file lists,
 the tests-first lists and the DoD for each are **§21.11**. In dependency order:
@@ -5309,7 +5309,9 @@ Tests, written first — `tests/worker/secondary.spec.ts` unless noted:
 - `SECONDARY_MIN_SWEEP_INTERVAL_MS`: two runs 30 min apart, both with gaps → one
   fetch, the second reports `skipped: 'throttled'`.
 - The reserve: with `remaining_credits` at `RESERVE + 2`, a gapped slate produces
-  NO odds fetch, `budgetSkipped: 1`, and the board is unchanged.
+  NO odds fetch, `budgetSkipped: 2` (one refusal per league — the reserve is
+  checked before the candidate scan, so a league is refused before anyone knows
+  whether it had a gap), and the board is unchanged.
 - The probe: with the reserve blocking and `last_attempt_at` 25 h old, exactly
   one `GET /v4/sports` happens, `remaining_credits` is NOT decremented by it,
   `checked_at` advances, and a second run 1 h later probes nothing.
@@ -5348,8 +5350,8 @@ Tests, written first — `tests/worker/secondary.spec.ts` unless noted:
   carries the sweep in the run-stats shape.
 - **(c)** The same route on a game that is fully lined → no fetch.
 - **(c)** The same route on an unranked CFB game → no fetch.
-- **(c)** The same route with the reserve hit → no fetch, `budgetSkipped: 1`,
-  still HTTP 200.
+- **(c)** The same route with the reserve hit → no fetch, `budgetSkipped: 2`
+  (one per league), still HTTP 200.
 - **(c)** The same route while the lease is held → `409 JOB_LOCKED` and no
   fetch (unchanged behaviour, asserted so the sweep cannot smuggle a call out
   from under the lock).

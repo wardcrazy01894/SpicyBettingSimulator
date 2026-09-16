@@ -178,6 +178,7 @@ function envWith(overrides: {
     APP_VERSION: env.APP_VERSION,
     GITHUB_REPO: overrides.GITHUB_REPO ?? env.GITHUB_REPO,
     GITHUB_API_BASE_URL: env.GITHUB_API_BASE_URL,
+    ODDS_API_BASE_URL: 'https://odds.test',
     ...(env.INVITE_CODE === undefined ? {} : { INVITE_CODE: env.INVITE_CODE }),
     ...(env.IP_HASH_SALT === undefined ? {} : { IP_HASH_SALT: env.IP_HASH_SALT }),
     ...(token === undefined ? {} : { GITHUB_TOKEN: token }),

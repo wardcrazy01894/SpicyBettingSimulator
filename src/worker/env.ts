@@ -9,6 +9,8 @@
  * codegen.
  */
 
+import type { OddsApiConfig } from './odds-api.js';
+
 export interface Env {
   // --- bindings -----------------------------------------------------------
   readonly DB: D1Database;
@@ -28,6 +30,11 @@ export interface Env {
   readonly GITHUB_REPO: string;
   /** GitHub REST base, e.g. "https://api.github.com"; a stub host in tests. */
   readonly GITHUB_API_BASE_URL: string;
+  /**
+   * The Odds API base, e.g. "https://api.the-odds-api.com"; the fixture server
+   * in dev and a stub host in tests. Only read when ODDS_API_KEY is set.
+   */
+  readonly ODDS_API_BASE_URL: string;
 
   // --- secrets (wrangler secret put) -------------------------------------
   /** Shared signup gate. When unset, signup is open (reported by /api/health). */
@@ -39,6 +46,11 @@ export interface Env {
    * bug reporting is OFF: `/api/health` says so and `POST /api/bugs` is 503.
    */
   readonly GITHUB_TOKEN?: string;
+  /**
+   * The Odds API key (free Starter tier). When unset the secondary odds
+   * provider is OFF: no sweep, no candidate scan, no request (PLAN.md §21).
+   */
+  readonly ODDS_API_KEY?: string;
 }
 
 /** Where and how `POST /api/bugs` files issues. `null` = feature off. */
@@ -57,6 +69,8 @@ export interface RuntimeConfig {
   readonly appVersion: string;
   readonly inviteRequired: boolean;
   readonly github: GitHubConfig | null;
+  /** The secondary odds provider. `null` = feature off (no `ODDS_API_KEY`). */
+  readonly oddsApi: OddsApiConfig | null;
 }
 
 /**
@@ -72,7 +86,26 @@ export function readConfig(env: Env): RuntimeConfig {
     appVersion: requireNonEmpty('APP_VERSION', env.APP_VERSION),
     inviteRequired: typeof env.INVITE_CODE === 'string' && env.INVITE_CODE.length > 0,
     github: readGitHub(env),
+    oddsApi: readOddsApiConfig(env),
   };
+}
+
+/**
+ * Same contract as `readGitHub`: optional, and a half-configuration (key set,
+ * base URL missing or malformed) turns the feature OFF with a logged reason
+ * rather than 500ing every request. The key itself is never logged.
+ */
+function readOddsApiConfig(env: Env): OddsApiConfig | null {
+  if (typeof env.ODDS_API_KEY !== 'string' || env.ODDS_API_KEY.trim() === '') return null;
+  try {
+    return {
+      apiKey: env.ODDS_API_KEY.trim(),
+      baseUrl: requireUrl('ODDS_API_BASE_URL', env.ODDS_API_BASE_URL),
+    };
+  } catch (err) {
+    console.error('[config] ODDS_API_KEY is set but the secondary provider is OFF:', String(err));
+    return null;
+  }
 }
 
 /**

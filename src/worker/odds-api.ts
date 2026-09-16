@@ -36,12 +36,14 @@
  * (`ingestTarget` isolates its own errors the same way) and a 401 from a
  * revoked key must not turn a good refresh run into a failed one.
  *
- * M9c — every function here throws until then.
+ * M9c.
  */
 
-import type { League } from '../shared/types.js';
-import type { OddsApiEvent } from '../shared/odds-api.js';
+import { ODDS_API_BOOKMAKERS, ODDS_API_TIMEOUT_MS } from '../shared/constants.js';
 import type { ParseWarning } from '../shared/espn.js';
+import { parseOddsApi } from '../shared/odds-api.js';
+import type { OddsApiEvent } from '../shared/odds-api.js';
+import type { League } from '../shared/types.js';
 
 /**
  * Validated config. `readConfig(env).oddsApi` (src/worker/env.ts) is the ONE
@@ -140,17 +142,26 @@ export interface SweepWindow {
  * logged, never put in a `ProviderError` message and never echoed in stats.
  * `redactUrl` is what the log path uses.
  */
-export function buildOddsUrl(
-  _config: OddsApiConfig,
-  _league: League,
-  _window: SweepWindow,
-): string {
-  throw new Error('not implemented (M9c: PLAN.md §21.6)');
+export function buildOddsUrl(config: OddsApiConfig, league: League, window: SweepWindow): string {
+  const url = new URL(`${config.baseUrl}/v4/sports/${ODDS_API_SPORT_KEY[league]}/odds`);
+  url.searchParams.set('apiKey', config.apiKey);
+  url.searchParams.set('bookmakers', ODDS_API_BOOKMAKERS.join(','));
+  url.searchParams.set('markets', 'spreads,totals,h2h');
+  url.searchParams.set('oddsFormat', 'american');
+  url.searchParams.set('dateFormat', 'iso');
+  url.searchParams.set('commenceTimeFrom', isoSeconds(window.fromAt));
+  url.searchParams.set('commenceTimeTo', isoSeconds(window.toAt));
+  return url.toString();
+}
+
+/** ISO-8601 to the second, UTC — the API rejects fractional seconds. */
+function isoSeconds(at: number): string {
+  return new Date(at).toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 /** `…&apiKey=REDACTED&…`. The only form of the URL that may reach a log or a stat. */
-export function redactUrl(_url: string): string {
-  throw new Error('not implemented (M9c: PLAN.md §21.6)');
+export function redactUrl(url: string): string {
+  return url.replace(/([?&]apiKey=)[^&]*/g, '$1REDACTED');
 }
 
 /**
@@ -165,14 +176,130 @@ export interface SecondaryOddsProvider {
 
 export class TheOddsApiProvider implements SecondaryOddsProvider {
   readonly name = 'odds-api';
+  readonly #config: OddsApiConfig;
 
-  constructor(_config: OddsApiConfig) {
-    throw new Error('not implemented (M9c: PLAN.md §21.6)');
+  constructor(config: OddsApiConfig) {
+    this.#config = config;
   }
 
-  fetchOdds(_league: League, _window: SweepWindow, _now: number): Promise<OddsApiResult> {
-    throw new Error('not implemented (M9c: PLAN.md §21.6)');
+  async fetchOdds(league: League, window: SweepWindow, now: number): Promise<OddsApiResult> {
+    const url = buildOddsUrl(this.#config, league, window);
+    const outcome = await request(url, this.#config.apiKey);
+    if (!outcome.ok) return { ok: false, league, ...outcome.failure };
+    if (!Array.isArray(outcome.body)) {
+      // The schema-drift alarm: a 2xx that is not the documented array.
+      return {
+        ok: false,
+        league,
+        kind: 'malformed',
+        status: 200,
+        error: 'body is not an array of events',
+        credits: outcome.credits,
+      };
+    }
+    const parsed = parseOddsApi(outcome.body, league);
+    return {
+      ok: true,
+      league,
+      events: parsed.events,
+      warnings: parsed.warnings,
+      credits: outcome.credits,
+      fetchedAt: now,
+    };
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * The one HTTP path, shared by the sweep and the probe. Never throws.
+ * ------------------------------------------------------------------ */
+
+interface Failure {
+  readonly kind: OddsApiFailureKind;
+  readonly status: number | null;
+  readonly error: string;
+  readonly credits: OddsApiCredits;
+}
+
+type RequestOutcome =
+  | { readonly ok: true; readonly body: unknown; readonly credits: OddsApiCredits }
+  | { readonly ok: false; readonly failure: Failure };
+
+const NO_CREDITS: OddsApiCredits = { remaining: null, used: null, last: null };
+
+/** A short, safe rendering of a thrown value: no stack, and never the api key. */
+function safeError(err: unknown, apiKey: string): string {
+  const text =
+    err instanceof Error
+      ? `${err.name}: ${err.message}`
+      : typeof err === 'string'
+        ? err
+        : typeof err;
+  return text.split(apiKey).join('REDACTED').slice(0, 200);
+}
+
+async function request(url: string, apiKey: string): Promise<RequestOutcome> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { accept: 'application/json', 'user-agent': ODDS_API_USER_AGENT },
+      signal: AbortSignal.timeout(ODDS_API_TIMEOUT_MS),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      failure: {
+        kind: 'unavailable',
+        status: null,
+        error: safeError(err, apiKey),
+        credits: NO_CREDITS,
+      },
+    };
+  }
+  // Headers are read even on a non-2xx: a 429 still tells us the balance.
+  const credits = readCredits(res.headers);
+  if (res.status === 401 || res.status === 403) {
+    return {
+      ok: false,
+      failure: {
+        kind: 'unauthorized',
+        status: res.status,
+        error: `HTTP ${String(res.status)}`,
+        credits,
+      },
+    };
+  }
+  if (res.status === 429) {
+    return {
+      ok: false,
+      failure: { kind: 'rate_limited', status: 429, error: 'HTTP 429', credits },
+    };
+  }
+  if (!res.ok) {
+    return {
+      ok: false,
+      failure: {
+        kind: 'unavailable',
+        status: res.status,
+        error: `HTTP ${String(res.status)}`,
+        credits,
+      },
+    };
+  }
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch (err) {
+    return {
+      ok: false,
+      failure: {
+        kind: 'malformed',
+        status: res.status,
+        error: `body is not JSON: ${safeError(err, apiKey)}`,
+        credits,
+      },
+    };
+  }
+  return { ok: true, body, credits };
 }
 
 /**
@@ -182,8 +309,18 @@ export class TheOddsApiProvider implements SecondaryOddsProvider {
  * treats them oppositely (`null` leaves the stored balance alone; 0 stops the
  * feature).
  */
-export function readCredits(_headers: Headers): OddsApiCredits {
-  throw new Error('not implemented (M9c: PLAN.md §21.6)');
+export function readCredits(headers: Headers): OddsApiCredits {
+  const read = (name: string): number | null => {
+    const raw = headers.get(name);
+    if (raw === null || !/^\d+$/.test(raw.trim())) return null;
+    const n = Number(raw.trim());
+    return Number.isSafeInteger(n) ? n : null;
+  };
+  return {
+    remaining: read('x-requests-remaining'),
+    used: read('x-requests-used'),
+    last: read('x-requests-last'),
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -226,6 +363,13 @@ export type OddsApiCreditsResult =
  * Failures are values, never exceptions, exactly as `fetchOdds`'s are — a probe
  * that cannot reach the provider must not fail the refresh run around it.
  */
-export function fetchCredits(_config: OddsApiConfig, _now: number): Promise<OddsApiCreditsResult> {
-  throw new Error('not implemented (M9c: PLAN.md §21.5)');
+export async function fetchCredits(
+  config: OddsApiConfig,
+  now: number,
+): Promise<OddsApiCreditsResult> {
+  const url = new URL(`${config.baseUrl}${ODDS_API_SPORTS_PATH}`);
+  url.searchParams.set('apiKey', config.apiKey);
+  const outcome = await request(url.toString(), config.apiKey);
+  if (!outcome.ok) return { ok: false, ...outcome.failure };
+  return { ok: true, credits: outcome.credits, fetchedAt: now };
 }

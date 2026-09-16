@@ -73,6 +73,8 @@ import type { Env } from './env.js';
 import { readConfig } from './env.js';
 import { EspnProvider } from './espn.js';
 import type { ProviderSlate, ScoreProvider, SlateTarget } from './providers.js';
+import { runSecondary } from './secondary.js';
+import type { SecondaryStats } from './secondary.js';
 
 export interface IngestTargetRow {
   readonly id: string;
@@ -110,6 +112,17 @@ export interface IngestStats extends LineGapStats {
    * posted nothing yet). Only the per-target rows are comparable run to run.
    */
   readonly coverage: readonly TargetCoverage[];
+  /** The secondary odds sweep's report for this run, every path (PLAN.md §21.8). */
+  readonly secondary: SecondaryStats;
+}
+
+export interface RefreshOptions {
+  /**
+   * The admin's per-game Refresh: waive THAT game's `SECONDARY_RETRY_MS`
+   * backoff and nothing else (PLAN.md §21.2). Null on the cron and on the
+   * admin "Run refresh".
+   */
+  readonly forceSecondaryGameId: string | null;
 }
 
 export interface TargetCoverage {
@@ -1138,7 +1151,12 @@ export async function ingestTarget(
 // `IngestStats.secondary`. All three refresh paths (cron, admin Run refresh,
 // admin per-game Refresh) reach it through here. NOTE: `LINE_UPSERT_SQL` in this
 // file is NOT touched; the secondary has its own upsert (PLAN.md §21.3).
-export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Promise<IngestStats> {
+export async function runRefresh(
+  env: Env,
+  now: EpochMs,
+  maxTargets: number,
+  options: RefreshOptions = { forceSecondaryGameId: null },
+): Promise<IngestStats> {
   await planTargets(env, now);
 
   const targets = await claimDueTargets(env, now, maxTargets, RESERVED_DISCOVERY_SLOTS);
@@ -1178,6 +1196,12 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
     if (result.error !== null) failures.push({ targetId: target.id, error: result.error });
   }
 
+  // LAST, after the primary has written: the decision sees the board ESPN just
+  // produced, and a gap the primary closed this run costs no credits. Never
+  // throws (PLAN.md §21.2); its row writes join the run's §8.6 total.
+  const secondary = await runSecondary(env, now, { force: options.forceSecondaryGameId });
+  for (const sweep of secondary.sweeps) rowsWritten += sweep.rowsWritten;
+
   return {
     targetsProcessed: targets.length,
     gamesUpserted,
@@ -1190,6 +1214,7 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
     ...gaps,
     lineGapDetails: lineGapDetails.slice(0, ESPN_MAX_WARNINGS_RECORDED),
     coverage,
+    secondary,
   };
 }
 
