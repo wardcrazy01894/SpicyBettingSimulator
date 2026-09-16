@@ -11,6 +11,7 @@
  */
 
 import type { GameLinesView } from '../../shared/api-types.js';
+import { MONEYLINE_NOT_OFFERED_SPREAD_TENTHS } from '../../shared/constants.js';
 import type { AmericanPrice, LineTenths, Market, Side } from '../../shared/types.js';
 
 export interface MarketQuote {
@@ -61,4 +62,17 @@ export function quoteFor(
   if (side === 'home') return { lineTenths: null, americanPrice: moneyline.homePrice };
   if (side === 'away') return { lineTenths: null, americanPrice: moneyline.awayPrice };
   return null;
+}
+
+/**
+ * True when the moneyline is absent BECAUSE of the spread: at 30 points and
+ * beyond no book posts one (`MONEYLINE_NOT_OFFERED_SPREAD_TENTHS`). The card
+ * then says so instead of showing the same "n/a" a genuinely missing market
+ * gets. Absent spread, or a posted moneyline, is never "not offered".
+ */
+export function moneylineNotOffered(lines: GameLinesView | null): boolean {
+  const spread = lines?.spread ?? null;
+  if (spread === null || lines?.moneyline !== null) return false;
+  const magnitude = spread.homeTenths < 0 ? -spread.homeTenths : spread.homeTenths;
+  return magnitude >= MONEYLINE_NOT_OFFERED_SPREAD_TENTHS;
 }

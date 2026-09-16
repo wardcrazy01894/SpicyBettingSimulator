@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MARKET_CELLS, quoteFor } from '../../src/web/lib/lines.js';
+import { MARKET_CELLS, moneylineNotOffered, quoteFor } from '../../src/web/lib/lines.js';
 import type { GameLinesView } from '../../src/shared/api-types.js';
 
 const FULL: GameLinesView = {
@@ -60,5 +60,35 @@ describe('MARKET_CELLS', () => {
       'total:under',
       'moneyline:home',
     ]);
+  });
+});
+
+describe('moneylineNotOffered', () => {
+  const at = (homeTenths: number): GameLinesView => ({
+    ...FULL,
+    spread: { homeTenths, homePrice: -110, awayTenths: -homeTenths, awayPrice: -110 },
+    moneyline: null,
+  });
+
+  it('is true when the moneyline is absent and the spread is 30 points or more', () => {
+    expect(moneylineNotOffered(at(-300))).toBe(true);
+    expect(moneylineNotOffered(at(335))).toBe(true);
+    expect(moneylineNotOffered(at(-575))).toBe(true);
+  });
+
+  it('is false under 30 points — that is a gap, not a book policy', () => {
+    expect(moneylineNotOffered(at(-295))).toBe(false);
+    expect(moneylineNotOffered(at(-35))).toBe(false);
+  });
+
+  it('is false when a moneyline IS posted, whatever the spread', () => {
+    expect(
+      moneylineNotOffered({ ...at(-400), moneyline: { homePrice: -20000, awayPrice: 5000 } }),
+    ).toBe(false);
+  });
+
+  it('is false with no spread to judge by, or no line at all', () => {
+    expect(moneylineNotOffered({ ...FULL, spread: null, moneyline: null })).toBe(false);
+    expect(moneylineNotOffered(null)).toBe(false);
   });
 });

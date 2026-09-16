@@ -60,6 +60,18 @@ export type TeaserPointsTenths = (typeof TEASER_POINTS_TENTHS)[number];
 /** A teaser is a parlay shape: never fewer than two legs, never more than ten. */
 export const MIN_TEASER_LEGS = 2;
 
+/**
+ * Books stop posting a MONEYLINE once the spread is this wide: the favourite
+ * would pay -20000 and nobody takes it. Measured 2026-09-16 on The Odds API's
+ * CFB slate: every game with no moneyline at any of nine books had a spread of
+ * 33.5 or more, and the widest spread that still HAD a DraftKings moneyline was
+ * 35.5. At or beyond this line an absent moneyline is book policy, not a gap —
+ * the board says "No ML" instead of "n/a", and the secondary-provider sweep
+ * (PLAN.md §21) does not count it as a market worth spending a credit on.
+ * Tenths of a point, like every line.
+ */
+export const MONEYLINE_NOT_OFFERED_SPREAD_TENTHS = 300;
+
 /** Leg counts the card prices. Same ceiling as a parlay. */
 export type TeaserLegCount = 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 

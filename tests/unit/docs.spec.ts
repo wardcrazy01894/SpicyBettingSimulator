@@ -37,6 +37,7 @@ import {
   MAX_SETTLE_ATTEMPTS,
   MIN_STAKE_CENTS,
   MIN_TEASER_LEGS,
+  MONEYLINE_NOT_OFFERED_SPREAD_TENTHS,
   SESSION_TTL_MS,
   TEASER_PAYOUTS,
   TEASER_POINTS_TENTHS,
@@ -284,6 +285,7 @@ describe('constants.ts vs PLAN.md §3.1', () => {
     VOID_AFTER_MS,
     MAX_PARLAY_LEGS,
     MIN_TEASER_LEGS,
+    MONEYLINE_NOT_OFFERED_SPREAD_TENTHS,
   };
 
   for (const [name, value] of Object.entries(expected)) {
