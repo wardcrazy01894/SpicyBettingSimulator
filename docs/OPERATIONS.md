@@ -240,7 +240,7 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   missing a market) with `noLine` / `noSpread` / `noTotal` / `noMoneyline` saying which,
   `stats.lineGapDetails` (`"HOU @ TTU: no total, no moneyline"`, capped at 20) and
   `stats.coverage[]`, the counts per target. **Read `coverage[]`, not the totals**: a refresh run
-  usually fetches today's date AND a discovery date up to 10 days out where nothing is posted yet,
+  usually fetches today's date AND a discovery date later in the week where nothing is posted yet,
   so the run total mixes the two. Discount `noMoneyline` — heavy favourites have none at any book.
   A warning reading `off the board` means DraftKings has pulled that market (its feed says the
   literal `OFF`, usually an injury / QB question or a number under review) — a book decision, not a
@@ -249,6 +249,22 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   the word for a genuinely malformed value and IS worth a look. Read a few Saturdays of the live
   date's `lineGaps` before deciding whether a second odds provider (PLAN §2.4) is worth its request
   budget; obscure CFB games with no line all week are the expected bulk of it.
+- **The board window ends on Monday (PLAN §22).** The board and the ingest planner stop at the end
+  of the Monday ET date that closes the football week (weeks run Tuesday–Monday), never ten days
+  out. Each league rolls over to NEXT week's slate at a fixed ET instant on Sunday — **CFB at
+  Sunday 00:00 ET** (Saturday's games are done), **NFL at Sunday 20:00 ET** (the early and late
+  windows are done) — and stays there through Monday. So "why did next week's games disappear?" on a
+  Friday is the rule working: next week's college games appear Sunday morning, the NFL's Sunday
+  night, and MNF plus next week are what Monday shows. **Next week's dates are not ingested either
+  until the rollover**: the planner creates an `ingest_targets` row only for dates inside the
+  window, so `games` having nothing for next week on a Friday is correct, not a stalled feed. (Only
+  targets that already exist keep refreshing outside the window — the one-off tail of 10-day-out
+  targets from before this rule, which ages out within ~12 days of its deploy.) Right after a
+  rollover the new week fills in over about 1–4 hours: at most two dates per refresh run, one of
+  them through the reserved discovery slot, so a sparse board at 00:15 ET on a Sunday is expected,
+  not a stall — `GET /api/admin/jobs` shows the dates being
+  taken, and the per-game Refresh button jumps one date to the front. `GET /api/games/:id` is
+  deliberately unwindowed so a bet placed on a game the list no longer shows still renders and edits.
 - **January (postseason):** verify a `dates=` target returns bowl / NFL playoff games (PLAN Spike S4(c)).
   If not, add the `seasontype=3` companion target described in PLAN §8.2.
 

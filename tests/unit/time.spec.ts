@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { BET_CUTOFF_BUFFER_MS, LINE_STALE_MS } from '../../src/shared/constants.js';
+import {
+  BET_CUTOFF_BUFFER_MS,
+  INGEST_WINDOW_MS,
+  LINE_STALE_MS,
+  NCAAF_WEEK_ROLLOVER_ET_HOUR,
+  NFL_WEEK_ROLLOVER_ET_HOUR,
+} from '../../src/shared/constants.js';
 import {
   ET_TIME_ZONE,
   MS_PER_DAY,
+  boardWindowEnd,
   etDateKey,
   etDateKeyRange,
   etDayBounds,
@@ -267,4 +274,177 @@ describe('expectedRefreshMs / lineStaleAfterMs (PLAN §8.4 / §8.5)', () => {
       expect(lineStaleAfterMs(T + ahead, T)).toBeGreaterThanOrEqual(LINE_STALE_MS);
     }
   });
+});
+
+/* ------------------------------------------------------------------ *
+ * boardWindowEnd — PLAN.md §22 (M9-0)
+ * ------------------------------------------------------------------ */
+
+/** The epoch ms of an ET wall-clock instant, DST-correct, via Intl (never by hand). */
+const HOUR_MS = 3_600_000;
+const etWall = (key: string, hh: number, mm = 0, ss = 0, ms = 0): number => {
+  const y = Number(key.slice(0, 4));
+  const m = Number(key.slice(4, 6));
+  const d = Number(key.slice(6, 8));
+  const { startAt } = etDayBounds(Date.UTC(y, m - 1, d, 12)); // noon UTC is inside that ET date
+  let at = startAt + hh * HOUR_MS + mm * 60_000 + ss * 1000 + ms;
+  const hourOf = (t: number): number =>
+    Number(
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: ET_TIME_ZONE,
+        hour: '2-digit',
+        hourCycle: 'h23',
+      })
+        .formatToParts(new Date(t))
+        .find((x) => x.type === 'hour')?.value,
+    );
+  // A 23 h or 25 h ET day shifts wall clocks after 02:00 by an hour; correct once.
+  if (hourOf(at) < hh) at += HOUR_MS;
+  else if (hourOf(at) > hh) at -= HOUR_MS;
+  expect(hourOf(at)).toBe(hh);
+  expect(etDateKey(at)).toBe(key);
+  return at;
+};
+const spanDays = (now: number, end: number): number => (end + 1 - now) / MS_PER_DAY;
+const isLastInstantOfEtDay = (end: number): boolean => etDayBounds(end + 1).startAt === end + 1;
+
+describe('boardWindowEnd (PLAN.md §22)', () => {
+  it("reproduces every row of §22.2's table, as ET date keys", () => {
+    const rows: [string, number, 'nfl' | 'ncaaf', string, number, number][] = [
+      // now key, ET hour, league, end key, span d, keys planned
+      ['20260918', 12, 'nfl', '20260921', 3.5, 4],
+      ['20260918', 12, 'ncaaf', '20260921', 3.5, 4],
+      ['20260919', 12, 'nfl', '20260921', 2.5, 3],
+      ['20260919', 12, 'ncaaf', '20260921', 2.5, 3],
+      ['20260920', 0, 'ncaaf', '20260928', 9.0, 9],
+      ['20260920', 0, 'nfl', '20260921', 2.0, 2],
+      ['20260920', 20, 'nfl', '20260928', 8.166, 9],
+      ['20260921', 12, 'nfl', '20260928', 7.5, 8],
+      ['20260921', 12, 'ncaaf', '20260928', 7.5, 8],
+      ['20260922', 12, 'nfl', '20260928', 6.5, 7],
+      ['20260923', 12, 'ncaaf', '20260928', 5.5, 6],
+    ];
+    for (const [key, hour, league, endKey, span, keys] of rows) {
+      const now = etWall(key, hour);
+      const end = boardWindowEnd(league, now);
+      expect(etDateKey(end), `${league} ${key} ${String(hour)}:00`).toBe(endKey);
+      expect(isLastInstantOfEtDay(end)).toBe(true);
+      expect(spanDays(now, end)).toBeCloseTo(span, 1);
+      expect(etDateKeyRange(now, end)).toHaveLength(keys);
+    }
+  });
+
+  it('Sunday 19:59:59.999 ET has NOT rolled the NFL over; 20:00:00.000 has', () => {
+    expect(etDateKey(boardWindowEnd('nfl', etWall('20260920', 19, 59, 59, 999)))).toBe('20260921');
+    expect(etDateKey(boardWindowEnd('nfl', etWall('20260920', NFL_WEEK_ROLLOVER_ET_HOUR)))).toBe(
+      '20260928',
+    );
+  });
+
+  it('the CFB rollover straddles ET midnight: Saturday 23:59:59.999 vs Sunday 00:00:00.000', () => {
+    expect(etDateKey(boardWindowEnd('ncaaf', etWall('20260919', 23, 59, 59, 999)))).toBe(
+      '20260921',
+    );
+    expect(
+      etDateKey(boardWindowEnd('ncaaf', etWall('20260920', NCAAF_WEEK_ROLLOVER_ET_HOUR))),
+    ).toBe('20260928');
+  });
+
+  it('Monday 00:00:00.000 and 23:59:59.999 both give the FOLLOWING Monday (clause b)', () => {
+    for (const league of ['nfl', 'ncaaf'] as const) {
+      const early = etWall('20260921', 0);
+      const late = etWall('20260921', 23, 59, 59, 999);
+      expect(etDateKey(boardWindowEnd(league, early))).toBe('20260928');
+      expect(etDateKey(boardWindowEnd(league, late))).toBe('20260928');
+      expect(spanDays(early, boardWindowEnd(league, early))).toBeCloseTo(8.0, 2);
+      expect(spanDays(late, boardWindowEnd(league, late))).toBeCloseTo(7.0, 2);
+      expect(etDateKeyRange(early, boardWindowEnd(league, early))).toHaveLength(8);
+    }
+  });
+
+  it('Tuesday 00:00 gives the Monday six days later — the window does NOT extend again', () => {
+    for (const league of ['nfl', 'ncaaf'] as const) {
+      const tue = etWall('20260922', 0);
+      expect(etDateKey(boardWindowEnd(league, tue))).toBe('20260928');
+      expect(etDateKeyRange(tue, boardWindowEnd(league, tue))).toHaveLength(7);
+    }
+  });
+
+  it('a Sunday after the rollover and the Monday after it return the SAME instant', () => {
+    expect(boardWindowEnd('nfl', etWall('20260920', 21))).toBe(
+      boardWindowEnd('nfl', etWall('20260921', 9)),
+    );
+    expect(boardWindowEnd('ncaaf', etWall('20260920', 1))).toBe(
+      boardWindowEnd('ncaaf', etWall('20260921', 9)),
+    );
+  });
+
+  it('fall back (Sun 2026-11-01, a 25 h day): CFB 00:30 → 11-09; NFL 19:59 → 11-02, 20:00 → 11-09', () => {
+    const cfb = etWall('20261101', 0, 30);
+    expect(etDateKey(boardWindowEnd('ncaaf', cfb))).toBe('20261109');
+    expect(spanDays(cfb, boardWindowEnd('ncaaf', cfb))).toBeCloseTo(9.02, 2);
+    expect(etDateKey(boardWindowEnd('nfl', etWall('20261101', 19, 59)))).toBe('20261102');
+    const nfl = etWall('20261101', 20);
+    expect(etDateKey(boardWindowEnd('nfl', nfl))).toBe('20261109');
+    expect(spanDays(nfl, boardWindowEnd('nfl', nfl))).toBeCloseTo(8.166, 2);
+  });
+
+  it('spring forward (Sun 2026-03-08, a 23 h day): CFB 00:30 → 03-16 (8.94 d); NFL 20:00 → 03-16', () => {
+    const cfb = etWall('20260308', 0, 30);
+    expect(etDateKey(boardWindowEnd('ncaaf', cfb))).toBe('20260316');
+    expect(spanDays(cfb, boardWindowEnd('ncaaf', cfb))).toBeCloseTo(8.94, 2);
+    expect(etDateKey(boardWindowEnd('nfl', etWall('20260308', 20)))).toBe('20260316');
+  });
+
+  it('a window that CONTAINS the fall-back transition still ends on its Monday with no key skipped', () => {
+    const tue = etWall('20261027', 12); // Tuesday of the fall-back week
+    const end = boardWindowEnd('nfl', tue);
+    expect(etDateKey(end)).toBe('20261102');
+    expect(etDateKeyRange(tue, end)).toEqual([
+      '20261027',
+      '20261028',
+      '20261029',
+      '20261030',
+      '20261031',
+      '20261101',
+      '20261102',
+    ]);
+  });
+
+  it('month and year boundaries: Wed 09-30 → Mon 10-05; Sun 12-27 20:00 → Mon 2027-01-04', () => {
+    expect(etDateKey(boardWindowEnd('ncaaf', etWall('20260930', 12)))).toBe('20261005');
+    expect(etDateKey(boardWindowEnd('nfl', etWall('20261227', 20)))).toBe('20270104');
+  });
+
+  it("over six months of 30-minute steps: always >= now, always a Monday's last instant, ≤ 9 keys, < the ceiling", () => {
+    const start = etWall('20260801', 0);
+    const stop = etWall('20270201', 0);
+    // One formatter, hoisted: constructing an Intl.DateTimeFormat per step is
+    // what pushed this scan past CI's 5 s default.
+    const WEEKDAY = new Intl.DateTimeFormat('en-US', {
+      timeZone: ET_TIME_ZONE,
+      weekday: 'short',
+    });
+    const weekdayOf = (t: number): string => WEEKDAY.format(new Date(t));
+    let maxSpan = 0;
+    let minSpan = Infinity;
+    for (let now = start; now < stop; now += 30 * 60_000) {
+      for (const league of ['nfl', 'ncaaf'] as const) {
+        const end = boardWindowEnd(league, now);
+        if (end < now || !isLastInstantOfEtDay(end) || weekdayOf(end) !== 'Mon') {
+          throw new Error(`bad end for ${league} at ${new Date(now).toISOString()}`);
+        }
+        const span = spanDays(now, end);
+        maxSpan = span > maxSpan ? span : maxSpan;
+        minSpan = span < minSpan ? span : minSpan;
+        if (end - now > INGEST_WINDOW_MS) throw new Error('exceeds INGEST_WINDOW_MS');
+      }
+    }
+    expect(maxSpan).toBeLessThan(9.05);
+    expect(minSpan).toBeGreaterThan(1.16);
+    // Key count at the widest points: a post-rollover Sunday.
+    expect(
+      etDateKeyRange(etWall('20260920', 0), boardWindowEnd('ncaaf', etWall('20260920', 0))),
+    ).toHaveLength(9);
+  }, 30_000);
 });

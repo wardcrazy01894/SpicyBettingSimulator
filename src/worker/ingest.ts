@@ -57,6 +57,7 @@ import type { ParseWarning } from '../shared/espn.js';
 import {
   LIVE_HORIZON_MS,
   REFRESH_DISCOVERY_MS,
+  boardWindowEnd,
   REFRESH_DONE_MS,
   REFRESH_LIVE_MS,
   REFRESH_SOON_MS,
@@ -105,7 +106,7 @@ export interface IngestStats extends LineGapStats {
   /**
    * The `LineGapStats` counts per target, because the run total conflates two
    * different things: the live date's board (what a bettor sees today) and the
-   * discovery slot's future date (up to 10 days out, where the book has often
+   * discovery slot's future date (later in the week, where the book has often
    * posted nothing yet). Only the per-target rows are comparable run to run.
    */
   readonly coverage: readonly TargetCoverage[];
@@ -191,7 +192,7 @@ interface EtDay {
 }
 
 /**
- * The ET calendar days covering `[from, from + INGEST_WINDOW_MS]`, with their
+ * The ET calendar days covering `[from, to]` (a league's board window), with their
  * midnight-to-midnight bounds. `etDateKeyRange` walks day boundary to day
  * boundary, so re-walking with `etDayBounds` from the same cursor yields
  * exactly the same days — 23 h and 25 h DST days included.
@@ -273,27 +274,28 @@ export async function bumpTargetForGame(
 
 /**
  * Ensure an `ingest_targets` row exists for every US-Eastern calendar date in
- * `now … now + INGEST_WINDOW_MS`, for BOTH leagues, and retire targets whose
- * window ended more than two days ago with no non-final games. Pure DB work, no
- * network, and no knowledge of the league calendar -- which is exactly why the
- * NFL postseason and bowl season need no special case.
+ * each league's BOARD WINDOW — `now … boardWindowEnd(league, now)`, the Monday
+ * that closes the football week (PLAN.md §22) — and retire targets whose window
+ * ended more than two days ago with no non-final games. Pure DB work, no
+ * network, and no knowledge of the league calendar beyond "weeks end on Monday"
+ * -- which is why the NFL postseason and bowl season need no special case.
+ *
+ * The day list is computed PER LEAGUE, not once: the two leagues differ for
+ * part of every Sunday (CFB rolls over to next week at 00:00 ET, the NFL at
+ * 20:00 ET). `INGEST_WINDOW_MS` is kept as a hard ceiling so that a bug in the
+ * week arithmetic can never turn one invocation into thousands of statements.
+ * The window only ever narrows day by day from Tuesday to the Sunday rollover,
+ * and a target already created keeps refreshing until the retirement rule takes
+ * it, so a game that leaves the BOARD keeps being ingested (§22.3).
  *
  * Returns the number of targets CREATED (0 on a steady-state rerun), which is
  * what makes the idempotency assertion in the spec a one-liner.
  */
-// TODO(M9-0, PLAN.md §22): the window ends on the Monday that closes the football
-// week, PER LEAGUE — `etDaysInWindow(now, min(boardWindowEnd(league, now), now +
-// INGEST_WINDOW_MS))` inside the league loop, not one shared day list. The two
-// leagues differ for part of every Sunday (CFB rolls at 00:00 ET, NFL at 20:00),
-// so the day list has to be computed per league. `INGEST_WINDOW_MS` stays, as the
-// hard ceiling that stops a bug in the week arithmetic from emitting thousands of
-// targets. The retirement rule below does NOT change.
 export async function planTargets(env: Env, now: EpochMs): Promise<number> {
-  const days = etDaysInWindow(now, now + INGEST_WINDOW_MS);
-
   const statements: D1PreparedStatement[] = [];
-  for (const day of days) {
-    for (const league of LEAGUES) {
+  for (const league of LEAGUES) {
+    const end = Math.min(boardWindowEnd(league, now), now + INGEST_WINDOW_MS);
+    for (const day of etDaysInWindow(now, end)) {
       statements.push(
         env.DB.prepare(
           `INSERT INTO ingest_targets
@@ -403,33 +405,20 @@ function notInClause(count: number): string {
  * week's line discovery) would starve forever — `ORDER BY priority, next_run_at`
  * alone does not prevent that, because live targets are perpetually the most due.
  *
- * Budget (computed): 11 ET dates x 2 leagues = 22 targets; worst case 2 live
- * leaves 20 discovery targets wanting 4 refreshes/day each = 80 slot-uses/day
- * against a supply of 96. Fits with 16 to spare. Two simultaneously-live targets
- * alternate in slot 1 and each get a 30-minute cadence.
+ * Budget (computed, PLAN.md §8.4/§22): the window spans at most 9 ET dates per
+ * league (2 at its narrowest), so at most 18 targets — 16 on a Monday, 14 from
+ * Tuesday on. Worst case 2 live leaves 16 discovery targets wanting 4
+ * refreshes/day each = 64 slot-uses/day against a supply of 96. Fits with 32 to
+ * spare. Two simultaneously-live targets alternate in slot 1 and each get a
+ * 30-minute cadence. DST needs no footnote: a weekday-anchored window spans at
+ * most 9 dates however long its days are.
  *
- * DST FOOTNOTE: "11 dates" is the usual figure, not a constant. `etDateKeyRange`
- * walks ET day boundaries, and the spring-forward day is 23 h long, so a 10-day
- * INGEST_WINDOW_MS starting in that week spans TWELVE ET date keys — 24 targets,
- * and 22 discovery targets wanting 88 slot-uses/day against the same supply of
- * 96. Still fits, with 8 to spare instead of 16. It is one week a year and the
- * margin holds, which is why the planner has no special case for it.
- *
- * TODO(M9-0, PLAN.md §22/§8.4): BOTH paragraphs above are superseded the moment
- * `planTargets` moves to `boardWindowEnd`. The window then spans at most 9 ET
- * dates (2 at its narrowest), so it is at most 18 targets — 16 on a Monday, 14
- * from Tuesday on — and worst case 2 live leaves 16 discovery targets wanting
- * 64 slot-uses/day against the same supply of 96, which fits with 32 to spare
- * instead of 16. The DST footnote stops applying entirely: a weekday-anchored
- * window spans at most 9 dates however long its days are. M9-0 rewrites this
- * comment along with the code; it is left standing here so the plan PR changes
- * no behaviour claim that its own code still makes.
- *
- * ROLLOVER BURST, also M9-0's to document: at a Sunday rollover the window gains
+ * ROLLOVER BURST: at a Sunday rollover the window gains
  * seven ET dates for one league at once, all with `next_run_at = now`. They are
- * the LEAST overdue rows in the queue, and the reserved slot takes one per run,
- * so next week's board fills over ~1 h 45 m of cron ticks on an idle queue and
- * up to ~4 h behind a live Saturday. That is expected, not a stall (PLAN §22.6).
+ * the LEAST overdue rows in the queue, and a run takes at most
+ * REFRESH_TARGETS_PER_RUN of them (one through the reserved slot), so next
+ * week's board fills over about an hour of cron ticks on an idle queue and up
+ * to ~4 h behind a live Saturday. That is expected, not a stall (PLAN §22.6).
  *
  * The reserved-slot query MUST exclude the id already claimed by slot 1
  * (`AND id <> :slot1Id`): on a run with no live target — most runs — slot 1's
