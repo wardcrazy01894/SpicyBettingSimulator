@@ -1129,6 +1129,15 @@ select:focus-visible,
   overflow-wrap: anywhere;
 }
 
+.stats-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 1ch;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
 /* ------------------------------------------------- banners, empty, spinner */
 
 .banner {

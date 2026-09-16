@@ -989,6 +989,88 @@ describe('defensive behaviour', () => {
     expect(warnings[0]?.reason).toMatch(/total: unusable line u−44\.5/);
   });
 
+  it('a market DraftKings has pulled ("OFF") is reported as off the board, not as a parse failure', () => {
+    // Verbatim shape ESPN served for CFB event 401856811 on 2026-09-16: the
+    // spread was up, the total and moneyline were the literal string "OFF".
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      pointSpread: {
+        home: { close: { line: '-7.5', odds: '-105' }, open: { line: '-12.5', odds: '-110' } },
+        away: { close: { line: '+7.5', odds: '-115' }, open: { line: '+12.5', odds: '-110' } },
+      },
+      total: {
+        over: { close: { line: 'OFF', odds: 'OFF' }, open: { line: 'OFF', odds: 'OFF' } },
+        under: { close: { line: 'OFF', odds: 'OFF' }, open: { line: 'OFF', odds: 'OFF' } },
+      },
+      moneyline: {
+        home: { close: { odds: 'OFF' }, open: { odds: 'OFF' } },
+        away: { close: { odds: 'OFF' }, open: { odds: 'OFF' } },
+      },
+    });
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(result?.lines?.spread).toEqual({
+      homeTenths: -75,
+      homePrice: -105,
+      awayTenths: 75,
+      awayPrice: -115,
+    });
+    expect(result?.lines?.total).toBeNull();
+    expect(result?.lines?.moneyline).toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.reason).toBe('DraftKings: total: off the board; moneyline: off the board');
+    expect(warnings[0]?.reason).not.toMatch(/unusable/);
+  });
+
+  it('an OFF spread is dropped without falling back to the top-level `spread` number', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      spread: -3.5,
+      pointSpread: {
+        home: { close: { line: 'OFF', odds: 'OFF' } },
+        away: { close: { line: 'OFF', odds: 'OFF' } },
+      },
+      moneyline: { home: { close: { odds: '-198' } }, away: { close: { odds: '+164' } } },
+    });
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(result?.lines?.spread).toBeNull();
+    expect(result?.lines?.moneyline).toEqual({ homePrice: -198, awayPrice: 164 });
+    expect(warnings[0]?.reason).toBe('DraftKings: spread: off the board');
+  });
+
+  it('OFF is recognised case- and whitespace-insensitively, and on the price alone', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      total: {
+        over: { close: { line: 'o50.5', odds: ' off ' } },
+        under: { close: { line: 'u50.5', odds: '-110' } },
+      },
+    });
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(result?.lines).toBeNull();
+    expect(warnings[0]?.reason).toBe('DraftKings: total: off the board');
+  });
+
+  it('a market warning carries the matchup label so the admin view can name the game', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      moneyline: { home: { close: { odds: 'OFF' } }, away: { close: { odds: 'OFF' } } },
+    });
+    parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(warnings).toEqual([
+      { eventId: '1', label: 'AWY @ HOM', reason: 'DraftKings: moneyline: off the board' },
+    ]);
+  });
+
+  it('a structural warning raised before the teams are known has a null label', () => {
+    const warnings: ParseWarning[] = [];
+    parseEvent({ id: 'x' }, 'nfl', FETCHED_AT, warnings);
+    expect(warnings[0]?.label).toBeNull();
+  });
+
   it('drops an out-of-range price and warns', () => {
     const warnings: ParseWarning[] = [];
     const event = baseEvent({

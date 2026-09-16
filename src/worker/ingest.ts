@@ -53,6 +53,7 @@ import {
   LINE_SEEN_TOUCH_MS,
   RESERVED_DISCOVERY_SLOTS,
 } from '../shared/constants.js';
+import type { ParseWarning } from '../shared/espn.js';
 import {
   LIVE_HORIZON_MS,
   REFRESH_DISCOVERY_MS,
@@ -101,6 +102,26 @@ export interface IngestStats {
   readonly rowsSkipped: number;
   readonly warnings: readonly string[];
   readonly failures: readonly { readonly targetId: string; readonly error: string }[];
+  /** See `LineGapStats`, summed over every target this run fetched. */
+  readonly upcomingGames: number;
+  readonly lineGaps: number;
+  readonly lineGapDetails: readonly string[];
+}
+
+/**
+ * How much of the board the odds feed actually covers — the measurement that
+ * decides whether a second odds provider is worth building (PLAN.md §8.3).
+ *
+ * `upcomingGames` is every SCHEDULED game in the slate (the same predicate
+ * `lineRowsWorthWriting` uses: a live or final game has no line by design and
+ * is not a gap). `lineGaps` is how many of those have no line at all or are
+ * missing a market — absent at the book, or pulled ("OFF"). `lineGapDetails`
+ * names them, capped like parser warnings; the counts are never capped.
+ */
+export interface LineGapStats {
+  readonly upcomingGames: number;
+  readonly lineGaps: number;
+  readonly lineGapDetails: readonly string[];
 }
 
 export interface IngestTargetResult {
@@ -116,6 +137,10 @@ export interface IngestTargetResult {
    * they must travel back with the counts rather than being swallowed here.
    */
   readonly warnings: readonly string[];
+  /** Zero across the board when the fetch failed — there was no slate to measure. */
+  readonly upcomingGames: number;
+  readonly lineGaps: number;
+  readonly lineGapDetails: readonly string[];
 }
 
 /* ------------------------------------------------------------------ *
@@ -939,8 +964,38 @@ export function computeNextRunAt(
  * One target
  * ------------------------------------------------------------------ */
 
-function warningText(w: { readonly eventId: string | null; readonly reason: string }): string {
-  return w.eventId === null ? w.reason : `${w.eventId}: ${w.reason}`;
+function warningText(w: ParseWarning): string {
+  if (w.eventId === null) return w.reason;
+  const who = w.label === null ? w.eventId : `${w.eventId} (${w.label})`;
+  return `${who}: ${w.reason}`;
+}
+
+const NO_GAPS: LineGapStats = { upcomingGames: 0, lineGaps: 0, lineGapDetails: [] };
+
+/** Pure: the `LineGapStats` of one slate, in the slate's own game order. */
+export function lineGapsOf(slate: ProviderSlate): LineGapStats {
+  const linesByGame = new Map(slate.lines.map((l) => [l.gameId, l]));
+  let upcomingGames = 0;
+  const details: string[] = [];
+  for (const game of slate.games) {
+    if (game.status !== 'scheduled') continue;
+    upcomingGames += 1;
+    const lines = linesByGame.get(game.id);
+    const missing: string[] = [];
+    if (lines === undefined) {
+      missing.push('no line');
+    } else {
+      if (lines.spread === null) missing.push('no spread');
+      if (lines.total === null) missing.push('no total');
+      if (lines.moneyline === null) missing.push('no moneyline');
+    }
+    if (missing.length > 0) details.push(`${game.shortName}: ${missing.join(', ')}`);
+  }
+  return {
+    upcomingGames,
+    lineGaps: details.length,
+    lineGapDetails: details.slice(0, ESPN_MAX_WARNINGS_RECORDED),
+  };
 }
 
 /** A short, safe rendering of a thrown value. Never leaks a stack. */
@@ -1017,6 +1072,7 @@ export async function ingestTarget(
     rowsSkipped: skipped,
     error,
     warnings: (slate?.warnings ?? []).map(warningText),
+    ...(slate === null ? NO_GAPS : lineGapsOf(slate)),
   };
 }
 
@@ -1044,6 +1100,9 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
   let rowsWritten = 0;
   const warnings: string[] = [];
   const failures: { targetId: string; error: string }[] = [];
+  let upcomingGames = 0;
+  let lineGaps = 0;
+  const lineGapDetails: string[] = [];
 
   for (const target of targets) {
     const result = await ingestTarget(env, provider, target, now);
@@ -1052,6 +1111,9 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
     rowsSkipped += result.rowsSkipped;
     rowsWritten += result.rowsWritten;
     warnings.push(...result.warnings);
+    upcomingGames += result.upcomingGames;
+    lineGaps += result.lineGaps;
+    lineGapDetails.push(...result.lineGapDetails);
     if (result.error !== null) failures.push({ targetId: target.id, error: result.error });
   }
 
@@ -1064,6 +1126,9 @@ export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Pr
     // The cap governs what is RECORDED, never what is parsed (PLAN.md §8.3).
     warnings: warnings.slice(0, ESPN_MAX_WARNINGS_RECORDED),
     failures,
+    upcomingGames,
+    lineGaps,
+    lineGapDetails: lineGapDetails.slice(0, ESPN_MAX_WARNINGS_RECORDED),
   };
 }
 

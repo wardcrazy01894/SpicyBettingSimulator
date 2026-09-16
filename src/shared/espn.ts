@@ -41,6 +41,12 @@ import type {
 
 export interface ParseWarning {
   readonly eventId: string | null;
+  /**
+   * The matchup as ESPN abbreviates it ("HOU @ TTU"), so an operator reading
+   * `GET /api/admin/jobs` does not have to look the event id up. Null for a
+   * structural warning raised before the teams could be parsed.
+   */
+  readonly label: string | null;
   readonly reason: string;
 }
 
@@ -110,6 +116,17 @@ function asArray(value: unknown): readonly unknown[] | null {
 const PICKEM_TOKENS = new Set(['PK', 'PICK', "PICK'EM", 'PICKEM', 'EVEN', 'EV']);
 /** Price tokens that mean +100. "PK" is deliberately NOT one of them. */
 const EVEN_PRICE_TOKENS = new Set(['EVEN', 'EV']);
+/**
+ * The book has PULLED the market. DraftKings marks every field of a suspended
+ * market with the literal string "OFF" (line and price alike; `close` and
+ * `open` alike), typically over an injury or QB question, weather, or a number
+ * under review. ESPN passes it through verbatim and says nothing about why.
+ */
+const OFF_BOARD_TOKEN = 'OFF';
+
+function isOffBoard(raw: unknown): boolean {
+  return typeof raw === 'string' && raw.trim().toUpperCase() === OFF_BOARD_TOKEN;
+}
 
 /** `-3.5` / `o50.5` / `+7` etc., already stripped of any over/under prefix. */
 const SIGNED_DECIMAL = /^([+-]?)(\d+)(?:\.(\d+))?$/;
@@ -344,6 +361,15 @@ function parseSpreadMarket(entry: unknown, notes: string[]): SpreadMarket | null
   const away = sideSnapshot(prop(pointSpread, 'away'));
   if (home === null || away === null) return null;
 
+  // A pulled market is a book decision, not a parse failure, and it is named as
+  // such so the operator does not chase a feed regression. Checked before the
+  // top-level `spread` fallback on purpose: that number can lag the pull, and
+  // a bet must never snapshot a line the book has withdrawn.
+  if ([home.line, home.odds, away.line, away.odds].some(isOffBoard)) {
+    notes.push('spread: off the board');
+    return null;
+  }
+
   // Cross-check per §8.3: the top-level `spread` NUMBER is a valid fallback for
   // a missing line (home perspective). `details` ("CIN -3.5") never is — it is
   // display text keyed on an abbreviation.
@@ -381,6 +407,11 @@ function parseTotalMarket(entry: unknown, notes: string[]): TotalMarket | null {
   const under = sideSnapshot(prop(total, 'under'));
   if (over === null || under === null) return null;
 
+  if ([over.line, over.odds, under.line, under.odds].some(isOffBoard)) {
+    notes.push('total: off the board');
+    return null;
+  }
+
   const overTenths = parseLineToTenths(over.line);
   const underTenths = parseLineToTenths(under.line);
   const tenths = overTenths ?? underTenths ?? parseLineToTenths(prop(entry, 'overUnder'));
@@ -410,6 +441,10 @@ function parseMoneylineMarket(entry: unknown, notes: string[]): MoneylineMarket 
   const home = sideSnapshot(prop(moneyline, 'home'));
   const away = sideSnapshot(prop(moneyline, 'away'));
   if (home === null || away === null) return null;
+  if ([home.odds, away.odds].some(isOffBoard)) {
+    notes.push('moneyline: off the board');
+    return null;
+  }
   const homePrice = parseAmericanPrice(home.odds);
   const awayPrice = parseAmericanPrice(away.odds);
   if (homePrice === null || awayPrice === null) {
@@ -466,7 +501,7 @@ export function parseEvent(
 ): { readonly game: Game; readonly lines: GameLines | null } | null {
   const eventId = asIdString(prop(event, 'id'));
   const warn = (reason: string): null => {
-    warnings?.push({ eventId, reason });
+    warnings?.push({ eventId, label: null, reason });
     return null;
   };
 
@@ -530,7 +565,10 @@ export function parseEvent(
     away,
   };
 
-  return { game, lines: parseLines(game.id, competition['odds'], fetchedAt, eventId, warnings) };
+  return {
+    game,
+    lines: parseLines(game.id, competition['odds'], fetchedAt, eventId, game.shortName, warnings),
+  };
 }
 
 /**
@@ -548,6 +586,7 @@ function parseLines(
   odds: unknown,
   fetchedAt: number,
   eventId: string | null,
+  label: string | null,
   warnings?: ParseWarning[],
 ): GameLines | null {
   const entry = selectOddsEntry(odds);
@@ -571,7 +610,7 @@ function parseLines(
     const parts = [...notes];
     const silent = generic.filter((m) => !notes.some((n) => n.startsWith(`${m}:`)));
     if (silent.length > 0) parts.push(`dropped unusable ${silent.join(', ')}`);
-    warnings?.push({ eventId, reason: `${provider}: ${parts.join('; ')}` });
+    warnings?.push({ eventId, label, reason: `${provider}: ${parts.join('; ')}` });
   }
 
   if (spread === null && total === null && moneyline === null) return null;
@@ -602,7 +641,7 @@ export function parseScoreboard(
 
   const events = asArray(prop(payload, 'events'));
   if (events === null) {
-    collected.push({ eventId: null, reason: 'payload has no events[] array' });
+    collected.push({ eventId: null, label: null, reason: 'payload has no events[] array' });
     return { games, lines, warnings: capped(), season, week };
   }
 

@@ -1458,6 +1458,25 @@ Rules:
   is **never** parsed — it is a display string and abbreviation-dependent.
 - Sanity bounds: `|line_tenths| <= 1000` (±100 pts), `100 <= |american| <= 100000`.
   Out-of-range → drop the market + warning.
+- **`"OFF"` means the book has pulled the market.** DraftKings serves the literal string
+  `OFF` in every field of a suspended market (line and price, `close` and `open`; captured
+  live for CFB 401856811 on 2026-09-16, spread up, total and moneyline OFF). The market is
+  dropped with the note `<market>: off the board` — distinct from `unusable`, which is
+  reserved for a malformed value — and the top-level `spread` number is NOT consulted as a
+  fallback for an OFF spread, because a bet must never snapshot a line the book withdrew.
+- Every warning carries `label`, the event's `shortName` (`"HOU @ TTU"`), so the admin view
+  can name the game; it is null only for a structural warning raised before the teams parsed.
+  Ingest renders warnings as `<eventId> (<label>): <provider>: <notes>`.
+
+**Board coverage measurement.** ESPN carries exactly one book, so a missing market has no
+in-feed fallback. Rather than build a second `OddsProvider` (§2.4) on a hunch, every
+refresh run records in `job_runs.stats`: `upcomingGames` (scheduled games in the slates
+fetched), `lineGaps` (those with no line or a missing market — absent or OFF) and
+`lineGapDetails` (`"HOU @ TTU: no total, no moneyline"`, capped at `ESPN_MAX_WARNINGS_RECORDED`
+like warnings; the counts are never capped). `lineGapsOf()` in `ingest.ts` is the pure
+function; a failed fetch reports zeros, not a board of zero gaps. The decision rule: if a few
+Saturdays of `lineGaps` are a handful of obscure CFB games, a second provider is not worth
+its request budget; if they are material, the details say which markets to buy.
 
 **Scores, teams and venue** — the part that is easy to get subtly wrong:
 

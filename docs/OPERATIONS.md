@@ -234,6 +234,16 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
 
 - Budget: `GET /api/admin/jobs` → newest run's `stats.dayRowsWritten` is the rolling 24 h rows-written
   total against D1's hard 100,000/day. Modelled ≈5k on a college Saturday.
+- **Board coverage:** ESPN carries exactly ONE book (DraftKings), so there is no in-feed fallback
+  when a market is missing. Each refresh run records `stats.upcomingGames` (scheduled games in the
+  slates it fetched), `stats.lineGaps` (how many of those have no line or are missing a market) and
+  `stats.lineGapDetails` (`"HOU @ TTU: no total, no moneyline"`, capped at 20). A warning reading
+  `off the board` means DraftKings has pulled that market (its feed says the literal `OFF`, usually an
+  injury / QB question or a number under review) — a book decision, not a feed regression, and it
+  usually comes back before kickoff. `unusable` is the word for a genuinely malformed value and IS
+  worth a look. Read `lineGaps` over a few Saturday runs before deciding whether a second odds
+  provider (PLAN §2.4) is worth its request budget; obscure CFB games with no line all week are the
+  expected bulk of it.
 - **January (postseason):** verify a `dates=` target returns bowl / NFL playoff games (PLAN Spike S4(c)).
   If not, add the `seasontype=3` companion target described in PLAN §8.2.
 

@@ -326,7 +326,10 @@ Jobs can be kicked manually as an admin: `POST /api/admin/jobs/{refresh|settle|m
 and one game's slate with `POST /api/admin/games/:id/refresh` (the Refresh button admins see on
 each game card).
 `GET /api/admin/jobs` shows the last 50 runs with stats, parser warnings and
-auto-void decisions — check it first when something looks wrong.
+auto-void decisions — check it first when something looks wrong. A refresh run's
+`lineGaps` / `lineGapDetails` count the scheduled games whose DraftKings line is
+missing a market or absent (PLAN.md §8.3); a market the book has pulled shows as
+`off the board`, not as a parser failure.
 `GET /api/admin/bugs` (and the Bug reports section of `/admin`) lists what users
 filed through "Report a bug", including reports GitHub refused, each with the
 browser's diagnostics log. `wrangler tail` shows one `[api]` line per failed or
