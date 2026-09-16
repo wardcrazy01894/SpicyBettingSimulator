@@ -416,8 +416,7 @@ the GitHub issue is filed so a GitHub outage loses nothing; `issue_number` /
 `issue_url` are set on success, `error` on failure. The `(user_id, created_at)`
 index is the rate-limit guard. §11.7.
 
-**`secondary_budget`** (migration `0007_secondary_odds.sql`, **planned — M9b
-writes it from §21.3; nothing under `migrations/` yet**) — `id (CHECK id = 1),
+**`secondary_budget`** (migration `0007_secondary_odds.sql`, shipped in M9b from §21.3) — `id (CHECK id = 1),
 remaining_credits, checked_at, last_attempt_at, nfl_last_sweep_at,
 ncaaf_last_sweep_at, cooldown_until, consecutive_failures, last_status,
 last_error, updated_at`. **Exactly one row.** It holds The Odds API's credit
@@ -3654,7 +3653,7 @@ friend who cannot find a game to bet):
   `GET /api/admin/jobs` reports `stats.dayRowsWritten` (rolling 24 h) for exactly
   this check; §8.6 predicts ≈ 5,100/day.
 
-### M9-plan — This chapter, the constants and the stubs — **PLANNED** _(ships first of all)_
+### M9-plan — This chapter, the constants and the stubs — **DONE** _(2026-09-16, PR #37)_
 
 One PR that adds NO behaviour and NO schema: PLAN §21 + §22, the CLAUDE.md
 rules they change, the `src/shared/constants.ts` values, the type-only stubs
@@ -3702,7 +3701,7 @@ bettors, it touches two hot read paths, and it has nothing to do with a second
 odds provider. Bundling it into M9a–c would mean a rollback of the provider work
 also rolls back the owner's window, or vice versa.
 
-### M9a / M9b / M9c — Secondary odds provider — **M9a DONE** _(2026-09-16)_, **M9b / M9c PLANNED**
+### M9a / M9b / M9c — Secondary odds provider — **M9a, M9b DONE** _(2026-09-16)_, **M9c PLANNED**
 
 Three PRs, each independently mergeable and green on its own; the file lists,
 the tests-first lists and the DoD for each are **§21.11**. In dependency order:
@@ -3728,7 +3727,7 @@ market (§21.4). `bettable` is unaffected in both cases (no market → not
 bettable), and the correction is the point: the banner means "ingestion has gone
 quiet", and a game nobody has priced is not a broken ingest. Everything else must
 be byte-identical while only primary rows exist, and
-`tests/worker/lines-parity.spec.ts` is the proof. M9c is the only PR that spends
+the parity test in `tests/worker/bets.spec.ts` (and the list/detail case in `tests/worker/routes.spec.ts`) is the proof. M9c is the only PR that spends
 money (credits), and it is off entirely without `ODDS_API_KEY`.
 
 ---
@@ -4587,6 +4586,12 @@ exist, no market survived") would flip that card to the stale banner and tell th
 operator ingestion is broken when it is working perfectly. A card with one
 surviving market renders that one button and no banner, as before.
 
+One consequence to know before it looks like a bug: once M9c writes secondary
+rows, a game with a FRESH all-null primary row and a STALE complete secondary row
+renders the stale banner — some row DID offer a complete market and every such
+row is stale. That is the definition doing its job (the secondary's market was
+real and has gone unconfirmed), and it is unreachable until M9c ships.
+
 **The rejected alternative: ingestion writes a merged `provider='board'` row.**
 Its appeal is real — board and placement would each read one row and could not
 disagree. It loses on three counts:
@@ -4605,7 +4610,7 @@ disagree. It loses on three counts:
 The pure function's own risk is that two call sites feed it different inputs. It
 is closed by contract and by test: every call site selects ALL rows for the game
 (`WHERE game_id IN (…)`, never `ORDER BY … LIMIT 1`), and
-`tests/worker/lines-parity.spec.ts` asserts that the board's `GameCard.lines`,
+the parity test in `tests/worker/bets.spec.ts` (and the list/detail case in `tests/worker/routes.spec.ts`) asserts that the board's `GameCard.lines`,
 the DETAIL route's card and placement's resolved snapshot agree for a crafted
 three-row set — including a row that is fresh for one market's window and stale
 for another's.
@@ -4892,8 +4897,10 @@ Three costs that table omits, because they are not parsing — named here so the
   unclaimed) with mascots precomputed once per side. Measured (node): 0.15 ms on
   the real 140 × 75 captures, where nearly everything matches in pass 1; ~1.9 ms
   at 100 × 75 and ~6.6 ms at 300 × 100 if EVERY candidate fell through to pass
-  2 — the feed-renames-everything case. Eligibility bounds `leftover` to the
-  NFL plus ranked CFB games, which is what keeps that case out of the budget.
+  2 — the feed-renames-everything case, measured BEFORE the mascots were
+  precomputed; with them (M9a as merged) the same benchmarks are **0.50 ms** and
+  **1.19 ms**. Eligibility bounds `leftover` to the NFL plus ranked CFB games,
+  which is what keeps that case out of the budget.
 
 The worst refresh invocation sweeps both leagues: `0.401 + 0.169 = 0.57 ms` of
 parsing on top of an ESPN parse that already costs ~1.8 ms, plus the scan, inside
@@ -4909,7 +4916,8 @@ The two feeds share no id, so the join is on names and kickoffs. Pure, in
 `src/shared/odds-api.ts`, and NEVER across leagues.
 
 **Pass 1 — exact and ORIENTED.** Key both sides on
-`${normaliseTeamName(home)}|${normaliseTeamName(away)}`, where
+`${normaliseTeamName(home)}|${normaliseTeamName(away)}` — a name that normalises
+to NOTHING has no key and never matches, in either pass — where
 `normaliseTeamName` is NFD → strip the combining marks (U+0300–U+036F) → lowercase
 → strip everything that is not `[a-z0-9]`. (NFD, not NFC: a precomposed `é`
 would survive NFC and then be deleted by the character class, turning "San José
@@ -5091,21 +5099,21 @@ the run's existing `rowsWritten` total so the §8.6 write budget stays one numbe
 
 **New**
 
-| File                                                   | Contents                                                                            |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| `migrations/0007_secondary_odds.sql`                   | §21.3 verbatim — written by **M9b**; the plan PR ships no migration (§15)           |
-| `src/shared/odds-api.ts`                               | `parseOddsApi`, `normaliseTeamName`, `mascotOf`, `matchOddsApiEvents`               |
-| `src/shared/lines.ts`                                  | `mergeEffectiveLine`, `marketProvider`, `providerRank`, `missingMarkets`            |
-| `src/worker/odds-api.ts`                               | `TheOddsApiProvider`, `buildOddsUrl`, `redactUrl`, `readCredits`, `fetchCredits`    |
-| `src/worker/secondary.ts`                              | `runSecondary`, `sweepSecondary`, the secondary's own upsert SQL, the budget claims |
-| `docs/samples/odds-api-{nfl,ncaaf}.json`               | the captured payloads (committed, §19 Q8)                                           |
-| `docs/samples/espn-nfl-scoreboard-2026-09-17..28.json` | ESPN, 6 ET dates MERGED — every date the NFL API sample spans (§21.7)               |
-| `docs/samples/espn-cfb-scoreboard-2026-09-17..26.json` | ESPN, 4 ET dates MERGED — every date the CFB API sample spans (§21.7)               |
-| `scripts/capture-espn-range.mjs`                       | the one-shot that produced them, driven off the API samples' own dates (§21.7)      |
-| `tests/unit/odds-api.spec.ts`                          | parse + match, against the samples                                                  |
-| `tests/unit/lines.spec.ts`                             | the merge and `missingMarkets`                                                      |
-| `tests/worker/secondary.spec.ts`                       | the sweep, the budget, the three refresh paths                                      |
-| `tests/worker/lines-parity.spec.ts`                    | board, detail route and placement agree                                             |
+| File                                                                                                       | Contents                                                                            |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `migrations/0007_secondary_odds.sql`                                                                       | §21.3 verbatim — written by **M9b**; the plan PR ships no migration (§15)           |
+| `src/shared/odds-api.ts`                                                                                   | `parseOddsApi`, `normaliseTeamName`, `mascotOf`, `matchOddsApiEvents`               |
+| `src/shared/lines.ts`                                                                                      | `mergeEffectiveLine`, `marketProvider`, `providerRank`, `missingMarkets`            |
+| `src/worker/odds-api.ts`                                                                                   | `TheOddsApiProvider`, `buildOddsUrl`, `redactUrl`, `readCredits`, `fetchCredits`    |
+| `src/worker/secondary.ts`                                                                                  | `runSecondary`, `sweepSecondary`, the secondary's own upsert SQL, the budget claims |
+| `docs/samples/odds-api-{nfl,ncaaf}.json`                                                                   | the captured payloads (committed, §19 Q8)                                           |
+| `docs/samples/espn-nfl-scoreboard-2026-09-17..28.json`                                                     | ESPN, 6 ET dates MERGED — every date the NFL API sample spans (§21.7)               |
+| `docs/samples/espn-cfb-scoreboard-2026-09-17..26.json`                                                     | ESPN, 4 ET dates MERGED — every date the CFB API sample spans (§21.7)               |
+| `scripts/capture-espn-range.mjs`                                                                           | the one-shot that produced them, driven off the API samples' own dates (§21.7)      |
+| `tests/unit/odds-api.spec.ts`                                                                              | parse + match, against the samples                                                  |
+| `tests/unit/lines.spec.ts`                                                                                 | the merge and `missingMarkets`                                                      |
+| `tests/worker/secondary.spec.ts`                                                                           | the sweep, the budget, the three refresh paths                                      |
+| the parity test in `tests/worker/bets.spec.ts` (and the list/detail case in `tests/worker/routes.spec.ts`) | board, detail route and placement agree                                             |
 
 **Changed**
 
@@ -5144,7 +5152,7 @@ which returns the FIRST row D1 hands back — so the detail card would render on
 provider's markets while `resolveLegSnapshots` merges both. That is exactly the
 "screen said −110, charged −115" divergence §21.4 exists to kill, reintroduced on
 a route nobody was looking at. It must use `queryAll` + `mergeEffectiveLine`, and
-`tests/worker/lines-parity.spec.ts` asserts the DETAIL route against placement,
+the parity test in `tests/worker/bets.spec.ts` (and the list/detail case in `tests/worker/routes.spec.ts`) asserts the DETAIL route against placement,
 not only the list route.
 
 `settle.ts` is NOT in either list, and must not be: grading reads the `bet_legs`
@@ -5253,11 +5261,12 @@ Tests, written first:
 - `tests/worker/schema.spec.ts`: 0007 composes on 0001–0006 — the three
   `game_lines` book columns, `games.secondary_tried_at`, and
   `secondary_budget` with exactly one row and a `CHECK` that refuses `id = 2`.
-- `tests/worker/lines-parity.spec.ts`: with a crafted three-row set, the
-  `GameCard` the board returns, **the card `GET /api/games/:id` returns** and the
-  snapshot `resolveLegSnapshots` produces all agree on line, price and provider
-  for all three markets — including one market whose only row is stale, which the
-  board must not offer and placement must refuse with `MARKET_UNAVAILABLE`.
+- the PARITY test (in `tests/worker/bets.spec.ts`, next to the placement it
+  compares against): with a two-row set, the `GameCard` the board returns,
+  **the card `GET /api/games/:id` returns** and the snapshot
+  `resolveLegSnapshots` produces all agree on line, price and provider for every
+  market — including one market whose only row is stale, which the board must not
+  offer and placement must refuse with `MARKET_UNAVAILABLE`.
 - `tests/worker/routes.spec.ts`: **300+ games, each with TWO line rows** →
   `GET /api/games` still returns `BOARD_MAX_GAMES` GAMES, not half of them. This
   is the test that fails today if the `LIMIT` stays on the joined rows (§21.10).

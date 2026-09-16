@@ -53,13 +53,10 @@ import type {
   Market,
   Side,
 } from '../shared/types.js';
-import {
-  BET_CUTOFF_BUFFER_MS,
-  MAX_ABS_AMERICAN_PRICE,
-  MIN_ABS_AMERICAN_PRICE,
-} from '../shared/constants.js';
+import { BET_CUTOFF_BUFFER_MS } from '../shared/constants.js';
 import { AppError } from '../shared/errors.js';
-import { lineStaleAfterMs } from '../shared/time.js';
+import { mergeEffectiveLine, usablePrice, usableTenths } from '../shared/lines.js';
+import type { EffectiveLine, LineRowView, MarketSource } from '../shared/lines.js';
 import { projectLeg } from '../shared/grading.js';
 import {
   PUSH_AMERICAN_PRICE,
@@ -122,6 +119,9 @@ interface LineRow {
   total_under_price: number | null;
   ml_home_price: number | null;
   ml_away_price: number | null;
+  spread_book: string | null;
+  total_book: string | null;
+  ml_book: string | null;
   captured_at: number;
   seen_at: number;
 }
@@ -401,35 +401,57 @@ interface MarketQuote {
   readonly lineTenths: LineTenths | null;
 }
 
-/** A price we are willing to write into `bet_legs` (whose CHECK bounds it). */
-function usablePrice(value: number | null): value is number {
-  if (value === null || !Number.isSafeInteger(value)) return false;
-  const magnitude = Math.abs(value);
-  return magnitude >= MIN_ABS_AMERICAN_PRICE && magnitude <= MAX_ABS_AMERICAN_PRICE;
-}
-
 /**
  * The one quote a (market, side) pair refers to, or null when the book does not
  * offer it. `line_tenths` comes back FROM THE BETTOR'S SIDE: home −3.5 is −35,
  * away +3.5 is +35, and both sides of a total carry the total itself.
  */
-function quoteFor(line: LineRow, market: Market, side: Side): MarketQuote | null {
+function quoteFor(
+  line: EffectiveLine,
+  market: Market,
+  side: Side,
+): (MarketQuote & MarketSource) | null {
   switch (market) {
     case 'moneyline': {
-      const price = side === 'home' ? line.ml_home_price : line.ml_away_price;
-      return usablePrice(price) ? { americanPrice: price, lineTenths: null } : null;
+      const m = line.moneyline;
+      if (m === null) return null;
+      const price = side === 'home' ? m.homePrice : m.awayPrice;
+      return usablePrice(price)
+        ? {
+            americanPrice: price,
+            lineTenths: null,
+            provider: m.provider,
+            capturedAt: m.capturedAt,
+            seenAt: m.seenAt,
+          }
+        : null;
     }
     case 'spread': {
-      const price = side === 'home' ? line.spread_home_price : line.spread_away_price;
-      const tenths = side === 'home' ? line.spread_home_tenths : line.spread_away_tenths;
-      if (!usablePrice(price) || tenths === null || !Number.isSafeInteger(tenths)) return null;
-      return { americanPrice: price, lineTenths: tenths };
+      const m = line.spread;
+      if (m === null) return null;
+      const price = side === 'home' ? m.homePrice : m.awayPrice;
+      const tenths = side === 'home' ? m.homeTenths : m.awayTenths;
+      if (!usablePrice(price) || !usableTenths(tenths)) return null;
+      return {
+        americanPrice: price,
+        lineTenths: tenths,
+        provider: m.provider,
+        capturedAt: m.capturedAt,
+        seenAt: m.seenAt,
+      };
     }
     case 'total': {
-      const price = side === 'over' ? line.total_over_price : line.total_under_price;
-      const tenths = line.total_tenths;
-      if (!usablePrice(price) || tenths === null || !Number.isSafeInteger(tenths)) return null;
-      return { americanPrice: price, lineTenths: tenths };
+      const m = line.total;
+      if (m === null) return null;
+      const price = side === 'over' ? m.overPrice : m.underPrice;
+      if (!usablePrice(price) || !usableTenths(m.tenths)) return null;
+      return {
+        americanPrice: price,
+        lineTenths: m.tenths,
+        provider: m.provider,
+        capturedAt: m.capturedAt,
+        seenAt: m.seenAt,
+      };
     }
   }
 }
@@ -458,40 +480,45 @@ async function loadGames(env: Env, gameIds: readonly string[]): Promise<Map<stri
 }
 
 /**
- * The current `game_lines` row per game. `PRIMARY KEY (game_id, provider)`
- * allows more than one book; v1 only ever writes DraftKings, and if a second
- * provider ever appears the most recently CONFIRMED row wins.
- *
- * THE TIE-BREAK MATCHES THE BOARD. `routes/games.ts` picks the board's line with
- * `ORDER BY seen_at DESC, provider ASC LIMIT 1` — freshest first, then the
- * alphabetically first provider. Here the rows are walked in ASCENDING order and
- * each overwrites the last, so the WINNER IS THE ROW THAT SORTS LAST; the exact
- * reverse, `seen_at ASC, provider DESC`, is therefore the same choice. Left
- * arbitrary, two books that were confirmed in the same poll could show one price
- * on the board and charge the other at placement — a "the screen said −110"
- * complaint that `LINE_CHANGED` would not even catch, because the client's
- * `expected` came from the board.
+ * EVERY `game_lines` row per game, any provider. The merge (`mergeEffectiveLine`)
+ * is what picks a book per market — the same function the board uses, so the
+ * price on the screen and the price charged cannot disagree (PLAN.md §21.4).
+ * Never `LIMIT 1`, never a row-level tie-break here.
  */
-// TODO(M9b, PLAN.md §21.4/§14.3): return ALL rows per game and hand them to
-// `mergeEffectiveLine`; the mirror-image tie-break documented above becomes a
-// shared pure function rather than a convention two files have to keep.
-// AND THE SNAPSHOT TRIO MOVES WITH IT: `provider`, `line_captured_at` and the
-// staleness test in `resolveLegSnapshots` must all come from
-// `EffectiveLine.<market>` (`MarketSource` carries all three), never from "the
-// row" — with a merged line the spread can be DraftKings' and the total
-// FanDuel's, and a leg stamped with the other book's capture time is an audit
-// record of a quote that never existed.
-async function loadLines(env: Env, gameIds: readonly string[]): Promise<Map<string, LineRow>> {
+async function loadLines(env: Env, gameIds: readonly string[]): Promise<Map<string, LineRow[]>> {
   const rows = await queryAll<LineRow>(
     env.DB.prepare(
       `SELECT * FROM game_lines WHERE game_id IN (${placeholders(gameIds.length)})
-        ORDER BY seen_at ASC, provider DESC`,
+        ORDER BY game_id ASC, provider ASC`,
     ).bind(...gameIds),
   );
-  // ASC + overwrite leaves the freshest row per game, lowest provider on a tie.
-  const byGame = new Map<string, LineRow>();
-  for (const row of rows) byGame.set(row.game_id, row);
+  const byGame = new Map<string, LineRow[]>();
+  for (const row of rows) {
+    const list = byGame.get(row.game_id) ?? [];
+    list.push(row);
+    byGame.set(row.game_id, list);
+  }
   return byGame;
+}
+
+function toLineRowView(row: LineRow): LineRowView {
+  return {
+    provider: row.provider,
+    spreadHomeTenths: row.spread_home_tenths,
+    spreadHomePrice: row.spread_home_price,
+    spreadAwayTenths: row.spread_away_tenths,
+    spreadAwayPrice: row.spread_away_price,
+    spreadBook: row.spread_book,
+    totalTenths: row.total_tenths,
+    totalOverPrice: row.total_over_price,
+    totalUnderPrice: row.total_under_price,
+    totalBook: row.total_book,
+    mlHomePrice: row.ml_home_price,
+    mlAwayPrice: row.ml_away_price,
+    mlBook: row.ml_book,
+    capturedAt: row.captured_at,
+    seenAt: row.seen_at,
+  };
 }
 
 /**
@@ -540,16 +567,15 @@ export async function resolveLegSnapshots(
         lockAt: lockAtFor(game.kickoff_at),
       });
     }
-    const line = lines.get(leg.gameId);
-    // TODO(M9b, PLAN.md §21.4/§14.3): this ROW-level staleness test becomes a
-    // MARKET-level one. `mergeEffectiveLine` drops a stale row per market, so
-    // the check here is "did THIS market survive?" — a game whose spread row is
-    // fresh and whose total row is stale must accept a spread leg and refuse a
-    // total leg with MARKET_UNAVAILABLE, which one row-level test cannot express.
-    if (
-      line === undefined ||
-      now - line.seen_at > lineStaleAfterMs(game.kickoff_at, line.seen_at)
-    ) {
+    // Staleness is judged per MARKET by the merge (a stale row loses its
+    // markets; a fresh row next to it keeps its own), so "did THIS market
+    // survive?" is the whole test — the same one the board applied.
+    const line = mergeEffectiveLine(
+      (lines.get(leg.gameId) ?? []).map(toLineRowView),
+      game.kickoff_at,
+      now,
+    );
+    if (line === null) {
       throw new AppError('MARKET_UNAVAILABLE', `No current line for ${leg.gameId}.`, {
         gameId: leg.gameId,
         market: leg.market,
@@ -595,15 +621,11 @@ export async function resolveLegSnapshots(
       side: leg.side,
       lineTenths: quote.lineTenths,
       americanPrice: quote.americanPrice,
-      // TODO(M9b, PLAN.md §14.3): THE SNAPSHOT TRIO. Both of these must come
-      // from `EffectiveLine.<market>` (`MarketSource` carries `provider`,
-      // `capturedAt` and `seenAt` together), never from "the row": with a merged
-      // line the spread can be DraftKings' and the total FanDuel's, and a leg
-      // that took `provider` from the market but `line_captured_at` from
-      // whichever row won the headline is an audit record of a quote that never
-      // existed.
-      provider: line.provider,
-      lineCapturedAt: line.captured_at,
+      // THE SNAPSHOT TRIO comes from the MARKET (PLAN.md §14.3): with a merged
+      // line the spread can be DraftKings' and the total FanDuel's, and each
+      // leg records the book that quoted it and when that quote was captured.
+      provider: quote.provider,
+      lineCapturedAt: quote.capturedAt,
       snapshotAt: now,
       kickoffAtSnapshot: game.kickoff_at,
       homeAbbr: game.home_abbr,

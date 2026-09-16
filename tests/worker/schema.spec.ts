@@ -186,6 +186,70 @@ describe('migration 0001', () => {
     });
   });
 
+  it('0007 added the three nullable per-market book columns to game_lines', async () => {
+    const cols = await env.DB.prepare('PRAGMA table_info(game_lines)').all<{
+      name: string;
+      type: string;
+      notnull: number;
+    }>();
+    for (const name of ['spread_book', 'total_book', 'ml_book']) {
+      expect(
+        cols.results.find((c) => c.name === name),
+        name,
+      ).toMatchObject({
+        type: 'TEXT',
+        notnull: 0,
+      });
+    }
+  });
+
+  it('0007 added nullable games.secondary_tried_at INTEGER, unindexed', async () => {
+    const cols = await env.DB.prepare('PRAGMA table_info(games)').all<{
+      name: string;
+      type: string;
+      notnull: number;
+    }>();
+    expect(cols.results.find((c) => c.name === 'secondary_tried_at')).toMatchObject({
+      type: 'INTEGER',
+      notnull: 0,
+    });
+    const idx = await env.DB.prepare('PRAGMA index_list(games)').all<{ name: string }>();
+    for (const i of idx.results) {
+      const cols2 = await env.DB.prepare(`PRAGMA index_info(${i.name})`).all<{ name: string }>();
+      expect(cols2.results.map((c) => c.name)).not.toContain('secondary_tried_at');
+    }
+  });
+
+  it('0007 created secondary_budget with exactly one row, seeded at 500, and a CHECK that refuses id = 2', async () => {
+    const rows = await env.DB.prepare(
+      'SELECT id, remaining_credits, checked_at, last_attempt_at, nfl_last_sweep_at, ncaaf_last_sweep_at, cooldown_until, consecutive_failures, last_status, last_error, updated_at FROM secondary_budget',
+    ).all();
+    expect(rows.results).toEqual([
+      {
+        id: 1,
+        remaining_credits: 500,
+        checked_at: 0,
+        last_attempt_at: 0,
+        nfl_last_sweep_at: 0,
+        ncaaf_last_sweep_at: 0,
+        cooldown_until: 0,
+        consecutive_failures: 0,
+        last_status: null,
+        last_error: null,
+        updated_at: 0,
+      },
+    ]);
+    await expect(
+      env.DB.prepare('INSERT INTO secondary_budget (id, remaining_credits) VALUES (2, 500)').run(),
+    ).rejects.toThrow(/CHECK/);
+    await expect(
+      env.DB.prepare('UPDATE secondary_budget SET remaining_credits = -1 WHERE id = 1').run(),
+    ).rejects.toThrow(/CHECK/);
+    await expect(
+      env.DB.prepare('UPDATE secondary_budget SET consecutive_failures = -1 WHERE id = 1').run(),
+    ).rejects.toThrow(/CHECK/);
+  });
+
   it('bug_reports.user_id must reference an existing user', async () => {
     await expect(
       env.DB.prepare(

@@ -179,12 +179,13 @@ the one failure mode the whole checklist has.
      `0004_games_conference.sql` adds `games.home/away_conference_id`,
      `0005_bets_teaser_tiers.sql` REBUILDS `bets`/`bet_legs`/`ledger` children-first
      to widen the teaser-tier CHECK (the only way on D1; proof in §16.2),
-     and `0006_bug_reports_diagnostics.sql` adds `bug_reports.diagnostics`.
-     `0007_secondary_odds.sql` is **planned, not written** (M9b): PLAN.md §21.3
-     carries the file verbatim — `game_lines.spread/total/ml_book`,
-     `games.secondary_tried_at` and the single-row `secondary_budget` table — and
-     M9b is the PR that creates it, after which it is frozen like the rest. The
-     plan PR that added §21 and §22 deliberately ships NO migration: the Deploy
+     and `0006_bug_reports_diagnostics.sql` adds `bug_reports.diagnostics`;
+     `0007_secondary_odds.sql` adds the per-market `game_lines.*_book` columns,
+     `games.secondary_tried_at` and the single-row `secondary_budget` table for
+     the secondary odds provider (PLAN.md §21.3).
+     `0007_secondary_odds.sql` shipped with M9b and is frozen like the rest;
+     PLAN.md §21.3 carries the same text as its specification. The plan PR that
+     added §21 and §22 deliberately shipped NO migration: the Deploy
      workflow applies whatever is under `migrations/` on merge, so a file landing
      ahead of the code that reads it is a production schema change nobody tested.
      PLAN.md §15, §16.2 and §21.3.
@@ -293,8 +294,9 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               every change is a new numbered 000N_*.sql (rule 9) — 0002 adds
               users.deleted_at, 0003 adds bug_reports, 0004 adds
               games.home/away_conference_id, 0005 rebuilds bets for 3–14-pt teasers,
-              0006 adds bug_reports.diagnostics. 0007 (secondary odds provider)
-              is PLANNED, not present: PLAN.md §21.3 is the file, M9b writes it
+              0006 adds bug_reports.diagnostics, 0007 adds the secondary
+              provider's per-market book columns, games.secondary_tried_at and
+              the secondary_budget row (PLAN.md §21.3)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES

@@ -326,12 +326,6 @@ describe('parseOddsApi — points and prices', () => {
     expect(e?.markets.moneyline).toBeNull();
   });
 
-  it('two names that normalise to nothing never match each other, in pass 1 or pass 2', () => {
-    const c = cand({ gameId: 'ncaaf:1', league: 'ncaaf', homeName: '???', awayName: '!!!' });
-    const e = ev({ eventId: 'x', league: 'ncaaf', homeTeam: '###', awayTeam: '***' });
-    expect(matchOddsApiEvents([c], [e]).matched.size).toBe(0);
-  });
-
   it('a market with one outcome is dropped', () => {
     const e = parseOne({ books: [{ key: 'draftkings', h2h: [{ name: HOME, price: -305 }] }] });
     expect(e?.markets.moneyline).toBeNull();
@@ -707,6 +701,12 @@ describe('matchOddsApiEvents — pass 2, the mascot fallback', () => {
     expect(out.matched.size).toBe(0);
     expect(out.unmatchedEvents).toBe(2);
     expect(out.unmatchedGames).toEqual(['NYJ @ BUF']);
+  });
+
+  it('two names that normalise to nothing never match each other, in pass 1 or pass 2', () => {
+    const c = cand({ gameId: 'ncaaf:1', league: 'ncaaf', homeName: '???', awayName: '!!!' });
+    const e = ev({ eventId: 'x', league: 'ncaaf', homeTeam: '###', awayTeam: '***' });
+    expect(matchOddsApiEvents([c], [e]).matched.size).toBe(0);
   });
 
   it('never throws on empty inputs', () => {

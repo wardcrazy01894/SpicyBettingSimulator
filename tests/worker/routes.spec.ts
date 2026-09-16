@@ -4,6 +4,8 @@ import type {
   BankrollView,
   BankrollsResponse,
   ConfigResponse,
+  GameCard,
+  GameLinesView,
   GamesResponse,
   HealthResponse,
   LeaderboardResponse,
@@ -282,6 +284,114 @@ describe('games board window (PLAN.md §22)', () => {
     const res = await get(`/api/games/${encodeURIComponent(gid('later'))}`, alex.cookie);
     expect(res.status, await res.clone().text()).toBe(200);
     expect((await res.json<{ game: { id: string } }>()).game.id).toBe(gid('later'));
+  });
+});
+
+describe('games board — every game_lines row is merged (PLAN.md §21.4)', () => {
+  it('300+ games with TWO line rows each still returns BOARD_MAX_GAMES games, not half', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const now = Date.now();
+    const stmts = [];
+    for (let i = 0; i < BOARD_MAX_GAMES + 5; i += 1) {
+      const id = gid(`g${String(i)}`);
+      await seedGame(env.DB, { id, season, kickoffAt: now + 2 * HOUR + i * 1000 });
+      stmts.push(seedLine(env.DB, fullLine(id, now - 1000)));
+      stmts.push(
+        seedLine(env.DB, {
+          ...fullLine(id, now - 500),
+          provider: 'odds-api',
+          spreadHomeTenths: null,
+          spreadHomePrice: null,
+          spreadAwayTenths: null,
+          spreadAwayPrice: null,
+          totalBook: 'draftkings',
+          mlBook: 'fanduel',
+        }),
+      );
+    }
+    await Promise.all(stmts);
+    const board = await (
+      await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
+    ).json<GamesResponse>();
+    expect(board.games).toHaveLength(BOARD_MAX_GAMES);
+    expect(new Set(board.games.map((g) => g.id)).size).toBe(BOARD_MAX_GAMES);
+  }, 60_000);
+
+  it('the list AND the detail route merge per market, naming the book on each market', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const now = Date.now();
+    const id = gid('merged');
+    await seedGame(env.DB, { id, season, kickoffAt: now + 20 * HOUR });
+    // Primary: spread only (total and moneyline OFF), seen 30 min ago.
+    await seedLine(env.DB, {
+      ...fullLine(id, now - 30 * 60_000),
+      capturedAt: now - 2 * HOUR,
+      totalTenths: null,
+      totalOverPrice: null,
+      totalUnderPrice: null,
+      mlHomePrice: null,
+      mlAwayPrice: null,
+    });
+    // Secondary: DraftKings total, FanDuel moneyline, seen 10 min ago.
+    await seedLine(env.DB, {
+      gameId: id,
+      provider: 'odds-api',
+      totalTenths: 535,
+      totalOverPrice: -105,
+      totalUnderPrice: -115,
+      totalBook: 'draftkings',
+      mlHomePrice: -180,
+      mlAwayPrice: 150,
+      mlBook: 'fanduel',
+      seenAt: now - 10 * 60_000,
+    });
+    const expectMerged = (lines: GameLinesView | null): void => {
+      expect(lines?.spread).toMatchObject({ homeTenths: -35, provider: 'DraftKings' });
+      expect(lines?.total).toMatchObject({
+        tenths: 535,
+        overPrice: -105,
+        provider: 'odds-api:draftkings',
+      });
+      expect(lines?.moneyline).toMatchObject({
+        homePrice: -180,
+        awayPrice: 150,
+        provider: 'odds-api:fanduel',
+      });
+      expect(lines?.provider).toBe('DraftKings');
+      expect(lines?.stale).toBe(false);
+    };
+    const board = await (
+      await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
+    ).json<GamesResponse>();
+    const card = board.games.find((g) => g.id === id);
+    expect(card?.bettable).toBe(true);
+    expectMerged(card?.lines ?? null);
+    const detail = await (
+      await get(`/api/games/${encodeURIComponent(id)}`, alex.cookie)
+    ).json<{ game: GameCard }>();
+    expectMerged(detail.game.lines);
+    expect(detail.game.lines).toEqual(card?.lines);
+  });
+
+  it('a FRESH all-null primary row is "no line", never the stale banner; a STALE one too', async () => {
+    const alex = await register('alex');
+    const { gid, season } = scope();
+    const now = Date.now();
+    await seedGame(env.DB, { id: gid('off'), season, kickoffAt: now + 20 * HOUR });
+    await seedLine(env.DB, { gameId: gid('off'), seenAt: now - 60_000 });
+    await seedGame(env.DB, { id: gid('off-old'), season, kickoffAt: now + 20 * HOUR });
+    await seedLine(env.DB, { gameId: gid('off-old'), seenAt: now - 5 * HOUR });
+    const board = await (
+      await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
+    ).json<GamesResponse>();
+    for (const key of ['off', 'off-old']) {
+      const card = board.games.find((g) => g.id === gid(key));
+      expect(card?.lines?.stale, key).toBe(false);
+      expect(card?.lines?.spread, key).toBeNull();
+      expect(card?.bettable, key).toBe(false);
+    }
   });
 });
 

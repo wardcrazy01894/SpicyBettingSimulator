@@ -6,6 +6,8 @@ import type {
   LineChangedDetails,
   PlaceBetRequest,
   UserResponse,
+  GameCard,
+  GamesResponse,
 } from '../../src/shared/api-types.js';
 import type { ApiErrorBody } from '../../src/shared/errors.js';
 import {
@@ -32,6 +34,7 @@ import {
   placeBet,
   resolveLegSnapshots,
 } from '../../src/worker/bets.js';
+import type { ResolvedLeg } from '../../src/worker/bets.js';
 import { buildApp } from '../../src/worker/index.js';
 import {
   balanceOf,
@@ -335,7 +338,7 @@ describe('placeBet — happy path', () => {
     // The BETTOR's side: home -3.5 is stored as -35 (PLAN.md §3.2).
     expect(leg?.line_tenths).toBe(-35);
     expect(leg?.american_price).toBe(-110);
-    expect(leg?.provider).toBe('draftkings');
+    expect(leg?.provider).toBe('DraftKings');
     // Provenance: when the BOOK's price last CHANGED, not when we polled it.
     expect(leg?.line_captured_at).toBe(NOW - 90_000);
     expect(leg?.kickoff_at_snapshot).toBe(kickoffAt);
@@ -472,6 +475,176 @@ describe('placeBet — the kickoff lock', () => {
     const res = await post('/api/bets', straight('nfl:nope'), alex.cookie);
     expect(res.status).toBe(404);
     expect(await errorCode(res)).toBe('GAME_NOT_FOUND');
+  });
+});
+
+describe('placeBet — merged lines and per-market provenance (PLAN.md §21.4 / §14.3)', () => {
+  /** Primary spread only (seen 30 min ago, captured 2 h ago) + secondary total/moneyline. */
+  async function seedMerged(
+    id: string,
+  ): Promise<{ primaryCaptured: number; secondaryCaptured: number }> {
+    await seedGame(env.DB, { id, kickoffAt: NOW + 20 * HOUR });
+    const primaryCaptured = NOW - 2 * HOUR;
+    const secondaryCaptured = NOW - 10 * 60_000;
+    await seedLine(env.DB, {
+      ...fullLine(id, NOW - 30 * 60_000),
+      capturedAt: primaryCaptured,
+      totalTenths: null,
+      totalOverPrice: null,
+      totalUnderPrice: null,
+      mlHomePrice: null,
+      mlAwayPrice: null,
+    });
+    await seedLine(env.DB, {
+      gameId: id,
+      provider: 'odds-api',
+      totalTenths: 535,
+      totalOverPrice: -105,
+      totalUnderPrice: -115,
+      totalBook: 'draftkings',
+      mlHomePrice: -180,
+      mlAwayPrice: 150,
+      mlBook: 'fanduel',
+      capturedAt: secondaryCaptured,
+      seenAt: NOW - 10 * 60_000,
+    });
+    return { primaryCaptured, secondaryCaptured };
+  }
+  const legsOf = (
+    betId: string,
+  ): Promise<{ market: string; provider: string; line_captured_at: number }[]> =>
+    env.DB.prepare(
+      'SELECT market, provider, line_captured_at FROM bet_legs WHERE bet_id = ? ORDER BY leg_index',
+    )
+      .bind(betId)
+      .all<{ market: string; provider: string; line_captured_at: number }>()
+      .then((r) => r.results);
+
+  it("a leg on a secondary market records that market's book and ITS captured_at; a primary leg its own", async () => {
+    const alex = await register();
+    const { primaryCaptured, secondaryCaptured } = await seedMerged(g(1));
+    // One straight per market (a parlay may not repeat a game).
+    const legs: { market: string; provider: string; line_captured_at: number }[] = [];
+    const betIds: string[] = [];
+    for (const [market, side] of [
+      ['spread', 'home'],
+      ['total', 'over'],
+      ['moneyline', 'away'],
+    ] as const) {
+      const res = await post(
+        '/api/bets',
+        {
+          league: 'nfl',
+          betType: 'straight',
+          stakeCents: 500,
+          legs: [{ gameId: g(1), market, side }],
+        },
+        alex.cookie,
+      );
+      expect(res.status, await res.clone().text()).toBe(201);
+      const { bet } = await res.json<BetResponse>();
+      betIds.push(bet.id);
+      legs.push(...(await legsOf(bet.id)));
+    }
+    expect(legs).toEqual([
+      { market: 'spread', provider: 'DraftKings', line_captured_at: primaryCaptured },
+      { market: 'total', provider: 'odds-api:draftkings', line_captured_at: secondaryCaptured },
+      { market: 'moneyline', provider: 'odds-api:fanduel', line_captured_at: secondaryCaptured },
+    ]);
+    // Deleting the line rows afterwards changes nothing about the bets (§14.3).
+    await env.DB.prepare('DELETE FROM game_lines WHERE game_id = ?').bind(g(1)).run();
+    for (const id of betIds) expect(await legsOf(id)).toHaveLength(1);
+  });
+
+  it('staleness is judged per MARKET: a stale primary spread is refused while the fresh secondary total is accepted', async () => {
+    const alex = await register();
+    await seedMerged(g(2));
+    await env.DB.prepare(
+      "UPDATE game_lines SET seen_at = ? WHERE game_id = ? AND provider = 'DraftKings'",
+    )
+      .bind(NOW - 4 * HOUR, g(2))
+      .run();
+    const spread = await post(
+      '/api/bets',
+      {
+        league: 'nfl',
+        betType: 'straight',
+        stakeCents: 500,
+        legs: [{ gameId: g(2), market: 'spread', side: 'home' }],
+      },
+      alex.cookie,
+    );
+    expect(spread.status).toBe(409);
+    expect(await errorCode(spread)).toBe('MARKET_UNAVAILABLE');
+    const total = await post(
+      '/api/bets',
+      {
+        league: 'nfl',
+        betType: 'straight',
+        stakeCents: 500,
+        legs: [{ gameId: g(2), market: 'total', side: 'under' }],
+      },
+      alex.cookie,
+    );
+    expect(total.status, await total.clone().text()).toBe(201);
+  });
+
+  it('PARITY: the board, the detail route and placement agree on line, price and provider for every market', async () => {
+    const alex = await register();
+    await seedMerged(g(3));
+    // Make the primary row stale so the spread is NOT offered anywhere.
+    await env.DB.prepare(
+      "UPDATE game_lines SET seen_at = ? WHERE game_id = ? AND provider = 'DraftKings'",
+    )
+      .bind(NOW - 4 * HOUR, g(3))
+      .run();
+    const board = await (await get('/api/games?league=nfl', alex.cookie)).json<GamesResponse>();
+    const card = board.games.find((x) => x.id === g(3));
+    const detail = await (
+      await get(`/api/games/${encodeURIComponent(g(3))}`, alex.cookie)
+    ).json<{ game: GameCard }>();
+    expect(detail.game.lines).toEqual(card?.lines);
+    expect(card?.lines?.spread).toBeNull();
+    expect(card?.lines?.stale).toBe(false);
+    const resolveOne = (
+      market: 'total' | 'moneyline',
+      side: 'over' | 'home',
+    ): Promise<readonly ResolvedLeg[]> =>
+      resolveLegSnapshots(
+        env,
+        {
+          league: 'nfl',
+          betType: 'straight',
+          stakeCents: 500,
+          legs: [{ gameId: g(3), market, side }],
+        },
+        NOW,
+      );
+    const legs = [
+      ...(await resolveOne('total', 'over')),
+      ...(await resolveOne('moneyline', 'home')),
+    ];
+    expect(legs.map((l) => [l.market, l.lineTenths, l.americanPrice, l.provider])).toEqual([
+      [
+        'total',
+        card?.lines?.total?.tenths,
+        card?.lines?.total?.overPrice,
+        card?.lines?.total?.provider,
+      ],
+      ['moneyline', null, card?.lines?.moneyline?.homePrice, card?.lines?.moneyline?.provider],
+    ]);
+    await expect(
+      resolveLegSnapshots(
+        env,
+        {
+          league: 'nfl',
+          betType: 'straight',
+          stakeCents: 500,
+          legs: [{ gameId: g(3), market: 'spread', side: 'home' }],
+        },
+        NOW,
+      ),
+    ).rejects.toMatchObject({ code: 'MARKET_UNAVAILABLE' });
   });
 });
 
@@ -642,7 +815,7 @@ describe('placeBet — lines', () => {
     const legs = await legRows(bet.id);
     expect(legs[0]?.american_price).toBe(164); // game_lines.ml_away_price
     expect(legs[0]?.line_tenths).toBeNull(); // moneyline carries no line
-    expect(legs[0]?.provider).toBe('draftkings');
+    expect(legs[0]?.provider).toBe('DraftKings');
     expect(bet.americanPrice).toBe(164);
   });
 });
