@@ -425,3 +425,209 @@ export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> 
     },
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * The Odds API (PLAN.md §21) — a builder in the v4 /odds shape and a stub
+ * server with `x-requests-*` header injection, so M9c's sweep tests can drive
+ * credits, 401/429/5xx and timeouts without the network.
+ * ------------------------------------------------------------------ */
+
+export interface OddsApiOutcomeSpec {
+  readonly name: string;
+  readonly price: number;
+  readonly point?: number;
+}
+
+export interface OddsApiBookSpec {
+  readonly key: string;
+  readonly spreads?: readonly OddsApiOutcomeSpec[];
+  readonly totals?: readonly OddsApiOutcomeSpec[];
+  readonly h2h?: readonly OddsApiOutcomeSpec[];
+}
+
+export interface OddsApiEventSpec {
+  readonly id: string;
+  readonly sportKey?: 'americanfootball_nfl' | 'americanfootball_ncaaf';
+  /** ISO-8601 UTC, as the API sends it. */
+  readonly commenceTime: string;
+  readonly homeTeam: string;
+  readonly awayTeam: string;
+  /**
+   * Books in RESPONSE order. Omit to get a full DraftKings line (spread ±3.5
+   * at -110, total 47.5 at -110, moneyline -180/+155), which is what most
+   * tests want.
+   */
+  readonly books?: readonly OddsApiBookSpec[];
+}
+
+/** A complete DraftKings line for `spec`, mirrored and well-formed. */
+export function draftKingsLine(spec: {
+  readonly homeTeam: string;
+  readonly awayTeam: string;
+  readonly spreadHome?: number;
+  readonly total?: number;
+  readonly mlHome?: number;
+  readonly mlAway?: number;
+}): OddsApiBookSpec {
+  const spreadHome = spec.spreadHome ?? -3.5;
+  const total = spec.total ?? 47.5;
+  return {
+    key: 'draftkings',
+    spreads: [
+      { name: spec.awayTeam, price: -110, point: -spreadHome },
+      { name: spec.homeTeam, price: -110, point: spreadHome },
+    ],
+    totals: [
+      { name: 'Over', price: -110, point: total },
+      { name: 'Under', price: -110, point: total },
+    ],
+    h2h: [
+      { name: spec.awayTeam, price: spec.mlAway ?? 155 },
+      { name: spec.homeTeam, price: spec.mlHome ?? -180 },
+    ],
+  };
+}
+
+/** One event in the documented v4 shape. */
+export function buildOddsApiEvent(spec: OddsApiEventSpec): Record<string, unknown> {
+  const books = spec.books ?? [draftKingsLine(spec)];
+  return {
+    id: spec.id,
+    sport_key: spec.sportKey ?? 'americanfootball_nfl',
+    sport_title: spec.sportKey === 'americanfootball_ncaaf' ? 'NCAAF' : 'NFL',
+    commence_time: spec.commenceTime,
+    home_team: spec.homeTeam,
+    away_team: spec.awayTeam,
+    bookmakers: books.map((b) => ({
+      key: b.key,
+      title: b.key,
+      last_update: spec.commenceTime,
+      markets: (['h2h', 'spreads', 'totals'] as const)
+        .filter((m) => b[m] !== undefined)
+        .map((m) => ({
+          key: m,
+          last_update: spec.commenceTime,
+          outcomes: (b[m] ?? []).map((o) =>
+            o.point === undefined
+              ? { name: o.name, price: o.price }
+              : { name: o.name, price: o.price, point: o.point },
+          ),
+        })),
+    })),
+  };
+}
+
+/** The whole body of `GET /v4/sports/{sport}/odds`: an array of events. */
+export function buildOddsApiPayload(events: readonly OddsApiEventSpec[]): unknown[] {
+  return events.map(buildOddsApiEvent);
+}
+
+export type OddsApiResponder = () => Response | Promise<Response>;
+
+export interface OddsApiCredits {
+  readonly last: number;
+  readonly used: number;
+  readonly remaining: number;
+}
+
+export interface OddsApiStub {
+  /** Serve these events for one sport key's `/odds` call, with the credit headers. */
+  set(
+    sportKey: string,
+    events: readonly OddsApiEventSpec[],
+    credits?: Partial<OddsApiCredits>,
+  ): void;
+  /** Serve an arbitrary response (or throw) for one sport key's `/odds` call. */
+  setResponder(sportKey: string, responder: OddsApiResponder): void;
+  /** What `GET /v4/sports` (the FREE probe) answers with; defaults to 200 + headers, cost 0. */
+  setProbe(responder: OddsApiResponder): void;
+  /** The credit headers every default response carries; a sweep response overrides `last`. */
+  setCredits(credits: Partial<OddsApiCredits>): void;
+  readonly callCount: number;
+  /** Every URL asked for, in order, api key INCLUDED — tests assert it never leaks. */
+  readonly urls: readonly string[];
+  readonly requestHeaders: readonly Record<string, string>[];
+  restore(): void;
+}
+
+export const ODDS_API_STUB_BASE = 'https://odds.test';
+
+/**
+ * Intercepts `fetch` for `https://odds.test/…`, the way `stubEspn` does for
+ * ESPN. A sport with no configured events answers `[]` with the credit
+ * headers, which is what the real API does for a league with nothing upcoming.
+ */
+export function stubOddsApi(): OddsApiStub {
+  const responders = new Map<string, OddsApiResponder>();
+  const urls: string[] = [];
+  const requestHeaders: Record<string, string>[] = [];
+  const original = globalThis.fetch;
+  let credits: OddsApiCredits = { last: 3, used: 3, remaining: 497 };
+
+  const headersFor = (over: Partial<OddsApiCredits> = {}): Record<string, string> => {
+    const c = { ...credits, ...over };
+    return {
+      'content-type': 'application/json',
+      'x-requests-last': String(c.last),
+      'x-requests-used': String(c.used),
+      'x-requests-remaining': String(c.remaining),
+    };
+  };
+  const jsonResponder =
+    (body: unknown, over: Partial<OddsApiCredits> = {}): OddsApiResponder =>
+    () =>
+      new Response(JSON.stringify(body), { status: 200, headers: headersFor(over) });
+
+  let probe: OddsApiResponder = () =>
+    new Response(JSON.stringify([{ key: 'americanfootball_nfl', active: true }]), {
+      status: 200,
+      headers: headersFor({ last: 0 }),
+    });
+
+  const stub = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (!url.startsWith(`${ODDS_API_STUB_BASE}/`)) return original(input, init);
+    urls.push(url);
+    const sent: Record<string, string> = {};
+    new Headers(init?.headers).forEach((value, key) => {
+      sent[key.toLowerCase()] = value;
+    });
+    requestHeaders.push(sent);
+    const path = new URL(url).pathname;
+    const sport = /^\/v4\/sports\/([^/]+)\/odds$/.exec(path)?.[1];
+    if (sport === undefined) {
+      if (path === '/v4/sports') return probe();
+      return new Response('not found', { status: 404, headers: headersFor({ last: 0 }) });
+    }
+    const responder = responders.get(sport);
+    if (responder === undefined) return jsonResponder([])();
+    return responder();
+  };
+  globalThis.fetch = stub;
+
+  return {
+    set(sportKey, events, over = {}) {
+      // A sweep response that reports a new balance moves the stub's balance
+      // too, so a probe issued afterwards agrees with it — as the real API's does.
+      credits = { ...credits, ...over };
+      responders.set(sportKey, jsonResponder(buildOddsApiPayload(events), over));
+    },
+    setResponder(sportKey, responder) {
+      responders.set(sportKey, responder);
+    },
+    setProbe(responder) {
+      probe = responder;
+    },
+    setCredits(over) {
+      credits = { ...credits, ...over };
+    },
+    get callCount() {
+      return urls.length;
+    },
+    urls,
+    requestHeaders,
+    restore() {
+      globalThis.fetch = original;
+    },
+  };
+}

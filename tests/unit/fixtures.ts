@@ -339,3 +339,50 @@ export function malformedScoreboard(): unknown {
     ],
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * The Odds API samples, and the SAME-DATE ESPN captures (PLAN.md §21.7)
+ * ------------------------------------------------------------------ */
+
+const ODDS_API_FILES = {
+  nfl: new URL('../../docs/samples/odds-api-nfl.json', import.meta.url),
+  ncaaf: new URL('../../docs/samples/odds-api-ncaaf.json', import.meta.url),
+  /** ESPN, every ET date the NFL API sample spans, merged by scripts/capture-espn-range.mjs. */
+  espnNflRange: new URL(
+    '../../docs/samples/espn-nfl-scoreboard-2026-09-17..28.json',
+    import.meta.url,
+  ),
+  espnCfbRange: new URL(
+    '../../docs/samples/espn-cfb-scoreboard-2026-09-17..26.json',
+    import.meta.url,
+  ),
+} as const;
+
+const oddsCache = new Map<keyof typeof ODDS_API_FILES, unknown>();
+function loadOdds(name: keyof typeof ODDS_API_FILES): unknown {
+  const cached = oddsCache.get(name);
+  if (cached !== undefined) return cached;
+  const parsed: unknown = JSON.parse(readFileSync(ODDS_API_FILES[name], 'utf8'));
+  oddsCache.set(name, parsed);
+  return parsed;
+}
+
+/** Raw parsed JSON of docs/samples/odds-api-nfl.json (32 events, captured 2026-09-16). */
+export function oddsApiNfl(): unknown {
+  return structuredClone(loadOdds('nfl'));
+}
+/** Raw parsed JSON of docs/samples/odds-api-ncaaf.json (75 events, captured 2026-09-16). */
+export function oddsApiNcaaf(): unknown {
+  return structuredClone(loadOdds('ncaaf'));
+}
+/**
+ * ESPN scoreboards MERGED over the six ET dates the NFL API sample spans. The
+ * root `season`/`week` describe the first date only — never assert them.
+ */
+export function espnNflRange(): unknown {
+  return structuredClone(loadOdds('espnNflRange'));
+}
+/** ESPN scoreboards MERGED over the four ET dates the NCAAF API sample spans. */
+export function espnCfbRange(): unknown {
+  return structuredClone(loadOdds('espnCfbRange'));
+}
