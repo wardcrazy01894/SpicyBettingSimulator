@@ -281,6 +281,13 @@ export async function bumpTargetForGame(
  * Returns the number of targets CREATED (0 on a steady-state rerun), which is
  * what makes the idempotency assertion in the spec a one-liner.
  */
+// TODO(M9-0, PLAN.md §22): the window ends on the Monday that closes the football
+// week, PER LEAGUE — `etDaysInWindow(now, min(boardWindowEnd(league, now), now +
+// INGEST_WINDOW_MS))` inside the league loop, not one shared day list. The two
+// leagues differ for part of every Sunday (CFB rolls at 00:00 ET, NFL at 20:00),
+// so the day list has to be computed per league. `INGEST_WINDOW_MS` stays, as the
+// hard ceiling that stops a bug in the week arithmetic from emitting thousands of
+// targets. The retirement rule below does NOT change.
 export async function planTargets(env: Env, now: EpochMs): Promise<number> {
   const days = etDaysInWindow(now, now + INGEST_WINDOW_MS);
 
@@ -407,6 +414,22 @@ function notInClause(count: number): string {
  * and 22 discovery targets wanting 88 slot-uses/day against the same supply of
  * 96. Still fits, with 8 to spare instead of 16. It is one week a year and the
  * margin holds, which is why the planner has no special case for it.
+ *
+ * TODO(M9-0, PLAN.md §22/§8.4): BOTH paragraphs above are superseded the moment
+ * `planTargets` moves to `boardWindowEnd`. The window then spans at most 9 ET
+ * dates (2 at its narrowest), so it is at most 18 targets — 16 on a Monday, 14
+ * from Tuesday on — and worst case 2 live leaves 16 discovery targets wanting
+ * 64 slot-uses/day against the same supply of 96, which fits with 32 to spare
+ * instead of 16. The DST footnote stops applying entirely: a weekday-anchored
+ * window spans at most 9 dates however long its days are. M9-0 rewrites this
+ * comment along with the code; it is left standing here so the plan PR changes
+ * no behaviour claim that its own code still makes.
+ *
+ * ROLLOVER BURST, also M9-0's to document: at a Sunday rollover the window gains
+ * seven ET dates for one league at once, all with `next_run_at = now`. They are
+ * the LEAST overdue rows in the queue, and the reserved slot takes one per run,
+ * so next week's board fills over ~1 h 45 m of cron ticks on an idle queue and
+ * up to ~4 h behind a live Saturday. That is expected, not a stall (PLAN §22.6).
  *
  * The reserved-slot query MUST exclude the id already claimed by slot 1
  * (`AND id <> :slot1Id`): on a run with no live target — most runs — slot 1's
@@ -1119,6 +1142,13 @@ export async function ingestTarget(
  * (`ON CONFLICT DO NOTHING` on 22 existing rows) and writes only on the first run
  * after midnight ET; §8.6 budgets it as a separate ~192-rows/day line item.
  */
+// TODO(M9c, PLAN.md §21.2): after the target loop below, call
+// `runSecondary(env, now, { force })` — ONE call, into src/worker/secondary.ts,
+// which loops the leagues itself — AFTER the ESPN ingest, so the decision sees
+// the board the primary just wrote, and fold its `SecondaryStats` into
+// `IngestStats.secondary`. All three refresh paths (cron, admin Run refresh,
+// admin per-game Refresh) reach it through here. NOTE: `LINE_UPSERT_SQL` in this
+// file is NOT touched; the secondary has its own upsert (PLAN.md §21.3).
 export async function runRefresh(env: Env, now: EpochMs, maxTargets: number): Promise<IngestStats> {
   await planTargets(env, now);
 

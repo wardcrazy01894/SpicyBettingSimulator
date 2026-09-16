@@ -38,6 +38,19 @@ import {
   MIN_STAKE_CENTS,
   MIN_TEASER_LEGS,
   MONEYLINE_NOT_OFFERED_SPREAD_TENTHS,
+  NCAAF_WEEK_ROLLOVER_ET_HOUR,
+  NFL_WEEK_ROLLOVER_ET_HOUR,
+  ODDS_API_BUDGET_PROBE_MS,
+  ODDS_API_COOLDOWN_MAX_MS,
+  ODDS_API_COOLDOWN_MS,
+  ODDS_API_MONTHLY_CREDITS,
+  ODDS_API_COST_PER_SWEEP,
+  ODDS_API_CREDIT_RESERVE,
+  ODDS_API_TIMEOUT_MS,
+  SECONDARY_MATCH_WINDOW_MS,
+  SECONDARY_MIN_SWEEP_INTERVAL_MS,
+  SECONDARY_RESWEEP_MARGIN_MS,
+  SECONDARY_RETRY_MS,
   SESSION_TTL_MS,
   TEASER_PAYOUTS,
   TEASER_POINTS_TENTHS,
@@ -285,6 +298,30 @@ describe('constants.ts vs PLAN.md §3.1', () => {
     VOID_AFTER_MS,
     MAX_PARLAY_LEGS,
     MIN_TEASER_LEGS,
+    // The board window (PLAN §22). These two ET hours are the whole of "which
+    // games are on the board": get one wrong and next week's slate appears a day
+    // early or a day late, on a live app, with no error anywhere.
+    NFL_WEEK_ROLLOVER_ET_HOUR,
+    NCAAF_WEEK_ROLLOVER_ET_HOUR,
+    // Secondary odds provider (PLAN §21). The credit numbers especially: the
+    // reserve is what makes exhausting a 500/month quota impossible, and a PLAN
+    // that quotes a different one is a plan whose arithmetic proves nothing.
+    SECONDARY_RETRY_MS,
+    SECONDARY_RESWEEP_MARGIN_MS,
+    SECONDARY_MIN_SWEEP_INTERVAL_MS,
+    SECONDARY_MATCH_WINDOW_MS,
+    ODDS_API_COST_PER_SWEEP,
+    ODDS_API_CREDIT_RESERVE,
+    ODDS_API_BUDGET_PROBE_MS,
+    ODDS_API_COOLDOWN_MS,
+    ODDS_API_COOLDOWN_MAX_MS,
+    ODDS_API_TIMEOUT_MS,
+    // 500 is ALSO hard-coded in migration 0007's seed (PLAN §21.3). SQL cannot
+    // import a constant, so this row is the only thing standing between the two
+    // numbers and a silent disagreement.
+    ODDS_API_MONTHLY_CREDITS,
+    // Two readers, one fact: the "No ML" hint in the UI and the sweep rule that
+    // stops the secondary chasing a moneyline no book posts (§21.2).
     MONEYLINE_NOT_OFFERED_SPREAD_TENTHS,
   };
 

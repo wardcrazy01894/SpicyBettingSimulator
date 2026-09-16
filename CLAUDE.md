@@ -93,9 +93,15 @@ the one failure mode the whole checklist has.
      review rounds were spent on a float-regression vector that was wrong; the
      canonical one is now `-110/+120/-105` at a **100¢** stake → exact 820, float 819. Divergence is stake-dependent — at 1000¢ the same parlay agrees — so
      spot-checking one stake proves nothing.
-3. **Timestamps are epoch milliseconds, UTC, everywhere** — DB, API, code. The
-   only place a timezone appears is `etDateKey()` (ESPN's `dates=` parameter) and
-   display formatting in the browser.
+3. **Timestamps are epoch milliseconds, UTC, everywhere** — DB, API, code. A
+   timezone appears in exactly three places, all of them CALENDAR questions:
+   `etDateKey()` (ESPN's `dates=` parameter), `boardWindowEnd()` (**planned —
+   M9-0**; the stub is in `src/shared/time.ts` and throws. The board and ingest
+   window will end on the Monday that closes the football week, rolling over at
+   an ET instant on Sunday — PLAN.md §22), and display formatting in the
+   browser. Both server-side ones live in `src/shared/time.ts` and go through
+   `Intl.DateTimeFormat` with an explicit `America/New_York`; nothing anywhere
+   hard-codes −4 or −5 hours, and nothing adds `7 * 86_400_000` to cross a week.
 4. **`src/shared/` is platform-free.** No `fetch`, no `Request`/`Response`, no
    DOM, no Workers globals. Enforced by tsconfig (`types: []`) and eslint. This
    is what makes it unit-testable and importable from both sides.
@@ -173,8 +179,16 @@ the one failure mode the whole checklist has.
      `0003_bug_reports.sql` (the `bug_reports` table) the second,
      `0004_games_conference.sql` adds `games.home/away_conference_id`,
      `0005_bets_teaser_tiers.sql` REBUILDS `bets`/`bet_legs`/`ledger` children-first
-     to widen the teaser-tier CHECK (the only way on D1; proof in §16.2), and
-     `0006_bug_reports_diagnostics.sql` adds `bug_reports.diagnostics`. PLAN.md §16.2.
+     to widen the teaser-tier CHECK (the only way on D1; proof in §16.2),
+     and `0006_bug_reports_diagnostics.sql` adds `bug_reports.diagnostics`.
+     `0007_secondary_odds.sql` is **planned, not written** (M9b): PLAN.md §21.3
+     carries the file verbatim — `game_lines.spread/total/ml_book`,
+     `games.secondary_tried_at` and the single-row `secondary_budget` table — and
+     M9b is the PR that creates it, after which it is frozen like the rest. The
+     plan PR that added §21 and §22 deliberately ships NO migration: the Deploy
+     workflow applies whatever is under `migrations/` on merge, so a file landing
+     ahead of the code that reads it is a production schema change nobody tested.
+     PLAN.md §15, §16.2 and §21.3.
    - A new migration is a deploy step. The Deploy workflow
      (`.github/workflows/deploy.yml`) applies pending migrations automatically on
      every merge to `main`, before it deploys. For a MANUAL deploy the order is
@@ -192,10 +206,18 @@ the one failure mode the whole checklist has.
      written without destroying money history. `users.deleted_at` + a rename is the
      delete. The tombstone username is `deleted_<hex>`, and `validateUsername`
      rejects that prefix at signup so nobody can squat one. PLAN.md §10.5.
-10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE`, `IP_HASH_SALT`
-    and `GITHUB_TOKEN` (a fine-grained PAT with Issues: read+write on this ONE
+10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE`, `IP_HASH_SALT`,
+    `GITHUB_TOKEN` (a fine-grained PAT with Issues: read+write on this ONE
     repo, for the in-app bug report form — optional; the feature is off without
-    it); there is no ESPN key.
+    it) and — **planned, M9c; no code reads it yet** — `ODDS_API_KEY` (The Odds
+    API free tier, for the SECONDARY odds provider; also optional, and without it
+    the board is primary-only and `job_runs.stats.secondary.enabled` is `false`).
+    There is no ESPN key.
+    `ODDS_API_KEY` is spent money in a literal sense: 500 credits a calendar
+    month, 3 per league sweep, guarded by `ODDS_API_CREDIT_RESERVE`. Never add a
+    code path that calls the API outside `sweepSecondary`, and never bypass the
+    credit claim — the guard is a `WHERE` clause inside an `UPDATE`, and
+    `meta.changes` is the only permission to make the request. PLAN.md §21.5.
 11. **Docs are part of the change.** Any PR that changes behaviour updates
     `PLAN.md` / `CLAUDE.md` / `README.md` / `docs/OPERATIONS.md` **in the same
     PR** — not in a follow-up,
@@ -257,8 +279,10 @@ errors. That is the ONLY transaction you get.
 ## Layout
 
 ```
-src/shared/   pure domain: types, odds, grading, espn parser, validation, time
-src/worker/   Hono API + cron jobs + D1 access
+src/shared/   pure domain: types, odds, grading, espn parser, validation, time,
+              lines (the per-market merge), odds-api (the secondary's parser)
+src/worker/   Hono API + cron jobs + D1 access; secondary.ts owns the Odds API
+              sweep and its credit budget, and never edits ingest.ts's SQL
 src/worker/routes/  one file per API area; index.ts holds the route table
 src/web/      React SPA: pages/, components/, state/ (contexts + pure reducers),
               hooks/ (useResource, usePages, useFocusTrap, useNow), lib/ (pure,
@@ -270,7 +294,8 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               every change is a new numbered 000N_*.sql (rule 9) — 0002 adds
               users.deleted_at, 0003 adds bug_reports, 0004 adds
               games.home/away_conference_id, 0005 rebuilds bets for 3–14-pt teasers,
-              0006 adds bug_reports.diagnostics
+              0006 adds bug_reports.diagnostics. 0007 (secondary odds provider)
+              is PLANNED, not present: PLAN.md §21.3 is the file, M9b writes it
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES

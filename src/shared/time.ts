@@ -1,10 +1,19 @@
 /**
  * Time helpers. Everything in the system is epoch MILLISECONDS, UTC.
  *
- * US Eastern appears in exactly ONE place: ESPN's `dates=YYYYMMDD` parameter
- * buckets by the US Eastern calendar day (an 8:20pm ET Saturday kickoff has a
- * `date` of 00:20Z on Sunday but belongs to Saturday's bucket). See PLAN.md §8.2
- * and Spike S4.
+ * US Eastern appears in exactly TWO places, both of them calendars rather than
+ * clocks:
+ *
+ *   1. ESPN's `dates=YYYYMMDD` parameter buckets by the US Eastern calendar day
+ *      (an 8:20pm ET Saturday kickoff has a `date` of 00:20Z on Sunday but
+ *      belongs to Saturday's bucket). See PLAN.md §8.2 and Spike S4.
+ *   2. The BOARD WINDOW ends on the Monday ET date that closes the football
+ *      week, and rolls over at an ET instant on Sunday (`boardWindowEnd`,
+ *      PLAN.md §22). A football week is a US Eastern calendar object; there is
+ *      no UTC expression of "Monday Night Football" that is not wrong twice a
+ *      year.
+ *
+ * Nothing else in the system has a timezone: every stored instant is epoch ms.
  *
  * `Intl.DateTimeFormat` with an explicit `timeZone` is the only mechanism used:
  * it is an ECMA-402 built-in, not a platform global, and workerd ships the full
@@ -13,7 +22,7 @@
  */
 
 import { BET_CUTOFF_BUFFER_MS, LINE_STALE_MS, LINE_STALE_MULTIPLIER } from './constants.js';
-import type { EpochMs } from './types.js';
+import type { EpochMs, League } from './types.js';
 
 export const ET_TIME_ZONE = 'America/New_York';
 export const MS_PER_DAY = 86_400_000;
@@ -130,6 +139,56 @@ export function etDateKeyRange(from: EpochMs, to: EpochMs): readonly string[] {
     cursor = endAt;
   }
   return keys;
+}
+
+/* ------------------------------------------------------------------ *
+ * The board / ingest window (PLAN.md §22)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The LAST INSTANT (inclusive) of the board and ingest window for `league` at
+ * `now`: the end of the Monday ET date that closes the current football week.
+ *
+ * The rule, all in US Eastern:
+ *
+ * Let M be the next Monday ET date at or after today's ET date (today, if today
+ * IS a Monday). The end is the last instant of M, EXCEPT that it is the last
+ * instant of M + 7 days when `now` is
+ *
+ *   (a) a SUNDAY at or after `WEEK_ROLLOVER_ET_HOUR[league]` (constants.ts;
+ *       M9-0 adds the import) — 00:00 ET for `ncaaf`, because Saturday's games
+ *       are done, and 20:00 ET for `nfl`, because the early and late windows
+ *       are; or
+ *   (b) a MONDAY, so that the rollover STAYS rolled over. Without (b) the board
+ *       would show next week on Sunday evening and hide it again all Monday.
+ *
+ * A football week runs Tuesday through Monday and the end is inclusive of its
+ * Monday, because Monday Night Football IS a Monday ET date.
+ *
+ * Worked, verified in a REPL against these helpers (§22 reproduces the table):
+ * a Friday gives the Monday three days out (3.50 d); a Sunday 19:59 ET gives the
+ * NFL 1.17 d and CFB 8.17 d; a Sunday 20:00 ET gives both 8.17 d; a MONDAY noon
+ * gives 7.50 d — the same instant Sunday night returned; a Tuesday noon gives
+ * 6.50 d. Measured over Aug 2026 – Jan 2027, the span never leaves
+ * [1.17 d, 9.04 d] and the ET-date count never leaves [2, 9].
+ *
+ * RETURNS AN INCLUSIVE END, i.e. `etDayBounds(thatMonday).endAt - 1`, because
+ * every caller wants `kickoff_at <= end` and because `etDateKeyRange(from, end)`
+ * is inclusive too: handing it the exclusive midnight would plan an extra ET
+ * date target for the Tuesday.
+ *
+ * DST is not special-cased and must not be: the Monday is located by ET calendar
+ * arithmetic (`etMidnight` re-measures the offset) and never by adding
+ * `7 * MS_PER_DAY`, so the 23 h and 25 h ET days come out right — measured, a
+ * window crossing the November fall-back is 9.02 days rather than 9.00.
+ *
+ * Total: never throws. A non-finite `now` yields `now` unchanged, so a caller
+ * that somehow has no clock plans nothing rather than looping.
+ *
+ * M9-0 — throws until then. PLAN.md §22.
+ */
+export function boardWindowEnd(_league: League, _now: EpochMs): EpochMs {
+  throw new Error('not implemented (M9-0: PLAN.md §22)');
 }
 
 /** Parse an ESPN ISO timestamp ("2026-09-13T17:00Z") to epoch ms, or null. */

@@ -34,6 +34,8 @@ a fresh fake $1,000 per `(league, season)`.
 18. [Spikes](#18-spikes)
 19. [Decisions (answered 2026-09-14)](#19-decisions-answered-2026-09-14)
 20. [Out of scope for v1](#20-out-of-scope-for-v1)
+21. [Secondary odds provider (The Odds API)](#21-secondary-odds-provider-the-odds-api)
+22. [Board window ends on Monday](#22-board-window-ends-on-monday)
 
 ---
 
@@ -125,9 +127,21 @@ also what makes `tsc -b` project references clean.
 
 `src/worker/providers.ts` defines `ScoreProvider` and `OddsProvider`. `EspnProvider`
 implements both from one scoreboard response (ESPN returns scores and odds in the
-same payload). A future `TheOddsApiProvider` would implement `OddsProvider` only and
-be composed with `EspnProvider` for scores. **Not implemented in v1** — the interface
+same payload), and is the PRIMARY feed for both scores and lines. The interface
 exists so that `ingest.ts` never mentions ESPN directly.
+
+**A SECOND provider now exists** (§21): `TheOddsApiProvider`, in
+`src/worker/odds-api.ts`, fills markets the primary is missing. It deliberately
+does NOT implement `OddsProvider`, and the reason is worth stating so nobody
+"fixes" it: `OddsProvider.fetchLines(league, target: SlateTarget)` is keyed by an
+ET calendar DATE and returns `GameLines[]` keyed by OUR game id. The Odds API is
+keyed by league and a time RANGE — one call covers a whole league — and its
+events carry the API's own ids, so turning a response into `GameLines` requires
+reading the `games` table, which an HTTP adapter must not do. It therefore
+declares its own smaller `SecondaryOddsProvider` interface (one league, one call,
+parsed events plus credit headers) and the match-to-`games` step is a separate
+pure function, `matchOddsApiEvents` in `src/shared/odds-api.ts`. `providers.ts`
+keeps meaning "providers of a SLATE".
 
 Key adapter contract: `fetchSlate(league, target) → ProviderSlate` where
 `ProviderSlate = { games: ProviderGame[]; lines: ProviderLine[]; fetchedAt: number }`.
@@ -165,19 +179,32 @@ section explains the _why_.
   reasons about them, and `tests/unit/docs.spec.ts` fails if the two ever disagree.
   Change the constant and this table in the same PR.
 
-| Constant                              | Value           | Meaning                                                                                                                                                                                               |
-| ------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                                         |
-| `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                                     |
-| `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                                  |
-| `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                                |
-| `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5)                 |
-| `SESSION_TTL_MS`                      | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                                  |
-| `MAX_SETTLE_ATTEMPTS`                 | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                                                                                                                                       |
-| `VOID_AFTER_MS`                       | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                                               |
-| `MAX_PARLAY_LEGS`                     | `10`            | also `CHECK(leg_count BETWEEN 1 AND 10)` on `bets`; the teaser card stops here too (§5.8)                                                                                                             |
-| `MIN_TEASER_LEGS`                     | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                                         |
-| `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` | `300`           | at 30+ points no book posts a moneyline (measured 2026-09-16: every no-moneyline game was 33.5+); the card shows "No ML" instead of "n/a", and the planned secondary sweep does not count it as a gap |
+| Constant                              | Value           | Meaning                                                                                                                                                                               |
+| ------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                         |
+| `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                     |
+| `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                  |
+| `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                |
+| `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5) |
+| `SESSION_TTL_MS`                      | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                  |
+| `MAX_SETTLE_ATTEMPTS`                 | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                                                                                                                       |
+| `VOID_AFTER_MS`                       | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                               |
+| `MAX_PARLAY_LEGS`                     | `10`            | also `CHECK(leg_count BETWEEN 1 AND 10)` on `bets`; the teaser card stops here too (§5.8)                                                                                             |
+| `MIN_TEASER_LEGS`                     | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                         |
+| `NFL_WEEK_ROLLOVER_ET_HOUR`           | `20`            | Sunday 20:00 ET: the NFL board rolls over to next week's Monday (§22)                                                                                                                 |
+| `NCAAF_WEEK_ROLLOVER_ET_HOUR`         | `0`             | Sunday 00:00 ET: the CFB board rolls over to next week's Monday (§22)                                                                                                                 |
+| `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` | `300`           | 30.0 pt: past this a missing moneyline is normal, not a gap — the UI hint and the sweep rule (§21.2)                                                                                  |
+| `SECONDARY_RETRY_MS`                  | `14_400_000`    | 4 h before the secondary re-attempts a game it could not fill (§21.5)                                                                                                                 |
+| `SECONDARY_RESWEEP_MARGIN_MS`         | `2_700_000`     | re-confirm a secondary fill this long before its staleness window closes (§21.5)                                                                                                      |
+| `SECONDARY_MIN_SWEEP_INTERVAL_MS`     | `7_200_000`     | floor between two sweeps of the SAME league; the blast-radius limiter (§21.5)                                                                                                         |
+| `SECONDARY_MATCH_WINDOW_MS`           | `5_400_000`     | kickoff tolerance of the mascot fallback matcher (§21.7)                                                                                                                              |
+| `ODDS_API_MONTHLY_CREDITS`            | `500`           | the free tier's monthly allowance; also the literal 0007 seeds (§21.3)                                                                                                                |
+| `ODDS_API_COST_PER_SWEEP`             | `3`             | credits one league sweep costs: markets (3) × regions (1), MEASURED (§21.5)                                                                                                           |
+| `ODDS_API_CREDIT_RESERVE`             | `25`            | sweeping stops below this — a cushion for debit drift, not for the probe, which is FREE (§21.5)                                                                                       |
+| `ODDS_API_BUDGET_PROBE_MS`            | `86_400_000`    | while the reserve blocks, one FREE `GET /v4/sports` a day to notice the monthly reset (§21.5)                                                                                         |
+| `ODDS_API_COOLDOWN_MS`                | `3_600_000`     | first cooldown after a 429 or a transport failure (§21.9)                                                                                                                             |
+| `ODDS_API_COOLDOWN_MAX_MS`            | `28_800_000`    | ceiling on the doubling of that cooldown across consecutive failures (§21.9)                                                                                                          |
+| `ODDS_API_TIMEOUT_MS`                 | `8_000`         | request timeout, same as ESPN's; a slow provider must not eat the CPU budget (§21.6)                                                                                                  |
 
 `TEASER_POINTS_TENTHS = [30, 40, 50, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140]`
 — the 3-to-14-point tiers (plus 6.5), in TENTHS, matching every other line
@@ -388,6 +415,16 @@ issue_number, issue_url, error`. One row per `POST /api/bugs`, written BEFORE
 the GitHub issue is filed so a GitHub outage loses nothing; `issue_number` /
 `issue_url` are set on success, `error` on failure. The `(user_id, created_at)`
 index is the rate-limit guard. §11.7.
+
+**`secondary_budget`** (migration `0007_secondary_odds.sql`, **planned — M9b
+writes it from §21.3; nothing under `migrations/` yet**) — `id (CHECK id = 1),
+remaining_credits, checked_at, last_attempt_at, nfl_last_sweep_at,
+ncaaf_last_sweep_at, cooldown_until, consecutive_failures, last_status,
+last_error, updated_at`. **Exactly one row.** It holds The Odds API's credit
+balance and the rate limiters that make exhausting a 500-credit month impossible.
+It is NOT a money table and carries no trigger: the guard is a conditional
+`UPDATE` whose `WHERE` is every limit at once, and `meta.changes = 1` is the
+permission to make the request. §21.3 / §21.5.
 
 **`ingest_targets`** — the ingestion work queue. §8.4.
 `id PRIMARY KEY` (`"<league>:<kind>:<key>"`), `league`, `kind ('week'|'date')`,
@@ -1408,6 +1445,12 @@ The key is computed with `Intl.DateTimeFormat` and an explicit `America/New_York
 timezone, **once per planner run**, not per game; `src/shared/time.ts` owns
 `etDateKey(epochMs)`.
 
+**How many dates the planner emits is §22's question, not this one.** The unit of
+work is unchanged — one ET date, one request — but the RANGE of dates ends on the
+Monday that closes the football week rather than ten days out. §22 owns that
+rule, its two rollover instants and its operator-visible consequences; everything
+else in this section reads the same either way.
+
 **Still an assumption, not a measurement:** that `dates=` reaches _postseason_
 games (NFL Wild Card in January, CFB bowls under `groups=80`). That cannot be
 probed until January. If it turns out postseason needs `seasontype=3`, the remedy
@@ -1535,10 +1578,14 @@ kickoff        event.date, ISO with no seconds ("2026-09-13T17:00Z").
 Each run:
 
 1. **Plan** (cheap, no network): ensure an `ingest_targets` row exists for every
-   `(league, ET date)` covering `now … now + 10d` — 2 leagues × ~11 dates ≈ 22
-   rows, created once and then reused. Delete targets whose window ended more
-   than 2 days ago and that have no non-final games. The planner needs no league
-   calendar, which is what makes bowls and the NFL postseason free (§8.2).
+   `(league, ET date)` covering `now … boardWindowEnd(league, now)` — the window
+   that ends on the Monday closing the football week (§22): 2 ET dates on a
+   Sunday morning for the NFL, 7 on a Tuesday, 8 on a Monday, at most 9 on a
+   Sunday after the rollover, so **≤ 18 rows**, created once and then reused. The two leagues differ by a week for
+   part of every Sunday, which is why the planner walks the dates PER LEAGUE.
+   Delete targets whose window ended more than 2 days ago and that have no
+   non-final games. Beyond that weekday rule the planner still needs no league
+   calendar, which is what keeps bowls and the NFL postseason free (§8.2).
 2. **Pick** up to `REFRESH_TARGETS_PER_RUN = 2` targets with `next_run_at <= now`.
    **The two slots are not interchangeable**:
 
@@ -1553,10 +1600,14 @@ Each run:
    that, because live targets are perpetually the most due. Next week's CFB lines
    would simply never be discovered.
 
-   Budget check, computed: a 10-day window is 11 ET dates × 2 leagues = **22
-   targets**. Worst case 2 are live, leaving **20** discovery targets that each
-   want a +6 h refresh = 4/day = **80 slot-uses/day**, against a supply of **96**
-   — fits with 16 to spare. If two targets are live simultaneously they alternate
+   Budget check, computed (under §22's window): at most 9 ET dates × 2 leagues =
+   **18 targets**, 16 on a Monday and 14 from Tuesday on. Worst case 2
+   are live, leaving **16** discovery targets that each want a +6 h refresh =
+   4/day = **64 slot-uses/day**, against a supply of **96** — fits with 32 to
+   spare, where the 10-day window it replaced left 16. The DST footnote that used
+   to sit here (a 23 h day makes a 10-day window span twelve ET dates) no longer
+   binds: a weekday-anchored window spans at most 9 dates however long its days
+   are. If two targets are live simultaneously they alternate
    in slot 1 and each gets a **30-minute** cadence; settlement tolerates that (it
    is a fake-money app, and the settle job runs independently of ingest).
    The reserved-slot query excludes the id slot 1 already claimed
@@ -2324,8 +2375,12 @@ slice, and the whole week is already in hand. `period`/`displayClock` render a l
 prelude, because a new season needed a new bankroll. A balance is account-level
 and opened at signup, so a GET is a GET again.
 
-Default window when `from`/`to` are absent: `now - 12h … now + 10d`, capped at 300
-games. Requires auth (this is a private app; the whole API is behind a session except
+Default window when `from`/`to` are absent: `now - BOARD_LOOKBACK_MS` (12 h) …
+`boardWindowEnd(league, now)` — the end of the Monday that closes the football
+week, per league (§22) — capped at `BOARD_MAX_GAMES` (300) GAMES. A games cap,
+not a rows cap: once a game can have more than one `game_lines` row (§21.3) the
+`LIMIT` moves into a subquery over `games`, or the board silently halves
+(§21.10). Requires auth (this is a private app; the whole API is behind a session except
 §11.1).
 
 ### 11.4 Bets
@@ -3226,6 +3281,20 @@ the user locked it). Grading reads only these; the exact price is recomputed fro
 and `tests/worker/settle.spec.ts` proves the payout is unaffected by mutating —
 or deleting — the `game_lines` row after placement.
 
+**THE TRIO IS PER MARKET, NOT PER ROW (M9b).** With a second provider a game can
+have two `game_lines` rows and the effective line is merged per market (§21.4):
+the spread may be DraftKings' and the total FanDuel's, captured at different
+instants. So `provider`, `line_captured_at` **and the staleness decision that let
+the leg be placed at all** must every one of them come from
+`EffectiveLine.<market>` — `MarketSource` carries `provider`, `capturedAt` and
+`seenAt` precisely so they travel together. Taking `provider` from the market and
+`line_captured_at` from "the line" (as `resolveLegSnapshots` does today, reading
+`line.captured_at`) would write an audit record of a quote that never existed:
+FanDuel's price stamped with DraftKings' capture time. `MARKET_UNAVAILABLE` is
+likewise decided per market — a game whose spread is fresh and whose total's only
+row is stale accepts a spread leg and refuses a total leg, and the board shows
+exactly that.
+
 ### 14.4 Cents rounding and money-column types
 
 Covered in §5.2/§5.3. BigInt rationals end-to-end; `number` appears only at the
@@ -3585,6 +3654,83 @@ friend who cannot find a game to bet):
   `GET /api/admin/jobs` reports `stats.dayRowsWritten` (rolling 24 h) for exactly
   this check; §8.6 predicts ≈ 5,100/day.
 
+### M9-plan — This chapter, the constants and the stubs — **PLANNED** _(ships first of all)_
+
+One PR that adds NO behaviour and NO schema: PLAN §21 + §22, the CLAUDE.md
+rules they change, the `src/shared/constants.ts` values, the type-only stubs
+(`src/shared/{lines,odds-api}.ts`, `src/worker/{odds-api,secondary}.ts`,
+`boardWindowEnd` in `src/shared/time.ts` — every body throws), the two captured
+API samples, the `tests/unit/docs.spec.ts` entries that pin the new constants,
+and TODO comments pointing at the milestone that fills each stub.
+**It ships no migration.** `migrations/0007_secondary_odds.sql` is written by
+**M9b**, from §21.3, which carries the file verbatim; a migration that lands
+before the code that reads it is a schema change nobody can test and that the
+Deploy workflow applies to production on merge.
+**DoD**: the five gate commands green; every stub throws with a milestone
+reference; `git status` shows no file under `migrations/`.
+
+### M9-0 — The board window ends on Monday — **PLANNED** _(ships FIRST of the code changes)_
+
+The product owner's rule, and the only milestone here that changes what a user
+sees without adding a feature: the board and the ingest planner stop at the end
+of the Monday that closes the football week instead of ten days out. **§22 is the
+specification**; this entry is the shipping order.
+
+**Files it changes** (the plan PR already landed §22 and the two rollover
+constants, so M9-0 is the code):
+
+| File                              | Change                                                                                                |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `src/shared/time.ts`              | implement `boardWindowEnd` (the stub throws today); import `WEEK_ROLLOVER_ET_HOUR`                    |
+| `src/shared/constants.ts`         | none — the two ET-hour constants and `INGEST_WINDOW_MS`'s new comment are already in                  |
+| `src/worker/ingest.ts`            | `planTargets` walks the days PER LEAGUE against the clamped window; `claimDueTargets`' budget comment |
+| `src/worker/routes/games.ts`      | the default `to` becomes `boardWindowEnd(league, now)`; drop the `INGEST_WINDOW_MS` import            |
+| `tests/unit/time.spec.ts`         | §22.5's pure cases, including both DST Sundays                                                        |
+| `tests/worker/ingest.spec.ts`     | §22.5's planner cases (Tue 14 / Sun 9+2 / Mon 8 each) and the re-based slot soak                      |
+| `tests/worker/routes.spec.ts`     | the board's default window, and the §22.5 rollover burst                                              |
+| `CLAUDE.md`                       | rule 3 loses its "(planned — M9-0)" marker                                                            |
+| `docs/OPERATIONS.md`, `README.md` | §22.6's two operator effects and the rollover-burst answer                                            |
+
+**Depends on**: the plan PR. **Blocks**: M9b (§21's candidate bound is this
+window); M9a does not import it.
+**DoD**: §22.2's table is a passing test; `npm run db:migrate:local` is untouched
+(no schema change); §22.6's operator effects are in `docs/OPERATIONS.md` BEFORE
+the deploy, not after.
+
+Why it ships first and alone: it is a behaviour change to a live app with real
+bettors, it touches two hot read paths, and it has nothing to do with a second
+odds provider. Bundling it into M9a–c would mean a rollback of the provider work
+also rolls back the owner's window, or vice versa.
+
+### M9a / M9b / M9c — Secondary odds provider — **PLANNED**
+
+Three PRs, each independently mergeable and green on its own; the file lists,
+the tests-first lists and the DoD for each are **§21.11**. In dependency order:
+
+| PR      | What lands                                                                                                           | Depends on            |
+| ------- | -------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| **M9a** | pure parse + match (`src/shared/odds-api.ts`), the merged ESPN captures                                              | M2d only              |
+| **M9b** | **writes `migrations/0007_secondary_odds.sql`** from §21.3, the per-market merge, the board and placement read paths | M9a (types), **M9-0** |
+| **M9c** | the sweep, the budget, the three refresh paths, the docs                                                             | M9a + M9b             |
+
+**M9b is the schema PR.** It creates `0007` from §21.3 (which carries the file
+verbatim), and `0007` is FROZEN from the moment M9b merges — the Deploy workflow
+applies it to the live D1 on that merge, so every later change to those columns
+is a new numbered `0008` (CLAUDE.md rule 9). Nothing before M9b puts a file under
+`migrations/`.
+
+M9b is also where behaviour could regress, and it does so in exactly ONE visible
+way: **a STALE all-NULL primary row stops rendering the "Line is stale" banner
+and renders "no line" instead.** ESPN writes such a row when DraftKings pulls
+every market ("OFF"); today `toLinesView` computes `stale` from the row's
+`seen_at` alone, and after M9b `stale` requires that some row offered a COMPLETE
+market (§21.4). `bettable` is unaffected in both cases (no market → not
+bettable), and the correction is the point: the banner means "ingestion has gone
+quiet", and a game nobody has priced is not a broken ingest. Everything else must
+be byte-identical while only primary rows exist, and
+`tests/worker/lines-parity.spec.ts` is the proof. M9c is the only PR that spends
+money (credits), and it is off entirely without `ODDS_API_KEY`.
+
 ---
 
 ## 16. Parallel-execution map
@@ -3758,6 +3904,61 @@ ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
   wire: every value the old client sends is still accepted.
 - **`scripts/teaser-card.mjs`** — generates `TEASER_PAYOUTS` and the §5.8 table
   from one model, so the two are regenerated together.
+- **`migrations/0007_secondary_odds.sql`** — the secondary odds provider (§21).
+  Three metadata-only `ADD COLUMN`s (`game_lines.spread_book` / `total_book` /
+  `ml_book`, `games.secondary_tried_at`) plus one new table, `secondary_budget`,
+  seeded with its single row. Nothing existing is rewritten, so it is safe on the
+  populated remote database and the order against the deploy is harmless in both
+  directions: the old Worker neither reads nor writes any of it.
+  **Written by M9b, not by the plan PR** — §21.3 carries the file verbatim until
+  then, and it is frozen from M9b's merge like every numbered migration before
+  it.
+- **`api-types.ts`** — `GameLinesView`'s three market objects each gain
+  `provider: string`, the per-market provenance the merge produces (§21.4).
+  Response-only and additive, under the same rule as M5b's additions: a field
+  appearing on a response cannot break a deployed client, and no existing field
+  changes meaning. **`stale` DOES change meaning, in one direction only**: it
+  becomes "some row offered a COMPLETE market and every row that did is stale at
+  `now`" (§21.4), where today `toLinesView` computes it from the row's `seen_at`
+  alone. `GameCard.tsx`'s `game.lines?.stale` check is untouched and `bettable`
+  is unaffected; the one visible difference is a STALE all-NULL primary row,
+  which renders the "Line is stale" banner today and renders "no line" after
+  M9b. That is the intended correction — the banner says ingestion is broken, and
+  a game DraftKings has simply not priced is not a broken ingest — and it is
+  called out in M9b's §15 entry as the milestone's only live behaviour change.
+- **`constants.ts`** — `LINE_PROVIDER_PRIMARY` / `LINE_PROVIDER_SECONDARY` /
+  `LINE_PROVIDER_PRIORITY`, `ODDS_API_*` (bookmakers, markets, cost, reserve,
+  probe, cooldown + its ceiling, timeout), `SECONDARY_*` (retry, re-sweep margin,
+  sweep interval, match window); `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` is
+  already on `main` via PR #36. Every numeric one is in §3.1's
+  constants-of-record table and `tests/unit/docs.spec.ts` asserts it —
+  **including `ODDS_API_MONTHLY_CREDITS` and `ODDS_API_TIMEOUT_MS`**, which an
+  earlier draft of this bullet claimed without it being true. The first of those
+  matters most: 500 is the number hard-coded in 0007's seed (§21.3), and a seed
+  that silently disagrees with the constant is exactly the drift the guard is
+  for.
+- **`constants.ts`, again, for M9-0** — `NFL_WEEK_ROLLOVER_ET_HOUR`,
+  `NCAAF_WEEK_ROLLOVER_ET_HOUR` and the `WEEK_ROLLOVER_ET_HOUR` record (§22).
+  `INGEST_WINDOW_MS` is NOT deleted: it stops being the window and becomes the
+  planner's hard ceiling, which is a doc-comment change plus a `min(...)` in
+  `planTargets`. Keeping the name keeps the blast-radius bound and keeps the
+  diff readable; a constant that no longer means what it says is exactly what
+  the doc guard exists to catch, so its comment says so in full.
+- **`src/shared/time.ts`** — `boardWindowEnd(league, now)`, the one definition of
+  where the board and the planner stop (§22). ET now appears in TWO places in
+  that file rather than one; CLAUDE.md rule 3 says so.
+- **`src/shared/lines.ts`** — `mergeEffectiveLine`, `marketProvider`,
+  `providerRank`, `missingMarkets`. New file, pure, imported by the board, by
+  placement and by the sweep.
+- **`src/worker/secondary.ts`** — new file: `runSecondary`, `sweepSecondary` and
+  the secondary's OWN upsert SQL. Deliberately not more of `ingest.ts`, whose
+  `LINE_UPSERT_SQL` M9c must not edit (§21.3).
+- **`env.ts`** — var `ODDS_API_BASE_URL`; secret `ODDS_API_KEY` (optional; the
+  whole feature is OFF without it, exactly like `GITHUB_TOKEN`).
+  `RuntimeConfig.oddsApi` is the parsed form and is `null` when the key is unset.
+- **No error code is added.** The secondary never produces a user-visible error:
+  a market it could not fill is a market that is simply absent, which
+  `MARKET_UNAVAILABLE` already means.
 
 ## 17. Risks and mitigations
 
@@ -3783,7 +3984,9 @@ ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
 
 Status at a glance: **S1 UNMEASURED** (no longer blocked — the Worker is
 deployed; nobody has read the number yet), **S2 UNMEASURED** (same),
-**S3 RESOLVED**, **S4(a)/(b) RESOLVED**, **S4(c) OPEN until January**.
+**S3 RESOLVED**, **S4(a)/(b) RESOLVED**, **S4(c) OPEN until January**,
+**S5 RESOLVED** (2026-09-16: `GET /v4/sports` returns the credit headers with
+`x-requests-last: 0`, so the budget probe is free — §21.5, §21.12).
 
 **How to measure S1 and S2, now that there is a deployed Worker.** Both answers
 come off `wrangler tail`, which prints one JSON log line per invocation carrying
@@ -3971,3 +4174,1470 @@ legs, spread and total, §5.8) and mixed-league parlays (§19 Q3 answered "one
 account balance", which is what made a cross-league leg legal). "Season archives"
 is gone from the list too — not because it shipped, but because §19 Q5 removed
 the concept of a season from the product entirely.
+
+---
+
+## 21. Secondary odds provider (The Odds API)
+
+Numbered **21** rather than 20 because §20 ("Out of scope for v1") already
+exists and renumbering a chapter every cross-reference points at is a worse
+trade than a section that is not the last one in the file.
+
+### 21.1 Goal, and what is deliberately not in it
+
+**Goal.** Fill any market — spread, total, moneyline — that the primary feed
+(DraftKings via ESPN) is missing, for NFL games and for CFB games with a top-25
+team, on The Odds API's FREE 500-credit/month tier, with a guard that makes
+exhausting the quota impossible.
+
+The measurement §8.3 built to answer "is a second provider worth it" answered
+yes: on 2026-09-16 ESPN reported the Texas Tech–Houston total and moneyline as
+`OFF` while the API carried both from nine books **including DraftKings** (total
+53.5, −105/−115). So the common case is not "a worse book's number" — it is
+DraftKings' own quote arriving through a different pipe.
+
+**Settled, not up for re-litigation:**
+
+1. The primary stays DraftKings-via-ESPN. The secondary fills only what the
+   primary lacks, PER MARKET. A whole market — the line AND both prices — comes
+   from ONE bookmaker; never a line from one book and a price from another.
+   Bookmaker preference: `draftkings, fanduel, betmgm, betrivers, bovada`
+   (`ODDS_API_BOOKMAKERS`). When the primary market reappears it takes the board
+   back on the next refresh, with no extra machinery: see §21.4.
+2. Eligible for a fill attempt: `status = 'scheduled'`, kickoff in the future and
+   inside the **board window** (§22 — the same one the board and the planner
+   use), league is `nfl`, OR league is `ncaaf` and `home_rank` or `away_rank` is
+   1–25; AND the effective line is missing a market **by §21.2's rule**, which is
+   not the same as "any market is null": a missing moneyline past a 30-point
+   spread is normal, not a gap.
+3. It rides the existing `refresh` cron. No fourth trigger. At most ONE odds call
+   per league per run, plus at most one FREE credit probe, so at most 4 external
+   subrequests against a limit of 50.
+4. The feature is OFF when `ODDS_API_KEY` is absent, exactly like `GITHUB_TOKEN`
+   (§11.7): `readConfig` returns `oddsApi: null`, the sweep is never attempted,
+   and `job_runs.stats.secondary.enabled` is `false`.
+
+**Out of scope, stated so it is not re-proposed:** the paid tier; a fourth cron;
+a dedicated admin sweep endpoint (the three existing refresh paths cover it,
+§21.2); filling UNRANKED CFB games; player props; showing more than one book's
+price for a market; any change to `settle.ts` (grading reads the `bet_legs`
+snapshot and nothing else — CLAUDE.md rule 7); any edit to migrations 0001–0006.
+
+### 21.2 Where the sweep runs, and what counts as a gap
+
+There are three ways a refresh happens and **all three fill**, because an
+operator who presses a Refresh button and gets a board that is still missing a
+total has been told nothing useful.
+
+| Path                                      | Entry point                                                      | Secondary behaviour                                    |
+| ----------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------ |
+| cron `*/15 * * * *`                       | `scheduled()` → `runJob('refresh','cron')` → `runRefresh`        | normal decision (§21.5)                                |
+| admin `POST /api/admin/jobs/refresh`      | `runJob('refresh','admin')` → `runRefresh`                       | normal decision                                        |
+| admin `POST /api/admin/games/:id/refresh` | `bumpTargetForGame` → `runJob('refresh','admin')` → `runRefresh` | `force` for THAT game: skips `SECONDARY_RETRY_MS` only |
+
+The third path already re-ingests through the ordinary refresh job — it makes the
+game's ET-date target the most due thing and then takes the **same `refresh`
+lease** (`routes/admin.ts`, §9.3). That is load-bearing here: every sweep, from
+every path, runs inside one lease, so the credit claim is already serialised and
+two operators hammering Refresh cannot both sweep. The conditional `UPDATE` in
+§21.5 is the belt to that braces, not a substitute for it.
+
+**ONE implementation**, in `src/worker/secondary.ts` — not in `ingest.ts`, whose
+`LINE_UPSERT_SQL` M9c must not touch (§21.3). `runRefresh` gains exactly one call
+and one stats field:
+
+```ts
+runSecondary(env, now, { force: string | null }): Promise<SecondaryStats>
+  // loops LEAGUES, at most one call each, folds secondary_budget into the stats
+
+sweepSecondary(env, league, now, { force }): Promise<SecondarySweep>
+  // ALWAYS a value, never null: a refusal is `{ skipped: 'throttled', … }`
+```
+
+`sweepSecondary` returning `SecondarySweep | null` was a round-1 mistake and is
+corrected here: `null` and "skipped, and here is why" are different facts, and
+the stats contract (§21.8) needs the second one. There is no `skipped: 'disabled'`
+either — when `ODDS_API_KEY` is unset, `SecondaryStats.enabled` is `false` and
+`sweeps` is empty, so nobody has to learn that a disabled feature emits one row
+per league saying so.
+
+`runRefresh` calls it once, AFTER the ESPN targets have been ingested (so the
+decision sees the board the primary just wrote, and a gap the primary closed this
+run costs no credits), and passes `force` through from the route. The route
+returns the sweep stats in the SAME shape as a cron run's, inside the
+`JobRunResponse` it already returns — no new route, no second stats vocabulary.
+
+`force` waives the 4-hour retry backoff and **nothing else**. It does not waive
+the credit reserve, the per-league sweep interval, the failure cooldown, or the
+one-call-per-league-per-run rule. That is a decision, not an oversight: if the
+league was swept 40 minutes ago, the fill on the board IS the freshest thing the
+API has, and spending three credits to re-learn it is the behaviour the reserve
+exists to prevent. When a claim is refused the reason travels back in the stats
+(`skipped: 'throttled' | 'budget' | 'cooldown'`), so the operator sees why rather
+than seeing nothing happen.
+
+#### Eligibility, and the moneyline rule
+
+A game is a CANDIDATE when all of:
+
+- `status = 'scheduled'` and `kickoff_at > now`;
+- `kickoff_at <= boardWindowEnd(league, now)` — **the same window the board and
+  the planner use** (§22). Not a separate horizon constant: a second definition
+  of "how far ahead the app looks" is a second thing to keep in sync, and the
+  sweep must never pay for events no candidate could match;
+- league is `nfl`, OR league is `ncaaf` and `home_rank` or `away_rank` is 1–25.
+
+A candidate is GAPPED when `missingMarkets()` (src/shared/lines.ts) says so:
+
+| Market missing from the effective line | Counts as a gap?                                                                |
+| -------------------------------------- | ------------------------------------------------------------------------------- |
+| spread                                 | always                                                                          |
+| total                                  | always                                                                          |
+| moneyline                              | only when `abs(spread.homeTenths) < MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` (30.0) |
+| moneyline, and there is no spread      | always — with nothing to judge by, assume it is fillable                        |
+
+**The moneyline rule is measured, not guessed.** In
+`docs/samples/odds-api-ncaaf.json` (75 events, nine books) fifteen events carry
+no moneyline at the five preferred books — and no moneyline at ANY of the nine
+either. Every one of them has `|spread| >= 33.5`. The largest spread that DOES
+carry a DraftKings moneyline is 35.5, and the largest below the fifteen is 30.5,
+so 30.0 sits in a real gap in the data rather than on a cliff edge. The NFL
+sample has no moneyline-less event at all.
+
+Without the rule those fifteen games are permanently unfillable AND permanently
+gapped: each re-triggers a three-credit sweep every `SECONDARY_RETRY_MS`,
+forever. Simulated over a 30-day month (§21.5), four of them cost **471 credits**
+of a 500-credit tier and move the reserve block from "never" to **day 19** —
+which does not break anything, but does spend the month on games no book prices
+and starve the fills that work. With the rule they are not gaps, and the typical
+month costs 318 credits with the reserve never blocking.
+
+This is the SWEEP's predicate and deliberately not the COVERAGE measurement in
+`ingest.ts` (§8.3), which keeps counting every absent market including those
+fifteen. One describes the feed; the other spends money. A single predicate doing
+both would have to pick, and picking would silently change the §8.3 series that
+justified this whole chapter.
+
+### 21.3 Data model — `migrations/0007_secondary_odds.sql`
+
+**THIS SECTION IS THE FILE.** The plan PR ships NO schema (§15): the block below
+is the complete text `M9b` writes to `migrations/0007_secondary_odds.sql`, and
+`0007` is frozen from the moment M9b merges, like every numbered migration before
+it (CLAUDE.md rule 9, §16.1). Nothing existing is rewritten — three metadata-only
+`ADD COLUMN`s and one new table — so it is safe on the populated remote D1 and
+the apply/deploy order is harmless in either direction: the old Worker neither
+reads nor writes any of it.
+
+```sql
+-- ---------------------------------------------------------------------------
+-- 1. Per-market bookmaker on a line row.
+--
+-- The secondary writes ONE row per game with provider = 'odds-api'
+-- (LINE_PROVIDER_SECONDARY). A whole market always comes from ONE book — never a
+-- line from one book and a price from another — but the three markets of a
+-- single game may come from three different books, and `bet_legs.provider` has
+-- to be able to say which. Hence one TEXT column per market rather than one per
+-- row. NULL on the primary's row, always: ESPN carries exactly one book and
+-- `game_lines.provider` already names it. NULL on a secondary row means "that
+-- market is not filled", which is what the price columns say too.
+-- ---------------------------------------------------------------------------
+ALTER TABLE game_lines ADD COLUMN spread_book TEXT NULL;
+ALTER TABLE game_lines ADD COLUMN total_book  TEXT NULL;
+ALTER TABLE game_lines ADD COLUMN ml_book     TEXT NULL;
+
+-- ---------------------------------------------------------------------------
+-- 2. When the secondary last TRIED, and failed, to fill this game.
+--
+-- Stamped ONLY for a game that still lacks a market AFTER a sweep has written
+-- its rows, so the write cost is one row per genuinely unfillable game per
+-- sweep rather than one per eligible game. Deliberately NOT INDEXED: the
+-- candidate scan is already bounded by (league, kickoff_at) via
+-- `idx_games_board`, and an index here would double the cost of every stamp for
+-- a predicate that is never selective on its own.
+-- ---------------------------------------------------------------------------
+ALTER TABLE games ADD COLUMN secondary_tried_at INTEGER NULL;
+
+-- ---------------------------------------------------------------------------
+-- 3. The credit budget. EXACTLY ONE ROW, enforced by CHECK (id = 1).
+--
+-- The free tier is 500 credits per calendar month and every response carries
+-- `x-requests-remaining`. That header is the authority; this row is the durable
+-- memory of the last reading plus the rate limiters that stop a bug or an
+-- outage spending the month in an afternoon.
+--
+-- NO READ-THEN-WRITE (CLAUDE.md rule 5). A sweep CLAIMS its credits with a
+-- conditional UPDATE whose WHERE carries every guard — reserve, per-league
+-- interval, cooldown — and `meta.changes = 1` is the permission to make the
+-- call. Pessimistic on purpose: a request that times out has already been
+-- debited, so an outage cannot overdraw us.
+--
+-- Concurrency: every sweep runs inside the `refresh` job lease (cron, admin
+-- "Run refresh", and the per-game admin Refresh all take it), so the claim is
+-- already serialised. The conditional UPDATE is the belt to that braces.
+--
+-- Per-league columns rather than a row per league because the balance is GLOBAL
+-- and must be claimed atomically with the per-league cadence check, in ONE
+-- statement. There are exactly two leagues (`LEAGUES`).
+-- ---------------------------------------------------------------------------
+CREATE TABLE secondary_budget (
+  id                   INTEGER PRIMARY KEY CHECK (id = 1),
+  -- Last value of `x-requests-remaining`, decremented pessimistically before
+  -- each request and overwritten by the header after each 2xx.
+  remaining_credits    INTEGER NOT NULL CHECK (remaining_credits >= 0),
+  -- When `remaining_credits` last came from a real response header. 0 = never.
+  -- ALSO the throttle for the POST-FAILURE probe, which is exempt from
+  -- `last_attempt_at` and from `cooldown_until` (§21.5): the failed request it
+  -- follows has already been made, and the probe costs nothing.
+  checked_at           INTEGER NOT NULL DEFAULT 0,
+  -- When any CREDIT-SPENDING request was last claimed, either league. This is
+  -- what throttles the daily reset probe to one per 24 h globally.
+  last_attempt_at      INTEGER NOT NULL DEFAULT 0,
+  -- Per-league sweep cadence floor (SECONDARY_MIN_SWEEP_INTERVAL_MS).
+  nfl_last_sweep_at    INTEGER NOT NULL DEFAULT 0,
+  ncaaf_last_sweep_at  INTEGER NOT NULL DEFAULT 0,
+  -- Set on 429 and on any transport failure; no SWEEP claim succeeds before it.
+  cooldown_until       INTEGER NOT NULL DEFAULT 0,
+  -- How many failures in a row. The cooldown DOUBLES with it, from
+  -- ODDS_API_COOLDOWN_MS up to ODDS_API_COOLDOWN_MAX_MS, so a provider that is
+  -- down for a day costs ~18 credits to notice instead of 144. Cleared to 0 by
+  -- a successful SWEEP or by the daily RESET probe — never by the post-failure
+  -- probe, which fires right after a failure and would otherwise reset the
+  -- counter every time and stop the cooldown ever doubling.
+  consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+  -- 'ok' | 'unauthorized' | 'rate_limited' | 'error'. Rendered by the admin view.
+  last_status          TEXT,
+  last_error           TEXT,
+  updated_at           INTEGER NOT NULL DEFAULT 0
+);
+
+-- Seeded with the free tier's nominal allowance and `checked_at = 0`, i.e. "we
+-- have never asked". The first response replaces it with the truth. Seeding 500
+-- rather than 0 is what lets the very first sweep happen at all; seeding it too
+-- HIGH is harmless because the reserve is checked against the header value from
+-- the first response onwards, and the FREE probe re-reads it daily even if no
+-- sweep ever runs.
+--
+-- THE 500 IS `ODDS_API_MONTHLY_CREDITS` (src/shared/constants.ts), literal here
+-- because SQL cannot import it — which is exactly why that constant is in §3.1's
+-- constants-of-record table and `tests/unit/docs.spec.ts` asserts it. It is a
+-- SEED, not a policy: migrations never replay, so changing the constant does not
+-- re-seed this row and does not need to; by then the row holds a real header
+-- value. If the tier ever changes, change the constant and let the next response
+-- correct the row. Do not write an 0008 to re-seed it.
+INSERT INTO secondary_budget (id, remaining_credits) VALUES (1, 500);
+```
+
+**ONE secondary row per game, `provider = 'odds-api'`** — not one row per
+bookmaker. The reasons, in order of how much they matter:
+
+- It makes "two secondary rows for one game with different `seen_at`"
+  **impossible by construction**: the primary key is `(game_id, provider)` and
+  the provider is a constant. There is no tie-break to get wrong.
+- A WITHDRAWAL becomes free. When a later sweep no longer has a total for the
+  game, the next write simply sets `total_tenths = NULL`, bumps `seen_at`, and
+  the market leaves the board. With a row per bookmaker we would have to SELECT
+  the rows we wrote last time in order to know which ones to blank — an extra
+  read per game and an orphan row the first time we got it wrong. (§8.3
+  established the same rule for the primary: a withdrawal is a write.)
+- Write budget. One row per gapped game per sweep, subject to compare-and-skip,
+  instead of up to nine. Writing all nine books for 75 CFB games would be ~675
+  rows a sweep against a 100k/day cap that a Saturday already spends ~5,100 of
+  (§8.6).
+
+`games.secondary_tried_at` is stamped **only for a game that still lacks a market
+after the sweep's writes**. A game the sweep filled is not stamped and does not
+need to be: it is no longer missing a market on the effective line, so the retry
+rule cannot select it. That turns the write cost from "one row per eligible game
+per sweep" into "one row per genuinely unfillable game per sweep" — on a normal
+Saturday, a handful. The column is deliberately NOT indexed: the candidate scan
+is already bounded by `(league, kickoff_at)` via `idx_games_board`, and an index
+would double the cost of every stamp for a predicate that is never selective on
+its own.
+
+#### The secondary's OWN upsert, and why it cannot reuse the primary's
+
+`ingest.ts`'s `LINE_UPSERT_SQL` compares nine price/line columns and **no book
+columns**. Reusing it — or copying "the same `WHERE` shape", which is what round 1
+said — is a correctness bug, not a style one:
+
+> DraftKings withdraws its total. FanDuel offers 53.5 at the identical
+> −105 / −115. The nine-column compare tuple is UNCHANGED, the write is skipped,
+> `total_book` stays `draftkings`, and every leg placed afterwards snapshots a
+> book that is not quoting that number.
+
+So M9c adds its own constants in `src/worker/secondary.ts` and **edits
+`LINE_UPSERT_SQL` not at all**. Two statements, because the all-NULL case must
+never INSERT:
+
+**(S1) `SECONDARY_LINE_UPSERT_SQL`** — used when at least one of the three
+markets is non-null. Same shape as the primary's, with `spread_book`,
+`total_book` and `ml_book` added to the column list, the `SET` list and **both
+halves of the compare tuple**:
+
+```sql
+INSERT INTO game_lines (
+  game_id, provider, spread_home_tenths, spread_home_price, spread_away_tenths,
+  spread_away_price, spread_book, total_tenths, total_over_price,
+  total_under_price, total_book, ml_home_price, ml_away_price, ml_book,
+  captured_at, seen_at
+) VALUES (?, 'odds-api', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(game_id, provider) DO UPDATE SET
+  … every column above …,
+  captured_at = CASE WHEN <OLD12> IS NOT <NEW12> THEN excluded.captured_at
+                     ELSE game_lines.captured_at END,
+  seen_at = excluded.seen_at
+WHERE <OLD12> IS NOT <NEW12>
+   OR game_lines.seen_at < excluded.seen_at - <LINE_SEEN_TOUCH_MS>;
+```
+
+where `<OLD12>` / `<NEW12>` are the nine market columns **plus the three book
+columns**. A book change alone is therefore a write — and, because the same
+tuple is inside the `captured_at` CASE, it also advances `captured_at`. That is
+correct and deliberate: FanDuel quoting 53.5 at −105/−115 is a DIFFERENT quote
+from DraftKings quoting the same numbers, and `bet_legs.line_captured_at` must
+say when the quote a leg snapshots was actually captured (§14.3), not when a
+book we are no longer reading last moved.
+
+**(S2) `SECONDARY_LINE_BLANK_SQL`** — used when all three markets are null. A
+plain `UPDATE … WHERE game_id = ? AND provider = 'odds-api' AND <OLD12> IS NOT
+<NEW12>`, which **cannot create a row**.
+
+The split is the answer to a real failure: an INSERT of an all-null secondary row
+would give a never-priced game (a ranked CFB matchup in early week, say, or one
+whose match yielded no usable market) a fresh `game_lines` row with three null
+markets. `mergeEffectiveLine` would then see rows that exist and no market — and
+under the naive definition of `stale` the card would read "Line is stale — not
+accepting bets right now" on a game that has never been priced at all. Two
+guards, both stated so neither is "simplified" away later: **never INSERT an
+all-null secondary row**, and `stale` means "some row offered a complete market
+and every such row is stale" (§21.4).
+
+### 21.4 The merge — `mergeEffectiveLine`, and why not a merged row
+
+```ts
+// src/shared/lines.ts — pure, platform-free, no D1, no DOM
+mergeEffectiveLine(
+  rows: readonly LineRowView[],   // EVERY game_lines row for one game
+  kickoffAt: EpochMs,
+  now: EpochMs,
+): EffectiveLine | null           // null == the game has never been priced
+```
+
+Per market, independently:
+
+1. drop rows that do not offer the market COMPLETE (a spread needs both tenths
+   and both prices; a total needs the number and both prices; a moneyline needs
+   both prices). A half-market is not a market.
+2. drop rows that are stale at `now`:
+   `now - seenAt > lineStaleAfterMs(kickoffAt, seenAt)`. Judged **per row**, so a
+   fresh secondary fill survives next to a primary row that has gone stale.
+3. of what is left, take the first by `LINE_PROVIDER_PRIORITY`
+   (`['DraftKings', 'odds-api']`, unknown providers last), then `seenAt` DESC,
+   then `provider` ASC.
+
+Step 3's primary-first ordering is the whole of "when the primary market
+reappears it wins": no state, no timer, no cleanup of the secondary row.
+
+**THREE CALL SITES, ONE FUNCTION** — and round 1 named two, which is how the
+detail card would have ended up disagreeing with the slip it feeds:
+
+| Caller                             | Must                                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `GET /api/games` (routes/games.ts) | select ALL rows per game; `LIMIT` moves into a games subquery (§21.10)                            |
+| `GET /api/games/:id`               | `queryAll` + merge — **not** `queryOne`, which takes whichever row D1 returns first               |
+| `resolveLegSnapshots` (bets.ts)    | select ALL rows per game; take provider, `line_captured_at` and staleness from the MARKET (§14.3) |
+
+All three pass the request's single captured clock (`c.var.now`), never a fresh
+`Date.now()`.
+
+**Worked example.** Texas Tech (home) vs Houston, kickoff `K` 20 h away. Two
+rows:
+
+| provider     | spread                            | total                                        | moneyline                    | captured_at | seen_at    |
+| ------------ | --------------------------------- | -------------------------------------------- | ---------------------------- | ----------- | ---------- |
+| `DraftKings` | home `-35` −110 / away `+35` −110 | NULL (`OFF`)                                 | NULL (`OFF`)                 | now − 2 h   | now − 30 m |
+| `odds-api`   | NULL                              | `535` o−105 / u−115, `total_book=draftkings` | −180/+150, `ml_book=fanduel` | now − 10 m  | now − 10 m |
+
+`lineStaleAfterMs(K, seen_at)` is 3 h for both rows (each was seen inside 48 h of
+kickoff), and both are fresh. Result:
+
+```
+spread    { homeTenths: -35, homePrice: -110, awayTenths: 35, awayPrice: -110,
+            provider: 'DraftKings',        capturedAt: now-2h,  seenAt: now-30m }
+total     { tenths: 535, overPrice: -105, underPrice: -115,
+            provider: 'odds-api:draftkings', capturedAt: now-10m, seenAt: now-10m }
+moneyline { homePrice: -180, awayPrice: 150,
+            provider: 'odds-api:fanduel',  capturedAt: now-10m, seenAt: now-10m }
+provider 'DraftKings'   capturedAt now-2h   seenAt now-30m   stale false
+```
+
+The headline `provider`/`capturedAt`/`seenAt` describe the highest-priority row
+that contributed anything, so the card still reads "DraftKings"; the per-market
+strings are the audit trail, and `bet_legs.provider` gets exactly the string the
+board showed.
+
+**`stale` means: some row offered a COMPLETE market, and every row that did is
+stale at `now`.** The qualifier is not pedantry. `src/shared/espn.ts` writes an
+ALL-NULL primary row when DraftKings pulls every market ("OFF"), and that row is
+FRESH — today it renders `stale: false` with three null markets, i.e. "no line",
+which is the truth and what `GameCard.tsx` shows. The looser definition ("rows
+exist, no market survived") would flip that card to the stale banner and tell the
+operator ingestion is broken when it is working perfectly. A card with one
+surviving market renders that one button and no banner, as before.
+
+**The rejected alternative: ingestion writes a merged `provider='board'` row.**
+Its appeal is real — board and placement would each read one row and could not
+disagree. It loses on three counts:
+
+- **Provenance.** `bet_legs.provider` would read `board`, which names no book. §14.3
+  makes the leg's `provider`/`line_captured_at`/`snapshot_at` trio the audit
+  record of a bet; a value that identifies no counterparty empties it.
+- **A fabricated `seen_at`.** A merged row's confirmation stamp would have to be
+  a min or a max over its sources, and neither is a moment at which anybody
+  confirmed anything. Every staleness decision in the app then keys off a
+  synthetic number, and the one property the board and placement rely on —
+  monotonicity in `now` — becomes an argument instead of a fact.
+- **Writes.** A third row per game per refresh, rewritten whenever EITHER source
+  moves, against a hard 100k/day cap.
+
+The pure function's own risk is that two call sites feed it different inputs. It
+is closed by contract and by test: every call site selects ALL rows for the game
+(`WHERE game_id IN (…)`, never `ORDER BY … LIMIT 1`), and
+`tests/worker/lines-parity.spec.ts` asserts that the board's `GameCard.lines`,
+the DETAIL route's card and placement's resolved snapshot agree for a crafted
+three-row set — including a row that is fresh for one market's window and stale
+for another's.
+
+**The "screen said −110, charged −115" hazard is closed by monotonicity, as
+before.** `lineStaleAfterMs` keys on `seenAt`, not on `now`, so a market present
+at time T is present for every T′ in `[T, T + window]`. The board read and the
+placement read happen milliseconds apart in the same direction of time. Do not
+"improve" the merge into a window measured from `now`.
+
+**ACCEPTED RISK: a withdrawn secondary market stays bettable for up to ~3 h.**
+The same monotonicity that closes the hazard above means a market the API stops
+carrying does not leave the board until its row goes stale (3 h inside 48 h of
+kickoff; 18 h further out) or until a sweep overwrites it with NULL — and near
+kickoff the sweep may not run again in time. So a user can, for up to about three
+hours, take a price no book is currently offering. This is accepted, explicitly:
+the money is fake, the exposure is bounded by the same window the PRIMARY feed
+has always had, and the alternative — suppressing fills inside `LIVE_HORIZON_MS`,
+or shortening the window near kickoff — would either remove the markets people
+actually bet or break monotonicity and reintroduce the board/placement
+disagreement. §21.9 lists it as a failure mode with this resolution so nobody
+re-discovers it as a bug.
+
+### 21.5 The sweep decision, and the credit guard
+
+**Decision (per league, per refresh run). One row read, then at most one
+candidate scan.** The decision itself writes nothing — with one exception,
+flagged in the pseudocode: when the reserve is blocking, `maybeProbe` may issue
+the reset probe's claim, which writes the single `secondary_budget` row (and
+never a `game_lines` or `games` row).
+
+```
+sweepSecondary(league, now, { force }):
+  cfg = readConfig(env).oddsApi            # null -> runSecondary never called us
+
+  # 0. Cheap pre-check: ONE row. If the league cannot possibly sweep (missing
+  #    row, cooldown, interval, reserve) we never pay for the candidate scan.
+  budget = SELECT * FROM secondary_budget WHERE id = 1
+  if budget is null:                                    return skipped('no-budget-row')
+  if now < budget.cooldown_until:                       return skipped('cooldown')
+  if now - budget[league + '_last_sweep_at'] < SECONDARY_MIN_SWEEP_INTERVAL_MS:
+                                                        return skipped('throttled')
+  if budget.remaining - COST < RESERVE:
+      maybeProbe(budget, now)                           # FREE, at most 1/day
+      return skipped('budget')
+
+  # 1. Candidates: scheduled, ahead, inside the §22 board window, NFL or top-25 CFB.
+  rows = SELECT g.id, g.kickoff_at, g.home_name, g.away_name, g.short_name,
+                g.secondary_tried_at, l.*             -- ALL line rows, both providers
+           FROM games g LEFT JOIN game_lines l ON l.game_id = g.id
+          WHERE g.league = :league AND g.status = 'scheduled'
+            AND g.kickoff_at > :now
+            AND g.kickoff_at <= :boardWindowEnd
+            AND (:league = 'nfl'
+                 OR g.home_rank BETWEEN 1 AND 25 OR g.away_rank BETWEEN 1 AND 25)
+  for each game:
+      eff     = mergeEffectiveLine(itsRows, kickoff_at, now)
+      gapped  = missingMarkets(eff).any            # §21.2's table, NOT "any null"
+
+  # 2. Two reasons to spend three credits, plus the operator's.
+  retry   = ANY gapped game with (secondary_tried_at IS NULL
+                                  OR now - secondary_tried_at >= SECONDARY_RETRY_MS)
+  resweep = ANY game where a SECONDARY market survived the merge and
+                  now >= m.seenAt + lineStaleAfterMs(kickoff, m.seenAt)
+                                  - SECONDARY_RESWEEP_MARGIN_MS
+  forced  = force is a candidate id AND that game is gapped
+  if not (retry or resweep or forced):                   return skipped('no-gap')
+```
+
+`retry` is what discovers a gap; `resweep` is what stops a fill from silently
+vanishing three hours after it appeared; `forced` is the operator. Note that a
+game the LAST sweep filled satisfies neither `retry` (it is not gapped any more)
+nor a stamp — which is why `secondary_tried_at` only ever records failures.
+
+**Claim, then call. The guard is a `WHERE`, never a read-then-write** (CLAUDE.md
+rule 5). One statement per league — two constant SQL strings chosen from a
+literal map, so the column name is never interpolated from input:
+
+```sql
+UPDATE secondary_budget
+   SET remaining_credits = remaining_credits - :cost,
+       last_attempt_at   = :now,
+       nfl_last_sweep_at = :now,          -- or ncaaf_last_sweep_at
+       updated_at        = :now
+ WHERE id = 1
+   AND remaining_credits - :cost >= :reserve
+   AND :now - nfl_last_sweep_at >= :minInterval
+   AND :now >= cooldown_until;
+```
+
+`meta.changes = 1` is the permission to make the call. The debit happens BEFORE
+the request, pessimistically: a request that times out has already been paid for,
+because we cannot know whether the provider counted it and over-counting is the
+safe direction. After a 2xx the row is overwritten from the authoritative
+`x-requests-remaining` header, which corrects any drift the pessimism introduced.
+
+**The budget probe is FREE, and that changes its design.** `GET /v4/sports?apiKey=…`
+answers 200 with `x-requests-last: 0` and both `x-requests-used` and
+`x-requests-remaining` present — **verified twice against the live API on
+2026-09-16** (spike S5, §21.12, now RESOLVED). So:
+
+- neither claim may decrement `remaining_credits`;
+- there are **TWO probes with two different claims**, and they must not share
+  one, because the obvious single gate deadlocks. **(a) THE RESET PROBE**, while
+  the reserve is blocking, is what lets us notice the monthly reset without month
+  arithmetic or trusting anyone's timezone:
+
+  ```sql
+  -- (a) reset probe: global daily throttle, respects the cooldown.
+  UPDATE secondary_budget
+     SET last_attempt_at = :now, updated_at = :now       -- NO credit arithmetic
+   WHERE id = 1
+     AND :now - last_attempt_at >= :probeMs
+     AND :now >= cooldown_until;
+  ```
+
+  **(b) THE POST-FAILURE PROBE**, which replaces the pessimistic debit with the
+  provider's own number after a sweep failed, **cannot use that gate at all**:
+  the sweep it follows has just set `last_attempt_at = now` AND
+  `cooldown_until = now + cooldown`, so both clauses are false by construction
+  and the un-debit could never run. It gets its own claim, throttled on
+  `checked_at` and **exempt from `cooldown_until`**:
+
+  ```sql
+  -- (b) post-failure probe: no daily throttle, no cooldown gate. It costs
+  -- nothing and it follows a request that has ALREADY been made, so neither
+  -- limiter is protecting anything here.
+  UPDATE secondary_budget
+     SET updated_at = :now                                -- NOT last_attempt_at
+   WHERE id = 1
+     AND :now - checked_at >= :postFailureProbeMinMs;     -- 60_000, anti-loop only
+  ```
+
+  The `checked_at` floor is one minute and exists solely so a pathological retry
+  storm cannot issue a probe per failed request; it is not a budget guard,
+  because there is no budget to guard. Deliberately NOT bumping
+  `last_attempt_at`: that column means "when did we last spend a credit", and a
+  free probe writing it would push the reset probe a day further out every time
+  the provider hiccuped.
+
+- **Both** probes, on a 2xx, write `remaining_credits = :fromHeader, checked_at = :now`
+  — the only statement in the feature that raises the balance, and it only ever
+  copies a header. Only the RESET probe (and a successful sweep) also writes
+  `consecutive_failures = 0`; the post-failure probe must NOT, because it runs
+  right after a failure whose whole point is to advance the counter — `GET
+/v4/sports` usually still answers 200 during an odds-endpoint outage, so a
+  probe that cleared the counter would pin the cooldown at its 1 h floor
+  forever. A probe that itself fails writes nothing at all: the pessimistic
+  debit simply stands, which is the safe direction.
+- `ODDS_API_CREDIT_RESERVE` is therefore **25, not 100**. The old figure existed
+  to out-size a paid probe ("31 × 3 = 93 < 100"); that arithmetic is dead and is
+  deleted rather than left to be quoted. 25 is a cushion for debit drift plus one
+  in-flight sweep, i.e. eight sweeps' worth.
+
+**Credit model — simulated, not estimated.** 15-minute ticks, 30-day month, the
+rules above, `COST=3`, `RESERVE=25`, `RETRY=4 h`, `MARGIN=45 m`,
+`MIN_INTERVAL=2 h`, the real `lineStaleAfterMs` tiers, the §21.2 gap rule and the
+§22 window. Re-run from scratch for round 2; the script's numbers, pasted:
+
+| Scenario                                                                       | Sweeps | Credits | Remaining | Reserve first blocks  |
+| ------------------------------------------------------------------------------ | ------ | ------- | --------- | --------------------- |
+| (a) quiet: one NFL gap, 6 h, once a week                                       | 12     | **36**  | 464       | never                 |
+| (b) typical: NFL 1 gap/day for 6 h + CFB Saturday, 4 ranked gaps, 8 h          | 106    | **318** | 182       | never                 |
+| (c) pathological: an unfillable ranked CFB game all week + a permanent NFL gap | 158    | **474** | 26        | day 15                |
+| (c) with the guard removed — what the DEMAND actually is                       | 337    | 1011    | —         | —                     |
+| (d) a decision bug stuck on "yes", with `SECONDARY_MIN_SWEEP_INTERVAL_MS`      | 158    | 474     | 26        | day 7                 |
+| (d) the same bug WITHOUT the per-league floor                                  | 158    | 474     | 26        | **day 1**             |
+| (e) PRE-(C): four big-spread moneyline chases, guard on                        | 157    | **471** | 29        | never (but see below) |
+| (e) POST-(C): the same four games are not gaps at all                          | 0      | **0**   | 500       | never                 |
+| (b) + (e) PRE-(C): a typical month PLUS that chase                             | 158    | 474     | 26        | **day 19**            |
+| (b) + (e) POST-(C): the same month with §21.2's rule                           | 106    | **318** | 182       | never                 |
+
+Read: (b) fits with 182 credits of headroom. (c) wants 1,011 credits — twice the
+tier — and the guard clamps it to 474 and turns the feature off on day 15;
+**exhaustion is impossible**, because the reserve refuses the claim and the probe
+that rediscovers the reset costs nothing. And the last two rows are why §21.2's
+moneyline rule is in the plan rather than in a backlog: without it, a perfectly
+ordinary month spends its credits on fifteen games no book prices and stops
+filling the ones it can from day 19 onward.
+
+**What degrades when the reserve bites.** Nothing breaks and no bet is affected.
+Existing secondary rows stop being re-confirmed, so each one goes stale on its own
+schedule (3 h near kickoff, 18 h further out) and those markets leave the board —
+which is precisely the pre-§21 behaviour, a card with a spread and no total. Bets
+already placed on a secondary market are untouched: grading reads the `bet_legs`
+snapshot (§14.3). `job_runs.stats.secondary.budgetSkipped` counts every refusal
+and `GET /api/admin/jobs` shows the balance, so "the feature went quiet" is
+visible rather than mysterious.
+
+**Row writes.** Per sweep: 1 row on `secondary_budget` (no indexes, so 1 row per
+statement — a claim, plus a correction after the response), one `game_lines` row
+per gapped game the sweep actually CHANGED (compare-and-skip, §21.3's own SQL),
+and one `games` row per game it could NOT fill. A worst-case CFB Saturday sweep
+touching 12 ranked gapped games is under 30 rows; four sweeps in a day is ~120
+against the ~5,100/day the app already writes (§8.6).
+
+**Row reads.** The pre-check is 1 row. The candidate scan is one league's games
+inside the §22 window joined to their line rows: on a CFB Saturday that is ~80
+ranked-or-not games before the rank filter and ~12 after, each with 1–2 line
+rows — call it 100 rows marshalled, twice per run at the very most. At 96 runs a
+day that is under 20k rows read against D1's 5,000,000/day free allowance. The
+scan is bounded by the window, which is the second reason §22 ships first: under
+the old 10-day window the same scan covered ~40% more games.
+
+### 21.6 The parse contract, and the CPU budget
+
+Pure, in `src/shared/odds-api.ts`, total like `src/shared/espn.ts`: a malformed
+event is SKIPPED with a warning, a malformed market is dropped and the rest of
+the event survives, and nothing throws. A feed that changes shape must degrade to
+"no fill", never to an exception inside a refresh run that has already written
+the ESPN slate.
+
+Request: `GET {base}/v4/sports/{sportKey}/odds` with
+`apiKey`, `bookmakers=draftkings,fanduel,betmgm,betrivers,bovada`,
+`markets=spreads,totals,h2h`, `oddsFormat=american`, `dateFormat=iso`,
+`commenceTimeFrom=now`, `commenceTimeTo=boardWindowEnd(league, now)` (§22 — the
+same window the board and the planner use; there is no secondary-only horizon).
+
+The probe is a different endpoint and carries none of this: `GET {base}/v4/sports`
+with `apiKey` alone, which is free (§21.5).
+
+- `bookmakers=` rather than `regions=us` because a bookmaker list of up to ten
+  keys **counts as one region**, so both cost the same three credits
+  (`x-requests-last = markets × regions`), while the list cuts the payload.
+- `commenceTimeFrom/To` cost nothing and bound the response to the window the
+  board covers.
+- The URL contains the api key. It is never logged, never put in an error
+  message, never echoed into `job_runs.stats`; `redactUrl` is the only form that
+  may leave the module.
+
+Parsing rules:
+
+- `commence_time` is ISO-8601 UTC and goes through the existing
+  `parseIsoToEpochMs`. **No US Eastern logic appears anywhere in the secondary
+  path** — ET exists only for ESPN's `dates=` bucket (§14.10), `games.kickoff_at`
+  is already epoch ms, and the API is keyed by an instant range. Nothing here
+  needs a calendar.
+- `point` arrives as a JS `number` (`7.5`, `53`, `-3.5`) and goes through
+  `parseLineToTenths`, which stringifies and does digit arithmetic and REJECTS
+  anything finer than a tenth rather than rounding it. `price` is an integer and
+  goes through `parseAmericanPrice`. Both enforce `MAX_ABS_LINE_TENTHS` and
+  `MIN/MAX_ABS_AMERICAN_PRICE`. eslint bans `Math.round`/`floor`/`ceil`/`trunc`
+  and `parseFloat` in this directory, and no float reaches a column.
+- `spreads` and `h2h` outcomes are named by FULL TEAM NAME; `totals` outcomes are
+  named "Over"/"Under". A spread's two `point` values must MIRROR exactly in
+  tenths (`homeTenths === -awayTenths`) and a total's two must be EQUAL; a book
+  that disagrees with itself is dropped with a warning. A market missing a side
+  is dropped.
+- Books are visited in `ODDS_API_BOOKMAKERS` order, not response order, and the
+  first book offering a COMPLETE market wins that market — independently per
+  market, which is how a game ends up with a DraftKings total and a FanDuel
+  moneyline.
+- An event whose three markets are all null is still returned, so the stats can
+  tell "the API does not carry this game" (a matching miss) from "the API carries
+  it with nothing usable" (a real dead end).
+
+**CPU.** Measured on this machine with node, on the committed samples — not
+workerd, but it bounds the order of magnitude:
+
+| Payload                                   | Bytes   | `JSON.parse` + a full walk |
+| ----------------------------------------- | ------- | -------------------------- |
+| ESPN CFB scoreboard (already in this run) | 1.33 MB | **1.827 ms** (parse only)  |
+| Odds API NCAAF, all nine books            | 320 KB  | 0.663 ms                   |
+| Odds API NCAAF, five books                | 197 KB  | **0.401 ms**               |
+| Odds API NFL, all nine books              | 134 KB  | 0.293 ms                   |
+| Odds API NFL, five books                  | 78 KB   | **0.169 ms**               |
+
+Two costs that table omits, because they are not parsing — named here so the
+10 ms budget is accounted honestly rather than optimistically:
+
+- **the candidate scan's marshalling**: ~100 D1 result rows per league per run,
+  mapped into `LineRowView`s. Bounded by the §22 window and by the rank filter.
+- **the per-game merge on the BOARD hot path**: `mergeEffectiveLine` runs once
+  per game on every `GET /api/games`, over 1–2 rows and 3 markets. It is a
+  handful of comparisons per game and it replaces work `toLinesView` already
+  did, but it is now in a request that a person is waiting for, not in a cron
+  job. The board is capped at `BOARD_MAX_GAMES` (300) games, which is the bound.
+
+The worst refresh invocation sweeps both leagues: `0.401 + 0.169 = 0.57 ms` of
+parsing on top of an ESPN parse that already costs ~1.8 ms, plus the scan, inside
+a 10 ms budget. The `bookmakers=` narrowing is what keeps the parse half from
+being 0.96 ms, which is why it is a requirement and not a nicety. Spike S1 (§18) still owns the real measurement:
+the number to read is `cpuTime` off `wrangler tail` for a refresh invocation that
+swept, and if it lands anywhere near 10 ms the first lever is
+`REFRESH_TARGETS_PER_RUN`, not the sweep.
+
+### 21.7 Matching ESPN games to API events
+
+The two feeds share no id, so the join is on names and kickoffs. Pure, in
+`src/shared/odds-api.ts`, and NEVER across leagues.
+
+**Pass 1 — exact and ORIENTED.** Key both sides on
+`${normaliseTeamName(home)}|${normaliseTeamName(away)}`, where
+`normaliseTeamName` is NFC → strip diacritics → lowercase → strip everything that
+is not `[a-z0-9]`. **MEASURED LIVE on 2026-09-16: 32/32 NFL and 69/75 NCAAF** —
+and **reproduced by test once M9a lands**, which matters, because the committed
+ESPN samples cover 2026-09-10..13 while the API samples cover 2026-09-17..29, so
+nothing in the repo as it stands can re-derive those numbers.
+
+**The capture is one MERGED file per league, not one date.** ESPN's unit is a
+single ET date (§8.1) and each API sample spans several — measured exactly:
+
+| API sample                         | events | ET dates its `commence_time`s fall in                            | merged capture                                         |
+| ---------------------------------- | ------ | ---------------------------------------------------------------- | ------------------------------------------------------ |
+| `docs/samples/odds-api-nfl.json`   | 32     | `20260917, 20260920, 20260921, 20260924, 20260927, 20260928` (6) | `docs/samples/espn-nfl-scoreboard-2026-09-17..28.json` |
+| `docs/samples/odds-api-ncaaf.json` | 75     | `20260917, 20260918, 20260919, 20260926` (4)                     | `docs/samples/espn-cfb-scoreboard-2026-09-17..26.json` |
+
+M9a's capture script (`scripts/capture-espn-range.mjs`, committed with the
+samples so the next person can re-run it):
+
+1. read the API sample, map every `commence_time` through `etDateKey`, dedupe and
+   sort — never hard-code the date list, or the samples and the capture drift
+   apart silently;
+2. fetch each key from §8.1's URL for that league (`dates=YYYYMMDD&limit=100` for
+   the NFL, `groups=80&limit=300&dates=YYYYMMDD` for CFB) with the existing
+   `ESPN_USER_AGENT`, in series;
+3. keep the FIRST response's root object and replace its `events` with the
+   concatenation of every response's `events`.
+
+The merged file is therefore not a byte-real ESPN response: its root `season` and
+`week` describe the first date only, and the test must not assert them. That is
+fine, because it exists for ONE purpose — feeding `matchOddsApiEvents` a
+candidate list drawn from the same days as the events — and the parser's own
+tests keep using the untouched per-week samples. A headline measurement that only
+its author can reproduce is a claim, not a measurement.
+It is what makes "San José State Spartans" equal "San Jose State Spartans" and
+"Louisiana Ragin' Cajuns" equal "Louisiana Ragin Cajuns" — verified in a REPL,
+both pairs collapse to the same key.
+
+Orientation is part of the key deliberately. If a neutral-site game arrives with
+home and away the other way round, pass 1 fails, pass 2 fails, the game is NOT
+filled and the candidate is counted in `swappedCandidates`. Accepting such a
+match would invert every spread sign on the card; refusing it costs one unfilled
+market and leaves a visible counter.
+
+**Pass 2 — mascot fallback.** A candidate matches an unclaimed event only when
+ALL of: same league; `|kickoffAt − commenceAt| ≤ SECONDARY_MATCH_WINDOW_MS`
+(90 min); `mascotOf(home)` AND `mascotOf(away)` both equal in that orientation;
+and **uniqueness IN BOTH DIRECTIONS** — exactly one event satisfies this for the
+candidate, AND exactly one candidate satisfies it for that event.
+
+One direction is not enough, and the counterexample is committed to this repo. In
+`docs/samples/espn-cfb-scoreboard.json`, "Southern Miss Golden Eagles @ Auburn
+Tigers" and "Georgia Southern Eagles @ Clemson Tigers" are both `(eagles, tigers)`
+and kick off within 90 minutes of each other. If the API carries only one of the
+two, the other candidate finds "exactly one unclaimed event" and takes the wrong
+game's spread onto a bettable card. Requiring the event to be unambiguous about
+the candidate too makes that a refusal.
+
+This exists for the six measured residual mismatches, every one an abbreviation
+difference in the PREFIX: "Massachusetts" vs "UMass", "App State" vs
+"Appalachian State", "Sam Houston" vs "Sam Houston State", "Southern Miss" vs
+"Southern Mississippi", "Nicholls" vs "Nicholls State", "SE Louisiana" vs
+"Southeastern Louisiana". The mascot is the token they agree on.
+
+The obvious objection — CFB is full of Tigers, Bulldogs and Wildcats — was
+measured rather than argued. On the API SIDE (the 75-event
+`docs/samples/odds-api-ncaaf.json`) "Tigers" appears 5 times, "Eagles" 5,
+"Panthers" 4, "Bulldogs" 4, "Bears" 4, "Wildcats" 4, and the biggest simultaneous
+kickoff bucket is 12 games; no pair of API events within 90 minutes shares both
+mascots in either orientation. The ESPN side is NOT as clean — see the Auburn /
+Clemson pair above — which is exactly why the rule is two-way uniqueness and not
+"the API is unambiguous, therefore we are safe". Eligibility does the rest: only
+NFL games and top-25 CFB games are candidates, so pass 2 chooses among a handful
+of games rather than a 75-game Saturday.
+
+**No alias table.** All six residual mismatches are UNRANKED CFB teams, which are
+not eligible for a fill in the first place. An alias table is a hand-maintained
+list that goes stale in silence; instead, `unmatchedGames` names the candidates
+nothing matched, so if a RANKED team ever appears there the signal is in
+`GET /api/admin/jobs` rather than in nobody's head.
+
+**A rescheduled game** — ESPN moved the kickoff, the API has not — still matches
+in pass 1, which does not look at the clock at all. Only the fallback is
+time-sensitive, and `SECONDARY_MATCH_WINDOW_MS` (90 min) is drawn from the data:
+**live-measured 2026-09-16, 106 of 107 matched events agreed to the minute and
+the one exception was 30 minutes apart**. Like the match counts above, that is a
+live measurement until M9a lands; then the SAME test reproduces it from the
+merged captures, asserting the median and max `|kickoffAt − commenceAt|` over the
+matched pairs — so the constant has a number behind it in CI rather than only in
+this paragraph.
+
+Unmatched API events are counted, not named: most of them are games we do not
+carry at all.
+
+### 21.8 Stats
+
+`job_runs.stats.secondary`, on every `refresh` run from every path. The types are
+`SecondaryStats` / `SecondarySweep` in `src/worker/secondary.ts`:
+
+```ts
+secondary: {
+  enabled: boolean,              // false when ODDS_API_KEY is unset; `sweeps` is then []
+  remaining: number | null,      // secondary_budget.remaining_credits
+  checkedAt: EpochMs | null,     // when that number last came from a real header
+  budgetSkipped: number,         // sweeps the reserve refused this run
+  sweeps: [{
+    league: 'nfl' | 'ncaaf',
+    reason: 'retry' | 'resweep' | 'forced' | null,   // null iff skipped
+    skipped: null | 'no-gap' | 'throttled' | 'budget' | 'cooldown' | 'no-budget-row',
+    cost: number,                // credits claimed; 0 when skipped, 0 for a probe
+    remaining: number | null,    // from THIS response's header
+    events: number,              // events in the response
+    matched: number,
+    unmatchedEspn: string[],     // eligible games nothing matched, capped
+    swapped: string[],           // home/away disagreement, refused
+    filled: { spread: number, total: number, moneyline: number },
+    stamped: number,             // games still gapped afterwards (secondary_tried_at)
+    rowsWritten: number,         // meta.rows_written, folded into the run total
+    warnings: string[],          // parser warnings, same rendering as ESPN's
+    error: string | null,        // 'unauthorized' | 'rate_limited' | …
+  }]
+}
+```
+
+`reason` and `skipped` are exclusive: exactly one of them is non-null on every
+entry. That is what makes the admin view readable — "ncaaf: retry, 3 credits,
+filled 2 totals" or "ncaaf: throttled" — and it is why `sweepSecondary` returns a
+value rather than `null` (§21.2).
+
+The admin Jobs tab renders unknown stat values as JSON today, which is enough;
+`GET /api/admin/jobs` folds `secondary.remaining` and `checkedAt` into each run's
+stats from `secondary_budget`, the same way it already folds `dayRowsWritten` —
+inside `stats`, because `JobRunView.stats` is already `Record<string, unknown>`
+and `api-types.ts` need not change for it. Each sweep's `rowsWritten` is added to
+the run's existing `rowsWritten` total so the §8.6 write budget stays one number.
+
+### 21.9 Failure modes
+
+| Failure                                                  | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ODDS_API_KEY` unset                                     | feature OFF. `readConfig().oddsApi === null`, no candidate scan, `secondary.enabled: false`, `sweeps: []`. `npm run dev` and the fixture server work with no key.                                                                                                                                                                                                                                                                                                                                                   |
+| `secondary_budget` has NO row                            | `skipped: 'no-budget-row'`, zero writes, run still `ok`. **Never a throw**: this is reached inside a refresh that has already written the ESPN slate. It means 0007's seed did not run; the runbook says to insert the row by hand.                                                                                                                                                                                                                                                                                 |
+| 401 / 403 (key revoked or wrong)                         | sweep abandoned for the run, `last_status='unauthorized'`, warning logged, budget row otherwise untouched — which means the pessimistic debit STANDS (the post-failure probe would 401 too), so a revoked key burns `ODDS_API_COST_PER_SWEEP` per claim, throttled only by `SECONDARY_MIN_SWEEP_INTERVAL_MS` (≈ 36 phantom credits/day) until the reserve blocks. Bounded, visible, and corrected by the first successful probe after the key is fixed. **No cooldown** — a timer would hide a configuration error. |
+| 429                                                      | `cooldown_until = now + cooldownFor(consecutive_failures)`. No claim of either league succeeds until it passes.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 5xx / timeout / DNS / TLS                                | same cooldown, and the FREE POST-FAILURE PROBE runs immediately afterwards to replace the pessimistic debit with the provider's own `x-requests-remaining`. It is exempt from `cooldown_until` and does not touch `last_attempt_at` — both of which the failing sweep just set, so the obvious shared gate would make the un-debit unreachable. Throttled only by a 60 s `checked_at` floor. An outage costs ~0 credits. §21.5.                                                                                     |
+| A provider outage that lasts for days                    | `consecutive_failures` doubles the cooldown from `ODDS_API_COOLDOWN_MS` (1 h) to `ODDS_API_COOLDOWN_MAX_MS` (8 h), so the burn settles at ≤ 3 attempts × 2 leagues a day instead of 24, and recovery is noticed within 8 h. A successful sweep or the daily reset probe clears it; the post-failure probe never does.                                                                                                                                                                                               |
+| 2xx whose body is not JSON, or not an array              | cooldown + a loud warning. Zero events, zero writes. This is the schema-drift alarm.                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| An exception anywhere in the sweep                       | caught at the `sweepSecondary` boundary and returned as a stat, exactly as `ingestTarget` isolates a target's error. It can never fail the ESPN ingest that ran FIRST in the same run.                                                                                                                                                                                                                                                                                                                              |
+| Budget exhausted by a pathological gap                   | impossible: the reserve refuses the claim (§21.5) and the probe that rediscovers the monthly reset is free. The feature goes quiet; nothing else changes.                                                                                                                                                                                                                                                                                                                                                           |
+| A bug that sweeps every run                              | `SECONDARY_MIN_SWEEP_INTERVAL_MS` turns "the month is gone in a day" into "the month is gone in seven", and `secondary.remaining` in the admin view is the thing to watch.                                                                                                                                                                                                                                                                                                                                          |
+| Clock skew at the monthly reset                          | no month arithmetic exists. The balance comes only from the header; the daily FREE probe rediscovers a reset within 24 h whatever timezone it happened in. Worst case: nothing, since the probe costs nothing.                                                                                                                                                                                                                                                                                                      |
+| Two Workers refreshing at once                           | both sweeps are inside the `refresh` lease (§9.2), including the per-game admin Refresh. The conditional `UPDATE` claim is the second line: `meta.changes` is the only permission.                                                                                                                                                                                                                                                                                                                                  |
+| A row fresh on the board, stale at placement             | cannot happen while `lineStaleAfterMs` keys on `seenAt`: the window is fixed at confirmation and monotone in `now`. All THREE call sites run the SAME `mergeEffectiveLine`. §21.4.                                                                                                                                                                                                                                                                                                                                  |
+| **A secondary market withdrawn near kickoff**            | **ACCEPTED**: it stays bettable for up to ~3 h (its own staleness window) unless a sweep NULLs it sooner. Fake money, bounded by the same window the primary has always had, and the alternatives break monotonicity. §21.4.                                                                                                                                                                                                                                                                                        |
+| A never-priced game showing "Line is stale"              | cannot happen: no all-NULL secondary row is ever INSERTed (§21.3), and `stale` requires that some row offered a COMPLETE market (§21.4).                                                                                                                                                                                                                                                                                                                                                                            |
+| A leg snapshotting the wrong book's capture time         | closed by §14.3: `provider`, `line_captured_at` and the staleness decision all come from `EffectiveLine.<market>`, never from a row.                                                                                                                                                                                                                                                                                                                                                                                |
+| Two secondary rows for one game with different `seen_at` | impossible: `PRIMARY KEY (game_id, provider)` with `provider` a constant. §21.3.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| A book change the compare-and-skip hides                 | closed by the secondary's own upsert: the three `*_book` columns are in BOTH halves of the compare tuple, so FanDuel replacing DraftKings at the identical number is a write. §21.3.                                                                                                                                                                                                                                                                                                                                |
+| A secondary fill vanishing mid-Saturday                  | the re-sweep rule fires `SECONDARY_RESWEEP_MARGIN_MS` (45 min = three cron ticks) before the row's own staleness window closes. If the reserve is blocking it DOES vanish — see §21.5's degradation note, and `budgetSkipped` says why.                                                                                                                                                                                                                                                                             |
+| Matching false positive (shared mascots, same kickoff)   | pass 2 requires BOTH mascots AND uniqueness in BOTH directions; the Auburn/Clemson pair in the committed ESPN sample is why one direction is not enough. Pass 1 is oriented, so a neutral-site home/away swap refuses rather than inverting.                                                                                                                                                                                                                                                                        |
+| Chasing a moneyline no book posts                        | §21.2's rule: a missing moneyline is a gap only below a 30.0-point spread. Measured: 15 of 75 NCAAF events have no moneyline anywhere, every one at ≥ 33.5.                                                                                                                                                                                                                                                                                                                                                         |
+| A rescheduled game                                       | pass 1 ignores kickoff entirely and still matches. Only the fallback is time-sensitive.                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Timezones                                                | the API path has none: `commence_time` is UTC and `games.kickoff_at` is epoch ms. ET enters only through the window bound the caller passes in (`boardWindowEnd`, §22), which is a calendar question and is answered in one place.                                                                                                                                                                                                                                                                                  |
+| D1 write amplification                                   | one row per game per sweep, compare-and-skip, plus one `games` stamp per game the sweep could not fill. §21.3 / §21.5.                                                                                                                                                                                                                                                                                                                                                                                              |
+
+### 21.10 File-by-file
+
+**New**
+
+| File                                                   | Contents                                                                            |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `migrations/0007_secondary_odds.sql`                   | §21.3 verbatim — written by **M9b**; the plan PR ships no migration (§15)           |
+| `src/shared/odds-api.ts`                               | `parseOddsApi`, `normaliseTeamName`, `mascotOf`, `matchOddsApiEvents`               |
+| `src/shared/lines.ts`                                  | `mergeEffectiveLine`, `marketProvider`, `providerRank`, `missingMarkets`            |
+| `src/worker/odds-api.ts`                               | `TheOddsApiProvider`, `buildOddsUrl`, `redactUrl`, `readCredits`, `fetchCredits`    |
+| `src/worker/secondary.ts`                              | `runSecondary`, `sweepSecondary`, the secondary's own upsert SQL, the budget claims |
+| `docs/samples/odds-api-{nfl,ncaaf}.json`               | the captured payloads (committed, §19 Q8)                                           |
+| `docs/samples/espn-nfl-scoreboard-2026-09-17..28.json` | ESPN, 6 ET dates MERGED — every date the NFL API sample spans (§21.7)               |
+| `docs/samples/espn-cfb-scoreboard-2026-09-17..26.json` | ESPN, 4 ET dates MERGED — every date the CFB API sample spans (§21.7)               |
+| `scripts/capture-espn-range.mjs`                       | the one-shot that produced them, driven off the API samples' own dates (§21.7)      |
+| `tests/unit/odds-api.spec.ts`                          | parse + match, against the samples                                                  |
+| `tests/unit/lines.spec.ts`                             | the merge and `missingMarkets`                                                      |
+| `tests/worker/secondary.spec.ts`                       | the sweep, the budget, the three refresh paths                                      |
+| `tests/worker/lines-parity.spec.ts`                    | board, detail route and placement agree                                             |
+
+**Changed**
+
+| File                         | Change                                                                                                                                                                                    |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/shared/constants.ts`    | the `LINE_PROVIDER_*` / `ODDS_API_*` / `SECONDARY_*` block (done, in the plan PR); `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` is already on main via PR #36                                    |
+| `src/shared/api-types.ts`    | `provider: string` on each of `GameLinesView`'s three market objects (§16.2)                                                                                                              |
+| `src/worker/env.ts`          | `ODDS_API_BASE_URL` var, `ODDS_API_KEY` secret, `RuntimeConfig.oddsApi`                                                                                                                   |
+| `src/worker/ingest.ts`       | ONE call to `runSecondary` at the end of `runRefresh`, and `SecondaryStats` folded into `IngestStats.secondary`. `LINE_UPSERT_SQL` is NOT touched                                         |
+| `src/worker/jobs.ts`         | `runJob`/`runRefresh` take an optional `{ forceSecondaryGameId }`; additive parameter, every existing call unchanged                                                                      |
+| `src/worker/routes/admin.ts` | `POST /games/:id/refresh` passes the game id as `forceSecondaryGameId`                                                                                                                    |
+| `src/worker/routes/games.ts` | `BOARD_JOIN` selects ALL rows for a game; the `LIMIT` moves into a games subquery; `GET /:id` uses `queryAll`; `toLinesView` becomes a thin map over `mergeEffectiveLine`                 |
+| `src/worker/bets.ts`         | `loadLines` returns ALL rows per game; `quoteFor` reads an `EffectiveLine`; `provider`, `line_captured_at` AND the staleness test all come from `EffectiveLine.<market>` (§14.3)          |
+| `src/web/lib/lines.ts`       | nothing — `quoteFor` already reads `GameLinesView`, and no component renders `provider` today                                                                                             |
+| `wrangler.jsonc`             | `"ODDS_API_BASE_URL": "https://api.the-odds-api.com"` var + the secret comment                                                                                                            |
+| `.dev.vars.example`          | commented `ODDS_API_KEY=` and an `ODDS_API_BASE_URL` override to the fixture server                                                                                                       |
+| `scripts/fixture-server.mjs` | serve the two samples at `/v4/sports/{sportKey}/odds` and a credit-header stub at `/v4/sports`, never requiring a key                                                                     |
+| `tests/worker/fixtures.ts`   | an Odds API event builder + `stubOddsApi` with `x-requests-*` header injection                                                                                                            |
+| `tests/unit/fixtures.ts`     | `oddsApiNfl()` / `oddsApiNcaaf()` and the two same-date ESPN loaders                                                                                                                      |
+| `tests/unit/docs.spec.ts`    | the new constants in the §3.1 expected map, `ODDS_API_MONTHLY_CREDITS` and `ODDS_API_TIMEOUT_MS` among them (done, in the plan PR)                                                        |
+| `PLAN.md` / `CLAUDE.md`      | this chapter, §2.4, §3.1, §3.2, **§14.3**, §15, §16.2; CLAUDE.md rule 9's migrations bullet and rule 10's secrets list (done, in the plan PR)                                             |
+| `docs/OPERATIONS.md`         | **M9b** adds the `0007_secondary_odds.sql` row to the migrations table, in the PR that creates the file; M9c adds `ODDS_API_KEY` to Secrets, a "Data feed" note and a weekly credit check |
+| `README.md`                  | M9c: `ODDS_API_KEY` in prerequisites, "optional — the board is primary-only without it"                                                                                                   |
+
+**The board's `LIMIT` is a correctness item, not a tidy-up.** `GET /api/games`
+today ends `ORDER BY g.kickoff_at, g.id LIMIT ?` with `BOARD_MAX_GAMES = 300`,
+and that `LIMIT` counts JOINED rows. The moment a game can have two line rows,
+a full board silently caps at ~150 GAMES with no error anywhere — the last games
+of the week just stop existing. The fix is to bound the GAMES, not the rows:
+`WHERE g.id IN (SELECT id FROM games WHERE … ORDER BY kickoff_at, id LIMIT 300)`
+(or the equivalent subquery join), and then join the line rows to that set.
+`tests/worker/routes.spec.ts` gets a case with 300+ games each carrying two rows.
+
+**`GET /api/games/:id` is the second half of the same bug.** It uses `queryOne`,
+which returns the FIRST row D1 hands back — so the detail card would render one
+provider's markets while `resolveLegSnapshots` merges both. That is exactly the
+"screen said −110, charged −115" divergence §21.4 exists to kill, reintroduced on
+a route nobody was looking at. It must use `queryAll` + `mergeEffectiveLine`, and
+`tests/worker/lines-parity.spec.ts` asserts the DETAIL route against placement,
+not only the list route.
+
+`settle.ts` is NOT in either list, and must not be: grading reads the `bet_legs`
+snapshot (CLAUDE.md rule 7).
+
+### 21.11 Milestones
+
+Three PRs, each independently mergeable and each green on its own — **after the
+plan PR**, which lands this chapter, the constants and the stubs and **no schema
+at all** (§15). `migrations/0007_secondary_odds.sql` does not exist until M9b
+writes it from §21.3, and it is FROZEN from M9b's merge, because the Deploy
+workflow applies pending migrations to the live D1 on every merge to `main`
+(CLAUDE.md rule 9).
+
+**M9a — pure parse + match.** No schema, no HTTP, no behaviour change.
+Owns `src/shared/odds-api.ts`, `docs/samples/odds-api-*.json`,
+`tests/unit/odds-api.spec.ts`, the `tests/unit/fixtures.ts` loaders and the
+`tests/worker/fixtures.ts` builder + `stubOddsApi` (landed early so M9c has it).
+
+**First task, before any test is written**: run `scripts/capture-espn-range.mjs`
+to produce `docs/samples/espn-nfl-scoreboard-2026-09-17..28.json` (6 merged ET
+dates) and `docs/samples/espn-cfb-scoreboard-2026-09-17..26.json` (4), exactly as
+§21.7 specifies — the date list comes from the API samples' own `commence_time`s,
+never from a literal. ESPN serves ONE ET date per request, so a single-date
+capture cannot cover an API sample that spans six; that is the mistake §21.7's
+table exists to prevent. Without these files §21.7's 32/32, 69/75 and the 90-min
+window all rest on one person's terminal session. Commit them under the §19-Q8
+rule that already covers the other samples.
+
+Tests, written first:
+
+- `parseOddsApi` on the real NFL sample: 32 events, every one with a kickoff, two
+  team names and a DraftKings-preferred spread/total/moneyline where present.
+- Same on the real NCAAF sample: 75 events, zero warnings, zero throws.
+- Bookmaker preference: an event where `draftkings` lacks a total picks
+  `fanduel`'s, and the two other markets stay DraftKings'.
+- A whole market comes from ONE book: never `spread_book != null` with a price
+  taken from a different book (asserted structurally by construction).
+- `point` of `7.5` → `75` tenths; `53` → `530`; `-3.5` → `-35`.
+- `point` of `7.55` → market DROPPED with a warning, never rounded.
+- A spread whose two `point`s do not mirror → dropped + warning.
+- A total whose two `point`s differ → dropped + warning.
+- A market with one outcome → dropped.
+- A price of `-99`, `0`, `100001` → dropped (bounds).
+- An outcome named neither team → dropped + warning, other markets survive.
+- `commence_time` unparseable / absent → event skipped + warning.
+- Payload is `{}` / `null` / `"x"` / an array of nulls → zero events, one
+  structural warning, no throw.
+- An event with all three markets unusable is still returned.
+- `normaliseTeamName`: the eight measured discrepancy pairs — asserting exactly
+  which two collapse (San José State, Ragin' Cajuns) and which six do not.
+- `mascotOf`: "Southern Miss Golden Eagles" and "Southern Mississippi Golden
+  Eagles" both give `eagles`.
+- `matchOddsApiEvents` pass 1 against the MERGED same-date ESPN captures:
+  **32/32 NFL and 69/75 NCAAF**, asserted as numbers so a future normalisation
+  change cannot quietly lose matches.
+- the same test asserts the kickoff agreement that sizes
+  `SECONDARY_MATCH_WINDOW_MS`: over the matched pairs the median
+  `|kickoffAt − commenceAt|` is 0 and the max is ≤ 30 min, comfortably inside the
+  90-minute fallback window.
+- Pass 2 fires for "Massachusetts Minutemen" vs "UMass Minutemen".
+- Pass 2 REFUSES when two events within 90 min share both mascots.
+- Pass 2 REFUSES in the other direction too: two CANDIDATES sharing both mascots
+  within 90 min and one event — the committed "Southern Miss Golden Eagles @
+  Auburn Tigers" / "Georgia Southern Eagles @ Clemson Tigers" pair, driven
+  straight from `docs/samples/espn-cfb-scoreboard.json` rather than synthesised,
+  because that is the shape the data actually has.
+- Pass 2 refuses at 91 minutes.
+- An oriented swap is refused and lands in `swappedCandidates`.
+- Never matches across leagues, even on identical names and kickoffs.
+- A rescheduled candidate (kickoff moved 6 h) still matches in pass 1.
+- Unmatched events are counted, unmatched candidates are named.
+
+**M9b — schema, merge, adoption. No sweep yet, and exactly one visible change: a
+STALE all-NULL primary row renders "no line" instead of the stale banner (§15).**
+CREATES `migrations/0007_secondary_odds.sql`, copying §21.3 — the first file this
+work puts under `migrations/`, frozen from this PR's merge. Also owns
+`src/shared/lines.ts`, `src/shared/api-types.ts`, and the `routes/games.ts` /
+`bets.ts` read paths.
+
+Tests, written first:
+
+- `tests/unit/lines.spec.ts`: one primary row, all three markets → the same
+  effective line the old `toLinesView` produced, `provider: 'DraftKings'` on each
+  market.
+- Zero rows → `null`.
+- **An all-NULL primary row that is FRESH → three null markets and
+  `stale: false`** (the ESPN "OFF" case, §21.4). The card says "no line", not
+  "Line is stale"; this is the one place the merge must NOT simplify.
+- `missingMarkets`: spread absent → gap; total absent → gap; moneyline absent at
+  a −29.5 spread → gap; moneyline absent at −30.0 and at −40.5 → NOT a gap;
+  moneyline absent with no spread at all → gap; `null` line → three gaps.
+- A row with a half-spread (one price missing) → spread dropped, others survive.
+- The §21.4 worked example, exactly: a primary spread, a secondary DraftKings
+  total, a secondary FanDuel moneyline; assert all three provider strings and
+  the headline trio.
+- Primary comes back: add a total to the primary row → the primary's total wins,
+  same call, no other change.
+- Staleness is PER ROW: primary `seen_at` 4 h old and secondary 10 min old, game
+  20 h out → primary's markets gone, secondary's survive, `stale: false`.
+- All rows stale → every market null, `stale: true`, and `bettable` false.
+- Monotonicity: for a fixed row set, a market present at `now` is present at
+  `now + 1 ms` … up to exactly its window, and never reappears after.
+- Unknown provider string sorts last but is still usable when it is the only one.
+- `tests/worker/schema.spec.ts`: 0007 composes on 0001–0006 — the three
+  `game_lines` book columns, `games.secondary_tried_at`, and
+  `secondary_budget` with exactly one row and a `CHECK` that refuses `id = 2`.
+- `tests/worker/lines-parity.spec.ts`: with a crafted three-row set, the
+  `GameCard` the board returns, **the card `GET /api/games/:id` returns** and the
+  snapshot `resolveLegSnapshots` produces all agree on line, price and provider
+  for all three markets — including one market whose only row is stale, which the
+  board must not offer and placement must refuse with `MARKET_UNAVAILABLE`.
+- `tests/worker/routes.spec.ts`: **300+ games, each with TWO line rows** →
+  `GET /api/games` still returns `BOARD_MAX_GAMES` GAMES, not half of them. This
+  is the test that fails today if the `LIMIT` stays on the joined rows (§21.10).
+- A leg's `line_captured_at` comes from ITS market's row: a game whose spread row
+  and total row have different `captured_at` values produces two legs with
+  different `line_captured_at`, each matching its own market (§14.3).
+- `tests/worker/bets.spec.ts`: a leg placed on a secondary market snapshots
+  `provider = 'odds-api:draftkings'`, and deleting the `game_lines` row
+  afterwards changes nothing about the bet (the §14.3 assertion, extended).
+- Regression: the existing board and placement suites pass unchanged.
+
+**M9c — the sweep, the budget, the three paths, the docs.** Owns
+`src/worker/odds-api.ts`, `src/worker/{ingest,jobs,env}.ts`,
+`src/worker/routes/admin.ts`, `wrangler.jsonc`, `.dev.vars.example`,
+`scripts/fixture-server.mjs`, `docs/OPERATIONS.md`, `README.md`.
+
+Tests, written first — `tests/worker/secondary.spec.ts` unless noted:
+
+- Feature OFF with no key: no fetch, `secondary.enabled === false`, the ESPN
+  ingest is byte-for-byte what it was.
+- A gapped NFL game (primary has a spread, no total, no moneyline) → one sweep,
+  one `game_lines` row with `provider='odds-api'`, `total_book`/`ml_book` set,
+  and the board now offers all three markets.
+- A fully-lined slate → NO fetch at all (`stub.callCount === 0`).
+- An unranked CFB gap → no fetch. A top-25 CFB gap → a fetch.
+- A game past kickoff, or `in_progress`, or `final` → not a candidate.
+- The 4 h backoff: after a sweep that could not fill game X, X is stamped; a
+  second run 1 h later does not sweep; a run 4 h 1 min later does.
+- A game the sweep FILLED is not stamped (`secondary_tried_at IS NULL`) and does
+  not re-trigger.
+- The re-sweep rule: with a fill in use on a game 20 h from kickoff, advance the
+  clock to `seen_at + 3 h − 45 min` and assert a sweep fires; at
+  `seen_at + 3 h − 46 min` assert it does not.
+- The fill does NOT vanish: stepping the clock through a simulated Saturday with
+  the sweep enabled, the total is bettable at every step.
+- Withdrawal: the second sweep's response has no total for a game that had one →
+  the row's `total_tenths` is NULLed, `seen_at` advances, the board stops
+  offering it.
+- Compare-and-skip: an identical second sweep writes 0 rows.
+- `SECONDARY_MIN_SWEEP_INTERVAL_MS`: two runs 30 min apart, both with gaps → one
+  fetch, the second reports `skipped: 'throttled'`.
+- The reserve: with `remaining_credits` at `RESERVE + 2`, a gapped slate produces
+  NO odds fetch, `budgetSkipped: 1`, and the board is unchanged.
+- The probe: with the reserve blocking and `last_attempt_at` 25 h old, exactly
+  one `GET /v4/sports` happens, `remaining_credits` is NOT decremented by it,
+  `checked_at` advances, and a second run 1 h later probes nothing.
+- The probe rediscovers a reset: the probe's response says `remaining: 500` and
+  the next run sweeps normally.
+- The probe cannot exhaust: 40 simulated days of a blocked reserve leave
+  `remaining_credits` exactly where it started.
+- `secondary_budget` deleted → `skipped: 'no-budget-row'`, run still `ok`, the
+  ESPN slate still landed, and nothing throws.
+- The moneyline rule: a ranked CFB game with a spread of −40.5 and no moneyline
+  is NOT a candidate for a sweep (`stub.callCount === 0`); the same game at −20.5
+  is.
+- 401 → no rows written, `last_status='unauthorized'`, `cooldown_until`
+  UNCHANGED, the run is still `ok`, the ESPN slate still landed.
+- 429 → cooldown set; the next run makes no call; after the cooldown it does.
+- 500 and a timeout → cooldown set, zero `game_lines`/`games` rows written, and
+  the FREE post-failure probe that follows restores `remaining_credits` to the
+  provider's number **in the same run**. This is the test that fails if the
+  un-debit is gated on `last_attempt_at`/`cooldown_until`, both of which the
+  failing sweep has just set (§21.5).
+- the post-failure probe does NOT bump `last_attempt_at`: after a failure the
+  daily reset probe is still due at its original time.
+- two failures a second apart issue ONE post-failure probe, not two (the 60 s
+  `checked_at` floor).
+- Cooldown escalation: three consecutive failures give 1 h, 2 h then 4 h, capped
+  at `ODDS_API_COOLDOWN_MAX_MS`; one success resets `consecutive_failures` to 0.
+- A 200 with `"not json"` → cooldown, one warning, zero rows.
+- A response that throws inside the parser (forced) → caught, the run is `ok`,
+  the ESPN counts are intact.
+- Headers: `x-requests-remaining` from the response overwrites the pessimistic
+  debit; a MISSING header leaves the stored balance alone (and does not set it
+  to 0).
+- `POST /api/admin/jobs/refresh` sweeps on the same rules as the cron.
+- **(c)** `POST /api/admin/games/:id/refresh` on a gapped eligible game inside
+  its 4 h backoff → a sweep happens, and the response's `run.stats.secondary`
+  carries the sweep in the run-stats shape.
+- **(c)** The same route on a game that is fully lined → no fetch.
+- **(c)** The same route on an unranked CFB game → no fetch.
+- **(c)** The same route with the reserve hit → no fetch, `budgetSkipped: 1`,
+  still HTTP 200.
+- **(c)** The same route while the lease is held → `409 JOB_LOCKED` and no
+  fetch (unchanged behaviour, asserted so the sweep cannot smuggle a call out
+  from under the lock).
+- Two leagues gapped in one run → at most 2 fetches, one per league.
+- `tests/unit/docs.spec.ts` stays green: every new constant is in §3.1, 0007 is
+  in the OPERATIONS table, `ODDS_API_KEY` is in the OPERATIONS secrets list.
+- `npm run dev` with NO `ODDS_API_KEY` starts and serves a board (manual, listed
+  in the PR checklist).
+
+### 21.12 Open questions, and the spike that is now closed
+
+**S5 — RESOLVED, 2026-09-16.** _Does `GET /v4/sports?apiKey=…` return the
+`x-requests-*` headers with `x-requests-last: 0`?_ **Yes** — verified twice
+against the live API with the real key: HTTP 200, `x-requests-last: 0`, and both
+`x-requests-used` and `x-requests-remaining` present. Consequences, all already
+folded into this chapter: the budget probe is free, its claim `UPDATE` must not
+decrement `remaining_credits`, a failed sweep is un-debited for nothing, and
+`ODDS_API_CREDIT_RESERVE` drops from 100 to **25** — the reserve now cushions
+debit drift only, and the "31 × 3 = 93 < 100" arithmetic that justified the old
+figure is deleted rather than left to be quoted at somebody.
+
+Nothing else here needs the product owner. The two choices that are genuinely
+his — "is a partly-secondary board acceptable at all" and "what should happen
+when the month's credits run out" — are answered by §21.1 (yes, per market, with
+the book named) and §21.5 (the board quietly reverts to primary-only, no bet is
+affected, and the admin view says so). The third, "may a withdrawn secondary
+market stay bettable for up to three hours", is answered in §21.4: yes, on the
+record, because the money is fake and the alternative breaks the one property the
+board and placement rely on.
+
+---
+
+## 22. Board window ends on Monday
+
+The product owner's rule, decided 2026-09-16 and not up for re-litigation:
+**never show a game past the Monday that closes next week.** In days that is
+"about a week, at most ~9" rather than a flat seven — the window is anchored to a
+weekday, not to a duration, so its width breathes between 1.17 and 9.04 days
+across the week (§22.2 measures it). Lines move too much after the weekend for a
+number posted nine days early to be worth betting into, and a board full of
+next-week games buries this week's.
+
+This chapter replaces `now … now + INGEST_WINDOW_MS` as the definition of the
+window. It ships as **M9-0**, on its own, BEFORE the secondary-provider work
+(§21), because it is a behaviour change to a live app and has nothing to do with
+a second odds feed.
+
+### 22.1 The rule
+
+All of it is US Eastern, and all of it is a CALENDAR question — there is no UTC
+expression of "Monday Night Football" that is not wrong twice a year.
+
+A football week runs **Tuesday through Monday**, and the window ends at the close
+of a Monday ET date — inclusive, because MNF _is_ a Monday ET date and an
+exclusive end would hide the one game the week finishes on. Exactly:
+
+> Let **M** be the next Monday ET date at or after today's ET date (today, if
+> today is a Monday). The window end is the **last instant of M**, except that
+> (a) on a **Sunday** at or after the league's rollover hour, and (b) on a
+> **Monday**, it is the last instant of **M + 7 days**.
+
+Clause (b) is what keeps the rollover a rollover: without it the board would show
+next week on Sunday evening and hide it again for the whole of Monday. With it,
+what Sunday night showed is what Monday shows — MNF plus next week's slate — and
+the window then narrows a day at a time from Tuesday on.
+
+The rollover instants are per league, because the two leagues finish their slates
+at different times:
+
+| Constant                      | Value | Instant         | Why there                                                                          |
+| ----------------------------- | ----- | --------------- | ---------------------------------------------------------------------------------- |
+| `NCAAF_WEEK_ROLLOVER_ET_HOUR` | `0`   | Sunday 00:00 ET | Saturday's games are over the moment the ET day ends                               |
+| `NFL_WEEK_ROLLOVER_ET_HOUR`   | `20`  | Sunday 20:00 ET | the early and late windows are done; SNF is in flight but its date is already past |
+
+Both are hours of the ET calendar day (minutes are always `:00`), they are
+constants of record in §3.1, and `tests/unit/docs.spec.ts` asserts them against
+`src/shared/constants.ts`. `WEEK_ROLLOVER_ET_HOUR` is the `Record<League, number>`
+the code reads.
+
+### 22.2 `boardWindowEnd(league, now)`
+
+One pure function in `src/shared/time.ts`, returning the **inclusive** last
+instant of the window:
+
+```ts
+boardWindowEnd(league: League, now: EpochMs): EpochMs;
+```
+
+Inclusive, i.e. `etDayBounds(thatMonday).endAt - 1`, because every caller wants
+`kickoff_at <= end` and because `etDateKeyRange(from, end)` is inclusive too:
+handing it the exclusive midnight would plan an extra ET-date target for the
+Tuesday, which is precisely the game the owner does not want shown.
+
+The whole of it: take `now`'s ET calendar date, find the next Monday on or after
+it (Monday → 0 days, Tuesday → 6, Sunday → 1), add 7 more days when `now` is a
+**Monday** or a **Sunday at or past the league's rollover hour**, and take the end
+of that ET day. The weekday comes from the ET parts via
+`new Date(Date.UTC(y, m - 1, d)).getUTCDay()` — no second
+`Intl.DateTimeFormat`, because constructing one is the expensive part (§1's 10 ms
+budget) and this runs per league per planner run.
+
+**Worked, computed in a REPL against the real ET helpers** (around the week of
+Tue 2026-09-15 … Mon 2026-09-21; `end` is the last instant of the named ET day):
+
+| `now` (ET)               | league  | window end     | span   | ET date keys planned |
+| ------------------------ | ------- | -------------- | ------ | -------------------- |
+| Fri 2026-09-18 12:00     | both    | Mon 2026-09-21 | 3.50 d | 0918…0921 (4)        |
+| Sat 2026-09-19 12:00     | both    | Mon 2026-09-21 | 2.50 d | 0919…0921 (3)        |
+| Sat 2026-09-19 23:59     | both    | Mon 2026-09-21 | 2.00 d | 0919…0921 (3)        |
+| **Sun 2026-09-20 00:00** | `ncaaf` | Mon 2026-09-28 | 9.00 d | 0920…0928 (9)        |
+| Sun 2026-09-20 00:00     | `nfl`   | Mon 2026-09-21 | 2.00 d | 0920…0921 (2)        |
+| Sun 2026-09-20 19:59     | `nfl`   | Mon 2026-09-21 | 1.17 d | 0920…0921 (2)        |
+| **Sun 2026-09-20 20:00** | `nfl`   | Mon 2026-09-28 | 8.17 d | 0920…0928 (9)        |
+| Mon 2026-09-21 12:00     | both    | Mon 2026-09-28 | 7.50 d | 0921…0928 (8)        |
+| Tue 2026-09-22 12:00     | both    | Mon 2026-09-28 | 6.50 d | 0922…0928 (7)        |
+| Wed 2026-09-23 12:00     | both    | Mon 2026-09-28 | 5.50 d | 0923…0928 (6)        |
+
+Scanned over August 2026 – January 2027 at 10-minute steps, the span runs from
+**1.17 days** (NFL, the last moment before its Sunday 20:00 rollover) to **9.04
+days** (CFB, a Sunday-00:00 window that crosses the November fall-back). The
+ET-date count is **2 at minimum** (NFL on a Sunday morning: the rest of today and
+Monday) and **9 at maximum**, which is where §8.4's "≤ 18 targets" comes from.
+
+**The shortest window is the last moment before a league's Sunday rollover**, and
+it is still a day and a half of board: a Sunday-afternoon NFL board covers the
+rest of Sunday plus Monday's nighter, which is exactly the set of games that can
+still be bet. It is never a sub-day window — clause (b) of §22.1 removed that
+case, and removing it is the point: Monday's board IS Sunday night's board, so
+nothing visible at 9 pm on Sunday has vanished by breakfast, and the window
+narrows only by the day passing.
+
+### 22.3 Who calls it, and what happens to `INGEST_WINDOW_MS`
+
+| Caller                                          | Before                                                                 | After                                                                                       |
+| ----------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `planTargets` (src/worker/ingest.ts)            | `etDaysInWindow(now, now + INGEST_WINDOW_MS)` for BOTH leagues at once | per league: `etDaysInWindow(now, min(boardWindowEnd(league, now), now + INGEST_WINDOW_MS))` |
+| `GET /api/games` default `to` (routes/games.ts) | `now + INGEST_WINDOW_MS`                                               | `boardWindowEnd(league, now)` — the route already has the league                            |
+| the secondary sweep's candidate bound (§21.5)   | (would have been a new 48 h constant)                                  | `boardWindowEnd(league, now)` — the SAME window, no second horizon                          |
+
+Every reader of `INGEST_WINDOW_MS` in the repo, listed so none is missed (line
+numbers as of the plan PR):
+`src/shared/constants.ts:203` (the definition);
+`src/worker/routes/games.ts:11` (import) and `:118` (the default `to`);
+`src/worker/ingest.ts:52` (import), `:194` and `:276` (doc comments), `:292`
+(the `planTargets` call) and `:413` (the DST footnote inside
+`claimDueTargets`, which M9-0 rewrites along with its 22-target budget);
+`tests/worker/ingest.spec.ts:6/467/617/915`.
+`src/worker/odds-api.ts` does NOT name it — its `SweepWindow` doc and its header
+both say `boardWindowEnd`, and they must keep saying that. PLAN's own mentions
+are in this chapter, §8.2, §8.4, §11.3 and §21.
+
+**`INGEST_WINDOW_MS` is KEPT, and demoted to a hard ceiling** rather than
+deleted. It never binds — the widest window measured is 9.04 days against a
+10-day ceiling — and that is deliberate: `planTargets` walks ET day boundaries
+and writes one row per day per league, so a bug in the week arithmetic that
+returned a date years out would turn a cron invocation into thousands of
+statements under a 10 ms CPU budget. The clamp is the blast-radius bound, exactly
+as `SECONDARY_MIN_SWEEP_INTERVAL_MS` is for the credit spend. Its doc comment
+says all of this, because a constant whose name no longer matches its job is
+precisely the drift CLAUDE.md rule 11 exists to catch.
+
+**The retirement rule does not change.** `planTargets` still deletes targets whose
+`window_end_at` is more than `TARGET_RETIRE_AFTER_MS` (2 days) old AND which
+contain no non-final game. The owner asked for a narrower window, not for faster
+cleanup, and the existing rule is what keeps a postponed game's slate alive
+(§7.5).
+
+Two consequences of leaving it alone, both intended:
+
+- **A target outside the window keeps refreshing until its own date passes.** The
+  window only ever narrows day by day, from Tuesday through to the Sunday
+  rollover, and a target already created keeps its cadence until the retirement
+  rule takes it — so a game that leaves the BOARD keeps being ingested. Nothing
+  discovered is ever un-discovered; the board is a view, not the queue.
+- **At deploy there is a one-off tail.** The live database currently has targets
+  up to 10 days out. M9-0 stops CREATING them past the Monday; the existing ones
+  age out normally, so within ~12 days the queue is at its new size. During that
+  window a handful of extra discovery targets consume refresh slots — visible as
+  a slightly higher `targetsProcessed` in `GET /api/admin/jobs`, harmless against
+  the 96-slot/day supply, and self-healing. No cleanup script, because a script
+  that deletes `ingest_targets` rows is a script somebody runs against the wrong
+  environment.
+
+### 22.4 DST, and the edges that actually break
+
+DST is handled by **not doing arithmetic**: the Monday is located by ET calendar
+date and its end by `etMidnight(y, m, d + 1)`, which re-measures the UTC offset
+around the boundary (`src/shared/time.ts` already does this two-pass for
+`etDayBounds`). Adding `7 * MS_PER_DAY` would be wrong by an hour twice a year,
+in the direction that silently drops or duplicates an ET date key.
+
+Measured at the two 2026 transitions:
+
+- **Fall back, Sun 2026-11-01** (25 h ET day): CFB at 00:30 ET → Mon 2026-11-09,
+  span 9.02 d; NFL at 19:59 → Mon 11-02 (1.17 d), at 20:00 → Mon 11-09 (8.17 d).
+- **Spring forward, Sun 2026-03-08** (23 h ET day): CFB at 00:30 ET → Mon
+  2026-03-16, span 8.94 d; NFL at 20:00 → Mon 03-16, 8.17 d.
+
+**The repeated hour on fall-back Sunday cannot hit either rollover.** When the
+clocks go back, 01:00–01:59 ET happens twice, so an `hour` of 1 is ambiguous —
+`etParts` reports the same wall clock for two different instants an hour apart.
+Neither rollover hour is 1: CFB's is 0 and the NFL's is 20, and midnight and
+8 pm are unaffected by a 02:00 transition. The comparison is `>=` anyway, so even
+if an ambiguous hour were involved both readings would fall on the same side of
+it. No special case, and none is needed.
+
+Other edges, each a test in §22.5: a month boundary (Wed 2026-09-30 → Mon
+2026-10-05), a year boundary (Sun 2026-12-27 20:00 → Mon 2027-01-04, which is
+also the postseason case §8.2 cares about), and the exact rollover instants —
+`hour >= rollover`, so Sunday 20:00:00.000 ET has rolled over and 19:59:59.999
+has not.
+
+### 22.5 Tests, written first
+
+`tests/unit/time.spec.ts` (pure, node env):
+
+- every row of §22.2's table, both leagues, asserted as an ET date key pair
+  (`etDateKey(now)` … `etDateKey(boardWindowEnd(...))`) rather than as a raw
+  epoch, so a failure reads as a date;
+- the end is the LAST INSTANT of its Monday: `boardWindowEnd(...) + 1` is the
+  `startAt` of the following ET day;
+- Sunday, both leagues, at `rollover - 1 ms` and at `rollover`, for each league's
+  hour — four assertions, and the CFB pair straddles ET midnight;
+- **Monday at 00:00:00.000 and at 23:59:59.999 both give the FOLLOWING Monday's
+  end** (clause (b)): spans of 8.00 d and 7.00 d, 8 ET date keys each;
+- **Tuesday at 00:00 gives the Monday six days later — 7 ET date keys**, i.e. the
+  window does NOT extend again on Tuesday. This is the assertion that pins clause
+  (b) to Monday alone;
+- a Sunday after the rollover and the Monday that follows it return the SAME
+  instant, so the board a user saw on Sunday night is the board they see on
+  Monday;
+- the two DST Sundays above, and a window that CONTAINS a transition (a Tuesday
+  in the week of the fall-back);
+- month-boundary and year-boundary cases;
+- monotonic and bounded: over a year of 10-minute steps, `boardWindowEnd` is
+  always `>= now`, always an ET Monday's last instant, and the span never exceeds
+  `INGEST_WINDOW_MS`;
+- `etDateKeyRange(now, boardWindowEnd(...))` never exceeds 9 keys.
+
+`tests/worker/ingest.spec.ts`:
+
+- `planTargets` on a Tuesday creates 7 dates × 2 leagues = 14 targets, and is
+  idempotent on a second run;
+- `planTargets` on a Sunday at 10:00 ET creates 9 CFB dates and 2 NFL dates — the
+  test that proves the leagues are planned SEPARATELY;
+- `planTargets` on a Monday plans 8 dates per league — and creates none it did
+  not already create on Sunday, so `created === 0` on that rerun — and does NOT
+  delete the existing future targets;
+- the existing slot-starvation soak test is re-based on the new target count.
+
+`tests/worker/routes.spec.ts`:
+
+- `GET /api/games?league=nfl` with no `to` returns a game on the closing Monday
+  and does NOT return one on the Tuesday after it;
+- an explicit `?to=` still overrides the default, unchanged;
+- `GET /api/games/:id` returns a game OUTSIDE the current window (§22.7) — the
+  assertion that stops somebody adding a window filter to the detail route.
+
+`tests/worker/ingest.spec.ts`, the ROLLOVER BURST (§22.6, effect 3):
+
+- seed a Sunday just before the CFB rollover, step the clock past it, and run
+  `planTargets` + `claimDueTargets` for successive cron ticks: the seven new date
+  targets are created at once but are drained ONE PER RUN through the reserved
+  discovery slot, oldest-overdue first. Assert that all seven have been claimed
+  within 7 runs of an idle queue (~1 h 45 m) and that no single run claims more
+  than `REFRESH_TARGETS_PER_RUN`. This is the test behind the runbook's "it fills
+  in over an hour or four" answer; without it that sentence is a guess.
+
+### 22.6 What an operator sees, and the docs that must move with it
+
+M9-0 is a user-visible change to a deployed app. The PR updates, in the same PR
+(CLAUDE.md rule 11):
+
+- **`docs/OPERATIONS.md`** — the line that says the refresh job "usually fetches
+  today's date AND a discovery date up to 10 days out" becomes the Monday rule,
+  plus a short "why did next week's games disappear?" note naming the two
+  rollover instants. This is the single most likely support question.
+- **`README.md`** — **none found**: grepped at plan time, the README describes
+  the app and the dev loop and never states the board's range, so there is
+  nothing to correct. Listed anyway so the next person does not have to grep it
+  again, and so a range sentence added in the meantime gets caught.
+- **`PLAN.md`** — this chapter, §8.2, §8.4, §11.3 (done).
+- **`CLAUDE.md`** — rule 3's "the only place a timezone appears" sentence, which
+  is otherwise false the moment `boardWindowEnd` lands (done).
+
+The two effects to expect, stated for the runbook:
+
+1. **The board shrinks from 10 days to at most ~9, and usually 3–7.** Nobody
+   loses a bet: every game that disappears is one whose kickoff is further out
+   than the owner wants shown.
+2. **On Friday, next week's CFB games are not on the board at all** — they appear
+   at Sunday 00:00 ET, the NFL's next week appears at Sunday 20:00 ET, and both
+   STAY through the Monday that follows. Before that they still exist, still
+   ingest and still have their lines; they are simply not shown (§22.2).
+3. **Next week's board fills in over about an hour or four, not at the stroke of
+   the rollover.** This is the support answer, so it belongs in the runbook
+   rather than being rediscovered at 1am. At the rollover the window gains SEVEN
+   ET dates for that league at once, and each is a brand-new `ingest_targets` row
+   with `next_run_at = now`. But a run claims at most `REFRESH_TARGETS_PER_RUN`
+   (2) targets, of which exactly ONE is the reserved discovery slot (§8.4), and
+   `ORDER BY priority ASC, next_run_at ASC` serves the OLDEST overdue discovery
+   target first — the new rows are the least overdue thing in the queue. With a
+   cron tick every 15 minutes and an otherwise idle queue that is ~1 h 45 m to
+   pull all seven; with a live Saturday or a backlog competing for slot 1 it can
+   be ~4 h. So at 00:15 ET on a Sunday a CFB board can legitimately be a
+   handful of games with no lines yet, filling as the runs go by. Nothing is
+   broken and nothing needs kicking; `GET /api/admin/jobs` shows the targets
+   being taken. (An operator in a hurry can force it with the per-game Refresh
+   button, which bumps one date to the head of the queue.)
+
+### 22.7 What this does NOT change
+
+The unit of ingest work (one ET date, one request — §8.2), the reschedule tiers
+(§8.4), the staleness window (§8.5), the write-budget levers (§8.5/§8.6),
+`BOARD_LOOKBACK_MS`, the retirement rule, the cron schedule, and every money
+path. No schema change, so no migration: M9-0 adds no column and touches no
+table. A rollback is a revert of the PR.
+
+**`GET /api/games/:id` stays UNWINDOWED, deliberately.** It takes an id and
+applies no `from`/`to` at all, and M9-0 must not "fix" that for symmetry. The
+edit flow reads a bet's games through it (§12), so a bet placed on Sunday night
+on a game the window later stops listing must still render, re-price and take an
+edit right up to that game's own lock (§14.2's `NOT EXISTS` over
+`bet_legs JOIN games`, which is the only thing that decides it). Bettability is decided per game by `kickoff_at`,
+`status` and the line's freshness — never by whether the game is inside the
+board's current window — so a narrowing window can hide a game from the LIST
+without ever making an existing bet unreachable. The list route is the browse
+surface; the detail route is an identity lookup.
