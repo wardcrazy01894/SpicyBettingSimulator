@@ -6,7 +6,7 @@
  * deployed server.
  */
 
-import type { AmericanPrice } from './types.js';
+import type { AmericanPrice, League } from './types.js';
 
 /**
  * Opening balance, deposited once per ACCOUNT in the signup batch (M5b). It is
@@ -175,16 +175,67 @@ export const LINE_SEEN_TOUCH_MS = 45 * 60 * 1000;
  * (next week's line discovery) would starve indefinitely; `priority ASC,
  * next_run_at ASC` alone does not prevent that.
  *
- * Budget check (computed): a 10-day window is 11 ET dates × 2 leagues = 22
- * targets. Worst case 2 are live, leaving 20 discovery targets that each want a
- * +6 h refresh = 4/day = 80 slot-uses/day, against a supply of 96 — fits with 16
- * to spare. If two targets are live at once they alternate in slot 1 and each
- * gets a 30-minute cadence, which settlement tolerates.
+ * Budget check (computed, under the §22 Monday window): the window spans 2 ET
+ * dates at its narrowest (an NFL Sunday morning), 7 on a Tuesday, 8 on a Monday
+ * and at most 9 (a Sunday after the rollover), so at most 9 × 2 leagues = 18
+ * targets — 16 on a Monday, 14 from Tuesday on. Worst case 2 are live, leaving
+ * 16 discovery targets that each
+ * want a +6 h refresh = 4/day = 64 slot-uses/day against a supply of 96 — 32 to
+ * spare, where the pre-M9-0 10-day window left 16. If two targets are live at
+ * once they alternate in slot 1 and each gets a 30-minute cadence, which
+ * settlement tolerates.
  */
 export const RESERVED_DISCOVERY_SLOTS = 1;
 
-/** How far ahead the ingest planner keeps `ingest_targets` populated. */
+/**
+ * HARD CEILING on how far ahead the ingest planner will ever look. It is NOT
+ * the window any more: since M9-0 the board and the planner both end at
+ * `boardWindowEnd(league, now)` (src/shared/time.ts, PLAN.md §22), which closes
+ * on the Monday that ends the football week and is at most ~9 days wide.
+ *
+ * So this never binds in normal operation, and that is the point: it is the
+ * blast-radius bound on a bug in the week arithmetic. `planTargets` walks ET day
+ * boundaries from `now` to the window end, ONE `ingest_targets` row per day per
+ * league; a `boardWindowEnd` that returned a date years out would turn that loop
+ * into thousands of statements inside a cron invocation with a 10 ms CPU budget.
+ * The planner therefore clamps to `min(boardWindowEnd(...), now + this)`.
+ */
 export const INGEST_WINDOW_MS = 10 * 24 * 60 * 60 * 1000;
+
+/* ------------------------------------------------------------------ *
+ * The board / ingest window (PLAN.md §22)
+ *
+ * A football week runs TUESDAY through MONDAY, and the board ends on the Monday
+ * that closes the current week, INCLUSIVE — Monday Night Football is a Monday ET
+ * date. The product owner's rule: never show a game more than a week out,
+ * because the lines move too much after the weekend to be worth betting into.
+ *
+ * The week advances at a fixed ET instant on Sunday, per league, because the two
+ * leagues finish their slates at different times. Both are HOURS of the ET
+ * calendar day (minutes are always :00), evaluated with the same
+ * `Intl.DateTimeFormat`-based ET helpers as `etDateKey` — no hard-coded -4/-5,
+ * so DST is handled by the tz database rather than by arithmetic.
+ * ------------------------------------------------------------------ */
+
+/**
+ * CFB rolls over at Sunday 00:00 ET: Saturday's games are done the moment the ET
+ * day ends, so the whole of Sunday already belongs to next week's board.
+ */
+export const NCAAF_WEEK_ROLLOVER_ET_HOUR = 0;
+
+/**
+ * The NFL rolls over at Sunday 20:00 ET, after the early and late windows have
+ * finished. Sunday Night Football and this week's Monday nighter stay on the
+ * board across the rollover anyway, because the window END is inclusive of
+ * Monday and the new end is a week FURTHER out.
+ */
+export const NFL_WEEK_ROLLOVER_ET_HOUR = 20;
+
+/** The two above, keyed by league. `boardWindowEnd` reads only this. */
+export const WEEK_ROLLOVER_ET_HOUR: Readonly<Record<League, number>> = {
+  nfl: NFL_WEEK_ROLLOVER_ET_HOUR,
+  ncaaf: NCAAF_WEEK_ROLLOVER_ET_HOUR,
+};
 
 /**
  * A postponed game (or one that vanished from the feed) is auto-voided once this
@@ -323,3 +374,162 @@ export const BUG_REPORT_DIAGNOSTICS_MAX = 8_000;
 export const CLIENT_ERROR_BEACON_MAX = 2_000;
 export const BUG_REPORTS_PER_WINDOW = 5;
 export const BUG_REPORT_WINDOW_MS = 60 * 60 * 1000;
+
+/* ------------------------------------------------------------------ *
+ * Secondary odds provider — The Odds API v4 (PLAN.md §21)
+ *
+ * The PRIMARY feed stays DraftKings-via-ESPN. The secondary fills, PER MARKET,
+ * only what the primary is missing, and only for games worth the credit: every
+ * NFL game and any CFB game with a top-25 team. It rides the existing `refresh`
+ * cron — no fourth trigger — and is OFF entirely when `ODDS_API_KEY` is unset.
+ * ------------------------------------------------------------------ */
+
+/** `game_lines.provider` of the ESPN/DraftKings row. The PRIMARY. */
+export const LINE_PROVIDER_PRIMARY = 'DraftKings';
+
+/**
+ * `game_lines.provider` of the ONE secondary row per game. Deliberately a
+ * constant rather than a per-bookmaker string: the PK is `(game_id, provider)`,
+ * so a fixed provider makes "two secondary rows for one game with different
+ * `seen_at`" impossible by construction, and makes a WITHDRAWAL a plain NULL in
+ * the next upsert instead of an orphan row nobody deletes. Which book each
+ * market came from is carried by `game_lines.spread_book / total_book / ml_book`
+ * (migration 0007), so the provenance is not lost. PLAN.md §21.3.
+ */
+export const LINE_PROVIDER_SECONDARY = 'odds-api';
+
+/**
+ * Provider preference for the per-market merge (`mergeEffectiveLine`, in
+ * src/shared/lines.ts). Earlier wins outright when it has the market and is
+ * fresh — so the moment the primary re-posts a market it takes the board back.
+ * A provider not in this list sorts last, then by `seen_at DESC, provider ASC`,
+ * which is the tie-break the board and placement already shared.
+ */
+export const LINE_PROVIDER_PRIORITY: readonly string[] = [
+  LINE_PROVIDER_PRIMARY,
+  LINE_PROVIDER_SECONDARY,
+];
+
+/**
+ * Bookmaker preference WITHIN one Odds API response, and simultaneously the
+ * `bookmakers=` request parameter. A whole market (line AND both prices) is
+ * always taken from ONE book — never a line from one and a price from another.
+ *
+ * Sent as `bookmakers=` rather than `regions=us` because the two cost the SAME
+ * three credits (markets × regions, and a bookmaker list counts as one region)
+ * while cutting the NCAAF payload from 320 KB to 197 KB — which matters for the
+ * 10 ms Worker CPU budget, since this parse shares an invocation with the ESPN
+ * ingest. PLAN.md §21.6.
+ */
+export const ODDS_API_BOOKMAKERS: readonly string[] = [
+  'draftkings',
+  'fanduel',
+  'betmgm',
+  'betrivers',
+  'bovada',
+];
+
+/** The three markets we ask for; also the per-sweep credit cost (markets × 1 region). */
+export const ODDS_API_MARKETS: readonly string[] = ['spreads', 'totals', 'h2h'];
+
+/**
+ * Credits one league sweep costs. MEASURED 2026-09-16 from `x-requests-last`:
+ * `markets × regions` = 3 × 1. Keep it equal to `ODDS_API_MARKETS.length`; it is
+ * a separate constant because the budget arithmetic reads it, not the array.
+ */
+export const ODDS_API_COST_PER_SWEEP = 3;
+
+/** Free tier, reset by the provider on the 1st of each calendar month. */
+export const ODDS_API_MONTHLY_CREDITS = 500;
+
+/**
+ * A sweep is refused when it would drop `x-requests-remaining` below this.
+ *
+ * It is a CUSHION FOR DEBIT DRIFT, nothing more, which is why it is 25 and not
+ * the 100 an earlier draft carried. The claim debits `ODDS_API_COST_PER_SWEEP`
+ * pessimistically BEFORE the request and the response header then overwrites the
+ * balance with the truth; between two such corrections the stored number can
+ * only ever be too LOW (a timed-out request may not have been counted by the
+ * provider), never too high. The reserve covers that drift plus one in-flight
+ * sweep: 25 is eight sweeps' worth.
+ *
+ * The number used to be 100 because the budget probe cost 3 credits and could
+ * fire 31 times a month. It does not: `GET /v4/sports` is FREE — verified twice
+ * against the live API on 2026-09-16, `x-requests-last: 0` with
+ * `x-requests-used` / `x-requests-remaining` both present — so the probe spends
+ * nothing and the reserve no longer has to out-size it (§21.5, spike S5).
+ */
+export const ODDS_API_CREDIT_RESERVE = 25;
+
+/**
+ * At most one FREE budget probe (`GET /v4/sports`) per this long while the
+ * reserve is blocking sweeps.
+ *
+ * The probe exists because the provider's quota resets on ITS calendar, in a
+ * timezone we are not told: without it, a month that hit the reserve would never
+ * make another request, never see a fresh `x-requests-remaining`, and the feature
+ * would stay off forever. A plain 24 h timer means we do no month arithmetic at
+ * all and are immune to reset-boundary clock skew. Because the probe costs no
+ * credits, the throttle is about request politeness and D1 writes, not budget.
+ */
+export const ODDS_API_BUDGET_PROBE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Floor between two sweeps OF THE SAME LEAGUE, enforced in the `WHERE` of the
+ * credit claim rather than in the decision logic. It is the blast radius limiter
+ * for a decision bug: measured, a decision function stuck on "yes" drains to the
+ * reserve in ONE day without it and in SEVEN with it. It never delays a
+ * legitimate sweep, because the tightest legitimate cadence is 2 h 15 m (the
+ * 3 h staleness window less `SECONDARY_RESWEEP_MARGIN_MS`).
+ */
+export const SECONDARY_MIN_SWEEP_INTERVAL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * A 429 or a transport failure parks the whole feature for this long — the FIRST
+ * time. Consecutive failures double it (`secondary_budget.consecutive_failures`)
+ * up to `ODDS_API_COOLDOWN_MAX_MS`, because a flat hour against a provider that
+ * is down for a day costs 24 × 2 leagues × 3 = 144 credits to learn nothing.
+ * A 2xx of any kind — including a free probe — resets the counter to 0.
+ */
+export const ODDS_API_COOLDOWN_MS = 60 * 60 * 1000;
+
+/**
+ * Ceiling on that doubling: 8 h, so a provider outage costs at most 3 sweeps ×
+ * 2 leagues × 3 credits = 18 credits a day instead of 144, and a feed that comes
+ * back is noticed within 8 h even if nobody looks. Not a credit guard (the free
+ * probe corrects the debit anyway) — a politeness guard with a bounded recovery
+ * time.
+ */
+export const ODDS_API_COOLDOWN_MAX_MS = 8 * 60 * 60 * 1000;
+
+export const ODDS_API_TIMEOUT_MS = 8_000;
+
+/**
+ * A game the sweep could NOT fill is not attempted again for this long. Only
+ * games that STILL lack a market after the sweep are stamped
+ * (`games.secondary_tried_at`), so a filled game costs no write and needs no
+ * backoff — it is no longer missing a market on the effective line.
+ */
+export const SECONDARY_RETRY_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * A secondary market IN USE must be re-confirmed before it goes stale, or it
+ * silently vanishes from the board mid-Saturday. The re-sweep deadline is
+ * `seen_at + lineStaleAfterMs(kickoff, seen_at) − this`, so it inherits the SAME
+ * window the board and placement use: 2 h 15 m for a game inside 48 h of
+ * kickoff, 17 h 15 m for one further out.
+ *
+ * Deliberately a MARGIN and not a flat interval: a flat 2.5 h would re-sweep a
+ * fill on a game five days out roughly seven times more often than its 18 h
+ * window needs, and the credits are the scarce resource. 45 minutes is three
+ * `refresh` cron ticks, so two consecutive missed or lease-skipped runs still
+ * leave the fill fresh.
+ */
+export const SECONDARY_RESWEEP_MARGIN_MS = 45 * 60 * 1000;
+
+/**
+ * The fallback matcher's kickoff tolerance. ESPN and the Odds API agreed to the
+ * minute on 106 of 107 captured events; the one exception was 30 minutes apart.
+ * Used ONLY with both mascots equal AND exactly one candidate. PLAN.md §21.7.
+ */
+export const SECONDARY_MATCH_WINDOW_MS = 90 * 60 * 1000;

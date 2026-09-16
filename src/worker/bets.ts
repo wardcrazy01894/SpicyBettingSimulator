@@ -472,6 +472,15 @@ async function loadGames(env: Env, gameIds: readonly string[]): Promise<Map<stri
  * complaint that `LINE_CHANGED` would not even catch, because the client's
  * `expected` came from the board.
  */
+// TODO(M9b, PLAN.md §21.4/§14.3): return ALL rows per game and hand them to
+// `mergeEffectiveLine`; the mirror-image tie-break documented above becomes a
+// shared pure function rather than a convention two files have to keep.
+// AND THE SNAPSHOT TRIO MOVES WITH IT: `provider`, `line_captured_at` and the
+// staleness test in `resolveLegSnapshots` must all come from
+// `EffectiveLine.<market>` (`MarketSource` carries all three), never from "the
+// row" — with a merged line the spread can be DraftKings' and the total
+// FanDuel's, and a leg stamped with the other book's capture time is an audit
+// record of a quote that never existed.
 async function loadLines(env: Env, gameIds: readonly string[]): Promise<Map<string, LineRow>> {
   const rows = await queryAll<LineRow>(
     env.DB.prepare(
@@ -532,6 +541,11 @@ export async function resolveLegSnapshots(
       });
     }
     const line = lines.get(leg.gameId);
+    // TODO(M9b, PLAN.md §21.4/§14.3): this ROW-level staleness test becomes a
+    // MARKET-level one. `mergeEffectiveLine` drops a stale row per market, so
+    // the check here is "did THIS market survive?" — a game whose spread row is
+    // fresh and whose total row is stale must accept a spread leg and refuse a
+    // total leg with MARKET_UNAVAILABLE, which one row-level test cannot express.
     if (
       line === undefined ||
       now - line.seen_at > lineStaleAfterMs(game.kickoff_at, line.seen_at)
@@ -581,6 +595,13 @@ export async function resolveLegSnapshots(
       side: leg.side,
       lineTenths: quote.lineTenths,
       americanPrice: quote.americanPrice,
+      // TODO(M9b, PLAN.md §14.3): THE SNAPSHOT TRIO. Both of these must come
+      // from `EffectiveLine.<market>` (`MarketSource` carries `provider`,
+      // `capturedAt` and `seenAt` together), never from "the row": with a merged
+      // line the spread can be DraftKings' and the total FanDuel's, and a leg
+      // that took `provider` from the market but `line_captured_at` from
+      // whichever row won the headline is an audit record of a quote that never
+      // existed.
       provider: line.provider,
       lineCapturedAt: line.captured_at,
       snapshotAt: now,

@@ -82,6 +82,17 @@ const BOARD_COLUMNS = `g.id, g.league, g.season, g.season_type, g.week, g.kickof
        l.spread_away_price, l.total_tenths, l.total_over_price, l.total_under_price,
        l.ml_home_price, l.ml_away_price, l.captured_at, l.seen_at`;
 
+// TODO(M9b, PLAN.md §21.4/§21.10): this LIMIT-1 pick is replaced by selecting
+// EVERY `game_lines` row for the game and merging them per market with
+// `mergeEffectiveLine` (src/shared/lines.ts) — the same call `bets.ts` makes, so
+// the board and placement cannot disagree about which book owns which market.
+// TWO THINGS MUST MOVE WITH IT, or the board breaks silently:
+//   1. the LIMIT below counts JOINED rows. With two line rows per game a full
+//      board caps at ~150 GAMES and no error is raised anywhere. The LIMIT moves
+//      into a subquery over `games` (§21.10).
+//   2. `GET /:id` uses queryOne, which keeps whichever row D1 returns first — it
+//      must become queryAll + the same merge, or the detail card and the slip
+//      disagree about which book owns a market.
 const BOARD_JOIN = `FROM games g
   LEFT JOIN game_lines l
          ON l.game_id = g.id
@@ -101,6 +112,9 @@ export function gamesRoutes(): Hono<AppContext> {
     const now = c.var.now;
     // PLAN.md §11.3: now − 12 h … now + 10 d unless the caller narrows it.
     const from = readInt(c.req.query('from'), 'from') ?? now - BOARD_LOOKBACK_MS;
+    // TODO(M9-0, PLAN.md §22): the default `to` becomes
+    // `boardWindowEnd(league, now)` — the end of the Monday that closes the
+    // football week, per league. The route already knows the league.
     const to = readInt(c.req.query('to'), 'to') ?? now + INGEST_WINDOW_MS;
 
     const clauses = ['g.league = ?1', 'g.kickoff_at >= ?2', 'g.kickoff_at <= ?3'];
@@ -149,7 +163,11 @@ export function gamesRoutes(): Hono<AppContext> {
   return app;
 }
 
-/** Exported for the bets route, which needs the same card shape for a slip. */
+/**
+ * The `GameCard` mapper for both board routes. (It used to say "exported for the
+ * bets route"; nothing outside this file imports it — the slip is built in the
+ * browser from the board response.)
+ */
 export function toGameCard(row: BoardRow, now: EpochMs): GameCard {
   const lines = toLinesView(row, now);
   const lockAt = lockAtFor(row.kickoff_at);
