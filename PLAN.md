@@ -4140,7 +4140,9 @@ Where an answer reversed an earlier default, the reversal is called out.
    itself — which already excludes money riding on open bets — and
    `MAX_PAYOUT_CENTS`, which limits the PAYOUT rather than the stake. The slip's
    MAX chip is the full available balance and nothing may cap it lower.
-8. **Keep `docs/samples/*.json` committed** (~1.5 MB). Trimming them would make
+8. **Keep `docs/samples/*.json` committed** (~4.5 MB since M9a: the two ESPN
+   week samples, the two Odds API samples, and the two merged same-date ESPN
+   captures that turn §21.7's match counts into CI). Trimming them would make
    the fast node project marginally faster at the cost of the "parses the real
    thing" guarantee. The `worker` project already uses small synthesised slates,
    so the big files only cost the project that can afford them.
@@ -4850,7 +4852,12 @@ Parsing rules:
 - `spreads` and `h2h` outcomes are named by FULL TEAM NAME; `totals` outcomes are
   named "Over"/"Under". A spread's two `point` values must MIRROR exactly in
   tenths (`homeTenths === -awayTenths`) and a total's two must be EQUAL; a book
-  that disagrees with itself is dropped with a warning. A market missing a side
+  that disagrees with itself is dropped for that market — the note is recorded as
+  a warning only if the market ends up EMPTY after every preferred book has been
+  tried, and only against the market it is about; a book out-voted by the next
+  book is not an operator problem. (M9c adds a per-book failure counter to the
+  sweep stats so "DraftKings failed every spread this sweep" is visible even when
+  FanDuel filled them all.) A market missing a side
   is dropped.
 - Books are visited in `ODDS_API_BOOKMAKERS` order, not response order, and the
   first book offering a COMPLETE market wins that market — independently per
@@ -4871,7 +4878,7 @@ workerd, but it bounds the order of magnitude:
 | Odds API NFL, all nine books              | 134 KB  | 0.293 ms                   |
 | Odds API NFL, five books                  | 78 KB   | **0.169 ms**               |
 
-Two costs that table omits, because they are not parsing — named here so the
+Three costs that table omits, because they are not parsing — named here so the
 10 ms budget is accounted honestly rather than optimistically:
 
 - **the candidate scan's marshalling**: ~100 D1 result rows per league per run,
@@ -4881,6 +4888,12 @@ Two costs that table omits, because they are not parsing — named here so the
   handful of comparisons per game and it replaces work `toLinesView` already
   did, but it is now in a request that a person is waiting for, not in a cron
   job. The board is capped at `BOARD_MAX_GAMES` (300) games, which is the bound.
+- **the matcher**: pass 1 is a map lookup, but pass 2 is O(leftover ×
+  unclaimed) with mascots precomputed once per side. Measured (node): 0.15 ms on
+  the real 140 × 75 captures, where nearly everything matches in pass 1; ~1.9 ms
+  at 100 × 75 and ~6.6 ms at 300 × 100 if EVERY candidate fell through to pass
+  2 — the feed-renames-everything case. Eligibility bounds `leftover` to the
+  NFL plus ranked CFB games, which is what keeps that case out of the budget.
 
 The worst refresh invocation sweeps both leagues: `0.401 + 0.169 = 0.57 ms` of
 parsing on top of an ESPN parse that already costs ~1.8 ms, plus the scan, inside
@@ -4897,8 +4910,10 @@ The two feeds share no id, so the join is on names and kickoffs. Pure, in
 
 **Pass 1 — exact and ORIENTED.** Key both sides on
 `${normaliseTeamName(home)}|${normaliseTeamName(away)}`, where
-`normaliseTeamName` is NFC → strip diacritics → lowercase → strip everything that
-is not `[a-z0-9]`. **MEASURED and reproduced by `tests/unit/odds-api.spec.ts`
+`normaliseTeamName` is NFD → strip the combining marks (U+0300–U+036F) → lowercase
+→ strip everything that is not `[a-z0-9]`. (NFD, not NFC: a precomposed `é`
+would survive NFC and then be deleted by the character class, turning "San José
+State" into `josstate` and breaking the very match below.) **MEASURED and reproduced by `tests/unit/odds-api.spec.ts`
 against the committed same-date captures: 32/32 NFL and 68/75 NCAAF on this key
 alone.** (The 2026-09-16 live figure of 69 counted one neutral-site game whose
 orientation the live script tried both ways; the committed test does not, and

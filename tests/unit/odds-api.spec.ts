@@ -306,6 +306,32 @@ describe('parseOddsApi — points and prices', () => {
     expect(parsed.warnings.some((w) => w.reason.includes('total'))).toBe(true);
   });
 
+  it('totals accept "over"/"under" in any case; team names must match exactly', () => {
+    const e = parseOne({
+      books: [
+        {
+          key: 'draftkings',
+          totals: [
+            { name: 'over', price: -110, point: 48.5 },
+            { name: 'UNDER', price: -110, point: 48.5 },
+          ],
+          h2h: [
+            { name: AWAY.toLowerCase(), price: 240 },
+            { name: HOME, price: -305 },
+          ],
+        },
+      ],
+    });
+    expect(e?.markets.total?.tenths).toBe(485);
+    expect(e?.markets.moneyline).toBeNull();
+  });
+
+  it('two names that normalise to nothing never match each other, in pass 1 or pass 2', () => {
+    const c = cand({ gameId: 'ncaaf:1', league: 'ncaaf', homeName: '???', awayName: '!!!' });
+    const e = ev({ eventId: 'x', league: 'ncaaf', homeTeam: '###', awayTeam: '***' });
+    expect(matchOddsApiEvents([c], [e]).matched.size).toBe(0);
+  });
+
   it('a market with one outcome is dropped', () => {
     const e = parseOne({ books: [{ key: 'draftkings', h2h: [{ name: HOME, price: -305 }] }] });
     expect(e?.markets.moneyline).toBeNull();
@@ -549,7 +575,7 @@ describe('matchOddsApiEvents — the measured counts, reproduced from the commit
       }
     }
     diffs.sort((a, b) => a - b);
-    expect(diffs.length).toBeGreaterThanOrEqual(101);
+    expect(diffs.length).toBe(105); // 32 NFL + 73 NCAAF
     expect(diffs[diffs.length >> 1]).toBe(0);
     expect(diffs[diffs.length - 1]).toBeLessThanOrEqual(30 * MIN);
     expect(30 * MIN).toBeLessThan(SECONDARY_MATCH_WINDOW_MS);

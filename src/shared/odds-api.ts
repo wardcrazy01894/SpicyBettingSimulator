@@ -194,6 +194,10 @@ function sidesOf(
   const [a, b] = pair;
   if (a.name === home && b.name === away) return { home: a, away: b };
   if (a.name === away && b.name === home) return { home: b, away: a };
+  if (a.name === b.name) {
+    notes.push(`${book} ${market}: both outcomes name "${a.name}"`);
+    return null;
+  }
   const stranger = a.name !== home && a.name !== away ? a.name : b.name;
   notes.push(`${book} ${market}: outcome "${stranger}" names neither team`);
   return null;
@@ -290,6 +294,13 @@ function parseMoneyline(
   return { homePrice, awayPrice };
 }
 
+/** Diagnostics kept PER MARKET, so a note is attributed to the market it is about. */
+interface MarketNotes {
+  readonly spread: string[];
+  readonly total: string[];
+  readonly moneyline: string[];
+}
+
 /**
  * The three markets for one event, each chosen INDEPENDENTLY: books in
  * `ODDS_API_BOOKMAKERS` order (never response order), first complete market
@@ -300,7 +311,7 @@ function chooseMarkets(
   event: JsonObject,
   home: string,
   away: string,
-  notes: string[],
+  notes: MarketNotes,
 ): OddsApiMarkets {
   const byBook = marketsByBook(event);
   let spread: BookedSpread | null = null;
@@ -311,17 +322,18 @@ function chooseMarkets(
     if (markets === undefined) continue;
     if (spread === null) {
       const node = markets.get('spreads');
-      const parsed = node === undefined ? null : parseSpread(node, home, away, book, notes);
+      const parsed = node === undefined ? null : parseSpread(node, home, away, book, notes.spread);
       if (parsed !== null) spread = { ...parsed, book };
     }
     if (total === null) {
       const node = markets.get('totals');
-      const parsed = node === undefined ? null : parseTotal(node, book, notes);
+      const parsed = node === undefined ? null : parseTotal(node, book, notes.total);
       if (parsed !== null) total = { ...parsed, book };
     }
     if (moneyline === null) {
       const node = markets.get('h2h');
-      const parsed = node === undefined ? null : parseMoneyline(node, home, away, book, notes);
+      const parsed =
+        node === undefined ? null : parseMoneyline(node, home, away, book, notes.moneyline);
       if (parsed !== null) moneyline = { ...parsed, book };
     }
     if (spread !== null && total !== null && moneyline !== null) break;
@@ -365,17 +377,20 @@ export function parseOddsApi(payload: unknown, league: League): ParsedOddsApi {
       );
       continue;
     }
-    // Market notes are informational (the event survives) and are only
-    // recorded when a market ended up EMPTY: a book that failed but was
-    // out-voted by the next book is not a problem the operator needs to see.
-    const notes: string[] = [];
+    // Market notes are informational (the event survives). A market's notes
+    // are recorded only when THAT market ended up empty: a book that failed
+    // but was out-voted by the next book is not a problem the operator needs
+    // to see, and a note about a market that was filled must not be pinned on
+    // one that was not. (M9c's per-book failure counter is where "DraftKings
+    // failed every spread this sweep" becomes visible; see PLAN.md §21.6.)
+    const notes: MarketNotes = { spread: [], total: [], moneyline: [] };
     const markets = chooseMarkets(raw, homeTeam, awayTeam, notes);
-    if (
-      notes.length > 0 &&
-      (markets.spread === null || markets.total === null || markets.moneyline === null)
-    ) {
-      warn(notes.join('; '), label);
-    }
+    const dropped = [
+      ...(markets.spread === null ? notes.spread : []),
+      ...(markets.total === null ? notes.total : []),
+      ...(markets.moneyline === null ? notes.moneyline : []),
+    ];
+    if (dropped.length > 0) warn(dropped.join('; '), label);
     events.push({ eventId, league, commenceAt, homeTeam, awayTeam, markets });
   }
   return { events, warnings: capped() };
@@ -495,19 +510,25 @@ export function matchOddsApiEvents(
 ): MatchOutcome {
   const matched = new Map<string, OddsApiEvent>();
   const claimed = new Set<OddsApiEvent>();
-  const key = (league: League, home: string, away: string): string =>
-    `${league}|${normaliseTeamName(home)}|${normaliseTeamName(away)}`;
+  // A name that normalises to NOTHING has no key: two such names must never
+  // "match" each other on the strength of both being empty.
+  const key = (league: League, home: string, away: string): string | null => {
+    const h = normaliseTeamName(home);
+    const a = normaliseTeamName(away);
+    return h === '' || a === '' ? null : `${league}|${h}|${a}`;
+  };
 
   // Pass 1 — exact, oriented, per league. First event with the key wins; a
   // duplicate event (same two teams twice) cannot claim a second candidate.
   const byKey = new Map<string, OddsApiEvent>();
   for (const e of events) {
     const k = key(e.league, e.homeTeam, e.awayTeam);
-    if (!byKey.has(k)) byKey.set(k, e);
+    if (k !== null && !byKey.has(k)) byKey.set(k, e);
   }
   const leftover: MatchCandidate[] = [];
   for (const c of candidates) {
-    const e = byKey.get(key(c.league, c.homeName, c.awayName));
+    const k = key(c.league, c.homeName, c.awayName);
+    const e = k === null ? undefined : byKey.get(k);
     if (e !== undefined && !claimed.has(e)) {
       matched.set(c.gameId, e);
       claimed.add(e);
@@ -517,17 +538,28 @@ export function matchOddsApiEvents(
   }
 
   // Pass 2 — mascot fallback, unique in BOTH directions among the unclaimed.
+  // Mascots are computed once per side (the comparison is O(leftover ×
+  // unclaimed), and every normalisation is a string pass), and an EMPTY mascot
+  // never matches anything: two names with no alphanumeric last token would
+  // otherwise compare equal.
   const unclaimed = events.filter((e) => !claimed.has(e));
-  const fallbackOk = (c: MatchCandidate, e: OddsApiEvent): boolean =>
-    c.league === e.league &&
-    Math.abs(c.kickoffAt - e.commenceAt) <= SECONDARY_MATCH_WINDOW_MS &&
-    mascotOf(c.homeName) === mascotOf(e.homeTeam) &&
-    mascotOf(c.awayName) === mascotOf(e.awayTeam);
-  const swappedOk = (c: MatchCandidate, e: OddsApiEvent): boolean =>
-    c.league === e.league &&
-    Math.abs(c.kickoffAt - e.commenceAt) <= SECONDARY_MATCH_WINDOW_MS &&
-    mascotOf(c.homeName) === mascotOf(e.awayTeam) &&
-    mascotOf(c.awayName) === mascotOf(e.homeTeam);
+  const cm = new Map(leftover.map((c) => [c, [mascotOf(c.homeName), mascotOf(c.awayName)]]));
+  const em = new Map(unclaimed.map((e) => [e, [mascotOf(e.homeTeam), mascotOf(e.awayTeam)]]));
+  const near = (c: MatchCandidate, e: OddsApiEvent): boolean =>
+    c.league === e.league && Math.abs(c.kickoffAt - e.commenceAt) <= SECONDARY_MATCH_WINDOW_MS;
+  const fallbackOk = (c: MatchCandidate, e: OddsApiEvent): boolean => {
+    const [ch, ca] = cm.get(c) ?? ['', ''];
+    const [eh, ea] = em.get(e) ?? ['', ''];
+    return ch !== '' && ca !== '' && ch === eh && ca === ea && near(c, e);
+  };
+  // The same test with the event's sides the other way round — and, like the
+  // fallback, only inside the kickoff window: a swap AND a >90-min move is
+  // simply unmatched, not "swapped".
+  const swappedOk = (c: MatchCandidate, e: OddsApiEvent): boolean => {
+    const [ch, ca] = cm.get(c) ?? ['', ''];
+    const [eh, ea] = em.get(e) ?? ['', ''];
+    return ch !== '' && ca !== '' && ch === ea && ca === eh && near(c, e);
+  };
 
   const unmatchedGames: string[] = [];
   const swappedCandidates: string[] = [];

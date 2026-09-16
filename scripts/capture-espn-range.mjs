@@ -34,7 +34,12 @@ const ET = new Intl.DateTimeFormat('en-US', {
   month: '2-digit',
   day: '2-digit',
 });
-/** ESPN `dates=` key (US Eastern calendar date) for an ISO instant. */
+/**
+ * ESPN `dates=` key (US Eastern calendar date) for an ISO instant. A local
+ * re-implementation of src/shared/time.ts's etDateKey, because this is a plain
+ * .mjs one-shot outside the TypeScript projects; both go through Intl with an
+ * explicit America/New_York, so they cannot disagree.
+ */
 function etDateKey(iso) {
   const parts = ET.formatToParts(new Date(iso));
   const get = (t) => parts.find((p) => p.type === t).value;
