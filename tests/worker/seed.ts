@@ -16,6 +16,7 @@
  */
 
 import type { BetLeague, GameStatus, League } from '../../src/shared/types.js';
+import { LINE_PROVIDER_PRIMARY } from '../../src/shared/constants.js';
 
 /** How far ahead of `now` a seeded game kicks off unless the test says otherwise. */
 export const DEFAULT_KICKOFF_OFFSET_MS = 2 * 60 * 60 * 1000;
@@ -56,6 +57,10 @@ export interface SeedLineSpec {
   readonly totalUnderPrice?: number | null;
   readonly mlHomePrice?: number | null;
   readonly mlAwayPrice?: number | null;
+  /** 0007 per-market book columns; null on a primary row. */
+  readonly spreadBook?: string | null;
+  readonly totalBook?: string | null;
+  readonly mlBook?: string | null;
   /** When the BOOK's price last CHANGED. Defaults to `seenAt`. */
   readonly capturedAt?: number;
   /** When we last CONFIRMED the line. Staleness is measured against THIS. */
@@ -135,12 +140,13 @@ export async function seedLine(db: D1Database, spec: SeedLineSpec): Promise<void
       `INSERT OR REPLACE INTO game_lines (
          game_id, provider, spread_home_tenths, spread_home_price,
          spread_away_tenths, spread_away_price, total_tenths, total_over_price,
-         total_under_price, ml_home_price, ml_away_price, captured_at, seen_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
+         total_under_price, ml_home_price, ml_away_price, captured_at, seen_at,
+         spread_book, total_book, ml_book)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`,
     )
     .bind(
       spec.gameId,
-      spec.provider ?? 'draftkings',
+      spec.provider ?? LINE_PROVIDER_PRIMARY,
       spec.spreadHomeTenths ?? null,
       spec.spreadHomePrice ?? null,
       spec.spreadAwayTenths ?? null,
@@ -152,6 +158,9 @@ export async function seedLine(db: D1Database, spec: SeedLineSpec): Promise<void
       spec.mlAwayPrice ?? null,
       spec.capturedAt ?? spec.seenAt,
       spec.seenAt,
+      spec.spreadBook ?? null,
+      spec.totalBook ?? null,
+      spec.mlBook ?? null,
     )
     .run();
 }

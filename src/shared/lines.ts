@@ -20,9 +20,17 @@
  * Platform-free (CLAUDE.md rule 4): no fetch, no D1, no DOM. The only input is
  * rows, a kickoff and a clock.
  *
- * M9b — every function here throws until then; nothing imports it yet.
+ * M9b.
  */
 
+import {
+  LINE_PROVIDER_PRIORITY,
+  MAX_ABS_AMERICAN_PRICE,
+  MAX_ABS_LINE_TENTHS,
+  MIN_ABS_AMERICAN_PRICE,
+  MONEYLINE_NOT_OFFERED_SPREAD_TENTHS,
+} from './constants.js';
+import { lineStaleAfterMs } from './time.js';
 import type {
   AmericanPrice,
   EpochMs,
@@ -153,11 +161,116 @@ export interface EffectiveLine {
  * else; there is no input for which this returns a half-built object.
  */
 export function mergeEffectiveLine(
-  _rows: readonly LineRowView[],
-  _kickoffAt: EpochMs,
-  _now: EpochMs,
+  rows: readonly LineRowView[],
+  kickoffAt: EpochMs,
+  now: EpochMs,
 ): EffectiveLine | null {
-  throw new Error('not implemented (M9b: PLAN.md §21.4)');
+  if (rows.length === 0) return null;
+
+  // Step 3's order, applied once: primary first, then most recently seen, then
+  // provider name. Each market then takes the FIRST row in this order that
+  // offers it complete and fresh.
+  const ordered = [...rows].sort(
+    (a, b) =>
+      providerRank(a.provider) - providerRank(b.provider) ||
+      b.seenAt - a.seenAt ||
+      (a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0),
+  );
+  const fresh = (row: LineRowView): boolean =>
+    Number.isFinite(row.seenAt) && now - row.seenAt <= lineStaleAfterMs(kickoffAt, row.seenAt);
+  const source = (row: LineRowView, book: string | null): MarketSource => ({
+    provider: marketProvider(row.provider, book),
+    capturedAt: row.capturedAt,
+    seenAt: row.seenAt,
+  });
+
+  // Whether ANY row offered a complete market, fresh or not: the difference
+  // between "no line" (stale: false, three nulls) and "line is stale".
+  let offered = false;
+  let spread: EffectiveLine['spread'] = null;
+  let total: EffectiveLine['total'] = null;
+  let moneyline: EffectiveLine['moneyline'] = null;
+  let headline: LineRowView | null = null;
+
+  for (const row of ordered) {
+    const s = completeSpread(row);
+    const t = completeTotal(row);
+    const m = completeMoneyline(row);
+    if (s !== null || t !== null || m !== null) offered = true;
+    if (!fresh(row)) continue;
+    let contributed = false;
+    if (spread === null && s !== null) {
+      spread = { ...s, ...source(row, row.spreadBook) };
+      contributed = true;
+    }
+    if (total === null && t !== null) {
+      total = { ...t, ...source(row, row.totalBook) };
+      contributed = true;
+    }
+    if (moneyline === null && m !== null) {
+      moneyline = { ...m, ...source(row, row.mlBook) };
+      contributed = true;
+    }
+    if (contributed && headline === null) headline = row;
+  }
+
+  // The headline trio: the highest-priority row that contributed a market, or,
+  // when nothing survived, the highest-priority row there is — so a fresh
+  // all-null "OFF" row still reads as its provider with stale: false.
+  const first = headline ?? ordered[0];
+  if (first === undefined) return null;
+  return {
+    spread,
+    total,
+    moneyline,
+    provider: first.provider,
+    capturedAt: first.capturedAt,
+    seenAt: first.seenAt,
+    stale: offered && spread === null && total === null && moneyline === null,
+  };
+}
+
+/* A market is COMPLETE only when every one of its numbers is a usable integer. */
+
+function usableTenths(value: LineTenths | null): value is LineTenths {
+  return value !== null && Number.isSafeInteger(value) && Math.abs(value) <= MAX_ABS_LINE_TENTHS;
+}
+
+function usablePrice(value: AmericanPrice | null): value is AmericanPrice {
+  return (
+    value !== null &&
+    Number.isSafeInteger(value) &&
+    Math.abs(value) >= MIN_ABS_AMERICAN_PRICE &&
+    Math.abs(value) <= MAX_ABS_AMERICAN_PRICE
+  );
+}
+
+function completeSpread(row: LineRowView): SpreadMarket | null {
+  return usableTenths(row.spreadHomeTenths) &&
+    usablePrice(row.spreadHomePrice) &&
+    usableTenths(row.spreadAwayTenths) &&
+    usablePrice(row.spreadAwayPrice)
+    ? {
+        homeTenths: row.spreadHomeTenths,
+        homePrice: row.spreadHomePrice,
+        awayTenths: row.spreadAwayTenths,
+        awayPrice: row.spreadAwayPrice,
+      }
+    : null;
+}
+
+function completeTotal(row: LineRowView): TotalMarket | null {
+  return usableTenths(row.totalTenths) &&
+    usablePrice(row.totalOverPrice) &&
+    usablePrice(row.totalUnderPrice)
+    ? { tenths: row.totalTenths, overPrice: row.totalOverPrice, underPrice: row.totalUnderPrice }
+    : null;
+}
+
+function completeMoneyline(row: LineRowView): MoneylineMarket | null {
+  return usablePrice(row.mlHomePrice) && usablePrice(row.mlAwayPrice)
+    ? { homePrice: row.mlHomePrice, awayPrice: row.mlAwayPrice }
+    : null;
 }
 
 /**
@@ -166,8 +279,8 @@ export function mergeEffectiveLine(
  * book. Exported because `bets.ts` writes it into `bet_legs.provider` and the
  * board renders it, and those two must not compose it differently.
  */
-export function marketProvider(_rowProvider: string, _book: string | null): string {
-  throw new Error('not implemented (M9b: PLAN.md §21.4)');
+export function marketProvider(rowProvider: string, book: string | null): string {
+  return book === null || book === '' ? rowProvider : `${rowProvider}:${book}`;
 }
 
 /**
@@ -176,8 +289,9 @@ export function marketProvider(_rowProvider: string, _book: string | null): stri
  * nobody has ranked — which sorts it last rather than crashing, so an unknown
  * row in the table can never make the board throw.
  */
-export function providerRank(_provider: string): number {
-  throw new Error('not implemented (M9b: PLAN.md §21.4)');
+export function providerRank(provider: string): number {
+  const index = LINE_PROVIDER_PRIORITY.indexOf(provider);
+  return index === -1 ? LINE_PROVIDER_PRIORITY.length : index;
 }
 
 /* ------------------------------------------------------------------ *
@@ -215,8 +329,15 @@ export interface MarketGaps {
  *
  * `null` (the game has never been priced) is three gaps, not zero.
  *
- * M9c — throws until then. PLAN.md §21.2.
+ * PLAN.md §21.2.
  */
-export function missingMarkets(_line: EffectiveLine | null): MarketGaps {
-  throw new Error('not implemented (M9c: PLAN.md §21.2)');
+export function missingMarkets(line: EffectiveLine | null): MarketGaps {
+  if (line === null) return { spread: true, total: true, moneyline: true, any: true };
+  const spread = line.spread === null;
+  const total = line.total === null;
+  const moneyline =
+    line.moneyline === null &&
+    (line.spread === null ||
+      Math.abs(line.spread.homeTenths) < MONEYLINE_NOT_OFFERED_SPREAD_TENTHS);
+  return { spread, total, moneyline, any: spread || total || moneyline };
 }

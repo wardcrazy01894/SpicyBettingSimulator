@@ -132,20 +132,31 @@ export interface GameLinesView {
    * 18 h if further out (`lineStaleAfterMs`). Such markets are not bettable.
    */
   readonly stale: boolean;
+  /**
+   * Each market carries ITS OWN provenance (`'DraftKings'`, or
+   * `'odds-api:<bookmaker>'` for a market the secondary provider filled): with
+   * a merged line the spread can be one book's and the total another's, and
+   * this is the exact string `bet_legs.provider` records for a leg on that
+   * market (PLAN.md §21.4). The headline `provider` above is the source of the
+   * highest-priority market that survived.
+   */
   readonly spread: {
     readonly homeTenths: LineTenths;
     readonly homePrice: AmericanPrice;
     readonly awayTenths: LineTenths;
     readonly awayPrice: AmericanPrice;
+    readonly provider: string;
   } | null;
   readonly total: {
     readonly tenths: LineTenths;
     readonly overPrice: AmericanPrice;
     readonly underPrice: AmericanPrice;
+    readonly provider: string;
   } | null;
   readonly moneyline: {
     readonly homePrice: AmericanPrice;
     readonly awayPrice: AmericanPrice;
+    readonly provider: string;
   } | null;
 }
 

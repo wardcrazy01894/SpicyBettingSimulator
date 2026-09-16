@@ -6,14 +6,16 @@
  */
 
 import { Hono } from 'hono';
-import { boardWindowEnd, lineStaleAfterMs } from '../../shared/time.js';
+import { mergeEffectiveLine } from '../../shared/lines.js';
+import type { EffectiveLine, LineRowView } from '../../shared/lines.js';
+import { boardWindowEnd } from '../../shared/time.js';
 import type { GameCard, GameLinesView, GamesResponse } from '../../shared/api-types.js';
 import { BOARD_LOOKBACK_MS, BOARD_MAX_GAMES } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { lockAtFor } from '../../shared/time.js';
 import type { BetLeague, EpochMs, GameStatus, League } from '../../shared/types.js';
 import { currentSeasonFor, isLeague } from '../bankroll.js';
-import { queryAll, queryOne } from '../db.js';
+import { queryAll } from '../db.js';
 import { requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
 
@@ -62,43 +64,51 @@ interface BoardRow {
   total_under_price: number | null;
   ml_home_price: number | null;
   ml_away_price: number | null;
+  spread_book: string | null;
+  total_book: string | null;
+  ml_book: string | null;
   captured_at: number | null;
   seen_at: number | null;
 }
 
 /**
- * One row per game with its CURRENT line attached.
+ * One row per (game, line row): EVERY `game_lines` row a game has comes back,
+ * and `mergeEffectiveLine` resolves them per market (PLAN.md §21.4). A game with
+ * no line row still comes back once, with the `l.*` columns null.
  *
- * `game_lines` is keyed `(game_id, provider)`, so the join picks the most
- * recently CONFIRMED provider deterministically rather than letting a second
- * book duplicate the game card.
+ * The board's LIMIT is applied to GAMES, in a subquery, never to the joined rows
+ * — with two line rows per game a LIMIT on the join would cap the board at half
+ * its games and raise no error anywhere.
  */
-const BOARD_COLUMNS = `g.id, g.league, g.season, g.season_type, g.week, g.kickoff_at,
+const GAME_COLUMNS = `g.id, g.league, g.season, g.season_type, g.week, g.kickoff_at,
        g.status, g.status_detail, g.period, g.display_clock, g.neutral_site,
        g.home_team_id, g.home_abbr, g.home_name, g.home_logo, g.home_rank, g.home_score,
        g.away_team_id, g.away_abbr, g.away_name, g.away_logo, g.away_rank, g.away_score,
-       g.home_conference_id, g.away_conference_id,
-       l.provider, l.spread_home_tenths, l.spread_home_price, l.spread_away_tenths,
+       g.home_conference_id, g.away_conference_id`;
+const LINE_COLUMNS = `l.provider, l.spread_home_tenths, l.spread_home_price, l.spread_away_tenths,
        l.spread_away_price, l.total_tenths, l.total_over_price, l.total_under_price,
-       l.ml_home_price, l.ml_away_price, l.captured_at, l.seen_at`;
+       l.ml_home_price, l.ml_away_price, l.spread_book, l.total_book, l.ml_book,
+       l.captured_at, l.seen_at`;
+const BOARD_COLUMNS = `${GAME_COLUMNS}, ${LINE_COLUMNS}`;
+const LINES_JOIN = `LEFT JOIN game_lines l ON l.game_id = g.id`;
 
-// TODO(M9b, PLAN.md §21.4/§21.10): this LIMIT-1 pick is replaced by selecting
-// EVERY `game_lines` row for the game and merging them per market with
-// `mergeEffectiveLine` (src/shared/lines.ts) — the same call `bets.ts` makes, so
-// the board and placement cannot disagree about which book owns which market.
-// TWO THINGS MUST MOVE WITH IT, or the board breaks silently:
-//   1. the LIMIT below counts JOINED rows. With two line rows per game a full
-//      board caps at ~150 GAMES and no error is raised anywhere. The LIMIT moves
-//      into a subquery over `games` (§21.10).
-//   2. `GET /:id` uses queryOne, which keeps whichever row D1 returns first — it
-//      must become queryAll + the same merge, or the detail card and the slip
-//      disagree about which book owns a market.
-const BOARD_JOIN = `FROM games g
-  LEFT JOIN game_lines l
-         ON l.game_id = g.id
-        AND l.provider = (SELECT provider FROM game_lines
-                           WHERE game_id = g.id
-                           ORDER BY seen_at DESC, provider ASC LIMIT 1)`;
+/** Group the joined rows by game, in the order the query returned the games. */
+function groupByGame(rows: readonly BoardRow[]): readonly { game: BoardRow; lines: BoardRow[] }[] {
+  const out: { game: BoardRow; lines: BoardRow[] }[] = [];
+  const byId = new Map<string, { game: BoardRow; lines: BoardRow[] }>();
+  for (const row of rows) {
+    let entry = byId.get(row.id);
+    if (entry === undefined) {
+      entry = { game: row, lines: [] };
+      byId.set(row.id, entry);
+      out.push(entry);
+    }
+    if (row.provider !== null && row.captured_at !== null && row.seen_at !== null) {
+      entry.lines.push(row);
+    }
+  }
+  return out;
+}
 
 export function gamesRoutes(): Hono<AppContext> {
   const app = new Hono<AppContext>();
@@ -125,12 +135,16 @@ export function gamesRoutes(): Hono<AppContext> {
     if (week !== undefined) clauses.push(`g.week = ${next(week)}`);
     if (status !== undefined) clauses.push(`g.status = ${next(status)}`);
 
+    // The LIMIT is on GAMES (the subquery), not on the joined line rows.
     const rows = await queryAll<BoardRow>(
       c.env.DB.prepare(
-        `SELECT ${BOARD_COLUMNS} ${BOARD_JOIN}
-          WHERE ${clauses.join(' AND ')}
-          ORDER BY g.kickoff_at ASC, g.id ASC
-          LIMIT ${next(BOARD_MAX_GAMES)}`,
+        `SELECT ${BOARD_COLUMNS}
+           FROM (SELECT * FROM games g
+                  WHERE ${clauses.join(' AND ')}
+                  ORDER BY g.kickoff_at ASC, g.id ASC
+                  LIMIT ${next(BOARD_MAX_GAMES)}) g
+           ${LINES_JOIN}
+          ORDER BY g.kickoff_at ASC, g.id ASC, l.provider ASC`,
       ).bind(...values),
     );
 
@@ -143,19 +157,23 @@ export function gamesRoutes(): Hono<AppContext> {
       league,
       season: resolvedSeason,
       week: week ?? null,
-      games: rows.map((row) => toGameCard(row, now)),
+      games: groupByGame(rows).map(({ game, lines }) => toGameCard(game, lines, now)),
     };
     return c.json(bodyOut);
   });
 
+  // Deliberately UNWINDOWED (PLAN.md §22.7): an id lookup, so a bet on a game
+  // the list no longer shows still renders and edits. EVERY line row, merged —
+  // never queryOne, which would keep whichever row D1 returned first.
   app.get('/:id', async (c) => {
-    const row = await queryOne<BoardRow>(
-      c.env.DB.prepare(`SELECT ${BOARD_COLUMNS} ${BOARD_JOIN} WHERE g.id = ?1`).bind(
+    const rows = await queryAll<BoardRow>(
+      c.env.DB.prepare(`SELECT ${BOARD_COLUMNS} FROM games g ${LINES_JOIN} WHERE g.id = ?1`).bind(
         c.req.param('id'),
       ),
     );
-    if (row === null) throw new AppError('GAME_NOT_FOUND', 'No such game.');
-    return c.json({ game: toGameCard(row, c.var.now) });
+    const grouped = groupByGame(rows)[0];
+    if (grouped === undefined) throw new AppError('GAME_NOT_FOUND', 'No such game.');
+    return c.json({ game: toGameCard(grouped.game, grouped.lines, c.var.now) });
   });
 
   return app;
@@ -166,8 +184,8 @@ export function gamesRoutes(): Hono<AppContext> {
  * bets route"; nothing outside this file imports it — the slip is built in the
  * browser from the board response.)
  */
-export function toGameCard(row: BoardRow, now: EpochMs): GameCard {
-  const lines = toLinesView(row, now);
+export function toGameCard(row: BoardRow, lineRows: readonly BoardRow[], now: EpochMs): GameCard {
+  const lines = toLinesView(row, lineRows, now);
   const lockAt = lockAtFor(row.kickoff_at);
   const status = row.status as GameStatus;
   return {
@@ -213,41 +231,76 @@ export function toGameCard(row: BoardRow, now: EpochMs): GameCard {
   };
 }
 
-function toLinesView(row: BoardRow, now: EpochMs): GameLinesView | null {
-  if (row.provider === null || row.seen_at === null || row.captured_at === null) return null;
+/** A joined line row -> the shape the merge reads. */
+function toLineRowView(row: BoardRow): LineRowView {
   return {
-    provider: row.provider,
-    capturedAt: row.captured_at,
-    seenAt: row.seen_at,
-    // Staleness keys off seen_at (last confirmation), never captured_at (last
-    // price change) — see the schema comment on game_lines — and the window
-    // scales with how often THIS game was being refreshed when last seen
-    // (lineStaleAfterMs), so it agrees with placement at any later instant.
-    stale: now - row.seen_at > lineStaleAfterMs(row.kickoff_at, row.seen_at),
+    provider: row.provider ?? '',
+    spreadHomeTenths: row.spread_home_tenths,
+    spreadHomePrice: row.spread_home_price,
+    spreadAwayTenths: row.spread_away_tenths,
+    spreadAwayPrice: row.spread_away_price,
+    spreadBook: row.spread_book,
+    totalTenths: row.total_tenths,
+    totalOverPrice: row.total_over_price,
+    totalUnderPrice: row.total_under_price,
+    totalBook: row.total_book,
+    mlHomePrice: row.ml_home_price,
+    mlAwayPrice: row.ml_away_price,
+    mlBook: row.ml_book,
+    capturedAt: row.captured_at ?? 0,
+    seenAt: row.seen_at ?? 0,
+  };
+}
+
+/**
+ * The card's lines are the MERGED effective line (PLAN.md §21.4): every market
+ * resolved independently across every row, each carrying its own provenance,
+ * staleness judged per row at the request's one clock — the same call
+ * placement makes, so the board can never offer a price placement refuses.
+ */
+export function toLinesView(
+  game: BoardRow,
+  lineRows: readonly BoardRow[],
+  now: EpochMs,
+): GameLinesView | null {
+  const merged: EffectiveLine | null = mergeEffectiveLine(
+    lineRows.map(toLineRowView),
+    game.kickoff_at,
+    now,
+  );
+  if (merged === null) return null;
+  return {
+    provider: merged.provider,
+    capturedAt: merged.capturedAt,
+    seenAt: merged.seenAt,
+    stale: merged.stale,
     spread:
-      row.spread_home_tenths !== null &&
-      row.spread_home_price !== null &&
-      row.spread_away_tenths !== null &&
-      row.spread_away_price !== null
-        ? {
-            homeTenths: row.spread_home_tenths,
-            homePrice: row.spread_home_price,
-            awayTenths: row.spread_away_tenths,
-            awayPrice: row.spread_away_price,
-          }
-        : null,
+      merged.spread === null
+        ? null
+        : {
+            homeTenths: merged.spread.homeTenths,
+            homePrice: merged.spread.homePrice,
+            awayTenths: merged.spread.awayTenths,
+            awayPrice: merged.spread.awayPrice,
+            provider: merged.spread.provider,
+          },
     total:
-      row.total_tenths !== null && row.total_over_price !== null && row.total_under_price !== null
-        ? {
-            tenths: row.total_tenths,
-            overPrice: row.total_over_price,
-            underPrice: row.total_under_price,
-          }
-        : null,
+      merged.total === null
+        ? null
+        : {
+            tenths: merged.total.tenths,
+            overPrice: merged.total.overPrice,
+            underPrice: merged.total.underPrice,
+            provider: merged.total.provider,
+          },
     moneyline:
-      row.ml_home_price !== null && row.ml_away_price !== null
-        ? { homePrice: row.ml_home_price, awayPrice: row.ml_away_price }
-        : null,
+      merged.moneyline === null
+        ? null
+        : {
+            homePrice: merged.moneyline.homePrice,
+            awayPrice: merged.moneyline.awayPrice,
+            provider: merged.moneyline.provider,
+          },
   };
 }
 

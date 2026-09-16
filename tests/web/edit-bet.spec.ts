@@ -21,9 +21,15 @@ function lines(overrides: Partial<GameLinesView> = {}): GameLinesView {
     capturedAt: KICKOFF - 7_200_000,
     seenAt: KICKOFF - 60_000,
     stale: false,
-    spread: { homeTenths: -35, homePrice: -110, awayTenths: 35, awayPrice: -110 },
-    total: { tenths: 475, overPrice: -110, underPrice: -110 },
-    moneyline: { homePrice: -180, awayPrice: 155 },
+    spread: {
+      homeTenths: -35,
+      homePrice: -110,
+      awayTenths: 35,
+      awayPrice: -110,
+      provider: 'DraftKings',
+    },
+    total: { tenths: 475, overPrice: -110, underPrice: -110, provider: 'DraftKings' },
+    moneyline: { homePrice: -180, awayPrice: 155, provider: 'DraftKings' },
     ...overrides,
   };
 }
@@ -54,7 +60,13 @@ describe('refreshSlipLegs', () => {
       id: 'g1',
       kickoffAt: KICKOFF,
       lines: lines({
-        spread: { homeTenths: -45, homePrice: -105, awayTenths: 45, awayPrice: -115 },
+        spread: {
+          homeTenths: -45,
+          homePrice: -105,
+          awayTenths: 45,
+          awayPrice: -115,
+          provider: 'DraftKings',
+        },
       }),
     });
 
@@ -72,7 +84,13 @@ describe('refreshSlipLegs', () => {
       id: 'g1',
       kickoffAt: KICKOFF,
       lines: lines({
-        spread: { homeTenths: -45, homePrice: -105, awayTenths: 45, awayPrice: -115 },
+        spread: {
+          homeTenths: -45,
+          homePrice: -105,
+          awayTenths: 45,
+          awayPrice: -115,
+          provider: 'DraftKings',
+        },
       }),
     });
 
@@ -135,12 +153,20 @@ describe('refreshSlipLegs', () => {
     const g1 = gameCard({
       id: 'g1',
       lines: lines({
-        spread: { homeTenths: -20, homePrice: -120, awayTenths: 20, awayPrice: 100 },
+        spread: {
+          homeTenths: -20,
+          homePrice: -120,
+          awayTenths: 20,
+          awayPrice: 100,
+          provider: 'DraftKings',
+        },
       }),
     });
     const g2 = gameCard({
       id: 'g2',
-      lines: lines({ total: { tenths: 512, overPrice: -102, underPrice: -118 } }),
+      lines: lines({
+        total: { tenths: 512, overPrice: -102, underPrice: -118, provider: 'DraftKings' },
+      }),
     });
 
     const { legs } = refreshSlipLegs(bet, board(g1, g2));

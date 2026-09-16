@@ -416,7 +416,7 @@ the GitHub issue is filed so a GitHub outage loses nothing; `issue_number` /
 `issue_url` are set on success, `error` on failure. The `(user_id, created_at)`
 index is the rate-limit guard. §11.7.
 
-**`secondary_budget`** (migration `0007_secondary_odds.sql`, **planned — M9b
+**`secondary_budget`** (migration `0007_secondary_odds.sql`, **shipped in M9b
 writes it from §21.3; nothing under `migrations/` yet**) — `id (CHECK id = 1),
 remaining_credits, checked_at, last_attempt_at, nfl_last_sweep_at,
 ncaaf_last_sweep_at, cooldown_until, consecutive_failures, last_status,
@@ -3654,7 +3654,7 @@ friend who cannot find a game to bet):
   `GET /api/admin/jobs` reports `stats.dayRowsWritten` (rolling 24 h) for exactly
   this check; §8.6 predicts ≈ 5,100/day.
 
-### M9-plan — This chapter, the constants and the stubs — **PLANNED** _(ships first of all)_
+### M9-plan — This chapter, the constants and the stubs — **DONE** _(2026-09-16, PR #37)_
 
 One PR that adds NO behaviour and NO schema: PLAN §21 + §22, the CLAUDE.md
 rules they change, the `src/shared/constants.ts` values, the type-only stubs
@@ -3702,7 +3702,7 @@ bettors, it touches two hot read paths, and it has nothing to do with a second
 odds provider. Bundling it into M9a–c would mean a rollback of the provider work
 also rolls back the owner's window, or vice versa.
 
-### M9a / M9b / M9c — Secondary odds provider — **M9a DONE** _(2026-09-16)_, **M9b / M9c PLANNED**
+### M9a / M9b / M9c — Secondary odds provider — **M9a, M9b DONE** _(2026-09-16)_, **M9c PLANNED**
 
 Three PRs, each independently mergeable and green on its own; the file lists,
 the tests-first lists and the DoD for each are **§21.11**. In dependency order:
@@ -4892,8 +4892,10 @@ Three costs that table omits, because they are not parsing — named here so the
   unclaimed) with mascots precomputed once per side. Measured (node): 0.15 ms on
   the real 140 × 75 captures, where nearly everything matches in pass 1; ~1.9 ms
   at 100 × 75 and ~6.6 ms at 300 × 100 if EVERY candidate fell through to pass
-  2 — the feed-renames-everything case. Eligibility bounds `leftover` to the
-  NFL plus ranked CFB games, which is what keeps that case out of the budget.
+  2 — the feed-renames-everything case, measured BEFORE the mascots were
+  precomputed; with them (M9a as merged) the same benchmarks are **0.50 ms** and
+  **1.19 ms**. Eligibility bounds `leftover` to the NFL plus ranked CFB games,
+  which is what keeps that case out of the budget.
 
 The worst refresh invocation sweeps both leagues: `0.401 + 0.169 = 0.57 ms` of
 parsing on top of an ESPN parse that already costs ~1.8 ms, plus the scan, inside
@@ -4909,7 +4911,8 @@ The two feeds share no id, so the join is on names and kickoffs. Pure, in
 `src/shared/odds-api.ts`, and NEVER across leagues.
 
 **Pass 1 — exact and ORIENTED.** Key both sides on
-`${normaliseTeamName(home)}|${normaliseTeamName(away)}`, where
+`${normaliseTeamName(home)}|${normaliseTeamName(away)}` — a name that normalises
+to NOTHING has no key and never matches, in either pass — where
 `normaliseTeamName` is NFD → strip the combining marks (U+0300–U+036F) → lowercase
 → strip everything that is not `[a-z0-9]`. (NFD, not NFC: a precomposed `é`
 would survive NFC and then be deleted by the character class, turning "San José
@@ -5253,11 +5256,12 @@ Tests, written first:
 - `tests/worker/schema.spec.ts`: 0007 composes on 0001–0006 — the three
   `game_lines` book columns, `games.secondary_tried_at`, and
   `secondary_budget` with exactly one row and a `CHECK` that refuses `id = 2`.
-- `tests/worker/lines-parity.spec.ts`: with a crafted three-row set, the
-  `GameCard` the board returns, **the card `GET /api/games/:id` returns** and the
-  snapshot `resolveLegSnapshots` produces all agree on line, price and provider
-  for all three markets — including one market whose only row is stale, which the
-  board must not offer and placement must refuse with `MARKET_UNAVAILABLE`.
+- the PARITY test (in `tests/worker/bets.spec.ts`, next to the placement it
+  compares against): with a two-row set, the `GameCard` the board returns,
+  **the card `GET /api/games/:id` returns** and the snapshot
+  `resolveLegSnapshots` produces all agree on line, price and provider for every
+  market — including one market whose only row is stale, which the board must not
+  offer and placement must refuse with `MARKET_UNAVAILABLE`.
 - `tests/worker/routes.spec.ts`: **300+ games, each with TWO line rows** →
   `GET /api/games` still returns `BOARD_MAX_GAMES` GAMES, not half of them. This
   is the test that fails today if the `LIMIT` stays on the joined rows (§21.10).

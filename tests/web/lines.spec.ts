@@ -8,9 +8,15 @@ const FULL: GameLinesView = {
   capturedAt: 1_800_000_000_000,
   seenAt: 1_800_000_000_000,
   stale: false,
-  spread: { homeTenths: -35, homePrice: -110, awayTenths: 35, awayPrice: -108 },
-  total: { tenths: 475, overPrice: -105, underPrice: -115 },
-  moneyline: { homePrice: -180, awayPrice: 155 },
+  spread: {
+    homeTenths: -35,
+    homePrice: -110,
+    awayTenths: 35,
+    awayPrice: -108,
+    provider: 'DraftKings',
+  },
+  total: { tenths: 475, overPrice: -105, underPrice: -115, provider: 'DraftKings' },
+  moneyline: { homePrice: -180, awayPrice: 155, provider: 'DraftKings' },
 };
 
 describe('quoteFor', () => {
@@ -66,7 +72,13 @@ describe('MARKET_CELLS', () => {
 describe('moneylineNotOffered', () => {
   const at = (homeTenths: number): GameLinesView => ({
     ...FULL,
-    spread: { homeTenths, homePrice: -110, awayTenths: -homeTenths, awayPrice: -110 },
+    spread: {
+      homeTenths,
+      homePrice: -110,
+      awayTenths: -homeTenths,
+      awayPrice: -110,
+      provider: 'DraftKings',
+    },
     moneyline: null,
   });
 
@@ -83,7 +95,10 @@ describe('moneylineNotOffered', () => {
 
   it('is false when a moneyline IS posted, whatever the spread', () => {
     expect(
-      moneylineNotOffered({ ...at(-400), moneyline: { homePrice: -20000, awayPrice: 5000 } }),
+      moneylineNotOffered({
+        ...at(-400),
+        moneyline: { homePrice: -20000, awayPrice: 5000, provider: 'DraftKings' },
+      }),
     ).toBe(false);
   });
 
