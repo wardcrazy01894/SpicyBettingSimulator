@@ -22,6 +22,11 @@ export interface MarketButtonProps {
    * and a screen reader would otherwise just find an unexplained dead control.
    */
   readonly disabledReason?: string;
+  /**
+   * What to print instead of "n/a" when the market is absent for a REASON the
+   * bettor should see — "No ML" on a 40-point spread, where no book posts one.
+   */
+  readonly unavailableText?: string;
   readonly onToggle: () => void;
 }
 
@@ -32,8 +37,17 @@ export interface MarketButtonProps {
  * sitting as small dim text under an empty slot — the odds ARE the pick there.
  */
 export function MarketButton(props: MarketButtonProps): ReactElement {
-  const { market, lineTenths, price, disabled, selected, ariaLabel, disabledReason, onToggle } =
-    props;
+  const {
+    market,
+    lineTenths,
+    price,
+    disabled,
+    selected,
+    ariaLabel,
+    disabledReason,
+    unavailableText,
+    onToggle,
+  } = props;
   const unavailable = price === null;
   const off = disabled || unavailable;
   const reason = off && disabledReason !== undefined ? disabledReason : undefined;
@@ -58,7 +72,7 @@ export function MarketButton(props: MarketButtonProps): ReactElement {
         </span>
       )}
       <span className={solo ? 'market-price market-price-solo' : 'market-price'}>
-        {price === null ? 'n/a' : formatAmerican(price)}
+        {price === null ? (unavailableText ?? 'n/a') : formatAmerican(price)}
       </span>
     </button>
   );

@@ -17,7 +17,7 @@ import { MarketButton } from './MarketButton.js';
 import { TeamRow } from './TeamRow.js';
 import { formatCountdown, formatTime } from '../lib/datetime.js';
 import { gameClockLabel, pickLabel } from '../lib/labels.js';
-import { MARKET_CELLS, quoteFor } from '../lib/lines.js';
+import { MARKET_CELLS, moneylineNotOffered, quoteFor } from '../lib/lines.js';
 import { postAdminGameRefresh } from '../api/client.js';
 import { invalidate } from '../hooks/useResource.js';
 import { useBetSlip } from '../state/bet-slip.js';
@@ -32,6 +32,9 @@ export interface GameCardProps {
 
 /** Shown on a greyed moneyline cell while the slip is building a teaser. */
 const UNTEASABLE_HINT = 'moneylines cannot be teased';
+/** A moneyline cell on a 30+ point spread: absent by book policy, not missing. */
+const NO_ML_TEXT = 'No ML';
+const NO_ML_HINT = 'no moneyline is offered at this spread';
 
 /**
  * Admin-only: pull this game's slate from ESPN right now (PLAN.md §9.3). The
@@ -84,6 +87,7 @@ export function GameCard(props: GameCardProps): ReactElement {
   const awayScore = game.away.score ?? 0;
   const countdown = formatCountdown(game.lockAt - now);
   const stale = game.lines?.stale ?? false;
+  const noMoneyline = moneylineNotOffered(game.lines);
 
   return (
     <article className="game-card">
@@ -135,7 +139,11 @@ export function GameCard(props: GameCardProps): ReactElement {
               // cell is greyed out while the slip is in teaser mode rather than
               // accepting a tap the server would then refuse.
               const unteasable = teasing && cell.market === 'moneyline';
+              const notOffered = noMoneyline && cell.market === 'moneyline';
               const disabled = !game.bettable || stale || quote === null || unteasable;
+              // "Not offered" is the more useful reason when both apply: there
+              // is no moneyline to tease in the first place.
+              const hint = notOffered ? NO_ML_HINT : unteasable ? UNTEASABLE_HINT : undefined;
               return (
                 <MarketButton
                   key={`${cell.market}:${cell.side}`}
@@ -147,7 +155,8 @@ export function GameCard(props: GameCardProps): ReactElement {
                   disabled={disabled}
                   selected={slip.isSelected(game.id, cell.market, cell.side)}
                   ariaLabel={label}
-                  {...(unteasable ? { disabledReason: UNTEASABLE_HINT } : {})}
+                  {...(hint === undefined ? {} : { disabledReason: hint })}
+                  {...(notOffered ? { unavailableText: NO_ML_TEXT } : {})}
                   onToggle={() => {
                     if (quote === null) return;
                     slip.toggleLeg({
