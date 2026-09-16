@@ -73,6 +73,5 @@ export function quoteFor(
 export function moneylineNotOffered(lines: GameLinesView | null): boolean {
   const spread = lines?.spread ?? null;
   if (spread === null || lines?.moneyline !== null) return false;
-  const magnitude = spread.homeTenths < 0 ? -spread.homeTenths : spread.homeTenths;
-  return magnitude >= MONEYLINE_NOT_OFFERED_SPREAD_TENTHS;
+  return Math.abs(spread.homeTenths) >= MONEYLINE_NOT_OFFERED_SPREAD_TENTHS;
 }

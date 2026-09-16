@@ -141,7 +141,9 @@ export function GameCard(props: GameCardProps): ReactElement {
               const unteasable = teasing && cell.market === 'moneyline';
               const notOffered = noMoneyline && cell.market === 'moneyline';
               const disabled = !game.bettable || stale || quote === null || unteasable;
-              const hint = unteasable ? UNTEASABLE_HINT : notOffered ? NO_ML_HINT : undefined;
+              // "Not offered" is the more useful reason when both apply: there
+              // is no moneyline to tease in the first place.
+              const hint = notOffered ? NO_ML_HINT : unteasable ? UNTEASABLE_HINT : undefined;
               return (
                 <MarketButton
                   key={`${cell.market}:${cell.side}`}

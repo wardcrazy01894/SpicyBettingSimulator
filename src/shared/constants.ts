@@ -63,12 +63,13 @@ export const MIN_TEASER_LEGS = 2;
 /**
  * Books stop posting a MONEYLINE once the spread is this wide: the favourite
  * would pay -20000 and nobody takes it. Measured 2026-09-16 on The Odds API's
- * CFB slate: every game with no moneyline at any of nine books had a spread of
- * 33.5 or more, and the widest spread that still HAD a DraftKings moneyline was
- * 35.5. At or beyond this line an absent moneyline is book policy, not a gap —
- * the board says "No ML" instead of "n/a", and the secondary-provider sweep
- * (PLAN.md §21) does not count it as a market worth spending a credit on.
- * Tenths of a point, like every line.
+ * CFB slate (75 games, nine US books): the 15 games with no moneyline at the
+ * five preferred books had none at ANY of the nine, and every one of them had
+ * a spread of 33.5 or more; the widest spread that still HAD a DraftKings
+ * moneyline was 35.5. At or beyond this line an absent moneyline is book
+ * policy, not a gap — the board says "No ML" instead of "n/a", and the planned
+ * secondary-provider sweep does not count it as a market worth spending a
+ * credit on. Tenths of a point, like every line.
  */
 export const MONEYLINE_NOT_OFFERED_SPREAD_TENTHS = 300;
 
