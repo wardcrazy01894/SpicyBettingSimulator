@@ -255,10 +255,14 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   Sunday 00:00 ET** (Saturday's games are done), **NFL at Sunday 20:00 ET** (the early and late
   windows are done) — and stays there through Monday. So "why did next week's games disappear?" on a
   Friday is the rule working: next week's college games appear Sunday morning, the NFL's Sunday
-  night, and MNF plus next week are what Monday shows. The games still exist and still ingest;
-  they are simply not listed until the rollover. Right after a rollover the new week fills in over
-  about 1–4 hours, one date per refresh run through the reserved discovery slot, so a sparse board
-  at 00:15 ET on a Sunday is expected, not a stall — `GET /api/admin/jobs` shows the dates being
+  night, and MNF plus next week are what Monday shows. **Next week's dates are not ingested either
+  until the rollover**: the planner creates an `ingest_targets` row only for dates inside the
+  window, so `games` having nothing for next week on a Friday is correct, not a stalled feed. (Only
+  targets that already exist keep refreshing outside the window — the one-off tail of 10-day-out
+  targets from before this rule, which ages out within ~12 days of its deploy.) Right after a
+  rollover the new week fills in over about 1–4 hours: at most two dates per refresh run, one of
+  them through the reserved discovery slot, so a sparse board at 00:15 ET on a Sunday is expected,
+  not a stall — `GET /api/admin/jobs` shows the dates being
   taken, and the per-game Refresh button jumps one date to the front. `GET /api/games/:id` is
   deliberately unwindowed so a bet placed on a game the list no longer shows still renders and edits.
 - **January (postseason):** verify a `dates=` target returns bowl / NFL playoff games (PLAN Spike S4(c)).

@@ -513,7 +513,9 @@ describe('planTargets', () => {
     const row = await env.DB.prepare('SELECT MAX(window_end_at) AS m FROM ingest_targets').first<{
       m: number;
     }>();
-    expect(row?.m).toBeLessThanOrEqual(T0 + INGEST_WINDOW_MS + DAY);
+    // The planned end is the Monday's EXCLUSIVE end (its following midnight),
+    // which sits inside the ceiling because the window never exceeds ~9 days.
+    expect(row?.m).toBeLessThanOrEqual(T0 + INGEST_WINDOW_MS);
   });
 
   it('a Sunday-night 00:20Z kickoff is planned under the SUNDAY ET date key', async () => {
@@ -679,17 +681,21 @@ describe('request budget', () => {
       boardWindowEnd('ncaaf', sunEarly),
     ).map((k) => `ncaaf:date:${k}`);
     expect(newIds).toHaveLength(7);
+    // The deployed cap, read the way runJob reads it — not a literal that
+    // would make the assertion below a tautology of the argument above.
+    const perRun = Number(env.REFRESH_TARGETS_PER_RUN);
+    expect(perRun).toBe(2);
     let claimedSoFar = 0;
     for (let run = 1; run <= 7; run += 1) {
       const now = sunEarly + run * 15 * MIN;
-      const stats = await runRefresh(env, now, 2);
-      expect(stats.targetsProcessed).toBeLessThanOrEqual(2);
+      const stats = await runRefresh(env, now, perRun);
+      expect(stats.targetsProcessed).toBeLessThanOrEqual(perRun);
       const done = await env.DB.prepare(
         `SELECT COUNT(*) AS n FROM ingest_targets WHERE id IN (${newIds.map(() => '?').join(',')}) AND last_run_at IS NOT NULL`,
       )
         .bind(...newIds)
         .first<{ n: number }>();
-      expect((done?.n ?? 0) - claimedSoFar).toBeLessThanOrEqual(2);
+      expect((done?.n ?? 0) - claimedSoFar).toBeLessThanOrEqual(perRun);
       claimedSoFar = done?.n ?? 0;
     }
     expect(claimedSoFar).toBe(7);
@@ -1856,11 +1862,12 @@ describe('slot fairness (PLAN.md §8.4)', () => {
     await insertGame('nfl:live1', 'nfl', live1.windowStartAt + HOUR, 'in_progress');
     await insertGame('ncaaf:live2', 'ncaaf', live2.windowStartAt + HOUR, 'in_progress');
 
-    // Simulate a full day of runs: the two live targets stay perpetually due,
-    // every other target reschedules itself to +6h after it is picked.
+    // Simulate a full day of runs from the Sunday-night plan: the two live
+    // targets stay perpetually due, every other target reschedules itself to
+    // +6h after it is picked.
     const seen = new Set<string>();
     for (let run = 0; run < 96; run += 1) {
-      const now = T0 + run * 15 * MIN;
+      const now = SUN_NIGHT + run * 15 * MIN;
       await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id IN (?, ?)')
         .bind(now, live1.id, live2.id)
         .run();

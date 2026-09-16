@@ -5575,10 +5575,10 @@ has not.
 
 - seed a Sunday just before the CFB rollover, step the clock past it, and run
   `planTargets` + `claimDueTargets` for successive cron ticks: the seven new date
-  targets are created at once but are drained ONE PER RUN through the reserved
-  discovery slot, oldest-overdue first. Assert that all seven have been claimed
-  within 7 runs of an idle queue (~1 h 45 m) and that no single run claims more
-  than `REFRESH_TARGETS_PER_RUN`. This is the test behind the runbook's "it fills
+  targets are created at once but are drained at most `REFRESH_TARGETS_PER_RUN`
+  per run (one of them through the reserved discovery slot), oldest-overdue
+  first. Assert that all seven have been claimed within 7 runs of an idle queue
+  and that no single run claims more than `REFRESH_TARGETS_PER_RUN`. This is the test behind the runbook's "it fills
   in over an hour or four" answer; without it that sentence is a guess.
 
 ### 22.6 What an operator sees, and the docs that must move with it
@@ -5605,8 +5605,11 @@ The two effects to expect, stated for the runbook:
    than the owner wants shown.
 2. **On Friday, next week's CFB games are not on the board at all** — they appear
    at Sunday 00:00 ET, the NFL's next week appears at Sunday 20:00 ET, and both
-   STAY through the Monday that follows. Before that they still exist, still
-   ingest and still have their lines; they are simply not shown (§22.2).
+   STAY through the Monday that follows. Before that they are not ingested
+   either: `planTargets` creates a target only for dates inside the window, so
+   `games` has nothing for next week on a Friday, and that is correct rather
+   than a stalled feed. Only already-created targets keep refreshing outside
+   the window — the one-off deploy tail of §22.3.
 3. **Next week's board fills in over about an hour or four, not at the stroke of
    the rollover.** This is the support answer, so it belongs in the runbook
    rather than being rediscovered at 1am. At the rollover the window gains SEVEN
@@ -5615,9 +5618,9 @@ The two effects to expect, stated for the runbook:
    (2) targets, of which exactly ONE is the reserved discovery slot (§8.4), and
    `ORDER BY priority ASC, next_run_at ASC` serves the OLDEST overdue discovery
    target first — the new rows are the least overdue thing in the queue. With a
-   cron tick every 15 minutes and an otherwise idle queue that is ~1 h 45 m to
-   pull all seven; with a live Saturday or a backlog competing for slot 1 it can
-   be ~4 h. So at 00:15 ET on a Sunday a CFB board can legitimately be a
+   cron tick every 15 minutes and an otherwise idle queue (where slot 1 also
+   takes a discovery target) that is about an hour to pull all seven; with a
+   live Saturday or a backlog competing for slot 1 it can be ~4 h. So at 00:15 ET on a Sunday a CFB board can legitimately be a
    handful of games with no lines yet, filling as the runs go by. Nothing is
    broken and nothing needs kicking; `GET /api/admin/jobs` shows the targets
    being taken. (An operator in a hurry can force it with the per-game Refresh

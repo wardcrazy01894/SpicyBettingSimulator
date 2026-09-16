@@ -106,7 +106,7 @@ export interface IngestStats extends LineGapStats {
   /**
    * The `LineGapStats` counts per target, because the run total conflates two
    * different things: the live date's board (what a bettor sees today) and the
-   * discovery slot's future date (up to 10 days out, where the book has often
+   * discovery slot's future date (later in the week, where the book has often
    * posted nothing yet). Only the per-target rows are comparable run to run.
    */
   readonly coverage: readonly TargetCoverage[];
@@ -415,9 +415,10 @@ function notInClause(count: number): string {
  *
  * ROLLOVER BURST: at a Sunday rollover the window gains
  * seven ET dates for one league at once, all with `next_run_at = now`. They are
- * the LEAST overdue rows in the queue, and the reserved slot takes one per run,
- * so next week's board fills over ~1 h 45 m of cron ticks on an idle queue and
- * up to ~4 h behind a live Saturday. That is expected, not a stall (PLAN §22.6).
+ * the LEAST overdue rows in the queue, and a run takes at most
+ * REFRESH_TARGETS_PER_RUN of them (one through the reserved slot), so next
+ * week's board fills over about an hour of cron ticks on an idle queue and up
+ * to ~4 h behind a live Saturday. That is expected, not a stall (PLAN §22.6).
  *
  * The reserved-slot query MUST exclude the id already claimed by slot 1
  * (`AND id <> :slot1Id`): on a run with no live target — most runs — slot 1's
