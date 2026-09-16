@@ -3702,7 +3702,7 @@ bettors, it touches two hot read paths, and it has nothing to do with a second
 odds provider. Bundling it into M9a–c would mean a rollback of the provider work
 also rolls back the owner's window, or vice versa.
 
-### M9a / M9b / M9c — Secondary odds provider — **PLANNED**
+### M9a / M9b / M9c — Secondary odds provider — **M9a DONE** _(2026-09-16)_, **M9b / M9c PLANNED**
 
 Three PRs, each independently mergeable and green on its own; the file lists,
 the tests-first lists and the DoD for each are **§21.11**. In dependency order:
@@ -4140,7 +4140,9 @@ Where an answer reversed an earlier default, the reversal is called out.
    itself — which already excludes money riding on open bets — and
    `MAX_PAYOUT_CENTS`, which limits the PAYOUT rather than the stake. The slip's
    MAX chip is the full available balance and nothing may cap it lower.
-8. **Keep `docs/samples/*.json` committed** (~1.5 MB). Trimming them would make
+8. **Keep `docs/samples/*.json` committed** (~4.5 MB since M9a: the two ESPN
+   week samples, the two Odds API samples, and the two merged same-date ESPN
+   captures that turn §21.7's match counts into CI). Trimming them would make
    the fast node project marginally faster at the cost of the "parses the real
    thing" guarantee. The `worker` project already uses small synthesised slates,
    so the big files only cost the project that can afford them.
@@ -4850,7 +4852,12 @@ Parsing rules:
 - `spreads` and `h2h` outcomes are named by FULL TEAM NAME; `totals` outcomes are
   named "Over"/"Under". A spread's two `point` values must MIRROR exactly in
   tenths (`homeTenths === -awayTenths`) and a total's two must be EQUAL; a book
-  that disagrees with itself is dropped with a warning. A market missing a side
+  that disagrees with itself is dropped for that market — the note is recorded as
+  a warning only if the market ends up EMPTY after every preferred book has been
+  tried, and only against the market it is about; a book out-voted by the next
+  book is not an operator problem. (M9c adds a per-book failure counter to the
+  sweep stats so "DraftKings failed every spread this sweep" is visible even when
+  FanDuel filled them all.) A market missing a side
   is dropped.
 - Books are visited in `ODDS_API_BOOKMAKERS` order, not response order, and the
   first book offering a COMPLETE market wins that market — independently per
@@ -4871,7 +4878,7 @@ workerd, but it bounds the order of magnitude:
 | Odds API NFL, all nine books              | 134 KB  | 0.293 ms                   |
 | Odds API NFL, five books                  | 78 KB   | **0.169 ms**               |
 
-Two costs that table omits, because they are not parsing — named here so the
+Three costs that table omits, because they are not parsing — named here so the
 10 ms budget is accounted honestly rather than optimistically:
 
 - **the candidate scan's marshalling**: ~100 D1 result rows per league per run,
@@ -4881,6 +4888,12 @@ Two costs that table omits, because they are not parsing — named here so the
   handful of comparisons per game and it replaces work `toLinesView` already
   did, but it is now in a request that a person is waiting for, not in a cron
   job. The board is capped at `BOARD_MAX_GAMES` (300) games, which is the bound.
+- **the matcher**: pass 1 is a map lookup, but pass 2 is O(leftover ×
+  unclaimed) with mascots precomputed once per side. Measured (node): 0.15 ms on
+  the real 140 × 75 captures, where nearly everything matches in pass 1; ~1.9 ms
+  at 100 × 75 and ~6.6 ms at 300 × 100 if EVERY candidate fell through to pass
+  2 — the feed-renames-everything case. Eligibility bounds `leftover` to the
+  NFL plus ranked CFB games, which is what keeps that case out of the budget.
 
 The worst refresh invocation sweeps both leagues: `0.401 + 0.169 = 0.57 ms` of
 parsing on top of an ESPN parse that already costs ~1.8 ms, plus the scan, inside
@@ -4897,11 +4910,22 @@ The two feeds share no id, so the join is on names and kickoffs. Pure, in
 
 **Pass 1 — exact and ORIENTED.** Key both sides on
 `${normaliseTeamName(home)}|${normaliseTeamName(away)}`, where
-`normaliseTeamName` is NFC → strip diacritics → lowercase → strip everything that
-is not `[a-z0-9]`. **MEASURED LIVE on 2026-09-16: 32/32 NFL and 69/75 NCAAF** —
-and **reproduced by test once M9a lands**, which matters, because the committed
-ESPN samples cover 2026-09-10..13 while the API samples cover 2026-09-17..29, so
-nothing in the repo as it stands can re-derive those numbers.
+`normaliseTeamName` is NFD → strip the combining marks (U+0300–U+036F) → lowercase
+→ strip everything that is not `[a-z0-9]`. (NFD, not NFC: a precomposed `é`
+would survive NFC and then be deleted by the character class, turning "San José
+State" into `josstate` and breaking the very match below.) **MEASURED and reproduced by `tests/unit/odds-api.spec.ts`
+against the committed same-date captures: 32/32 NFL and 68/75 NCAAF on this key
+alone.** (The 2026-09-16 live figure of 69 counted one neutral-site game whose
+orientation the live script tried both ways; the committed test does not, and
+68 is the honest pass-1 number.) The mascot fallback then recovers ALL FIVE
+abbreviation misses, for **73/75**, and the two events left are neutral-site
+games the feeds orient the other way round — "Kansas @ Arizona State" and
+"Virginia @ West Virginia", which ESPN lists as `ASU VS KU` / `WVU VS UVA` with
+the teams swapped — refused and counted in `swappedCandidates` exactly as the
+orientation rule below says. Whether a `neutralSite` game should be allowed to
+match swapped, with its markets re-oriented BY TEAM NAME (which the parser
+already does per outcome, so the spread sign would be right), is an open
+question for M9c — §21.12.
 
 **The capture is one MERGED file per league, not one date.** ESPN's unit is a
 single ET date (§8.1) and each API sample spans several — measured exactly:
@@ -4953,11 +4977,14 @@ two, the other candidate finds "exactly one unclaimed event" and takes the wrong
 game's spread onto a bettable card. Requiring the event to be unambiguous about
 the candidate too makes that a refusal.
 
-This exists for the six measured residual mismatches, every one an abbreviation
+This exists for the measured residual mismatches, every one an abbreviation
 difference in the PREFIX: "Massachusetts" vs "UMass", "App State" vs
 "Appalachian State", "Sam Houston" vs "Sam Houston State", "Southern Miss" vs
 "Southern Mississippi", "Nicholls" vs "Nicholls State", "SE Louisiana" vs
-"Southeastern Louisiana". The mascot is the token they agree on.
+"Southeastern Louisiana". The mascot is the token they agree on, and on the
+committed captures the fallback recovers every one of them (the five games
+those six names appear in), with both-direction uniqueness never refusing a
+real match on that data.
 
 The obvious objection — CFB is full of Tigers, Bulldogs and Wildcats — was
 measured rather than argued. On the API SIDE (the 75-event
@@ -5143,8 +5170,8 @@ dates) and `docs/samples/espn-cfb-scoreboard-2026-09-17..26.json` (4), exactly a
 §21.7 specifies — the date list comes from the API samples' own `commence_time`s,
 never from a literal. ESPN serves ONE ET date per request, so a single-date
 capture cannot cover an API sample that spans six; that is the mistake §21.7's
-table exists to prevent. Without these files §21.7's 32/32, 69/75 and the 90-min
-window all rest on one person's terminal session. Commit them under the §19-Q8
+table exists to prevent. Without these files §21.7's 32/32, 68/75 (73/75 with
+the fallback) and the 90-min window all rest on one person's terminal session. Commit them under the §19-Q8
 rule that already covers the other samples.
 
 Tests, written first:
@@ -5172,8 +5199,9 @@ Tests, written first:
 - `mascotOf`: "Southern Miss Golden Eagles" and "Southern Mississippi Golden
   Eagles" both give `eagles`.
 - `matchOddsApiEvents` pass 1 against the MERGED same-date ESPN captures:
-  **32/32 NFL and 69/75 NCAAF**, asserted as numbers so a future normalisation
-  change cannot quietly lose matches.
+  **32/32 NFL and 68/75 NCAAF**, and the full matcher **73/75** with the two
+  neutral-site swaps named in `swappedCandidates`, asserted as numbers so a
+  future normalisation change cannot quietly lose matches.
 - the same test asserts the kickoff agreement that sizes
   `SECONDARY_MATCH_WINDOW_MS`: over the matched pairs the median
   `|kickoffAt − commenceAt|` is 0 and the max is ≤ 30 min, comfortably inside the
@@ -5333,6 +5361,19 @@ decrement `remaining_credits`, a failed sweep is un-debited for nothing, and
 `ODDS_API_CREDIT_RESERVE` drops from 100 to **25** — the reserve now cushions
 debit drift only, and the "31 × 3 = 93 < 100" arithmetic that justified the old
 figure is deleted rather than left to be quoted at somebody.
+
+**Q — neutral-site games the two feeds orient the other way round (found by
+M9a's committed test).** "Kansas @ Arizona State" and "Virginia @ West Virginia"
+(ESPN: `ASU VS KU`, `WVU VS UVA`, both `neutralSite`) are the ONLY two NCAAF
+events on the captured week that nothing matches, and both are the kind of game
+the owner wants filled. The orientation rule refuses them because a swapped
+match would put the wrong sign on every spread — but the parser already orients
+every outcome BY TEAM NAME, so a swapped match re-oriented by name would carry
+the right sign. Proposal for M9c: when the ESPN game is `neutralSite`, accept a
+swapped pass-1 / pass-2 match and map the API's markets onto the ESPN sides by
+team name (home spread = the API outcome named for ESPN's home team; moneyline
+likewise; the total is symmetric). Needs the owner's yes, a test on exactly
+those two games, and `swappedCandidates` becomes "swapped AND not neutral-site".
 
 Nothing else here needs the product owner. The two choices that are genuinely
 his — "is a partly-secondary board acceptable at all" and "what should happen

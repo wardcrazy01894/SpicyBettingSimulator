@@ -303,12 +303,15 @@ tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES
 tests/web/    node-env tests for src/web's PURE logic — slip reducer, payout
               preview, grouping, paging, edit re-pricing. No jsdom: the modules
               under test are deliberately DOM-free
-docs/samples/ captured ESPN payloads (NFL 16 events, CFB 86) — read only by the
-              unit project, and deliberately committed (PLAN.md §19 Q8) so the
-              parser is tested against the real thing
+docs/samples/ captured payloads, read only by the unit project and deliberately
+              committed (PLAN.md §19 Q8) so parsers are tested against the real
+              thing: two ESPN week scoreboards (NFL 16 events, CFB 86), two Odds
+              API slates (NFL 32, NCAAF 75), and two ESPN captures MERGED over
+              the same ET dates as those slates (PLAN.md §21.7's match counts)
 docs/         teaser-odds.md — the sourcing behind TEASER_PAYOUTS
 scripts/      fixture server, admin password tool, ledger reconcile, branch
-              protection, icon rasteriser, teaser card generator
+              protection, icon rasteriser, teaser card generator, and the
+              one-shot ESPN range capture behind the same-date samples
 .github/      ci.yml (gate + gitleaks), deploy.yml, dependabot.yml (weekly grouped
               bumps; every one still gets CI + adversarial review), PR template
 ```
