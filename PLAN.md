@@ -1464,19 +1464,39 @@ Rules:
   dropped with the note `<market>: off the board` — distinct from `unusable`, which is
   reserved for a malformed value — and the top-level `spread` number is NOT consulted as a
   fallback for an OFF spread, because a bet must never snapshot a line the book withdrew.
+  One `pulled()` helper runs before any market parser reads a leaf, so no parser can get
+  the order wrong, and a one-sided OFF node is still a pull.
+- **A withdrawal is a WRITE.** When every market is pulled, `parseLines` still returns a
+  row with all three markets null, so the upsert NULLs the columns and bumps `seen_at`.
+  Without that, "no market → no row → no write" would leave the previously stored line on
+  the board, and bettable, until its staleness window (3–18 h) ran out. An odds entry whose
+  markets are merely ABSENT still yields no row: there is nothing to withdraw, and writing
+  empty rows for never-priced games would spend the write budget for nothing.
 - Every warning carries `label`, the event's `shortName` (`"HOU @ TTU"`), so the admin view
   can name the game; it is null only for a structural warning raised before the teams parsed.
   Ingest renders warnings as `<eventId> (<label>): <provider>: <notes>`.
 
 **Board coverage measurement.** ESPN carries exactly one book, so a missing market has no
 in-feed fallback. Rather than build a second `OddsProvider` (§2.4) on a hunch, every
-refresh run records in `job_runs.stats`: `upcomingGames` (scheduled games in the slates
-fetched), `lineGaps` (those with no line or a missing market — absent or OFF) and
-`lineGapDetails` (`"HOU @ TTU: no total, no moneyline"`, capped at `ESPN_MAX_WARNINGS_RECORDED`
-like warnings; the counts are never capped). `lineGapsOf()` in `ingest.ts` is the pure
-function; a failed fetch reports zeros, not a board of zero gaps. The decision rule: if a few
-Saturdays of `lineGaps` are a handful of obscure CFB games, a second provider is not worth
-its request budget; if they are material, the details say which markets to buy.
+refresh run records in `job_runs.stats`:
+
+- `upcomingGames` — games that are `scheduled` AND whose kickoff is still ahead of the run's
+  clock (a game ESPN still calls "pre" a minute after kickoff is not a gap);
+- `lineGaps` — those with no line row or any market null (absent at the book, or OFF), with
+  `noLine` / `noSpread` / `noTotal` / `noMoneyline` saying which. Discount `noMoneyline`: a
+  heavy favourite has no moneyline at any book (§14.9);
+- `lineGapDetails` — `"HOU @ TTU: no total, no moneyline"`, capped once per run at
+  `ESPN_MAX_WARNINGS_RECORDED`; the counts are never capped;
+- `coverage[]` — the same counts PER TARGET (`{ targetId, upcomingGames, lineGaps }`). The
+  run totals conflate the live date's board with the discovery slot's future date, where
+  the book has often posted nothing yet; only the per-target rows are comparable run to run.
+
+`lineGapsOf(slate, now)` in `ingest.ts` is the pure function, counting each game once
+however many times a payload lists it. It measures the PARSED slate, like `warnings`: a
+target with no slate (fetch or parse failed) reports zeros, and a slate whose upsert threw
+is still measured, next to its `error`. The decision rule: if a few Saturdays of the live
+date's `lineGaps` are a handful of obscure CFB games, a second provider is not worth its
+request budget; if they are material, the per-market counters say which markets to buy.
 
 **Scores, teams and venue** — the part that is easy to get subtly wrong:
 

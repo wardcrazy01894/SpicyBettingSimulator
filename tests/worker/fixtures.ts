@@ -30,6 +30,7 @@ export interface EventSpecOdds {
    * shape DraftKings serves for a market it has pulled (a live capture is in
    * tests/unit/espn.spec.ts). Wins over `total` / `mlHome` when both are set.
    */
+  readonly spreadOff?: true;
   readonly totalOff?: true;
   readonly moneylineOff?: true;
   /** Defaults to DraftKings / "100" — the entry `selectOddsEntry` prefers. */
@@ -170,7 +171,15 @@ function buildOdds(odds: EventSpecOdds): Record<string, unknown> {
     },
   };
 
-  if (odds.spreadHome !== undefined) {
+  if (odds.spreadOff === true) {
+    const off = { line: 'OFF', odds: 'OFF' };
+    entry['spread'] = null;
+    entry['pointSpread'] = {
+      displayName: 'Spread',
+      home: { close: { ...off }, open: { ...off } },
+      away: { close: { ...off }, open: { ...off } },
+    };
+  } else if (odds.spreadHome !== undefined) {
     const homePrice = odds.spreadHomePrice ?? -110;
     const awayPrice = odds.spreadAwayPrice ?? -110;
     // `details` is deliberately a display string: PLAN §8.3 forbids parsing it.

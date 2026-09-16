@@ -1049,7 +1049,8 @@ describe('defensive behaviour', () => {
       },
     });
     const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
-    expect(result?.lines).toBeNull();
+    // A pull with nothing else on the board is still a WRITE (all-null row).
+    expect(result?.lines).toMatchObject({ spread: null, total: null, moneyline: null });
     expect(warnings[0]?.reason).toBe('DraftKings: total: off the board');
   });
 
@@ -1063,6 +1064,54 @@ describe('defensive behaviour', () => {
     expect(warnings).toEqual([
       { eventId: '1', label: 'AWY @ HOM', reason: 'DraftKings: moneyline: off the board' },
     ]);
+  });
+
+  it('when EVERY market is pulled the row is written with all markets null — a withdrawal is a write', () => {
+    // Without this, a stored line would stay bettable for the whole staleness
+    // window after the book withdrew it, because "no row" means "no write".
+    const warnings: ParseWarning[] = [];
+    const off = { line: 'OFF', odds: 'OFF' };
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      spread: -3.5,
+      pointSpread: { home: { close: { ...off } }, away: { close: { ...off } } },
+      total: { over: { close: { ...off } }, under: { close: { ...off } } },
+      moneyline: { home: { close: { odds: 'OFF' } }, away: { close: { odds: 'OFF' } } },
+    });
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(result?.lines).toEqual({
+      gameId: 'nfl:1',
+      provider: 'DraftKings',
+      capturedAt: FETCHED_AT,
+      spread: null,
+      total: null,
+      moneyline: null,
+    });
+    expect(warnings[0]?.reason).toBe(
+      'DraftKings: spread: off the board; total: off the board; moneyline: off the board',
+    );
+  });
+
+  it('an odds entry whose markets are merely ABSENT still yields no row (nothing to withdraw)', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      details: 'HOM -3.5',
+    });
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(result?.lines).toBeNull();
+    expect(warnings).toEqual([]);
+  });
+
+  it('a one-sided OFF market is still "off the board", not "dropped unusable"', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      pointSpread: { home: { close: { line: 'OFF', odds: 'OFF' } } },
+      moneyline: { home: { close: { line: 'OFF' } } },
+    });
+    parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    expect(warnings[0]?.reason).toBe('DraftKings: spread: off the board; moneyline: off the board');
   });
 
   it('a structural warning raised before the teams are known has a null label', () => {

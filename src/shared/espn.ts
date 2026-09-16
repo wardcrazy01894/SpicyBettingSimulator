@@ -329,6 +329,36 @@ function sideSnapshot(node: unknown): { readonly line: unknown; readonly odds: u
   return null;
 }
 
+type Side = ReturnType<typeof sideSnapshot>;
+
+/**
+ * What the market parsers report back to `parseLines`: the human-readable
+ * notes, and whether any market was PULLED by the book (as opposed to absent
+ * or malformed). A pull is the one case where an all-null row must still be
+ * written, so the previously stored line is withdrawn rather than left
+ * bettable for the rest of its staleness window.
+ */
+interface MarketDiagnostics {
+  readonly notes: string[];
+  pulled: boolean;
+}
+
+/**
+ * True, with the note recorded, when the book has pulled `market`: any side
+ * that exists carries "OFF" in its line or price. Called BEFORE a market parser
+ * reads a single leaf, and before the spread's top-level `spread` fallback,
+ * because that number can lag the pull and a bet must never snapshot a line
+ * the book has withdrawn. One helper so no parser can forget the order.
+ */
+function pulled(market: string, diag: MarketDiagnostics, ...sides: readonly Side[]): boolean {
+  const off = sides.some((s) => s !== null && (isOffBoard(s.line) || isOffBoard(s.odds)));
+  if (off) {
+    diag.notes.push(`${market}: off the board`);
+    diag.pulled = true;
+  }
+  return off;
+}
+
 /** A short, safe rendering of a raw feed value for a warning message. */
 function rawText(value: unknown): string {
   // JSON.stringify is typed as returning string but yields undefined for
@@ -355,20 +385,15 @@ function rawText(value: unknown): string {
  * a market or fall back, so an operator reading `GET /api/admin/jobs` can tell
  * a Unicode-minus regression from a bounds violation (PLAN §14.8).
  */
-function parseSpreadMarket(entry: unknown, notes: string[]): SpreadMarket | null {
+function parseSpreadMarket(entry: unknown, diag: MarketDiagnostics): SpreadMarket | null {
+  const { notes } = diag;
   const pointSpread = prop(entry, 'pointSpread');
   const home = sideSnapshot(prop(pointSpread, 'home'));
   const away = sideSnapshot(prop(pointSpread, 'away'));
-  if (home === null || away === null) return null;
-
   // A pulled market is a book decision, not a parse failure, and it is named as
-  // such so the operator does not chase a feed regression. Checked before the
-  // top-level `spread` fallback on purpose: that number can lag the pull, and
-  // a bet must never snapshot a line the book has withdrawn.
-  if ([home.line, home.odds, away.line, away.odds].some(isOffBoard)) {
-    notes.push('spread: off the board');
-    return null;
-  }
+  // such so the operator does not chase a feed regression.
+  if (pulled('spread', diag, home, away)) return null;
+  if (home === null || away === null) return null;
 
   // Cross-check per §8.3: the top-level `spread` NUMBER is a valid fallback for
   // a missing line (home perspective). `details` ("CIN -3.5") never is — it is
@@ -401,16 +426,13 @@ function parseSpreadMarket(entry: unknown, notes: string[]): SpreadMarket | null
   return { homeTenths, homePrice, awayTenths, awayPrice };
 }
 
-function parseTotalMarket(entry: unknown, notes: string[]): TotalMarket | null {
+function parseTotalMarket(entry: unknown, diag: MarketDiagnostics): TotalMarket | null {
+  const { notes } = diag;
   const total = prop(entry, 'total');
   const over = sideSnapshot(prop(total, 'over'));
   const under = sideSnapshot(prop(total, 'under'));
+  if (pulled('total', diag, over, under)) return null;
   if (over === null || under === null) return null;
-
-  if ([over.line, over.odds, under.line, under.odds].some(isOffBoard)) {
-    notes.push('total: off the board');
-    return null;
-  }
 
   const overTenths = parseLineToTenths(over.line);
   const underTenths = parseLineToTenths(under.line);
@@ -436,15 +458,13 @@ function parseTotalMarket(entry: unknown, notes: string[]): TotalMarket | null {
   return { tenths, overPrice, underPrice };
 }
 
-function parseMoneylineMarket(entry: unknown, notes: string[]): MoneylineMarket | null {
+function parseMoneylineMarket(entry: unknown, diag: MarketDiagnostics): MoneylineMarket | null {
+  const { notes } = diag;
   const moneyline = prop(entry, 'moneyline');
   const home = sideSnapshot(prop(moneyline, 'home'));
   const away = sideSnapshot(prop(moneyline, 'away'));
+  if (pulled('moneyline', diag, home, away)) return null;
   if (home === null || away === null) return null;
-  if ([home.odds, away.odds].some(isOffBoard)) {
-    notes.push('moneyline: off the board');
-    return null;
-  }
   const homePrice = parseAmericanPrice(home.odds);
   const awayPrice = parseAmericanPrice(away.odds);
   if (homePrice === null || awayPrice === null) {
@@ -579,7 +599,9 @@ export function parseEvent(
  * market that is simply absent is normal and silent: big favourites often have
  * no moneyline, and every market is independently nullable (PLAN.md §14.9).
  * An odds block that yields no market at all is reported as `null` rather than
- * an all-null row, so ingestion never writes an empty line.
+ * an all-null row, so ingestion never writes an empty line — EXCEPT when the
+ * book pulled a market ("OFF"), which must reach the database as an all-null
+ * write so the stored line is withdrawn rather than left bettable.
  */
 function parseLines(
   gameId: string,
@@ -593,10 +615,11 @@ function parseLines(
   if (entry === null) return null;
 
   const provider = asString(prop(prop(entry, 'provider'), 'name')) ?? 'unknown';
-  const notes: string[] = [];
-  const spread = parseSpreadMarket(entry, notes);
-  const total = parseTotalMarket(entry, notes);
-  const moneyline = parseMoneylineMarket(entry, notes);
+  const diag: MarketDiagnostics = { notes: [], pulled: false };
+  const spread = parseSpreadMarket(entry, diag);
+  const total = parseTotalMarket(entry, diag);
+  const moneyline = parseMoneylineMarket(entry, diag);
+  const { notes } = diag;
 
   // Present-but-unusable markets warn with the parser's diagnostic; a market
   // whose container node is simply absent is silent (normal for ESPN).
@@ -613,7 +636,10 @@ function parseLines(
     warnings?.push({ eventId, label, reason: `${provider}: ${parts.join('; ')}` });
   }
 
-  if (spread === null && total === null && moneyline === null) return null;
+  // No market at all: no row, UNLESS the book PULLED one. A withdrawal has to
+  // reach the database as an all-null write, or the previously stored line
+  // stays on the board — and bettable — until its staleness window runs out.
+  if (spread === null && total === null && moneyline === null && !diag.pulled) return null;
   return { gameId, provider, capturedAt: fetchedAt, spread, total, moneyline };
 }
 
