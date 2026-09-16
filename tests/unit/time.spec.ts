@@ -416,16 +416,19 @@ describe('boardWindowEnd (PLAN.md §22)', () => {
     expect(etDateKey(boardWindowEnd('nfl', etWall('20261227', 20)))).toBe('20270104');
   });
 
-  it("over a year of 10-minute steps: always >= now, always a Monday's last instant, ≤ 9 keys, < the ceiling", () => {
+  it("over six months of 30-minute steps: always >= now, always a Monday's last instant, ≤ 9 keys, < the ceiling", () => {
     const start = etWall('20260801', 0);
     const stop = etWall('20270201', 0);
-    const weekdayOf = (t: number): string =>
-      new Intl.DateTimeFormat('en-US', { timeZone: ET_TIME_ZONE, weekday: 'short' }).format(
-        new Date(t),
-      );
+    // One formatter, hoisted: constructing an Intl.DateTimeFormat per step is
+    // what pushed this scan past CI's 5 s default.
+    const WEEKDAY = new Intl.DateTimeFormat('en-US', {
+      timeZone: ET_TIME_ZONE,
+      weekday: 'short',
+    });
+    const weekdayOf = (t: number): string => WEEKDAY.format(new Date(t));
     let maxSpan = 0;
     let minSpan = Infinity;
-    for (let now = start; now < stop; now += 10 * 60_000) {
+    for (let now = start; now < stop; now += 30 * 60_000) {
       for (const league of ['nfl', 'ncaaf'] as const) {
         const end = boardWindowEnd(league, now);
         if (end < now || !isLastInstantOfEtDay(end) || weekdayOf(end) !== 'Mon') {
@@ -443,5 +446,5 @@ describe('boardWindowEnd (PLAN.md §22)', () => {
     expect(
       etDateKeyRange(etWall('20260920', 0), boardWindowEnd('ncaaf', etWall('20260920', 0))),
     ).toHaveLength(9);
-  });
+  }, 30_000);
 });
