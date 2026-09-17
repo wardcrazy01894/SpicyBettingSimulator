@@ -52,22 +52,22 @@ const FILES = {
   nfl: 'espn-nfl-scoreboard-2026-09-17..28.json',
   'college-football': 'espn-cfb-scoreboard-2026-09-17..26.json',
 };
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+/** The captures start on this date (Thu 2026-09-17); used to compute the shift. */
+const SAMPLE_ANCHOR_MS = Date.parse('2026-09-17T00:00:00Z');
+/** Same anchor as the ESPN captures — that is the point of the same-date files. */
+const ODDS_ANCHOR_MS = SAMPLE_ANCHOR_MS;
 const ODDS_FILES = {
   americanfootball_nfl: 'odds-api-nfl.json',
   americanfootball_ncaaf: 'odds-api-ncaaf.json',
 };
 /** Same anchor as the ESPN captures — that is the point of the same-date files. */
-const ODDS_ANCHOR_MS = SAMPLE_ANCHOR_MS;
 const ODDS_HEADERS = {
   'content-type': 'application/json',
   'cache-control': 'no-store',
   'x-requests-used': '3',
   'x-requests-remaining': '497',
 };
-
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-/** The captures start on this date (Thu 2026-09-17); used to compute the shift. */
-const SAMPLE_ANCHOR_MS = Date.parse('2026-09-17T00:00:00Z');
 
 function loadSample(league) {
   return JSON.parse(readFileSync(join(SAMPLES, FILES[league]), 'utf8'));

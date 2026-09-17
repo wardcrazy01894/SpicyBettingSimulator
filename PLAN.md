@@ -4807,7 +4807,8 @@ visible rather than mysterious.
 
 **Row writes.** Per sweep: 1 row on `secondary_budget` (no indexes, so 1 row per
 statement — a claim, plus a correction after the response), one `game_lines` row
-per gapped game the sweep actually CHANGED (compare-and-skip, §21.3's own SQL),
+per MATCHED candidate the sweep actually CHANGED — a filled game keeps being
+re-confirmed, §21.3 — (compare-and-skip, §21.3's own SQL),
 and one `games` row per game it could NOT fill. A worst-case CFB Saturday sweep
 touching 12 ranked gapped games is under 30 rows; four sweeps in a day is ~120
 against the ~5,100/day the app already writes (§8.6).
@@ -5043,7 +5044,7 @@ secondary: {
   sweeps: [{
     league: 'nfl' | 'ncaaf',
     reason: 'retry' | 'resweep' | 'forced' | null,   // null iff skipped
-    skipped: null | 'no-gap' | 'throttled' | 'budget' | 'cooldown' | 'no-budget-row',
+    skipped: null | 'no-gap' | 'throttled' | 'budget' | 'cooldown' | 'no-budget-row' | 'error',
     cost: number,                // credits claimed; 0 when skipped, 0 for a probe
     remaining: number | null,    // from THIS response's header
     events: number,              // events in the response
@@ -5060,7 +5061,12 @@ secondary: {
 ```
 
 `reason` and `skipped` are exclusive: exactly one of them is non-null on every
-entry. That is what makes the admin view readable — "ncaaf: retry, 3 credits,
+entry. `skipped: 'error'` is the exception boundary firing BEFORE the claim (no
+credits spent; `error` says what threw); a throw AFTER the claim reports the
+real `reason` and `cost: 3`. If `runSecondary` itself fails (it cannot read
+`secondary_budget`, say), the run carries `enabled: true` with `sweeps: []` and
+`remaining: null` — distinguishable from the key being unset, where `enabled`
+is false. That is what makes the admin view readable — "ncaaf: retry, 3 credits,
 filled 2 totals" or "ncaaf: throttled" — and it is why `sweepSecondary` returns a
 value rather than `null` (§21.2).
 

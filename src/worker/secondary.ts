@@ -80,11 +80,13 @@ export type SweepReason = 'retry' | 'resweep' | 'forced';
  *   'throttled'     SECONDARY_MIN_SWEEP_INTERVAL_MS since this league's last sweep.
  *   'budget'        the claim would drop below ODDS_API_CREDIT_RESERVE.
  *   'cooldown'      a 429 or a transport failure is still parking the feature.
+ *   'error'         the sweep threw BEFORE claiming any credits; `error` says what.
  *   'no-budget-row' `secondary_budget` has no row — the 0007 seed did not run.
  *                   Reported, NEVER thrown: this code path is reached inside a
  *                   refresh run that has already written the ESPN slate.
  */
-export type SweepSkipped = 'no-gap' | 'throttled' | 'budget' | 'cooldown' | 'no-budget-row';
+export type SweepSkipped =
+  'no-gap' | 'throttled' | 'budget' | 'cooldown' | 'no-budget-row' | 'error';
 
 /** One league's outcome for one refresh run. Never `null`, always a value. */
 export interface SecondarySweep {
@@ -537,7 +539,7 @@ export async function sweepSecondary(
     // claim had already gone through, say so — the credits were spent.
     const message = safeMessage(err, progress.apiKey);
     console.error(`[secondary] ${league} sweep threw:`, message);
-    const base = skipped(league, 'no-gap');
+    const base = skipped(league, 'error');
     return progress.claimed === null
       ? { ...base, error: `exception: ${message}` }
       : {

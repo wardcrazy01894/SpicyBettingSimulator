@@ -711,8 +711,9 @@ describe('secondary sweep — failures', () => {
 describe('secondary sweep — every refresh path', () => {
   it('POST /api/admin/jobs/refresh sweeps on the same rules as the cron', async () => {
     const cookie = await registerAdmin('alex');
-    const id = await game();
-    odds.set(NFL, [apiEvent()]);
+    const kickoffAt = liveKickoff();
+    const id = await game({ kickoffAt, seenAt: Date.now() - 5 * MIN });
+    odds.set(NFL, [liveEvent(kickoffAt)]);
     const res = await send('/api/admin/jobs/refresh', {
       method: 'POST',
       headers: { 'X-SBS-Client': '1', cookie },
@@ -730,11 +731,12 @@ describe('secondary sweep — every refresh path', () => {
 
   it('(c) the per-game Refresh on a gapped eligible game INSIDE its backoff sweeps anyway (force), and reports it', async () => {
     const cookie = await registerAdmin('alex');
-    const id = await game();
+    const kickoffAt = liveKickoff();
+    const id = await game({ kickoffAt, seenAt: Date.now() - 5 * MIN });
     await env.DB.prepare('UPDATE games SET secondary_tried_at = ? WHERE id = ?')
-      .bind(NOW - HOUR, id)
+      .bind(Date.now() - HOUR, id)
       .run();
-    odds.set(NFL, [apiEvent()]);
+    odds.set(NFL, [liveEvent(kickoffAt)]);
     const res = await send(`/api/admin/games/${encodeURIComponent(id)}/refresh`, {
       method: 'POST',
       headers: { 'X-SBS-Client': '1', cookie },
