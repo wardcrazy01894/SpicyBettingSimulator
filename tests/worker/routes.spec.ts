@@ -438,8 +438,14 @@ describe('games board', () => {
     await seedLine(env.DB, fullLine(gid('far-ok'), now - 10 * HOUR));
     await seedGame(env.DB, { id: gid('far-stale'), season, kickoffAt: now + 5 * 24 * HOUR });
     await seedLine(env.DB, fullLine(gid('far-stale'), now - 19 * HOUR));
+    // Five days out can be past the Monday that closes the board (PLAN §22),
+    // so widen the query explicitly: this test is about the staleness tier,
+    // not the window.
     const board = await (
-      await get(`/api/games?league=nfl&season=${String(season)}`, alex.cookie)
+      await get(
+        `/api/games?league=nfl&season=${String(season)}&to=${String(now + 10 * 24 * HOUR)}`,
+        alex.cookie,
+      )
     ).json<GamesResponse>();
     const ok = board.games.find((g) => g.id === gid('far-ok'));
     const stale = board.games.find((g) => g.id === gid('far-stale'));

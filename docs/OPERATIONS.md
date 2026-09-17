@@ -179,7 +179,8 @@ the free plan retains a few days). Every line is prefixed so you can filter:
 | `[client-error]`        | `POST /api/bugs/client-errors` | a browser hit an uncaught error; the line is that browser's diagnostics log (last errors, API calls, routes), at most one per 30 s per user      |
 | `[cron]`                | the scheduled handler          | every job run: name, status, error                                                                                                               |
 | `[bugs]`                | bug filing                     | GitHub refused a report, or the row could not be marked filed                                                                                    |
-| `[config]`              | `readConfig`                   | `GITHUB_TOKEN` set but a var is missing — bug reports OFF                                                                                        |
+| `[config]`              | `readConfig`                   | `GITHUB_TOKEN` (or `ODDS_API_KEY`) set but a var is missing — that feature stays OFF                                                             |
+| `[secondary]`           | the secondary odds sweep       | `unauthorized — check ODDS_API_KEY`; a malformed 2xx (schema drift); or a sweep that threw and was contained (the run is still `ok`; PLAN §21.9) |
 
 ```bash
 npx wrangler tail --format pretty                    # everything, live

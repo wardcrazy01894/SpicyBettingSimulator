@@ -39,7 +39,7 @@
  * M9c.
  */
 
-import { ODDS_API_BOOKMAKERS, ODDS_API_TIMEOUT_MS } from '../shared/constants.js';
+import { ODDS_API_BOOKMAKERS, ODDS_API_MARKETS, ODDS_API_TIMEOUT_MS } from '../shared/constants.js';
 import type { ParseWarning } from '../shared/espn.js';
 import { parseOddsApi } from '../shared/odds-api.js';
 import type { OddsApiEvent } from '../shared/odds-api.js';
@@ -139,14 +139,14 @@ export interface SweepWindow {
 /**
  * Build the absolute URL. Exported so a test can assert the parameter list
  * WITHOUT the key: the returned string CONTAINS the api key, so it must never be
- * logged, never put in a `ProviderError` message and never echoed in stats.
- * `redactUrl` is what the log path uses.
+ * logged, never put in an error message and never echoed in stats. Nothing in
+ * this module logs a URL at all; `redactUrl` exists for anything that ever does.
  */
 export function buildOddsUrl(config: OddsApiConfig, league: League, window: SweepWindow): string {
   const url = new URL(`${config.baseUrl}/v4/sports/${ODDS_API_SPORT_KEY[league]}/odds`);
   url.searchParams.set('apiKey', config.apiKey);
   url.searchParams.set('bookmakers', ODDS_API_BOOKMAKERS.join(','));
-  url.searchParams.set('markets', 'spreads,totals,h2h');
+  url.searchParams.set('markets', ODDS_API_MARKETS.join(','));
   url.searchParams.set('oddsFormat', 'american');
   url.searchParams.set('dateFormat', 'iso');
   url.searchParams.set('commenceTimeFrom', isoSeconds(window.fromAt));

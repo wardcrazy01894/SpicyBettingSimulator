@@ -16,7 +16,7 @@ import {
 } from '../../src/shared/constants.js';
 import { mergeEffectiveLine } from '../../src/shared/lines.js';
 import type { LineRowView } from '../../src/shared/lines.js';
-import { lineStaleAfterMs } from '../../src/shared/time.js';
+import { boardWindowEnd, lineStaleAfterMs } from '../../src/shared/time.js';
 import type { Env } from '../../src/worker/env.js';
 import { runRefresh } from '../../src/worker/ingest.js';
 import { buildApp } from '../../src/worker/index.js';
@@ -233,6 +233,19 @@ async function refresh(now: number, force: string | null = null): ReturnType<typ
 async function send(path: string, init: RequestInit): Promise<Response> {
   return buildApp().fetch(new Request(`${ORIGIN}${path}`, init), env);
 }
+/**
+ * The admin routes run on the REAL clock (`c.var.now`), not `NOW`, so a game
+ * they must find has to be seeded relative to `Date.now()` and inside today's
+ * board window — never at the absolute `KICK`, which is a date bomb.
+ */
+function liveKickoff(): number {
+  const real = Date.now();
+  const end = boardWindowEnd('nfl', real);
+  return Math.min(real + 2 * 24 * HOUR, end - HOUR);
+}
+const liveEvent = (kickoffAt: number, over: Partial<OddsApiEventSpec> = {}): OddsApiEventSpec =>
+  apiEvent({ commenceTime: iso(kickoffAt), ...over });
+
 async function registerAdmin(username: keyof typeof DK_VECTORS): Promise<string> {
   const res = await send('/api/auth/signup', {
     method: 'POST',
@@ -617,7 +630,7 @@ describe('secondary sweep — failures', () => {
     expect(await secondaryRow(id)).toBeUndefined();
     expect(probeCalls()).toBe(1);
     const row = await budget();
-    expect(row?.remaining_credits).toBe(497); // the provider's number, not 500 − 3 = 497 by luck: set a different one
+    expect(row?.remaining_credits).toBe(497); // the provider's number (the next test proves it is not the debit by luck)
     expect(row?.cooldown_until).toBe(NOW + ODDS_API_COOLDOWN_MS);
     expect(row?.last_attempt_at).toBe(NOW);
     expect(row?.checked_at).toBe(NOW);
@@ -739,12 +752,20 @@ describe('secondary sweep — every refresh path', () => {
 
   it('(c) the per-game Refresh on a fully-lined game, or an unranked CFB game, makes no odds fetch', async () => {
     const cookie = await registerAdmin('alex');
-    const full = await game({ primary: 'full' });
+    const full = await game({
+      primary: 'full',
+      kickoffAt: liveKickoff(),
+      seenAt: Date.now() - 5 * MIN,
+    });
     await send(`/api/admin/games/${encodeURIComponent(full)}/refresh`, {
       method: 'POST',
       headers: { 'X-SBS-Client': '1', cookie },
     });
-    const unranked = await game({ league: 'ncaaf' });
+    const unranked = await game({
+      league: 'ncaaf',
+      kickoffAt: liveKickoff(),
+      seenAt: Date.now() - 5 * MIN,
+    });
     await env.DB.prepare("UPDATE job_locks SET lease_until = 0, run_id = ''").run();
     await send(`/api/admin/games/${encodeURIComponent(unranked)}/refresh`, {
       method: 'POST',
@@ -753,9 +774,9 @@ describe('secondary sweep — every refresh path', () => {
     expect(oddsCalls()).toBe(0);
   });
 
-  it('(c) the per-game Refresh with the reserve hit → no fetch, budgetSkipped 1, still HTTP 200', async () => {
+  it('(c) the per-game Refresh with the reserve hit → no fetch, budgetSkipped 2 (one per league), still HTTP 200', async () => {
     const cookie = await registerAdmin('alex');
-    const id = await game();
+    const id = await game({ kickoffAt: liveKickoff(), seenAt: Date.now() - 5 * MIN });
     await setBudget('remaining_credits = ?', ODDS_API_CREDIT_RESERVE);
     odds.setCredits({ remaining: ODDS_API_CREDIT_RESERVE }); // the free probe confirms the block
     const res = await send(`/api/admin/games/${encodeURIComponent(id)}/refresh`, {
@@ -787,9 +808,10 @@ describe('secondary sweep — every refresh path', () => {
 
   it('the board a user sees after a sweep carries the secondary markets with their books', async () => {
     const cookie = await registerAdmin('alex');
-    const id = await game();
-    odds.set(NFL, [apiEvent()]);
-    await refresh(NOW);
+    const kickoffAt = liveKickoff();
+    const id = await game({ kickoffAt, seenAt: Date.now() - 5 * MIN });
+    odds.set(NFL, [liveEvent(kickoffAt)]);
+    await refresh(Date.now());
     const res = await send('/api/games?league=nfl', { method: 'GET', headers: { cookie } });
     const board = await res.json<GamesResponse>();
     const card = board.games.find((g) => g.id === id);

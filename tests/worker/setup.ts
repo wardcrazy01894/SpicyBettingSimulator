@@ -30,7 +30,34 @@ import { beforeAll } from 'vitest';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, [...env.TEST_MIGRATIONS]);
+  installDefaultOddsStub();
 });
+
+/**
+ * `ODDS_API_KEY` is set for the whole worker project (vitest.workers.config.ts),
+ * so EVERY spec that runs a refresh would otherwise make a real outbound fetch
+ * to `https://odds.test` from the secondary sweep. This default answers that
+ * host with an empty slate and honest credit headers; a spec that needs more
+ * installs `stubOddsApi()` on top (it saves and restores whatever `fetch` it
+ * found, i.e. this one). Nothing in the worker project touches the network.
+ */
+function installDefaultOddsStub(): void {
+  const original = globalThis.fetch;
+  const headers = {
+    'content-type': 'application/json',
+    'x-requests-used': '3',
+    'x-requests-remaining': '497',
+  };
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (!url.startsWith('https://odds.test/')) return original(input, init);
+    const path = new URL(url).pathname;
+    if (path === '/v4/sports') {
+      return new Response('[]', { status: 200, headers: { ...headers, 'x-requests-last': '0' } });
+    }
+    return new Response('[]', { status: 200, headers: { ...headers, 'x-requests-last': '3' } });
+  };
+}
 
 /**
  * PRECOMPUTED browser-derived keys — the 64-hex `dk` a real browser would POST.

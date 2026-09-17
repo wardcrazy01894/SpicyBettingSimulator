@@ -3701,7 +3701,7 @@ bettors, it touches two hot read paths, and it has nothing to do with a second
 odds provider. Bundling it into M9a–c would mean a rollback of the provider work
 also rolls back the owner's window, or vice versa.
 
-### M9a / M9b / M9c — Secondary odds provider — **DONE** _(2026-09-16)_
+### M9a / M9b / M9c — Secondary odds provider — **DONE** _(M9a, M9b 2026-09-16; M9c 2026-09-17)_
 
 Three PRs, each independently mergeable and green on its own; the file lists,
 the tests-first lists and the DoD for each are **§21.11**. In dependency order:
@@ -4440,8 +4440,13 @@ bookmaker. The reasons, in order of how much they matter:
   the rows we wrote last time in order to know which ones to blank — an extra
   read per game and an orphan row the first time we got it wrong. (§8.3
   established the same rule for the primary: a withdrawal is a write.)
-- Write budget. One row per gapped game per sweep, subject to compare-and-skip,
-  instead of up to nine. Writing all nine books for 75 CFB games would be ~675
+- Write budget. One row per MATCHED candidate per sweep — not only the gapped
+  ones, because a game the secondary un-gapped must keep being re-confirmed or
+  the re-sweep rule cannot keep its fill fresh — subject to compare-and-skip,
+  instead of up to nine rows per game. The consequence is worth knowing: a game
+  with a complete primary line also carries a secondary row, so when a primary
+  market goes stale the board switches to the other book's number rather than
+  showing no line. Writing all nine books for 75 CFB games would be ~675
   rows a sweep against a 100k/day cap that a Saturday already spends ~5,100 of
   (§8.6).
 
@@ -4860,9 +4865,9 @@ Parsing rules:
   that disagrees with itself is dropped for that market — the note is recorded as
   a warning only if the market ends up EMPTY after every preferred book has been
   tried, and only against the market it is about; a book out-voted by the next
-  book is not an operator problem. (M9c adds a per-book failure counter to the
-  sweep stats so "DraftKings failed every spread this sweep" is visible even when
-  FanDuel filled them all.) A market missing a side
+  book is not an operator problem — the price of that quiet is that "DraftKings
+  failed every spread this sweep, FanDuel filled them" is visible only as the
+  `*_book` columns on the rows, not as a warning. A market missing a side
   is dropped.
 - Books are visited in `ODDS_API_BOOKMAKERS` order, not response order, and the
   first book offering a COMPLETE market wins that market — independently per
@@ -5060,11 +5065,11 @@ filled 2 totals" or "ncaaf: throttled" — and it is why `sweepSecondary` return
 value rather than `null` (§21.2).
 
 The admin Jobs tab renders unknown stat values as JSON today, which is enough;
-`GET /api/admin/jobs` folds `secondary.remaining` and `checkedAt` into each run's
-stats from `secondary_budget`, the same way it already folds `dayRowsWritten` —
-inside `stats`, because `JobRunView.stats` is already `Record<string, unknown>`
-and `api-types.ts` need not change for it. Each sweep's `rowsWritten` is added to
-the run's existing `rowsWritten` total so the §8.6 write budget stays one number.
+Each run's own `secondary.remaining` / `checkedAt` are the balance AS OF THAT
+RUN, recorded by the run itself (`runSecondary` reads the row after its sweeps),
+which is what an operator reading a history of runs wants; nothing is folded in
+at read time. Each sweep's `rowsWritten` is added to the run's existing
+`rowsWritten` total so the §8.6 write budget stays one number.
 
 ### 21.9 Failure modes
 

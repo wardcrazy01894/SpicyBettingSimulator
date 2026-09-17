@@ -38,7 +38,6 @@ import {
   ODDS_API_COOLDOWN_MS,
   ODDS_API_COST_PER_SWEEP,
   ODDS_API_CREDIT_RESERVE,
-  SECONDARY_MATCH_WINDOW_MS,
   SECONDARY_MIN_SWEEP_INTERVAL_MS,
   SECONDARY_RESWEEP_MARGIN_MS,
   SECONDARY_RETRY_MS,
@@ -46,7 +45,7 @@ import {
 import { mergeEffectiveLine, missingMarkets } from '../shared/lines.js';
 import type { EffectiveLine, LineRowView } from '../shared/lines.js';
 import { matchOddsApiEvents } from '../shared/odds-api.js';
-import type { MatchCandidate, OddsApiEvent } from '../shared/odds-api.js';
+import type { MatchCandidate } from '../shared/odds-api.js';
 import { boardWindowEnd, lineStaleAfterMs } from '../shared/time.js';
 import { LEAGUES } from '../shared/types.js';
 import type { EpochMs, League } from '../shared/types.js';
@@ -162,19 +161,44 @@ export async function runSecondary(
   now: EpochMs,
   options: SweepOptions,
 ): Promise<SecondaryStats> {
-  if (readConfig(env).oddsApi === null) {
-    return { enabled: false, remaining: null, checkedAt: null, budgetSkipped: 0, sweeps: [] };
-  }
-  const sweeps: SecondarySweep[] = [];
-  for (const league of LEAGUES) sweeps.push(await sweepSecondary(env, league, now, options));
-  const budget = await readBudget(env);
-  return {
-    enabled: true,
-    remaining: budget?.remaining_credits ?? null,
-    checkedAt: budget === null || budget.checked_at === 0 ? null : budget.checked_at,
-    budgetSkipped: sweeps.filter((s) => s.skipped === 'budget').length,
-    sweeps,
+  const off: SecondaryStats = {
+    enabled: false,
+    remaining: null,
+    checkedAt: null,
+    budgetSkipped: 0,
+    sweeps: [],
   };
+  // The entry point is a boundary too: `readConfig` and the closing budget read
+  // sit outside `sweepSecondary`'s own try/catch, and a D1 error on either
+  // (a manual deploy that shipped code before `db:migrate:remote`, say) must
+  // not turn the ESPN ingest that already ran into an `error` run with no stats.
+  try {
+    if (readConfig(env).oddsApi === null) return off;
+    const sweeps: SecondarySweep[] = [];
+    for (const league of LEAGUES) sweeps.push(await sweepSecondary(env, league, now, options));
+    let budget: BudgetRow | null = null;
+    try {
+      budget = await readBudget(env);
+    } catch (err) {
+      console.error('[secondary] could not read secondary_budget:', safeMessage(err, null));
+    }
+    return {
+      enabled: true,
+      remaining: budget?.remaining_credits ?? null,
+      checkedAt: budget === null || budget.checked_at === 0 ? null : budget.checked_at,
+      budgetSkipped: sweeps.filter((s) => s.skipped === 'budget').length,
+      sweeps,
+    };
+  } catch (err) {
+    console.error('[secondary] runSecondary threw:', safeMessage(err, null));
+    return { ...off, enabled: true };
+  }
+}
+
+/** A short rendering of a thrown value with no stack and, when known, no api key. */
+function safeMessage(err: unknown, apiKey: string | null): string {
+  const text = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
+  return (apiKey === null ? text : text.split(apiKey).join('REDACTED')).slice(0, 200);
 }
 
 /**
@@ -492,24 +516,37 @@ function skipped(league: League, why: SweepSkipped): SecondarySweep {
   };
 }
 
+/** What the exception boundary needs to know to report honestly. */
+interface SweepProgress {
+  apiKey: string | null;
+  /** Set the moment the claim succeeded: three credits are gone whatever happens next. */
+  claimed: SweepReason | null;
+}
+
 export async function sweepSecondary(
   env: Env,
   league: League,
   now: EpochMs,
   options: SweepOptions,
 ): Promise<SecondarySweep> {
+  const progress: SweepProgress = { apiKey: null, claimed: null };
   try {
-    return await sweepInner(env, league, now, options);
+    return await sweepInner(env, league, now, options, progress);
   } catch (err) {
-    // The boundary: nothing here may fail the refresh run around it.
-    const message = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
+    // The boundary: nothing here may fail the refresh run around it. If the
+    // claim had already gone through, say so — the credits were spent.
+    const message = safeMessage(err, progress.apiKey);
     console.error(`[secondary] ${league} sweep threw:`, message);
-    return {
-      ...skipped(league, 'no-gap'),
-      skipped: null,
-      reason: 'retry',
-      error: `exception: ${message.slice(0, 200)}`,
-    };
+    const base = skipped(league, 'no-gap');
+    return progress.claimed === null
+      ? { ...base, error: `exception: ${message}` }
+      : {
+          ...base,
+          skipped: null,
+          reason: progress.claimed,
+          cost: ODDS_API_COST_PER_SWEEP,
+          error: `exception: ${message}`,
+        };
   }
 }
 
@@ -518,9 +555,11 @@ async function sweepInner(
   league: League,
   now: EpochMs,
   options: SweepOptions,
+  progress: SweepProgress,
 ): Promise<SecondarySweep> {
   const cfg = readConfig(env).oddsApi;
   if (cfg === null) return skipped(league, 'no-gap');
+  progress.apiKey = cfg.apiKey;
 
   // 0. One row. If the league cannot possibly sweep, never pay for the scan.
   const budget = await readBudget(env);
@@ -558,6 +597,7 @@ async function sweepInner(
       return skipped(league, 'budget');
     return skipped(league, 'throttled');
   }
+  progress.claimed = reason;
   let rowsWritten = rowsWrittenOf(claim);
 
   const provider = new TheOddsApiProvider(cfg);
@@ -613,11 +653,9 @@ async function sweepInner(
   );
   const filled = { spread: 0, total: 0, moneyline: 0 };
   const stmts: D1PreparedStatement[] = [];
-  const touched = new Map<string, OddsApiEvent>();
   for (const c of candidates) {
     const e = outcome.matched.get(c.match.gameId);
     if (e === undefined) continue;
-    touched.set(c.match.gameId, e);
     const m = e.markets;
     if (m.spread === null && m.total === null && m.moneyline === null) {
       stmts.push(env.DB.prepare(SECONDARY_LINE_BLANK_SQL).bind(c.match.gameId, now));
@@ -685,6 +723,3 @@ async function sweepInner(
     error: null,
   };
 }
-
-/** Unused-import guard for the match window: the matcher owns it, the sweep reports it. */
-export const SWEEP_MATCH_WINDOW_MS = SECONDARY_MATCH_WINDOW_MS;

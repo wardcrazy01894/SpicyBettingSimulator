@@ -18,16 +18,16 @@
  *
  * The Odds API routes serve docs/samples/odds-api-*.json with the real credit
  * headers (`x-requests-remaining` etc.), honour `commenceTimeFrom/To`, and shift
- * `commence_time` into the current week by the same rule as the ESPN events —
- * from their OWN anchor (that sample is the week of 2026-09-17, one week after
- * the ESPN capture), so the two feeds still describe the same games. Any
- * `apiKey` is accepted; nothing is spent.
+ * `commence_time` into the current week by the same rule and from the SAME
+ * anchor as the ESPN events, which are the same-date captures of the same games
+ * — so the sweep finds matches locally. Any `apiKey` is accepted; nothing is
+ * spent.
  *
  * Query handling: `dates=` is honoured by filtering events to that US-Eastern
  * calendar day (same bucketing as real ESPN, verified 2026-09-13); `groups=` and
  * everything else is ignored.
  *
- * Time shifting: the captured samples are from the week of 2026-09-12, so out of
+ * Time shifting: the captured samples start on 2026-09-17, so out of
  * the box every fixture game is in the past and nothing is bettable. By default
  * every event `date` is shifted forward by a whole number of weeks so the slate
  * lands in the CURRENT week, and started/final games are rewound to
@@ -44,16 +44,20 @@ const PORT = Number(process.env.FIXTURE_PORT ?? 8788);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SAMPLES = join(HERE, '..', 'docs', 'samples');
 
+// The SAME-DATE captures (PLAN.md §21.7): every ET date the Odds API samples
+// span, so the two local feeds describe the same games and the secondary sweep
+// finds matches in `npm run dev`. The original week samples stay committed for
+// the parser's unit tests.
 const FILES = {
-  nfl: 'espn-nfl-scoreboard.json',
-  'college-football': 'espn-cfb-scoreboard.json',
+  nfl: 'espn-nfl-scoreboard-2026-09-17..28.json',
+  'college-football': 'espn-cfb-scoreboard-2026-09-17..26.json',
 };
 const ODDS_FILES = {
   americanfootball_nfl: 'odds-api-nfl.json',
   americanfootball_ncaaf: 'odds-api-ncaaf.json',
 };
-/** The Odds API samples were captured 2026-09-16 for the week of the 17th. */
-const ODDS_ANCHOR_MS = Date.parse('2026-09-17T00:00:00Z');
+/** Same anchor as the ESPN captures — that is the point of the same-date files. */
+const ODDS_ANCHOR_MS = SAMPLE_ANCHOR_MS;
 const ODDS_HEADERS = {
   'content-type': 'application/json',
   'cache-control': 'no-store',
@@ -62,8 +66,8 @@ const ODDS_HEADERS = {
 };
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-/** All sample kickoffs fall in this week; used to compute the shift. */
-const SAMPLE_ANCHOR_MS = Date.parse('2026-09-10T00:00:00Z');
+/** The captures start on this date (Thu 2026-09-17); used to compute the shift. */
+const SAMPLE_ANCHOR_MS = Date.parse('2026-09-17T00:00:00Z');
 
 function loadSample(league) {
   return JSON.parse(readFileSync(join(SAMPLES, FILES[league]), 'utf8'));
