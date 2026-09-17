@@ -203,7 +203,11 @@ export function adminRoutes(): Hono<AppContext> {
         { gameId },
       );
     }
-    const run = await runJob(c.env, 'refresh', 'admin', c.var.now);
+    // The same refresh lease and the same secondary sweep as the cron, with
+    // THIS game's retry backoff waived and nothing else (PLAN.md §21.2).
+    const run = await runJob(c.env, 'refresh', 'admin', c.var.now, {
+      forceSecondaryGameId: gameId,
+    });
     if (run.status === 'skipped') {
       throw new AppError('JOB_LOCKED', 'The refresh job is already running.', { job: 'refresh' });
     }

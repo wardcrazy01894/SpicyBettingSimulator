@@ -53,6 +53,7 @@ check failed). Roll back manually if the site is actually broken; the workflow d
 printf '%s' 'new-code'  | npx wrangler secret put INVITE_CODE    # shared signup code (one code for everyone)
 printf '%s' "$(openssl rand -hex 24)" | npx wrangler secret put IP_HASH_SALT   # rotating this resets IP throttle keys only
 printf '%s' 'github_pat_…' | npx wrangler secret put GITHUB_TOKEN   # in-app bug reports → GitHub issues (optional)
+printf '%s' 'odds-api-key…' | npx wrangler secret put ODDS_API_KEY   # secondary odds provider, The Odds API (optional)
 ```
 
 `GET /api/health` reports `inviteRequired: true` once `INVITE_CODE` is set, and
@@ -66,6 +67,14 @@ expiry and put the renewal date in your calendar: when it lapses `POST /api/bugs
 `503`, the account page still shows the button (health only knows the secret is _set_), and the
 reports pile up on `GET /api/admin/bugs` with `error: "GitHub responded 401"`. Rotate with the same
 `secret put`. Never use a classic token or the `gh` CLI's OAuth token here — both are account-wide.
+
+**`ODDS_API_KEY`** is The Odds API key from https://the-odds-api.com (free Starter tier, **500
+credits a calendar month**, reset on the 1st). It turns on the SECONDARY odds provider (PLAN §21):
+each refresh run may spend 3 credits per league to fill a spread, total or moneyline that
+DraftKings-via-ESPN is missing on an NFL game or a top-25 CFB game. Without it the board is
+primary-only and every refresh run's `stats.secondary.enabled` is `false`. Locally, `.dev.vars`
+must ALSO set `ODDS_API_BASE_URL=http://127.0.0.1:8788` so `npm run dev` hits the fixture server
+(which serves the committed samples with real credit headers) rather than the real API.
 
 ## Schema changes
 
@@ -170,7 +179,8 @@ the free plan retains a few days). Every line is prefixed so you can filter:
 | `[client-error]`        | `POST /api/bugs/client-errors` | a browser hit an uncaught error; the line is that browser's diagnostics log (last errors, API calls, routes), at most one per 30 s per user      |
 | `[cron]`                | the scheduled handler          | every job run: name, status, error                                                                                                               |
 | `[bugs]`                | bug filing                     | GitHub refused a report, or the row could not be marked filed                                                                                    |
-| `[config]`              | `readConfig`                   | `GITHUB_TOKEN` set but a var is missing — bug reports OFF                                                                                        |
+| `[config]`              | `readConfig`                   | `GITHUB_TOKEN` (or `ODDS_API_KEY`) set but a var is missing — that feature stays OFF                                                             |
+| `[secondary]`           | the secondary odds sweep       | `unauthorized — check ODDS_API_KEY`; a malformed 2xx (schema drift); or a sweep that threw and was contained (the run is still `ok`; PLAN §21.9) |
 
 ```bash
 npx wrangler tail --format pretty                    # everything, live
@@ -266,6 +276,23 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   not a stall — `GET /api/admin/jobs` shows the dates being
   taken, and the per-game Refresh button jumps one date to the front. `GET /api/games/:id` is
   deliberately unwindowed so a bet placed on a game the list no longer shows still renders and edits.
+- **The secondary odds provider (PLAN §21).** ESPN carries one book, so when DraftKings is
+  missing a market on an NFL game or a top-25 CFB game, the refresh job asks The Odds API for it
+  (draftkings first, then fanduel, betmgm, betrivers, bovada) and writes ONE `game_lines` row per
+  game with `provider='odds-api'` and the book named per market; the board and placement merge it
+  under the primary, and a leg on such a market records `odds-api:<book>`. Every refresh run —
+  cron, "Run refresh", and the per-game Refresh button (which waives that game's 4 h retry
+  backoff) — reports `stats.secondary`: `enabled`, `remaining` (credits, from the provider's own
+  header), `budgetSkipped`, and one entry per league saying `retry` / `resweep` / `forced` with the
+  cost and what it filled, or `skipped: no-gap | throttled | budget | cooldown | no-budget-row`.
+  Guards you should never see tripped: a sweep is refused below a reserve of 25 credits, at most
+  once per 2 h per league, and not at all during the 1–8 h cooldown a 429 or 5xx sets. A FREE probe
+  (`GET /v4/sports`, 0 credits) re-reads the balance daily while the reserve blocks and right after
+  a failed sweep, so the monthly reset is noticed without any date arithmetic and an outage costs
+  ~0 credits. If `remaining` sits under 25 for days: the month is spent; nothing is broken and the
+  board is primary-only until the 1st. If `last_status` in `secondary_budget` reads `unauthorized`:
+  the key was revoked — `wrangler secret put ODDS_API_KEY` again. A ranked game whose two feeds
+  disagree on home/away (neutral sites) is refused on purpose and named under `swapped`.
 - **January (postseason):** verify a `dates=` target returns bowl / NFL playoff games (PLAN Spike S4(c)).
   If not, add the `seasontype=3` companion target described in PLAN §8.2.
 
@@ -275,6 +302,7 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
 npm run db:reconcile -- --remote        # SUM(ledger) vs balance for every account; exit 1 on drift
 npx wrangler tail                       # live logs (cron runs, errors)
 npx wrangler d1 execute spicybetting --remote --command "SELECT job, status, started_at FROM job_runs ORDER BY started_at DESC LIMIT 10"
+npx wrangler d1 execute spicybetting --remote --command "SELECT remaining_credits, checked_at, cooldown_until, consecutive_failures, last_status FROM secondary_budget"   # weekly: the free tier is 500/month
 ```
 
 A settle run that could not settle a bet records `status='error'` with the stats intact; the bet is

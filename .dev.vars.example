@@ -21,3 +21,11 @@ IP_HASH_SALT="local-dev-ip-salt-change-me"
 # ONE repo) to exercise it against a scratch repo — never the real one from dev.
 # GITHUB_TOKEN="github_pat_..."
 # GITHUB_REPO="you/scratch-repo"
+
+# The secondary odds provider (The Odds API, PLAN.md §21). Leave ODDS_API_KEY
+# unset and the feature is OFF. Locally the fixture server also serves the
+# committed docs/samples/odds-api-*.json at the real v4 path, so any non-empty
+# key works against it without spending a credit; never point a real key at
+# the real API from dev by accident — the free tier is 500 credits a month.
+ODDS_API_BASE_URL=http://127.0.0.1:8788
+# ODDS_API_KEY="any-value-for-the-fixture-server"

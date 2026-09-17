@@ -31,6 +31,10 @@ export default defineProject({
           GITHUB_REPO: 'wardcrazy01894/SpicyBettingSimulator',
           GITHUB_API_BASE_URL: 'https://github.test',
           GITHUB_TOKEN: 'test-github-token',
+          // Fetches to this host are stubbed per spec file (stubOddsApi in
+          // tests/worker/fixtures.ts). The key is any non-empty string.
+          ODDS_API_BASE_URL: 'https://odds.test',
+          ODDS_API_KEY: 'test-odds-key',
         },
       },
     }),

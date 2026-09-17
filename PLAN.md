@@ -3701,7 +3701,7 @@ bettors, it touches two hot read paths, and it has nothing to do with a second
 odds provider. Bundling it into M9a–c would mean a rollback of the provider work
 also rolls back the owner's window, or vice versa.
 
-### M9a / M9b / M9c — Secondary odds provider — **M9a, M9b DONE** _(2026-09-16)_, **M9c PLANNED**
+### M9a / M9b / M9c — Secondary odds provider — **DONE** _(M9a, M9b 2026-09-16; M9c 2026-09-17)_
 
 Three PRs, each independently mergeable and green on its own; the file lists,
 the tests-first lists and the DoD for each are **§21.11**. In dependency order:
@@ -4440,8 +4440,13 @@ bookmaker. The reasons, in order of how much they matter:
   the rows we wrote last time in order to know which ones to blank — an extra
   read per game and an orphan row the first time we got it wrong. (§8.3
   established the same rule for the primary: a withdrawal is a write.)
-- Write budget. One row per gapped game per sweep, subject to compare-and-skip,
-  instead of up to nine. Writing all nine books for 75 CFB games would be ~675
+- Write budget. One row per MATCHED candidate per sweep — not only the gapped
+  ones, because a game the secondary un-gapped must keep being re-confirmed or
+  the re-sweep rule cannot keep its fill fresh — subject to compare-and-skip,
+  instead of up to nine rows per game. The consequence is worth knowing: a game
+  with a complete primary line also carries a secondary row, so when a primary
+  market goes stale the board switches to the other book's number rather than
+  showing no line. Writing all nine books for 75 CFB games would be ~675
   rows a sweep against a 100k/day cap that a Saturday already spends ~5,100 of
   (§8.6).
 
@@ -4802,7 +4807,8 @@ visible rather than mysterious.
 
 **Row writes.** Per sweep: 1 row on `secondary_budget` (no indexes, so 1 row per
 statement — a claim, plus a correction after the response), one `game_lines` row
-per gapped game the sweep actually CHANGED (compare-and-skip, §21.3's own SQL),
+per MATCHED candidate the sweep actually CHANGED — a filled game keeps being
+re-confirmed, §21.3 — (compare-and-skip, §21.3's own SQL),
 and one `games` row per game it could NOT fill. A worst-case CFB Saturday sweep
 touching 12 ranked gapped games is under 30 rows; four sweeps in a day is ~120
 against the ~5,100/day the app already writes (§8.6).
@@ -4860,9 +4866,9 @@ Parsing rules:
   that disagrees with itself is dropped for that market — the note is recorded as
   a warning only if the market ends up EMPTY after every preferred book has been
   tried, and only against the market it is about; a book out-voted by the next
-  book is not an operator problem. (M9c adds a per-book failure counter to the
-  sweep stats so "DraftKings failed every spread this sweep" is visible even when
-  FanDuel filled them all.) A market missing a side
+  book is not an operator problem — the price of that quiet is that "DraftKings
+  failed every spread this sweep, FanDuel filled them" is visible only as the
+  `*_book` columns on the rows, not as a warning. A market missing a side
   is dropped.
 - Books are visited in `ODDS_API_BOOKMAKERS` order, not response order, and the
   first book offering a COMPLETE market wins that market — independently per
@@ -5038,7 +5044,7 @@ secondary: {
   sweeps: [{
     league: 'nfl' | 'ncaaf',
     reason: 'retry' | 'resweep' | 'forced' | null,   // null iff skipped
-    skipped: null | 'no-gap' | 'throttled' | 'budget' | 'cooldown' | 'no-budget-row',
+    skipped: null | 'no-gap' | 'throttled' | 'budget' | 'cooldown' | 'no-budget-row' | 'error',
     cost: number,                // credits claimed; 0 when skipped, 0 for a probe
     remaining: number | null,    // from THIS response's header
     events: number,              // events in the response
@@ -5055,16 +5061,21 @@ secondary: {
 ```
 
 `reason` and `skipped` are exclusive: exactly one of them is non-null on every
-entry. That is what makes the admin view readable — "ncaaf: retry, 3 credits,
+entry. `skipped: 'error'` is the exception boundary firing BEFORE the claim (no
+credits spent; `error` says what threw); a throw AFTER the claim reports the
+real `reason` and `cost: 3`. If `runSecondary` itself fails (it cannot read
+`secondary_budget`, say), the run carries `enabled: true` with `sweeps: []` and
+`remaining: null` — distinguishable from the key being unset, where `enabled`
+is false. That is what makes the admin view readable — "ncaaf: retry, 3 credits,
 filled 2 totals" or "ncaaf: throttled" — and it is why `sweepSecondary` returns a
 value rather than `null` (§21.2).
 
 The admin Jobs tab renders unknown stat values as JSON today, which is enough;
-`GET /api/admin/jobs` folds `secondary.remaining` and `checkedAt` into each run's
-stats from `secondary_budget`, the same way it already folds `dayRowsWritten` —
-inside `stats`, because `JobRunView.stats` is already `Record<string, unknown>`
-and `api-types.ts` need not change for it. Each sweep's `rowsWritten` is added to
-the run's existing `rowsWritten` total so the §8.6 write budget stays one number.
+Each run's own `secondary.remaining` / `checkedAt` are the balance AS OF THAT
+RUN, recorded by the run itself (`runSecondary` reads the row after its sweeps),
+which is what an operator reading a history of runs wants; nothing is folded in
+at read time. Each sweep's `rowsWritten` is added to the run's existing
+`rowsWritten` total so the §8.6 write budget stays one number.
 
 ### 21.9 Failure modes
 
@@ -5309,7 +5320,9 @@ Tests, written first — `tests/worker/secondary.spec.ts` unless noted:
 - `SECONDARY_MIN_SWEEP_INTERVAL_MS`: two runs 30 min apart, both with gaps → one
   fetch, the second reports `skipped: 'throttled'`.
 - The reserve: with `remaining_credits` at `RESERVE + 2`, a gapped slate produces
-  NO odds fetch, `budgetSkipped: 1`, and the board is unchanged.
+  NO odds fetch, `budgetSkipped: 2` (one refusal per league — the reserve is
+  checked before the candidate scan, so a league is refused before anyone knows
+  whether it had a gap), and the board is unchanged.
 - The probe: with the reserve blocking and `last_attempt_at` 25 h old, exactly
   one `GET /v4/sports` happens, `remaining_credits` is NOT decremented by it,
   `checked_at` advances, and a second run 1 h later probes nothing.
@@ -5348,8 +5361,8 @@ Tests, written first — `tests/worker/secondary.spec.ts` unless noted:
   carries the sweep in the run-stats shape.
 - **(c)** The same route on a game that is fully lined → no fetch.
 - **(c)** The same route on an unranked CFB game → no fetch.
-- **(c)** The same route with the reserve hit → no fetch, `budgetSkipped: 1`,
-  still HTTP 200.
+- **(c)** The same route with the reserve hit → no fetch, `budgetSkipped: 2`
+  (one per league), still HTTP 200.
 - **(c)** The same route while the lease is held → `409 JOB_LOCKED` and no
   fetch (unchanged behaviour, asserted so the sweep cannot smuggle a call out
   from under the lock).

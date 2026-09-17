@@ -209,9 +209,12 @@ the one failure mode the whole checklist has.
 10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE`, `IP_HASH_SALT`,
     `GITHUB_TOKEN` (a fine-grained PAT with Issues: read+write on this ONE
     repo, for the in-app bug report form — optional; the feature is off without
-    it) and — **planned, M9c; no code reads it yet** — `ODDS_API_KEY` (The Odds
-    API free tier, for the SECONDARY odds provider; also optional, and without it
-    the board is primary-only and `job_runs.stats.secondary.enabled` is `false`).
+    it) and `ODDS_API_KEY` (The Odds API free tier, for the SECONDARY odds
+    provider, PLAN.md §21; also optional, and without it the board is
+    primary-only and `job_runs.stats.secondary.enabled` is `false`). Never call
+    the API outside `src/worker/secondary.ts`'s sweep, and never bypass its
+    credit claim: the free tier is 500 credits a month and the claim is the
+    only thing between a bug and an empty month.
     There is no ESPN key.
     `ODDS_API_KEY` is spent money in a literal sense: 500 credits a calendar
     month, 3 per league sweep, guarded by `ODDS_API_CREDIT_RESERVE`. Never add a
@@ -347,6 +350,7 @@ wrangler d1 migrations apply spicybetting --remote
 wrangler secret put INVITE_CODE
 wrangler secret put IP_HASH_SALT
 wrangler secret put GITHUB_TOKEN   # turns on in-app bug reports (PLAN.md §11.7)
+wrangler secret put ODDS_API_KEY   # turns on the secondary odds provider (PLAN.md §21)
 wrangler tail                      # live logs
 npm run db:reconcile -- --remote   # assert SUM(ledger) === balance for every bankroll
 ```
