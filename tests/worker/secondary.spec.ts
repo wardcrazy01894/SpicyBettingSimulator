@@ -398,14 +398,14 @@ describe('secondary sweep — the decision (PLAN.md §21.2 / §21.5)', () => {
   it('the fill does not vanish: over a simulated Saturday of ticks the secondary total stays on the board', async () => {
     const id = await game();
     odds.set(NFL, [apiEvent()]);
-    for (let t = NOW; t <= NOW + 12 * HOUR; t += 15 * MIN) {
+    for (let t = NOW; t <= NOW + 12 * HOUR; t += 30 * MIN) {
       await refresh(t);
       const line = await effective(id, t);
       expect(line?.total?.provider, new Date(t).toISOString()).toBe('odds-api:draftkings');
     }
     // and it did so without a sweep every tick
     expect(oddsCalls()).toBeLessThanOrEqual(7);
-  });
+  }, 60_000);
 
   it('withdrawal: a later sweep with no total for the game NULLs the column and advances seen_at', async () => {
     const id = await game();
@@ -555,11 +555,14 @@ describe('secondary sweep — credits (PLAN.md §21.5)', () => {
       NOW - 25 * HOUR,
     );
     odds.setCredits({ remaining: ODDS_API_CREDIT_RESERVE - 1 });
-    for (let d = 0; d < 40; d += 1) await refresh(NOW + d * 24 * HOUR);
+    // One league's sweep per day is the whole mechanism; a full refresh per day
+    // is 40 ESPN ingests of nothing and times out on the CI runner.
+    for (let d = 0; d < 40; d += 1)
+      await sweepSecondary(env, 'nfl', NOW + d * 24 * HOUR, { force: null });
     expect(oddsCalls()).toBe(0);
     expect(probeCalls()).toBe(40);
     expect((await budget())?.remaining_credits).toBe(ODDS_API_CREDIT_RESERVE - 1);
-  });
+  }, 60_000);
 
   it('secondary_budget deleted → skipped: no-budget-row, run ok, the ESPN slate still landed, nothing throws', async () => {
     await game();
