@@ -276,6 +276,19 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   not a stall — `GET /api/admin/jobs` shows the dates being
   taken, and the per-game Refresh button jumps one date to the front. `GET /api/games/:id` is
   deliberately unwindowed so a bet placed on a game the list no longer shows still renders and edits.
+- **Provider-name drift (seen 2026-09-17).** ESPN served DraftKings as `Draft Kings` for a day,
+  which wrote a second `game_lines` row per game under that string. The ingest now keys the
+  primary on ESPN's provider id (always `DraftKings`), and the merge ranks provider strings
+  normalised, so the variant rows are harmless — but they never get re-confirmed and sit stale.
+  One-off cleanup, SELF-GUARDING: a variant row is deleted only when the canonical `DraftKings` row
+  for the same game is at least as fresh, so running it too early (before a refresh has re-stamped
+  the canonical row — up to ~2 h after the fix deploys) deletes nothing rather than the only fresh
+  line on a Saturday. Run it once, then again a few hours later:
+  `npx wrangler d1 execute spicybetting --remote --command "DELETE FROM game_lines WHERE provider = 'Draft Kings' AND EXISTS (SELECT 1 FROM game_lines c WHERE c.game_id = game_lines.game_id AND c.provider = 'DraftKings' AND c.seen_at >= game_lines.seen_at)"`.
+  Note the fix makes drift UNDER id 100 silent by design (a warning per game per refresh would
+  flood the cap), so `SELECT DISTINCT provider FROM game_lines` only catches a variant that also
+  arrives without id 100 — a third spelling there is the same bug in a new coat, handled by the id
+  mapping in `src/shared/espn.ts`.
 - **The secondary odds provider (PLAN §21).** ESPN carries one book, so when DraftKings is
   missing a market on an NFL game or a top-25 CFB game, the refresh job asks The Odds API for it
   (draftkings first, then fanduel, betmgm, betrivers, bovada) and writes ONE `game_lines` row per

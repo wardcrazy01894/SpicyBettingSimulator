@@ -1492,7 +1492,14 @@ moneyline   : moneyline.home/away.close.odds
 Rules:
 
 - Pick the odds entry with `provider.id === '100'`; if absent, take the entry with the
-  lowest `provider.priority`; record the provider name on the row.
+  lowest `provider.priority`. **The primary's row is keyed on the ID, never on the
+  display name**: id `100` is always written as `LINE_PROVIDER_PRIMARY` (`'DraftKings'`),
+  because ESPN served the same book as `DraftKings` and `Draft Kings` within one day
+  (2026-09-17) and `game_lines` is keyed on this string — a drifting name forked every
+  game's line into two rows and made the merge rank the fresh one as an unknown
+  provider, below the secondary. Any other book keeps its own name. `providerRank`
+  (§21.4) compares NORMALISED strings for the same reason, so rows already written
+  under the variant still rank as the primary.
 - `close` preferred, `open` as fallback, otherwise that market is `NULL`.
 - `"o50.5"` / `"u50.5"` / `"+3.5"` / `"-3.5"` / `"EVEN"` / `"PK"` are all handled by
   `parseLineToTenths` / `parseAmericanPrice` with explicit unit tests.
@@ -4539,7 +4546,10 @@ Per market, independently:
    fresh secondary fill survives next to a primary row that has gone stale.
 3. of what is left, take the first by `LINE_PROVIDER_PRIORITY`
    (`['DraftKings', 'odds-api']`, unknown providers last), then `seenAt` DESC,
-   then `provider` ASC.
+   then `provider` ASC. The priority match is NORMALISED (lowercase,
+   alphanumerics only), because the string on a row is whatever the feed said
+   the day it was written — ESPN served `Draft Kings` for a day (§8.3) — and a
+   variant primary row must still outrank the secondary.
 
 Step 3's primary-first ordering is the whole of "when the primary market
 reappears it wins": no state, no timer, no cleanup of the secondary row.
