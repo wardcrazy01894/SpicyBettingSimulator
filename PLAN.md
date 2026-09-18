@@ -4546,7 +4546,10 @@ Per market, independently:
    fresh secondary fill survives next to a primary row that has gone stale.
 3. of what is left, take the first by `LINE_PROVIDER_PRIORITY`
    (`['DraftKings', 'odds-api']`, unknown providers last), then `seenAt` DESC,
-   then `provider` ASC.
+   then `provider` ASC. The priority match is NORMALISED (lowercase,
+   alphanumerics only), because the string on a row is whatever the feed said
+   the day it was written — ESPN served `Draft Kings` for a day (§8.3) — and a
+   variant primary row must still outrank the secondary.
 
 Step 3's primary-first ordering is the whole of "when the primary market
 reappears it wins": no state, no timer, no cleanup of the secondary row.

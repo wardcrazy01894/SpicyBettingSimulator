@@ -79,6 +79,20 @@ describe('providerRank / marketProvider', () => {
     expect(providerRank('odds api')).toBe(1);
   });
 
+  it('the shape the live D1 actually had: a STALE "DraftKings" row plus a FRESH "Draft Kings" row → the fresh one wins on seenAt', () => {
+    const old = primary({ seenAt: NOW - 20 * HOUR, capturedAt: NOW - 20 * HOUR });
+    const spaced: LineRowView = {
+      ...primary({ totalTenths: 525, totalOverPrice: -110, totalUnderPrice: -110 }),
+      provider: 'Draft Kings',
+    };
+    const fill = secondary({ ...TOTAL, totalBook: 'fanduel' });
+    const line = mergeEffectiveLine([old, fill, spaced], KICKOFF, NOW);
+    expect(line?.total).toMatchObject({ tenths: 525, provider: 'Draft Kings' });
+    expect(line?.spread?.provider).toBe('Draft Kings');
+    expect(line?.provider).toBe('Draft Kings');
+    expect(line?.stale).toBe(false);
+  });
+
   it('a fresh "Draft Kings" primary row beats a fresh secondary row on every market', () => {
     const spaced: LineRowView = { ...primary(), provider: 'Draft Kings' };
     const fill = secondary({

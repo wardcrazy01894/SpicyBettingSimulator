@@ -46,7 +46,12 @@ import type {
  * this, which is what stops the merge from depending on a column list.
  */
 export interface LineRowView {
-  /** `game_lines.provider`: 'DraftKings' (primary) or 'odds-api' (secondary). */
+  /**
+   * `game_lines.provider`: 'DraftKings' (primary) or 'odds-api' (secondary) —
+   * in principle. In practice it is whatever string the feed wrote the day the
+   * row was written (ESPN served 'Draft Kings' for a day, §8.3), which is why
+   * `providerRank` normalises before ranking.
+   */
   readonly provider: string;
   readonly spreadHomeTenths: LineTenths | null;
   readonly spreadHomePrice: AmericanPrice | null;

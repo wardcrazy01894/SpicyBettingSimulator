@@ -1119,16 +1119,21 @@ describe('defensive behaviour', () => {
     // "Draft Kings" (with a space) within a day. game_lines is keyed on the
     // provider STRING, so a drifting display name forks every game's line into
     // two rows and makes the merge rank the fresh one as an unknown provider.
-    for (const name of ['Draft Kings', 'DRAFTKINGS', 'draft kings']) {
+    for (const [id, name] of [
+      ['100', 'Draft Kings'],
+      ['100', 'DRAFTKINGS'],
+      [100, 'draft kings'], // ESPN sometimes sends the id as a number
+      ['100', undefined], // …and sometimes no name at all
+    ] as const) {
       const result = parseEvent(
         baseEvent({
-          provider: { id: '100', name, priority: 1 },
+          provider: { id, name, priority: 1 },
           moneyline: { home: { close: { odds: '-198' } }, away: { close: { odds: '+164' } } },
         }),
         'nfl',
         FETCHED_AT,
       );
-      expect(result?.lines?.provider, name).toBe('DraftKings');
+      expect(result?.lines?.provider, String(name)).toBe('DraftKings');
     }
     // Any other book keeps its own name — the id is what we key on, not the text.
     const other = parseEvent(
