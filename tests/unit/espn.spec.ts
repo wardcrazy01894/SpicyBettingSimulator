@@ -1114,6 +1114,34 @@ describe('defensive behaviour', () => {
     expect(warnings[0]?.reason).toBe('DraftKings: spread: off the board; moneyline: off the board');
   });
 
+  it('the PRIMARY is keyed on ESPN provider id 100, whatever ESPN calls it this week', () => {
+    // Seen live 2026-09-17/18: ESPN served the same book as "DraftKings" and as
+    // "Draft Kings" (with a space) within a day. game_lines is keyed on the
+    // provider STRING, so a drifting display name forks every game's line into
+    // two rows and makes the merge rank the fresh one as an unknown provider.
+    for (const name of ['Draft Kings', 'DRAFTKINGS', 'draft kings']) {
+      const result = parseEvent(
+        baseEvent({
+          provider: { id: '100', name, priority: 1 },
+          moneyline: { home: { close: { odds: '-198' } }, away: { close: { odds: '+164' } } },
+        }),
+        'nfl',
+        FETCHED_AT,
+      );
+      expect(result?.lines?.provider, name).toBe('DraftKings');
+    }
+    // Any other book keeps its own name — the id is what we key on, not the text.
+    const other = parseEvent(
+      baseEvent({
+        provider: { id: '2000', name: 'FanDuel', priority: 2 },
+        moneyline: { home: { close: { odds: '-198' } }, away: { close: { odds: '+164' } } },
+      }),
+      'nfl',
+      FETCHED_AT,
+    );
+    expect(other?.lines?.provider).toBe('FanDuel');
+  });
+
   it('a structural warning raised before the teams are known has a null label', () => {
     const warnings: ParseWarning[] = [];
     parseEvent({ id: 'x' }, 'nfl', FETCHED_AT, warnings);

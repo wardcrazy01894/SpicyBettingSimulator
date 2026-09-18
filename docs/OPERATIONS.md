@@ -276,6 +276,14 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   not a stall — `GET /api/admin/jobs` shows the dates being
   taken, and the per-game Refresh button jumps one date to the front. `GET /api/games/:id` is
   deliberately unwindowed so a bet placed on a game the list no longer shows still renders and edits.
+- **Provider-name drift (seen 2026-09-17).** ESPN served DraftKings as `Draft Kings` for a day,
+  which wrote a second `game_lines` row per game under that string. The ingest now keys the
+  primary on ESPN's provider id (always `DraftKings`), and the merge ranks provider strings
+  normalised, so the variant rows are harmless — but they never get re-confirmed and sit stale.
+  One-off cleanup after that fix deployed (safe: they are exact duplicates of the primary row):
+  `npx wrangler d1 execute spicybetting --remote --command "DELETE FROM game_lines WHERE provider = 'Draft Kings'"`.
+  If `SELECT DISTINCT provider FROM game_lines` ever shows a third spelling, that is the same
+  bug in a new coat: the id mapping in `src/shared/espn.ts` is where it is handled.
 - **The secondary odds provider (PLAN §21).** ESPN carries one book, so when DraftKings is
   missing a market on an NFL game or a top-25 CFB game, the refresh job asks The Odds API for it
   (draftkings first, then fanduel, betmgm, betrivers, bovada) and writes ONE `game_lines` row per

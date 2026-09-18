@@ -25,6 +25,7 @@ import {
   MAX_ABS_AMERICAN_PRICE,
   MAX_ABS_LINE_TENTHS,
   MIN_ABS_AMERICAN_PRICE,
+  LINE_PROVIDER_PRIMARY,
 } from './constants.js';
 import { parseIsoToEpochMs } from './time.js';
 import type {
@@ -614,7 +615,15 @@ function parseLines(
   const entry = selectOddsEntry(odds);
   if (entry === null) return null;
 
-  const provider = asString(prop(prop(entry, 'provider'), 'name')) ?? 'unknown';
+  // The PRIMARY is keyed on ESPN's provider ID, never on the display name:
+  // ESPN served the same book as "DraftKings" and "Draft Kings" within one day
+  // (2026-09-17), and game_lines is keyed on this string, so a drifting name
+  // forks every game's line into two rows. Any other book keeps its own name.
+  const providerId = asIdString(prop(prop(entry, 'provider'), 'id'));
+  const provider =
+    providerId === ESPN_DRAFTKINGS_PROVIDER_ID
+      ? LINE_PROVIDER_PRIMARY
+      : (asString(prop(prop(entry, 'provider'), 'name')) ?? 'unknown');
   const diag: MarketDiagnostics = { notes: [], pulled: false };
   const spread = parseSpreadMarket(entry, diag);
   const total = parseTotalMarket(entry, diag);

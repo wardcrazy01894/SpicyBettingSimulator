@@ -71,6 +71,30 @@ describe('providerRank / marketProvider', () => {
     expect(providerRank('someday-book')).toBe(LINE_PROVIDER_PRIORITY.length);
   });
 
+  it('ranks by the NORMALISED provider string, so a row written under "Draft Kings" is still the primary', () => {
+    // Rows already on the live D1 carry the space-variant ESPN served for a day.
+    expect(providerRank('Draft Kings')).toBe(0);
+    expect(providerRank('draftkings')).toBe(0);
+    expect(providerRank('ODDS-API')).toBe(1);
+    expect(providerRank('odds api')).toBe(1);
+  });
+
+  it('a fresh "Draft Kings" primary row beats a fresh secondary row on every market', () => {
+    const spaced: LineRowView = { ...primary(), provider: 'Draft Kings' };
+    const fill = secondary({
+      ...SPREAD,
+      spreadBook: 'fanduel',
+      ...TOTAL,
+      totalBook: 'fanduel',
+      ...ML,
+      mlBook: 'fanduel',
+    });
+    const line = mergeEffectiveLine([fill, spaced], KICKOFF, NOW);
+    expect(line?.spread?.provider).toBe('Draft Kings');
+    expect(line?.total?.provider).toBe('Draft Kings');
+    expect(line?.moneyline?.provider).toBe('Draft Kings');
+  });
+
   it('composes the provenance string the board shows and the leg records', () => {
     expect(marketProvider(LINE_PROVIDER_PRIMARY, null)).toBe('DraftKings');
     expect(marketProvider(LINE_PROVIDER_SECONDARY, 'fanduel')).toBe('odds-api:fanduel');

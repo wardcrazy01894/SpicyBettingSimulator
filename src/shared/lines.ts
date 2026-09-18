@@ -295,9 +295,18 @@ export function marketProvider(rowProvider: string, book: string | null): string
  * row in the table can never make the board throw.
  */
 export function providerRank(provider: string): number {
-  const index = LINE_PROVIDER_PRIORITY.indexOf(provider);
+  // Normalised, because the STRING on a row is whatever the feed said the day
+  // it was written: ESPN served "DraftKings" and "Draft Kings" within one day
+  // (2026-09-17), and the rows under the variant must still rank as the primary.
+  const key = normaliseProvider(provider);
+  const index = PRIORITY_KEYS.indexOf(key);
   return index === -1 ? LINE_PROVIDER_PRIORITY.length : index;
 }
+
+function normaliseProvider(provider: string): string {
+  return provider.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+const PRIORITY_KEYS: readonly string[] = LINE_PROVIDER_PRIORITY.map(normaliseProvider);
 
 /* ------------------------------------------------------------------ *
  * What the secondary provider is allowed to chase (PLAN.md §21.2)
