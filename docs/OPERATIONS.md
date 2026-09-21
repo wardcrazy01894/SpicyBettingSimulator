@@ -345,6 +345,12 @@ the `vitest` major. If a pool bump widens that peer to a vitest major we current
 arrives red and the fix is to lift the `vitest` ceiling in BOTH `dependabot.yml` and PLAN §15 — not
 to rerun CI.
 
+And one thing CI will never flag again, because `allowScripts` names `esbuild`, `workerd` and
+`fsevents` without a version: whether the bumped version's install script is still the one-line
+binary fetch it has always been. On a Cloudflare-group or minor/patch PR that moves any of those
+three, run `npm view <pkg>@<new version> scripts` and compare it with the previous version's; a
+`postinstall` that does anything other than download its own binary is the review finding.
+
 `package.json` carries one `overrides` entry, scoped to
 `@cloudflare/vitest-pool-workers → miniflare → sharp: 0.35.4`, to patch a
 dev-only vulnerability in a package that pool's miniflare pins exactly (PLAN §15).
