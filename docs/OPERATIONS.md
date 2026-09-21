@@ -348,8 +348,11 @@ to rerun CI.
 And one thing CI will never flag again, because `allowScripts` names `esbuild`, `workerd` and
 `fsevents` without a version: whether the bumped version's install script is still the one-line
 binary fetch it has always been. On a Cloudflare-group or minor/patch PR that moves any of those
-three, run `npm view <pkg>@<new version> scripts` and compare it with the previous version's; a
-`postinstall` that does anything other than download its own binary is the review finding.
+three, run `npm view <pkg>@<new version> scripts` and compare it with the previous version's — but
+know that the field is a fixed wrapper (`node install.js` for esbuild and workerd, `node-gyp rebuild`
+for fsevents) that will read identically on every bump, so the real check is the referenced file:
+open the new version's `install.js` on npmjs.com or unpkg and skim what it does. One that does
+anything other than fetch its own binary is the review finding.
 
 `package.json` carries one `overrides` entry, scoped to
 `@cloudflare/vitest-pool-workers → miniflare → sharp: 0.35.4`, to patch a
