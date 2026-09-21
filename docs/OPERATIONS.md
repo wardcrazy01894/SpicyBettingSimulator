@@ -329,6 +329,14 @@ for minor/patch npm bumps, one per major, one for the Cloudflare toolchain (`wra
 `@cloudflare/*`), and one for all GitHub Actions. Each is a normal PR — CI plus an adversarial
 review before merge; nothing auto-merges.
 
+**A bump PR that fails `npm ci` with `ESTRICTALLOWSCRIPTS`** has pulled in a package with an
+install-time script that `package.json`'s `allowScripts` does not name (CLAUDE.md rule 12;
+`.npmrc` makes the check strict). That is the policy working, not a flake: read the package's
+`postinstall`, and if it is what it says it is, `npm approve-scripts --no-allow-scripts-pin <pkg>`
+on the PR branch and push. The three names already there — `esbuild`, `workerd`, `fsevents` — cover
+every native binary the toolchain fetches today, so a Cloudflare-group bump should never trip it on
+its own; a NEW name is the thing to look at.
+
 Reviewing a Cloudflare-group PR means checking two constraints, both in PLAN §15: `compatibility_date`
 in `wrangler.jsonc` must not be newer than the workerd bundled with `@cloudflare/vitest-pool-workers`
 (the pool refuses it with `ERR_RUNTIME_FAILURE` and `npm run test:worker` fails; a date later than

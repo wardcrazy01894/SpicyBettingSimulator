@@ -258,6 +258,20 @@ the one failure mode the whole checklist has.
       _wrong_, only that a number, a code, a route or a table no longer exists —
       which is the drift that actually happens. Judgement is still the reviewer's
       job; see `.github/pull_request_template.md`.
+12. **Install scripts are allowlisted, and the allowlist is STRICT.**
+    `package.json`'s `allowScripts` names the dependencies that may run a
+    `preinstall` / `install` / `postinstall` script — today `esbuild`,
+    `workerd` and `fsevents`, the three native-binary fetchers, by NAME so a
+    Dependabot bump does not strand a pinned entry. `.npmrc` sets
+    `strict-allow-scripts=true`, so an `npm ci` that meets a script-bearing
+    package outside that list FAILS with `ESTRICTALLOWSCRIPTS` rather than
+    printing the advisory warning npm 11 otherwise prints and nobody reads.
+    That is the point: a new package that wants to run code at install time
+    is the classic supply-chain vector, and it should cost a human a look.
+    When CI (or your own install) fails that way, READ the package's install
+    script, then `npm approve-scripts --no-allow-scripts-pin <pkg>` in the
+    same PR. Never `--dangerously-allow-all-scripts`, and never delete
+    `.npmrc` to get green.
 
 ---
 
@@ -320,6 +334,8 @@ docs/         teaser-odds.md — the sourcing behind TEASER_PAYOUTS
 scripts/      fixture server, admin password tool, ledger reconcile, branch
               protection, icon rasteriser, teaser card generator, and the
               one-shot ESPN range capture behind the same-date samples
+.npmrc        strict-allow-scripts=true — rule 12; the allowlist itself is package.json
+              allowScripts (esbuild, workerd, fsevents, by name)
 .github/      ci.yml (gate + gitleaks), deploy.yml, dependabot.yml (weekly grouped
               bumps; every one still gets CI + adversarial review), PR template
 ```
