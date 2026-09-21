@@ -1032,6 +1032,28 @@ select:focus-visible,
   font-weight: 650;
 }
 
+/* A player's name on the board is the way into their bet history. */
+.player-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+/* ---------------------------------------------------------------- players */
+
+.player-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.player-rank {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
 /* ----------------------------------------------------------------- ledger */
 
 .ledger {

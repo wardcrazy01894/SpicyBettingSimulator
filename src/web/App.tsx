@@ -3,7 +3,7 @@
  *
  *   <SessionProvider> -> <ConfigProvider> -> <BetSlipProvider> -> <AppShell>
  *
- * Routes: / (games), /bets, /leaderboard, /account, /admin, /login
+ * Routes: / (games), /bets, /leaderboard, /players/:userId, /account, /admin, /login
  *
  * ORDER MATTERS. Session is outermost because everything below it needs to know
  * whether there is a user; Config is next because the slip needs
@@ -25,6 +25,7 @@ import { GamesPage } from './pages/GamesPage.js';
 import { LeaderboardPage } from './pages/LeaderboardPage.js';
 import { MyBetsPage } from './pages/MyBetsPage.js';
 import { NotFoundPage } from './pages/NotFoundPage.js';
+import { PlayerBetsPage } from './pages/PlayerBetsPage.js';
 import { BetSlipProvider } from './state/BetSlipContext.js';
 import { ConfigProvider } from './state/ConfigContext.js';
 import { SessionProvider } from './state/SessionContext.js';
@@ -41,6 +42,7 @@ export function App(): ReactElement {
                 <Route index element={<GamesPage />} />
                 <Route path="/bets" element={<MyBetsPage />} />
                 <Route path="/leaderboard" element={<LeaderboardPage />} />
+                <Route path="/players/:userId" element={<PlayerBetsPage />} />
                 <Route path="/account" element={<AccountPage />} />
                 <Route path="/admin" element={<AdminPage />} />
                 <Route path="*" element={<NotFoundPage />} />

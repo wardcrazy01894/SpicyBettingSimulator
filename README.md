@@ -49,6 +49,10 @@ no top-up button, so bet like it's real.
 6. **Watch it grade.** Settlement runs a few minutes after each refresh. Your
    account page has the full ledger, every cent of it, and the leaderboard
    ranks everyone by **equity**: balance plus whatever is still riding.
+   **Tap a name on the leaderboard** to see that player's bets: what's still
+   open and how each leg is going, and everything that's settled, with what it
+   won or lost. Everyone's history is open to everyone; it's a friend group,
+   not a bank.
 7. **Something look wrong?** "Report a bug" is in the header on every page
    once you're signed in. It files an issue in
    [this repo](https://github.com/wardcrazy01894/SpicyBettingSimulator/issues)

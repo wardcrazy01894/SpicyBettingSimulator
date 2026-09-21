@@ -1,5 +1,7 @@
 /**
- * Columns: rank, user, EQUITY, balance, open exposure, W-L-P, ROI.
+ * Columns: rank, user, EQUITY, balance, open exposure, W-L-P, ROI. The user's
+ * name links to their bet history (`/players/:userId`, §11.8) — the board says
+ * who is winning; the link is how you find out what they took.
  *
  * Equity leads because equity is the RANKED column (PLAN.md §11.5, decided
  * 2026-09-14) — a table whose first money column is not the one the order is
@@ -7,6 +9,7 @@
  * so the two halves of the equity figure are both visible.
  */
 import type { ReactElement } from 'react';
+import { Link } from 'react-router-dom';
 
 import { formatRoi } from '../lib/labels.js';
 import { formatCents } from '../../shared/validate.js';
@@ -45,7 +48,11 @@ export function LeaderboardTable(props: {
           {rows.map((row) => (
             <tr key={row.userId} className={row.userId === meUserId ? 'row-me' : undefined}>
               <td>{String(row.rank)}</td>
-              <td>{row.displayName}</td>
+              <td>
+                <Link className="player-link" to={`/players/${encodeURIComponent(row.userId)}`}>
+                  {row.displayName}
+                </Link>
+              </td>
               <td className="num num-strong">{formatCents(row.equityCents)}</td>
               <td className="num">{formatCents(row.balanceCents)}</td>
               <td className="num">{formatCents(row.pendingStakeCents)}</td>
