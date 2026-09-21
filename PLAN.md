@@ -3539,7 +3539,7 @@ constrained:
 | `typescript`           | `~6.0.3`  | `typescript-eslint@8.70` declares `typescript: ">=4.8.4 <6.1.0"`. 6.0.x is inside that range; TypeScript **7.0.2** (the Go port) is not, so `npm run lint` would fail on it.                                                  |
 | `@vitejs/plugin-react` | `^5.2.0`  | 5.2.0 is the first v5 that accepts `vite@^8`. v6 accepts vite 8 too but pulls in extra optional peers (`oxc-transform-react`, `@rolldown/plugin-babel`) we do not need.                                                       |
 
-`vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.131` are current and unconstrained.
+`vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.134` are current and unconstrained.
 
 **One `overrides` entry, scoped: `@cloudflare/vitest-pool-workers → miniflare
 → sharp: 0.35.4`** (package.json). `sharp` is not our dependency:
