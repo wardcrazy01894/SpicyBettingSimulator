@@ -40,6 +40,7 @@ import type {
   DisplayNameRequest,
   LoginRequest,
   PlaceBetRequest,
+  PlayerBetsResponse,
   ReconcileResponse,
   SignupRequest,
   UserResponse,
@@ -348,6 +349,20 @@ export function getLedger(params: LedgerQuery = {}): Promise<LedgerResponse> {
 /** `league: 'all'` is the default board; a league narrows record/ROI only. */
 export function getLeaderboard(league: League | 'all'): Promise<LeaderboardResponse> {
   return apiGet<LeaderboardResponse>(`/api/leaderboard${query({ league })}`);
+}
+
+// ---------------------------------------------------------------------------
+// §11.8 players
+// ---------------------------------------------------------------------------
+
+/**
+ * Another player's bets, read-only. Same query vocabulary as `getBets`; a
+ * player who is disabled, deleted or unknown is `404 NOT_FOUND`.
+ */
+export function getPlayerBets(userId: string, params: BetsQuery = {}): Promise<PlayerBetsResponse> {
+  return apiGet<PlayerBetsResponse>(
+    `/api/users/${encodeURIComponent(userId)}/bets${query({ ...params })}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

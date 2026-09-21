@@ -286,7 +286,10 @@ src/shared/   pure domain: types, odds, grading, espn parser, validation, time,
               lines (the per-market merge), odds-api (the secondary's parser)
 src/worker/   Hono API + cron jobs + D1 access; secondary.ts owns the Odds API
               sweep and its credit budget, and never edits ingest.ts's SQL
-src/worker/routes/  one file per API area; index.ts holds the route table
+src/worker/routes/  one file per API area; index.ts holds the route table.
+              users.ts is GET /api/users/:id/bets — another player's bets,
+              read-only (players.ts forces cancellable:false), visible under
+              the leaderboard's own predicate (PLAN.md §11.8)
 src/web/      React SPA: pages/, components/, state/ (contexts + pure reducers),
               hooks/ (useResource, usePages, useFocusTrap, useNow), lib/ (pure,
               DOM-free helpers), api/ (client, kdf, error copy)

@@ -17,6 +17,7 @@
  *     app.route('/api/leaderboard', leaderboardRoutes());
  *     app.route('/api/admin', adminRoutes());
  *     app.route('/api/bugs', bugsRoutes());
+ *     app.route('/api/users', usersRoutes());
  */
 
 import { Hono } from 'hono';
@@ -40,6 +41,7 @@ import { bugsRoutes } from './routes/bugs.js';
 import { gamesRoutes } from './routes/games.js';
 import { leaderboardRoutes } from './routes/leaderboard.js';
 import { metaRoutes } from './routes/meta.js';
+import { usersRoutes } from './routes/users.js';
 
 /**
  * Build the app. A function rather than a module-level singleton so tests can
@@ -66,6 +68,7 @@ export function buildApp(): Hono<AppContext> {
   app.route('/api/leaderboard', leaderboardRoutes());
   app.route('/api/admin', adminRoutes());
   app.route('/api/bugs', bugsRoutes());
+  app.route('/api/users', usersRoutes());
 
   // Anything under /api that no route claimed is OUR 404, never index.html.
   app.notFound((c) => {

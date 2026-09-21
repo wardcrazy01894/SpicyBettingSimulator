@@ -16,6 +16,7 @@ import {
   getHealth,
   getLeaderboard,
   getLedger,
+  getPlayerBets,
 } from '../api/client.js';
 import { useResource } from './useResource.js';
 import type { Resource } from './useResource.js';
@@ -29,6 +30,7 @@ import type {
   JobRunsResponse,
   LeaderboardResponse,
   LedgerResponse,
+  PlayerBetsResponse,
 } from '../../shared/api-types.js';
 import type { League } from '../../shared/types.js';
 
@@ -47,6 +49,19 @@ export function useGames(
 
 export function useBets(status: 'open' | 'settled' | 'all'): Resource<BetsResponse> {
   return useResource(`bets:${status}`, () => getBets({ status }));
+}
+
+/**
+ * Another player's bets. Under the `bets:` prefix on purpose: when YOU place or
+ * cancel a bet, `invalidate('bets')` drops this too, so looking at your own
+ * page never shows a list one bet behind My Bets. Everyone else's changes
+ * arrive by the page's poll.
+ */
+export function usePlayerBets(
+  userId: string,
+  status: 'open' | 'settled' | 'all',
+): Resource<PlayerBetsResponse> {
+  return useResource(`bets:player:${userId}:${status}`, () => getPlayerBets(userId, { status }));
 }
 
 /**
