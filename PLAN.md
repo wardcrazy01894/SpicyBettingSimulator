@@ -2727,6 +2727,56 @@ Limits are in `constants.ts`: title 3–120 chars, description 10–4,000, page 
 `validateBugReport` runs in both the browser (to enable the Send button) and the
 Worker (as the gate).
 
+### 11.8 Players — another user's bets
+
+| Method | Path                  | Response                                                                                                                                                      |
+| ------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/users/:id/bets` | `200 {player: PlayerView, bets: BetView[], nextCursor}`. `?status=open\|settled\|all&league=&limit=&cursor=` — **`GET /api/bets`'s query string, unchanged.** |
+
+The product is a few friends finding out who knows football, and "what did
+Tyler take this week, and how did it go" is half of that conversation (added
+2026-09-21, M10). Any signed-in user may read any PLAYING account's bets — open
+ones with their live per-leg `projected` grade, settled ones with the
+`payoutCents` settlement actually paid — through the SAME query that feeds
+My Bets (`listBets`), over a different owner. The route lives in
+`src/worker/routes/users.ts`; the owner check and the read-only mapping in
+`src/worker/players.ts`.
+
+`PlayerView = { id, username, displayName }` — deliberately NOT `UserSummary`:
+another player's admin flag and signup date are nobody's business on a bets
+page. The stats (rank, equity, balance, exposure, record, ROI) are NOT repeated
+here; the page reads them from the leaderboard's `all` row (§11.5), so there is
+one source for every number and it is the one the board ranks on.
+
+**WHO IS VISIBLE is the leaderboard's predicate**, `users.is_disabled = 0 AND
+users.deleted_at IS NULL`. An account off the board is `404 NOT_FOUND`,
+indistinguishable from an id that never existed — the same answer the admin
+routes give a soft-deleted account, and for the same reason: a disabled account
+is not playing and cannot answer for its bets. Nothing is deleted; re-enabling
+puts the history straight back.
+
+**EVERY `BetView` in the response is `cancellable: false`, whoever asks —
+including when you look at yourself.** The page is read-only by contract. The
+viewer could not act on the bet anyway (`DELETE`/`PUT /api/bets/:id` are scoped
+to the owner and answer `404 BET_NOT_FOUND` to anybody else), but a `true` would
+tell the client to draw Edit and Cancel buttons it cannot honour, and one flag
+whose meaning depends on who is asking is exactly the kind of thing that gets
+misread. My Bets is where you act on your own bets.
+
+The query string is read by ONE function, `readBetListFilter` in
+`routes/bets.ts`, shared with `GET /api/bets`, so the two lists can never
+disagree about what `status=settled` (the complement of `open`, cancelled
+included — §11.4) or `league=mixed` means. `BetView.bankrollId` is on the wire
+unchanged: it names the owner's balance, and every endpoint that accepts a
+`bankrollId` resolves it against the CALLER (`resolveBankrollId`, and the
+`EXISTS` inside placement's INSERT), so knowing somebody else's id buys nothing.
+No `?season=`, as everywhere (§19 Q5). No new error code: `NOT_FOUND`,
+`VALIDATION` and `UNAUTHENTICATED` already mean exactly the three failures.
+
+`tests/worker/players.spec.ts` pins all of it: the read-only flag against the
+owner's own `true`, the open/settled partition, the exact-league match, the
+cursor, the 404 for disabled / deleted / unknown alike, and the 400s.
+
 ## 12. Frontend design
 
 React 19 + TypeScript + Vite, `react-router-dom` for routing, **no UI framework** —
@@ -2770,7 +2820,13 @@ main.tsx
     │           │   │   └── <LoadMore paged>          usePages() cursor paging
     │           │   ├── route "/leaderboard" <LeaderboardPage>
     │           │   │   ├── <Segmented<Scope> all|nfl|ncaaf>
-    │           │   │   └── <LeaderboardTable rows meUserId>
+    │           │   │   └── <LeaderboardTable rows meUserId>   each name links to /players/:userId
+    │           │   ├── route "/players/:userId" <PlayerBetsPage>   another player's bets, read-only (§11.8)
+    │           │   │   ├── (stats header, inline)   from the leaderboard's `all` row: rank, equity, balance, exposure, W-L-P, ROI
+    │           │   │   ├── <Segmented<Filter> open|settled>
+    │           │   │   ├── groupBetsByWeek()
+    │           │   │   │   └── <BetCard bet readOnly>    never Edit/Cancel; the server says cancellable:false too
+    │           │   │   └── <LoadMore paged>
     │           │   ├── route "/account"    <AccountPage>
     │           │   │   ├── <DisplayNameForm>      POST /api/auth/display-name, session.setDisplayName()
     │           │   │   ├── (balances, inline)
@@ -2836,12 +2892,15 @@ Three contexts, each a `useReducer`; no Redux, no react-query.
   over a plain module-level `resource-store.ts`: in-memory cache, `refetch()`,
   stale-while-revalidate and an `invalidate(keyPrefix)` used after a successful
   bet mutation. `hooks/useApi.ts` wraps it into the named calls
-  (`useGames`, `useBets`, `useBalances`, `useLedger`, `useLeaderboard`), and
-  `hooks/useNow.ts` supplies the ticking clock and the poll interval.
+  (`useGames`, `useBets`, `usePlayerBets`, `useBalances`, `useLedger`,
+  `useLeaderboard`), and `hooks/useNow.ts` supplies the ticking clock and the
+  poll interval. `usePlayerBets` keys under the `bets:` prefix on purpose, so
+  placing or cancelling your own bet invalidates your own player page too.
   Deliberately not a dependency.
 
 - **Cursor paging** — `hooks/usePages.ts` over `lib/paging.ts`, for the two
-  endpoints that return a `nextCursor` (`/api/bets`, `/api/ledger`). Page 1 lives
+  endpoints that return a `nextCursor` (`/api/bets`, `/api/users/:id/bets`,
+  `/api/ledger`). Page 1 lives
   in the `useResource` cache and is re-read by polling and by `invalidate()`;
   pages 2..n sit next to it. A poll can therefore hand back a page 1 that
   OVERLAPS what is already loaded — placing a bet shifts every row down by one —
@@ -3441,6 +3500,8 @@ Live at https://spicybetting.wardcrazy01894.workers.dev, first deployed
 | M6 settlement                                 | **DONE**                                                            |
 | M7a–e frontend                                | **DONE**                                                            |
 | M8 deploy + operate                           | **DONE** — deployed 2026-09-14; see the two open measurements below |
+| M9-0 / M9a–c board window, secondary odds     | **DONE** — 2026-09-16 / 2026-09-17 (§21, §22)                       |
+| M10 player bet history                        | **DONE** — 2026-09-21 (§11.8)                                       |
 
 Two things follow from the deploy having happened:
 
@@ -3737,6 +3798,29 @@ be byte-identical while only primary rows exist, and
 the parity test in `tests/worker/bets.spec.ts` (and the list/detail case in `tests/worker/routes.spec.ts`) is the proof. M9c is the only PR that spends
 money (credits), and it is off entirely without `ODDS_API_KEY`.
 
+### M10 — Player bet history — **DONE** _(2026-09-21)_
+
+"I want to see which ones Tyler has placed that won and which have lost, and
+for how much." One endpoint, one page, no schema change, no new error code.
+
+**Files owned**: `src/worker/players.ts`, `src/worker/routes/users.ts` (one
+`app.route('/api/users', …)` line in `index.ts`), `src/web/pages/PlayerBetsPage.tsx`,
+the `readOnly` prop on `BetCard`, the name link in `LeaderboardTable`,
+`getPlayerBets` / `usePlayerBets`. `api-types.ts` gains `PlayerView` and
+`PlayerBetsResponse` (additive — §16.2). `routes/bets.ts` exports
+`readBetListFilter` so both lists parse one query vocabulary.
+
+**Tests first**: `tests/worker/players.spec.ts` — the read-only flag against the
+owner's own `cancellable: true`, the open/settled partition with a cancelled
+bet, the exact-league match with a `mixed` bet, the cursor, the 404 for a
+disabled, soft-deleted and unknown id alike (and the 200 again after
+re-enabling), the 400s. No new pure logic in `src/shared` or `src/web/lib`: the
+page is a composition of `groupBetsByWeek`, `usePages` and `BetCard`, all of
+which already have their own specs.
+
+**DoD**: §11.8 is the contract; `docs.spec.ts` sees the new route in §11 and
+the new file mounted in `index.ts`; the gate is green.
+
 ---
 
 ## 16. Parallel-execution map
@@ -3965,6 +4049,15 @@ ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
 - **No error code is added.** The secondary never produces a user-visible error:
   a market it could not fill is a market that is simply absent, which
   `MARKET_UNAVAILABLE` already means.
+- **`api-types.ts`, for M10** — `PlayerView` and `PlayerBetsResponse`
+  (§11.8), the response of the new `GET /api/users/:id/bets`. New types only;
+  no existing field changes meaning. `BetView` is reused as-is, with
+  `cancellable` always `false` in that one response — a value the field could
+  already take, so no client reads it differently.
+- **`src/worker/routes/users.ts`** — a new router, mounted at `/api/users` by
+  one line in `index.ts` like every other. `src/worker/players.ts` holds the
+  visibility check and the read-only mapping over `listBets`. No migration, no
+  env var, no error code.
 
 ## 17. Risks and mitigations
 

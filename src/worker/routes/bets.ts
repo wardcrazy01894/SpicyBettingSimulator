@@ -23,11 +23,32 @@ const BET_FILTERS = ['open', 'settled', 'all'] as const;
 type BetFilter = (typeof BET_FILTERS)[number];
 
 /** No `season`: the product has no concept of one (PLAN.md §19 Q5). */
-interface BetListFilter {
+export interface BetListFilter {
   status: BetFilter;
   league?: BetLeague;
   limit: number;
   cursor?: string;
+}
+
+/**
+ * `?status=&league=&limit=&cursor=` as ONE reader, so `GET /api/users/:id/bets`
+ * (routes/users.ts) accepts exactly what `GET /api/bets` does — the two lists
+ * are the same query over a different owner, and a filter that one of them
+ * understood and the other 400'd would be a bug nobody would find until a
+ * shared client hit it.
+ */
+export function readBetListFilter(query: (name: string) => string | undefined): BetListFilter {
+  // `exactOptionalPropertyTypes` is on, so an absent filter must be an absent
+  // KEY, not a key holding `undefined`.
+  const filter: BetListFilter = {
+    status: readFilter(query('status')),
+    limit: readLimit(query('limit'), DEFAULT_BET_PAGE, MAX_BET_PAGE),
+  };
+  const league = readBetLeague(query('league'));
+  if (league !== undefined) filter.league = league;
+  const cursor = query('cursor');
+  if (cursor !== undefined && cursor !== '') filter.cursor = cursor;
+  return filter;
 }
 
 export function betsRoutes(): Hono<AppContext> {
@@ -43,17 +64,7 @@ export function betsRoutes(): Hono<AppContext> {
   });
 
   app.get('/', async (c) => {
-    // `exactOptionalPropertyTypes` is on, so an absent filter must be an absent
-    // KEY, not a key holding `undefined`.
-    const filter: BetListFilter = {
-      status: readFilter(c.req.query('status')),
-      limit: readLimit(c.req.query('limit'), DEFAULT_BET_PAGE, MAX_BET_PAGE),
-    };
-    const league = readBetLeague(c.req.query('league'));
-    if (league !== undefined) filter.league = league;
-    const cursor = c.req.query('cursor');
-    if (cursor !== undefined && cursor !== '') filter.cursor = cursor;
-
+    const filter = readBetListFilter((name) => c.req.query(name));
     const page = await listBets(c.env, userId(c.var.user), filter, c.var.now);
     const out: BetsResponse = { bets: page.bets, nextCursor: page.nextCursor };
     return c.json(out);

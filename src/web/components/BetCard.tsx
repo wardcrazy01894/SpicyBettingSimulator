@@ -1,7 +1,14 @@
 /**
- * One bet in My Bets. Shows the SNAPSHOT line and price (what the user actually
- * got), the live per-leg projection for open bets, and cancel/edit actions that
- * disappear once the server says `cancellable: false`.
+ * One bet in My Bets, or in another player's history. Shows the SNAPSHOT line
+ * and price (what the user actually got), the live per-leg projection for open
+ * bets, and cancel/edit actions that disappear once the server says
+ * `cancellable: false`.
+ *
+ * `readOnly` is the player-page case. The server already answers
+ * `cancellable: false` for every bet on `GET /api/users/:id/bets` (§11.8), so
+ * the actions would not render anyway; the prop makes the intent legible at
+ * the call site and keeps the edit handler from ever being wired for a bet the
+ * viewer does not own.
  *
  * `americanPrice` is the EFFECTIVE price (§11.4): while pending it is the
  * placement price; once settled, settlement has written back the price of the
@@ -30,10 +37,12 @@ import type { BetView, GameCard } from '../../shared/api-types.js';
 
 export interface BetCardProps {
   readonly bet: BetView;
+  /** Somebody else's bet: never offer Edit or Cancel. */
+  readonly readOnly?: boolean;
 }
 
 export function BetCard(props: BetCardProps): ReactElement {
-  const { bet } = props;
+  const { bet, readOnly = false } = props;
   const slip = useBetSlip();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -136,7 +145,7 @@ export function BetCard(props: BetCardProps): ReactElement {
 
       <footer className="bet-foot">
         <span className="muted">Placed {formatDateTime(bet.placedAt)}</span>
-        {bet.cancellable && (
+        {!readOnly && bet.cancellable && (
           <div className="bet-actions">
             <button type="button" className="btn btn-quiet" disabled={busy} onClick={startEdit}>
               {busy ? 'Working…' : 'Edit'}

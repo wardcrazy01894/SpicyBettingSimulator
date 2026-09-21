@@ -475,6 +475,34 @@ export interface LeaderboardResponse {
 }
 
 // ---------------------------------------------------------------------------
+// players (§11.8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Who a bet history belongs to. Deliberately NOT `UserSummary`: another
+ * player's admin flag and signup date are nobody's business on a bets page,
+ * and a shape that carries only what the page prints cannot leak more later
+ * by accident.
+ */
+export interface PlayerView {
+  readonly id: string;
+  readonly username: string;
+  readonly displayName: string;
+}
+
+/**
+ * `GET /api/users/:id/bets` — another player's bets, `BetsResponse` plus who
+ * they belong to. Every `BetView` in it is `cancellable: false`, whoever asks:
+ * the page is read-only by contract, and the viewer could not act on the bet
+ * anyway (`DELETE`/`PUT /api/bets/:id` are scoped to the owner).
+ */
+export interface PlayerBetsResponse {
+  readonly player: PlayerView;
+  readonly bets: readonly BetView[];
+  readonly nextCursor: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // admin
 // ---------------------------------------------------------------------------
 
