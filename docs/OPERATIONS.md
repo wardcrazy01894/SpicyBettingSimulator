@@ -329,6 +329,14 @@ for minor/patch npm bumps, one per major, one for the Cloudflare toolchain (`wra
 `@cloudflare/*`), and one for all GitHub Actions. Each is a normal PR — CI plus an adversarial
 review before merge; nothing auto-merges.
 
+**A bump PR that fails `npm ci` with `ESTRICTALLOWSCRIPTS`** has pulled in a package with an
+install-time script that `package.json`'s `allowScripts` does not name (CLAUDE.md rule 12;
+`.npmrc` makes the check strict). That is the policy working, not a flake: read the package's
+`postinstall`, and if it is what it says it is, `npm approve-scripts --no-allow-scripts-pin <pkg>`
+on the PR branch and push. The three names already there — `esbuild`, `workerd`, `fsevents` — cover
+every native binary the toolchain fetches today, so a Cloudflare-group bump should never trip it on
+its own; a NEW name is the thing to look at.
+
 Reviewing a Cloudflare-group PR means checking two constraints, both in PLAN §15: `compatibility_date`
 in `wrangler.jsonc` must not be newer than the workerd bundled with `@cloudflare/vitest-pool-workers`
 (the pool refuses it with `ERR_RUNTIME_FAILURE` and `npm run test:worker` fails; a date later than
@@ -336,6 +344,15 @@ today's fails differently, `ERR_FUTURE_COMPATIBILITY_DATE`), and the pool's `pee
 the `vitest` major. If a pool bump widens that peer to a vitest major we currently ignore, the PR
 arrives red and the fix is to lift the `vitest` ceiling in BOTH `dependabot.yml` and PLAN §15 — not
 to rerun CI.
+
+And one thing CI will never flag again, because `allowScripts` names `esbuild`, `workerd` and
+`fsevents` without a version: whether the bumped version's install script is still the one-line
+binary fetch it has always been. On a Cloudflare-group or minor/patch PR that moves any of those
+three, run `npm view <pkg>@<new version> scripts` and compare it with the previous version's — but
+know that the field is a fixed wrapper (`node install.js` for esbuild and workerd, `node-gyp rebuild`
+for fsevents) that will read identically on every bump, so the real check is the referenced file:
+open the new version's `install.js` on npmjs.com or unpkg and skim what it does. One that does
+anything other than fetch its own binary is the review finding.
 
 `package.json` carries one `overrides` entry, scoped to
 `@cloudflare/vitest-pool-workers → miniflare → sharp: 0.35.4`, to patch a
