@@ -1536,7 +1536,7 @@ describe('editBet', () => {
 
 describe('in-batch guards — the generated SQL', () => {
   it('betInsertSql carries the §14.1 lock guard verbatim', () => {
-    const sql = betInsertSql(3, '');
+    const sql = betInsertSql(3, false);
     expect(sql).toContain(`AND status = 'scheduled'`);
     // STRICTLY greater: a kickoff exactly at the cutoff is CLOSED.
     expect(sql).toContain('AND kickoff_at > ?14');
@@ -1548,7 +1548,11 @@ describe('in-batch guards — the generated SQL', () => {
     // leg-count comparison would refuse every same-game bet (M11).
     expect(sql).toContain(') = ?19');
     expect(sql).not.toContain(') = ?7');
-    expect(betInsertSql(1, '')).toContain(') = ?17');
+    expect(betInsertSql(1, false)).toContain(') = ?17');
+    // The edit's cancelled-bet guard is numbered by the SAME function, right
+    // after the count, so no caller can drift it: 3 games -> count ?19, guard ?20.
+    expect(betInsertSql(3, true)).toContain("WHERE id = ?20 AND status = 'cancelled'");
+    expect(betInsertSql(3, false)).not.toContain("status = 'cancelled'");
     // M5b: the balance is named on the request, so OWNERSHIP is what has to be
     // re-checked inside the batch. This conjunct REPLACES `AND league = ?4 AND
     // season = ?5`, which existed only to pin the bet to the bankroll its legs

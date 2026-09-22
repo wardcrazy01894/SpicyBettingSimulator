@@ -6,7 +6,7 @@
 
 import { MIN_TEASER_LEGS } from '../../shared/constants.js';
 import { formatAmerican } from '../../shared/odds.js';
-import { formatLineTenths } from '../../shared/validate.js';
+import { distinctGameIds, formatLineTenths } from '../../shared/validate.js';
 import type {
   BetLeague,
   BetStatus,
@@ -69,7 +69,7 @@ export const BET_TYPE_LABEL: Readonly<Record<BetType, string>> = {
 
 /** Whether any two legs are on one game — a same-game parlay or teaser (M11). */
 export function hasSameGameLegs(legs: readonly { readonly gameId: string }[]): boolean {
-  return new Set(legs.map((leg) => leg.gameId)).size < legs.length;
+  return distinctGameIds(legs).length < legs.length;
 }
 
 /**
@@ -83,14 +83,17 @@ export function betShapeLabel(bet: {
   readonly legs: readonly { readonly gameId: string }[];
 }): string {
   if (bet.betType === 'straight') return BET_TYPE_LABEL.straight;
-  const shape =
-    bet.teaserPoints === null
+  // The noun is composed for its position in the sentence, never re-cased
+  // from a heading label: "6-pt teaser" / "parlay" mid-sentence after "Same
+  // game", or capitalised on its own.
+  const noun =
+    bet.teaserPoints === null ? 'parlay' : `${teaserPointsLabel(bet.teaserPoints)} teaser`;
+  const shape = hasSameGameLegs(bet.legs)
+    ? `Same game ${noun}`
+    : bet.teaserPoints === null
       ? BET_TYPE_LABEL[bet.betType]
-      : `${teaserPointsLabel(bet.teaserPoints)} teaser`;
-  const prefix = hasSameGameLegs(bet.legs) ? 'Same game ' : '';
-  const shapeText =
-    prefix === '' ? shape : `${prefix}${shape.charAt(0).toLowerCase()}${shape.slice(1)}`;
-  return `${shapeText} · ${String(bet.legs.length)} legs`;
+      : noun;
+  return `${shape} · ${String(bet.legs.length)} legs`;
 }
 
 /**

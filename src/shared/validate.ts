@@ -410,6 +410,16 @@ export interface LegRef {
   readonly side: Side;
 }
 
+/**
+ * The legs' game ids with repeats removed, first occurrence first. The one
+ * definition of "which games is this bet on" now that a game may repeat: the
+ * placement guard counts these, the edit re-price fetches these, and the UI
+ * says "Same game" when there are fewer of them than legs.
+ */
+export function distinctGameIds(legs: readonly { readonly gameId: string }[]): readonly string[] {
+  return [...new Set(legs.map((leg) => leg.gameId))];
+}
+
 export function legSlot(market: Market): LegSlot {
   return market === 'total' ? 'total' : 'side';
 }

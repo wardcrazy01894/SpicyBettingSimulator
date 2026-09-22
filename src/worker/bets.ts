@@ -55,6 +55,7 @@ import type {
 } from '../shared/types.js';
 import { BET_CUTOFF_BUFFER_MS } from '../shared/constants.js';
 import { AppError, DB_MESSAGES, thrownMentions } from '../shared/errors.js';
+import { distinctGameIds } from '../shared/validate.js';
 import { mergeEffectiveLine, usablePrice, usableTenths } from '../shared/lines.js';
 import type { EffectiveLine, LineRowView, MarketSource } from '../shared/lines.js';
 import { projectLeg } from '../shared/grading.js';
@@ -279,7 +280,15 @@ const USER_STATE_GUARD = `AND EXISTS (SELECT 1 FROM users
  *
  * Exported for those assertions; nothing outside this module calls it.
  */
-export function betInsertSql(gameCount: number, extraGuard: string): string {
+export function betInsertSql(gameCount: number, requiresCancelledBet: boolean): string {
+  // EVERY parameter index after the fixed fifteen is derived HERE, from
+  // `gameCount`, so a caller binds `...gameIds, gameIds.length` and then the
+  // cancelled-bet id in that order and never computes an offset of its own.
+  const countParam = 16 + gameCount;
+  const cancelledParam = countParam + 1;
+  const extraGuard = requiresCancelledBet
+    ? `\n   AND EXISTS (SELECT 1 FROM bets\n                WHERE id = ?${String(cancelledParam)} AND status = 'cancelled'\n                  AND replaced_by_bet_id = ?1)`
+    : '';
   return `INSERT INTO bets (id, user_id, bankroll_id, league, season, bet_type, leg_count,
                     stake_cents, american_price, potential_payout_cents, status,
                     placed_at, earliest_kickoff_at, replaces_bet_id,
@@ -288,7 +297,7 @@ SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?12, ?13, ?15, ?
  WHERE (SELECT COUNT(*) FROM games
          WHERE id IN (${placeholders(gameCount, 16)})
            AND status = 'scheduled'
-           AND kickoff_at > ?14) = ?${String(16 + gameCount)}
+           AND kickoff_at > ?14) = ?${String(countParam)}
    AND EXISTS (SELECT 1 FROM bankrolls WHERE id = ?3 AND user_id = ?2)
    ${USER_STATE_GUARD}${extraGuard}`;
 }
@@ -546,7 +555,7 @@ export async function resolveLegSnapshots(
   now: EpochMs,
 ): Promise<readonly ResolvedLeg[]> {
   const input = validated(req);
-  const gameIds = input.legs.map((l) => l.gameId);
+  const gameIds = distinctGameIds(input.legs);
   const [games, lines] = await Promise.all([loadGames(env, gameIds), loadLines(env, gameIds)]);
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
   const resolved: ResolvedLeg[] = [];
@@ -668,11 +677,6 @@ export interface PlacementArgs {
   readonly memo: string;
 }
 
-/** The legs' game ids with repeats removed, first occurrence first. */
-function distinctGameIds(legs: readonly ResolvedLeg[]): readonly string[] {
-  return [...new Set(legs.map((l) => l.gameId))];
-}
-
 /** True for 0008's `bet_legs_bi_one_side_per_game` abort. */
 function isOneSidePickError(err: unknown): boolean {
   return thrownMentions(err, DB_MESSAGES.oneSidePickPerGame);
@@ -783,12 +787,9 @@ export function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
   // and once in the count it must reach (`betInsertSql`).
   const gameIds = distinctGameIds(legs);
 
-  const extraGuard =
-    args.requiresCancelledBetId === null
-      ? ''
-      : `\n   AND EXISTS (SELECT 1 FROM bets\n                WHERE id = ?${String(17 + gameIds.length)} AND status = 'cancelled'\n                  AND replaced_by_bet_id = ?1)`;
-
-  const betStatement = env.DB.prepare(betInsertSql(gameIds.length, extraGuard)).bind(
+  const betStatement = env.DB.prepare(
+    betInsertSql(gameIds.length, args.requiresCancelledBetId !== null),
+  ).bind(
     betId,
     args.userId,
     args.bankrollId,
@@ -952,7 +953,7 @@ async function rejectPlacement(
     // is gone rather than merely off.
     throw new AppError('ACCOUNT_DISABLED', 'This account can no longer place bets.');
   }
-  const gameIds = input.legs.map((l) => l.gameId);
+  const gameIds = distinctGameIds(input.legs);
   const games = await loadGames(env, gameIds);
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
   for (const gameId of gameIds) {
