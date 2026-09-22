@@ -67,6 +67,32 @@ export const BET_TYPE_LABEL: Readonly<Record<BetType, string>> = {
   teaser: 'Teaser',
 };
 
+/** Whether any two legs are on one game — a same-game parlay or teaser (M11). */
+export function hasSameGameLegs(legs: readonly { readonly gameId: string }[]): boolean {
+  return new Set(legs.map((leg) => leg.gameId)).size < legs.length;
+}
+
+/**
+ * The bet card's shape line: "Straight", "Parlay · 3 legs", "6.5-pt teaser ·
+ * 2 legs", and "Same game parlay · 2 legs" when two legs share a game. The
+ * word order is the industry's; nothing here changes how the bet is priced.
+ */
+export function betShapeLabel(bet: {
+  readonly betType: BetType;
+  readonly teaserPoints: number | null;
+  readonly legs: readonly { readonly gameId: string }[];
+}): string {
+  if (bet.betType === 'straight') return BET_TYPE_LABEL.straight;
+  const shape =
+    bet.teaserPoints === null
+      ? BET_TYPE_LABEL[bet.betType]
+      : `${teaserPointsLabel(bet.teaserPoints)} teaser`;
+  const prefix = hasSameGameLegs(bet.legs) ? 'Same game ' : '';
+  const shapeText =
+    prefix === '' ? shape : `${prefix}${shape.charAt(0).toLowerCase()}${shape.slice(1)}`;
+  return `${shapeText} · ${String(bet.legs.length)} legs`;
+}
+
 /**
  * A teaser tier in TENTHS rendered as points: 60 → "6-pt", 65 → "6.5-pt".
  *

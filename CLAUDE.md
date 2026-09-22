@@ -166,6 +166,15 @@ the one failure mode the whole checklist has.
    `TEASER_PAYOUTS[tier][legCount]`. `gradeBet` therefore needs its `pricing`
    argument built from the BET ROW (`bet_type` / `teaser_points_tenths`) — the
    legs cannot tell you. PLAN.md §5.8.
+   8f. **A game may hold ONE side pick (spread OR moneyline) and ONE total per
+   bet — same-game parlays, PLAN.md §5.2c.** The rule is `legsConflict` /
+   `sameGameConflict` in `validate.ts`, run by the slip and the server alike,
+   and the schema backs it with `UNIQUE(bet_id, game_id, market)` plus the
+   `bet_legs_bi_one_side_per_game` trigger (0008). Pricing is the plain parlay
+   product: there is no correlation model, and refusing spread+moneyline on one
+   game IS the correlation guard. Because a game can repeat in `bet_legs`, the
+   placement guards compare `COUNT(*) … IN (…)` against the DISTINCT game count
+   bound after the ids, never against `leg_count`.
 9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
    2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will
    never replay it. **Every schema change is a new numbered
@@ -183,6 +192,10 @@ the one failure mode the whole checklist has.
      `0007_secondary_odds.sql` adds the per-market `game_lines.*_book` columns,
      `games.secondary_tried_at` and the single-row `secondary_budget` table for
      the secondary odds provider (PLAN.md §21.3).
+     `0008_bet_legs_same_game.sql` REBUILDS `bet_legs` alone (a leaf table)
+     to replace `UNIQUE(bet_id, game_id)` with `UNIQUE(bet_id, game_id, market)`
+     and add the `bet_legs_bi_one_side_per_game` trigger — same-game parlays,
+     rule 8f and PLAN.md §5.2c.
      `0007_secondary_odds.sql` shipped with M9b and is frozen like the rest;
      PLAN.md §21.3 carries the same text as its specification. The plan PR that
      added §21 and §22 deliberately shipped NO migration: the Deploy
@@ -316,7 +329,8 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               games.home/away_conference_id, 0005 rebuilds bets for 3–14-pt teasers,
               0006 adds bug_reports.diagnostics, 0007 adds the secondary
               provider's per-market book columns, games.secondary_tried_at and
-              the secondary_budget row (PLAN.md §21.3)
+              the secondary_budget row (PLAN.md §21.3), 0008 rebuilds bet_legs
+              for same-game parlays (PLAN.md §5.2c)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES

@@ -4,7 +4,9 @@ import {
   formatCents,
   formatLineTenths,
   isCoherentMarketSide,
+  legsConflict,
   parseDollarsToCents,
+  sameGameConflict,
   validateBugReport,
   validateDerivedKeyHex,
   validateDisplayNameUpdate,
@@ -15,6 +17,7 @@ import {
 } from '../../src/shared/validate.js';
 import type { PlaceBetInput } from '../../src/shared/validate.js';
 import type { PlaceBetRequest } from '../../src/shared/api-types.js';
+import type { Market, Side } from '../../src/shared/types.js';
 import {
   BUG_REPORT_DESCRIPTION_MAX,
   BUG_REPORT_DIAGNOSTICS_MAX,
@@ -263,13 +266,81 @@ describe('validatePlaceBet', () => {
       'legs',
     );
   });
-  it('rejects two legs on the same gameId (correlated parlay)', () => {
-    const r = fail(
+  // Same-game parlays (M11). A game may contribute ONE side pick (spread OR
+  // moneyline) and ONE total to a bet; anything else on that game is refused
+  // on the later leg's `market`, which is the field the slip would change.
+  it('accepts a spread and a total on the same game (a same-game parlay)', () => {
+    const v = ok(
       validatePlaceBet(
         straight({ betType: 'parlay', legs: [leg('g1', 'spread'), leg('g1', 'total', 'over')] }),
       ),
     );
-    expect(r.field).toBe('legs[1].gameId');
+    expect(v.legs).toHaveLength(2);
+  });
+  it('accepts a moneyline and a total on the same game', () => {
+    expect(
+      validatePlaceBet(
+        straight({
+          betType: 'parlay',
+          legs: [leg('g1', 'moneyline'), leg('g1', 'total', 'under')],
+        }),
+      ).ok,
+    ).toBe(true);
+  });
+  it('accepts a 10-leg parlay of five games at two legs each', () => {
+    const legs = Array.from({ length: 5 }, (_, i) => [
+      leg(`g${String(i)}`, 'spread'),
+      leg(`g${String(i)}`, 'total', 'over'),
+    ]).flat();
+    expect(validatePlaceBet(straight({ betType: 'parlay', legs })).ok).toBe(true);
+  });
+  it('rejects both sides of one market on one game', () => {
+    const spreads = fail(
+      validatePlaceBet(
+        straight({
+          betType: 'parlay',
+          legs: [leg('g1', 'spread', 'home'), leg('g1', 'spread', 'away')],
+        }),
+      ),
+    );
+    expect(spreads.field).toBe('legs[1].market');
+    expect(spreads.message).toMatch(/spread on one game twice/);
+    const totals = fail(
+      validatePlaceBet(
+        straight({
+          betType: 'parlay',
+          legs: [leg('g1', 'total', 'over'), leg('g1', 'total', 'under')],
+        }),
+      ),
+    );
+    expect(totals.field).toBe('legs[1].market');
+  });
+  it('rejects a spread and a moneyline on one game (correlated), whichever comes first', () => {
+    const r = fail(
+      validatePlaceBet(
+        straight({ betType: 'parlay', legs: [leg('g1', 'spread'), leg('g1', 'moneyline')] }),
+      ),
+    );
+    expect(r.field).toBe('legs[1].market');
+    expect(r.message).toMatch(/spread with a moneyline/);
+    expect(
+      fail(
+        validatePlaceBet(
+          straight({ betType: 'parlay', legs: [leg('g1', 'moneyline'), leg('g1', 'spread')] }),
+        ),
+      ).field,
+    ).toBe('legs[1].market');
+  });
+  it('names the LATER leg when the conflict is not adjacent', () => {
+    const r = fail(
+      validatePlaceBet(
+        straight({
+          betType: 'parlay',
+          legs: [leg('g1', 'spread'), leg('g2', 'spread'), leg('g1', 'moneyline', 'away')],
+        }),
+      ),
+    );
+    expect(r.field).toBe('legs[2].market');
   });
   it('rejects market=total with side=home', () => {
     expect(fail(validatePlaceBet(straight({ legs: [leg('g1', 'total', 'home')] }))).field).toBe(
@@ -476,16 +547,51 @@ describe('validatePlaceBet — teasers', () => {
     expect(fail(validatePlaceBet(teaser({ legs: [...ten, leg('g-extra')] }))).field).toBe('legs');
   });
 
-  it('still refuses two legs from the same game', () => {
+  it('may tease a spread and a total on the same game, but not two spreads', () => {
+    expect(validatePlaceBet(teaser({ legs: [leg('g1'), leg('g1', 'total', 'over')] })).ok).toBe(
+      true,
+    );
     expect(
-      fail(validatePlaceBet(teaser({ legs: [leg('g1'), leg('g1', 'total', 'over')] }))).field,
-    ).toBe('legs[1].gameId');
+      fail(
+        validatePlaceBet(
+          teaser({ legs: [leg('g1', 'spread', 'home'), leg('g1', 'spread', 'away')] }),
+        ),
+      ).field,
+    ).toBe('legs[1].market');
   });
 
   it('does NOT care which league the legs are in — cross-league teasers are legal', () => {
     // The wire `league` is advisory; the server labels the bet from the games.
     expect(validatePlaceBet(teaser({ league: 'mixed' })).ok).toBe(true);
     expect(validatePlaceBet(teaser({ league: 'ncaaf' })).ok).toBe(true);
+  });
+});
+
+describe('legsConflict / sameGameConflict (same-game parlays)', () => {
+  const ref = (gameId: string, market: Market, side: Side = 'home') => ({ gameId, market, side });
+  it('two legs conflict when they share a game AND a slot (side or total)', () => {
+    expect(legsConflict(ref('g', 'spread'), ref('g', 'moneyline'))).toBe(true);
+    expect(legsConflict(ref('g', 'spread'), ref('g', 'spread', 'away'))).toBe(true);
+    expect(legsConflict(ref('g', 'total', 'over'), ref('g', 'total', 'under'))).toBe(true);
+    expect(legsConflict(ref('g', 'spread'), ref('g', 'total', 'over'))).toBe(false);
+    expect(legsConflict(ref('g', 'moneyline'), ref('g', 'total', 'over'))).toBe(false);
+    expect(legsConflict(ref('g', 'spread'), ref('h', 'spread'))).toBe(false);
+  });
+  it('the SAME pick (game, market, side) also conflicts — it is the same slot', () => {
+    expect(legsConflict(ref('g', 'spread'), ref('g', 'spread'))).toBe(true);
+  });
+  it('sameGameConflict names the market for a repeat and the pairing for spread+moneyline', () => {
+    expect(sameGameConflict([ref('g', 'spread')], ref('g', 'total', 'over'))).toBeNull();
+    expect(sameGameConflict([], ref('g', 'spread'))).toBeNull();
+    expect(sameGameConflict([ref('g', 'total', 'over')], ref('g', 'total', 'under'))).toMatch(
+      /total on one game twice/,
+    );
+    expect(sameGameConflict([ref('g', 'moneyline')], ref('g', 'spread'))).toMatch(
+      /spread with a moneyline/,
+    );
+    expect(
+      sameGameConflict([ref('h', 'spread'), ref('g', 'spread')], ref('g', 'moneyline')),
+    ).toMatch(/spread with a moneyline/);
   });
 });
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { TEASER_PAYOUTS, TEASER_POINTS_TENTHS } from '../../src/shared/constants.js';
-import { teaserPointsLabel, teaserTierOptionLabel } from '../../src/web/lib/labels.js';
+import {
+  betShapeLabel,
+  hasSameGameLegs,
+  teaserPointsLabel,
+  teaserTierOptionLabel,
+} from '../../src/web/lib/labels.js';
 
 describe('teaserTierOptionLabel', () => {
   it("shows the tier and its card price for the slip's leg count", () => {
@@ -27,5 +32,40 @@ describe('teaserTierOptionLabel', () => {
         expect(teaserTierOptionLabel(tenths, legs, TEASER_PAYOUTS)).toMatch(/ · [+-]\d+$/);
       }
     }
+  });
+});
+
+describe('hasSameGameLegs', () => {
+  it('is true only when two legs share a game', () => {
+    expect(hasSameGameLegs([{ gameId: 'a' }, { gameId: 'b' }])).toBe(false);
+    expect(hasSameGameLegs([{ gameId: 'a' }, { gameId: 'b' }, { gameId: 'a' }])).toBe(true);
+    expect(hasSameGameLegs([{ gameId: 'a' }])).toBe(false);
+    expect(hasSameGameLegs([])).toBe(false);
+  });
+});
+
+describe('betShapeLabel', () => {
+  const legs = (...gameIds: string[]) => gameIds.map((gameId) => ({ gameId }));
+  it('names the shape, the tier and the leg count', () => {
+    expect(betShapeLabel({ betType: 'straight', teaserPoints: null, legs: legs('a') })).toBe(
+      'Straight',
+    );
+    expect(
+      betShapeLabel({ betType: 'parlay', teaserPoints: null, legs: legs('a', 'b', 'c') }),
+    ).toBe('Parlay · 3 legs');
+    expect(betShapeLabel({ betType: 'teaser', teaserPoints: 65, legs: legs('a', 'b') })).toBe(
+      '6.5-pt teaser · 2 legs',
+    );
+  });
+  it('says "Same game" when a multi holds two legs on one game', () => {
+    expect(betShapeLabel({ betType: 'parlay', teaserPoints: null, legs: legs('a', 'a') })).toBe(
+      'Same game parlay · 2 legs',
+    );
+    expect(
+      betShapeLabel({ betType: 'parlay', teaserPoints: null, legs: legs('a', 'a', 'b') }),
+    ).toBe('Same game parlay · 3 legs');
+    expect(betShapeLabel({ betType: 'teaser', teaserPoints: 60, legs: legs('a', 'a') })).toBe(
+      'Same game 6-pt teaser · 2 legs',
+    );
   });
 });

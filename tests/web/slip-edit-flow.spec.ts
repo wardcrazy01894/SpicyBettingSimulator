@@ -297,16 +297,28 @@ describe('a parlay that is already full', () => {
     expect(after.slip.legs).toBe(before.slip.legs);
   });
 
-  it('still allows SWAPPING markets on a game already in the parlay', () => {
+  it('still allows SWAPPING within a slot on a game already in the parlay', () => {
+    const before = full();
+    // The other side of g0's spread takes g0's side slot: same leg count.
+    const after = slipReducer(before, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g0', { side: 'away', lineTenths: 35 }),
+      maxLegs: 3,
+    });
+    expect(after.notice).toBeNull();
+    expect(after.slip.legs).toHaveLength(3);
+    expect(after.slip.legs.find((l) => l.gameId === 'g0')?.side).toBe('away');
+  });
+
+  it("refuses a game's OTHER slot when full — a total beside its spread is a fourth leg (M11)", () => {
     const before = full();
     const after = slipReducer(before, {
       type: 'TOGGLE_LEG',
       leg: leg('g0', { market: 'total', side: 'over', lineTenths: 475 }),
       maxLegs: 3,
     });
-    expect(after.notice).toBeNull();
-    expect(after.slip.legs).toHaveLength(3);
-    expect(after.slip.legs.map((l) => l.market)).toContain('total');
+    expect(after.notice).toBe(parlayFullNotice(3));
+    expect(after.slip.legs).toBe(before.slip.legs);
   });
 
   it('still allows removing a leg', () => {

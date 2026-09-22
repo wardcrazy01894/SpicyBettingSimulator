@@ -321,8 +321,10 @@ function validateTeaserPoints(
  *   - a teaser's legs are spread or total only — a moneyline has no line to move
  *   - each leg's market/side combination is coherent
  *     (total <=> over/under; moneyline/spread <=> home/away)
- *   - no two legs share a gameId (correlated-parlay guard; the DB also enforces
- *     it via UNIQUE(bet_id, game_id))
+ *   - no two legs occupy the same SLOT of one game (`sameGameConflict`): a game
+ *     may contribute one side pick (spread OR moneyline) and one total. The DB
+ *     backs it with UNIQUE(bet_id, game_id, market) and the
+ *     `bet_legs_bi_one_side_per_game` trigger (migration 0008)
  *   - gameIds are non-empty strings
  *
  * WHAT THIS DELIBERATELY NO LONGER CHECKS (M5b): that the legs share a league or
@@ -365,7 +367,6 @@ export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput>
     return bad(`a teaser has ${String(MIN_TEASER_LEGS)}-${String(MAX_PARLAY_LEGS)} legs`, 'legs');
   }
   const legs: PlaceBetLegInput[] = [];
-  const seen = new Set<string>();
   for (const [i, rawLeg] of rawLegs.entries()) {
     const leg = validateLeg(rawLeg, i);
     if (!leg.ok) return leg;
@@ -374,10 +375,10 @@ export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput>
       // the slip has to grey out, and "market" is what the user would change.
       return bad('a teaser leg must be a spread or a total', `legs[${String(i)}].market`);
     }
-    if (seen.has(leg.value.gameId)) {
-      return bad('a bet cannot include the same game twice', `legs[${String(i)}].gameId`);
-    }
-    seen.add(leg.value.gameId);
+    // Same-game legs are legal (M11) up to one per slot; the LATER leg is the
+    // one named, on `market`, because the market is what the user would change.
+    const conflict = sameGameConflict(legs, leg.value);
+    if (conflict !== null) return bad(conflict, `legs[${String(i)}].market`);
     legs.push(leg.value);
   }
   return good({
@@ -389,6 +390,50 @@ export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput>
     ...(teaserPoints.value === undefined ? {} : { teaserPoints: teaserPoints.value }),
     ...(rawBankrollId === undefined ? {} : { bankrollId: rawBankrollId }),
   });
+}
+
+/**
+ * The two SLOTS a game offers a bet. A bet may hold one leg in each slot per
+ * game: a side pick — the spread OR the moneyline, which are the same question
+ * ("does this team win by enough?") asked twice and therefore correlated — and
+ * a total, which asks something else. Same-game parlays (M11, PLAN.md §5.2c)
+ * are priced as ordinary parlays; this slot rule is the whole correlation
+ * guard, and the schema mirrors it (UNIQUE(bet_id, game_id, market) plus the
+ * `bet_legs_bi_one_side_per_game` trigger).
+ */
+export type LegSlot = 'side' | 'total';
+
+/** Just enough of a leg to judge whether two of them may share a bet. */
+export interface LegRef {
+  readonly gameId: string;
+  readonly market: Market;
+  readonly side: Side;
+}
+
+export function legSlot(market: Market): LegSlot {
+  return market === 'total' ? 'total' : 'side';
+}
+
+/**
+ * Whether two legs cannot be in one bet together: the same game AND the same
+ * slot. The identical pick counts too — it is the same slot.
+ */
+export function legsConflict(a: LegRef, b: LegRef): boolean {
+  return a.gameId === b.gameId && legSlot(a.market) === legSlot(b.market);
+}
+
+/**
+ * The validation message for adding `leg` to `legs`, or `null` when it fits.
+ * Two messages, because they call for different fixes: the same market twice
+ * ("pick a side") and a spread beside a moneyline ("pick one of them").
+ */
+export function sameGameConflict(legs: readonly LegRef[], leg: LegRef): string | null {
+  const clash = legs.find((other) => legsConflict(other, leg));
+  if (clash === undefined) return null;
+  if (clash.market === leg.market) {
+    return `a bet cannot take the ${leg.market} on one game twice`;
+  }
+  return 'a bet cannot pair a spread with a moneyline on one game';
 }
 
 /** `value < min || value > max`, named so the leg-count checks read as one idea. */

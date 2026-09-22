@@ -438,6 +438,50 @@ describe('runSettle — outcomes', () => {
     await expectNoDrift();
   });
 
+  // Same-game parlays (M11): two legs, ONE game row. Each leg grades from its
+  // own `bet_legs` snapshot against the same score, exactly as if the legs were
+  // on different games — there is no correlation model anywhere in grading.
+  it('a same-game parlay grades both legs off ONE final game and pays the parlay price', async () => {
+    const user = await register();
+    const a = await seedScheduled(g(1));
+    const betId = await place(user.id, [spreadLeg(a), totalLeg(a)], 1000);
+    await finalize(a, 31, 17); // home covers -3.5; 48 clears 45.5
+    await runSettle(env, NOW + 1, 20);
+    const bet = await betRow(betId);
+    expect(bet.status).toBe('won');
+    expect(bet.payout_cents).toBe(3644); // -110 × -110 at 1000¢, PLAN.md §5.4
+    expect(bet.american_price).toBe(264);
+    expect((await legRows(betId)).map((l) => l.result)).toEqual(['win', 'win']);
+    await expectNoDrift();
+  });
+
+  it('a same-game parlay whose total pushes is re-priced to its surviving spread leg', async () => {
+    const user = await register();
+    const a = await seedScheduled(g(1), { totalTenths: 480 });
+    const betId = await place(user.id, [spreadLeg(a), totalLeg(a)], 1000);
+    await finalize(a, 31, 17); // 48 = 48.0: push on the total, cover on the spread
+    await runSettle(env, NOW + 1, 20);
+    const bet = await betRow(betId);
+    expect(bet.status).toBe('won');
+    expect(bet.payout_cents).toBe(1909); // one -110 leg: floor(1000 × 210 / 110)
+    expect(bet.american_price).toBe(-110);
+    expect((await legRows(betId)).map((l) => l.result)).toEqual(['win', 'push']);
+    await expectNoDrift();
+  });
+
+  it('a same-game parlay with one losing leg LOSES, whatever the other leg did', async () => {
+    const user = await register();
+    const a = await seedScheduled(g(1));
+    const betId = await place(user.id, [mlLeg(a), totalLeg(a)], 1000);
+    await finalize(a, 20, 17); // home wins the moneyline; 37 misses the over
+    await runSettle(env, NOW + 1, 20);
+    const bet = await betRow(betId);
+    expect(bet.status).toBe('lost');
+    expect(bet.payout_cents).toBe(0);
+    expect((await legRows(betId)).map((l) => l.result)).toEqual(['win', 'loss']);
+    await expectNoDrift();
+  });
+
   it('a parlay with a loss and pushes LOSES', async () => {
     const user = await register();
     const a = await seedScheduled(g(1));

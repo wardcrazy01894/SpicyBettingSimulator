@@ -39,6 +39,11 @@ export const ERROR_CODES = [
   'MIXED_LEAGUE_PARLAY',
   /** @deprecated M5b — see `MIXED_LEAGUE_PARLAY`. Never thrown. */
   'MIXED_SEASON_PARLAY',
+  /**
+   * One game, too many legs. Since M11 a game may hold one side pick (spread
+   * OR moneyline) and one total per bet; `validatePlaceBet` refuses more as a
+   * `400 VALIDATION`, and this 409 is what 0008's DB backstops map to.
+   */
   'DUPLICATE_GAME_IN_PARLAY',
   'PAYOUT_LIMIT_EXCEEDED',
   'BET_LOCKED',
@@ -155,13 +160,15 @@ export function fromThrown(value: unknown): AppError {
 }
 
 /**
- * The exact strings migrations/0001_init.sql raises. SQLite never echoes bound
+ * The exact strings the migrations' triggers raise. SQLite never echoes bound
  * values into these messages, so a user-controlled string cannot forge them.
  */
 export const DB_MESSAGES = {
   insufficientFunds: ['ledger: insufficient funds', 'CHECK constraint failed: balance_cents >= 0'],
   unknownBankroll: ['ledger: unknown bankroll_id'],
   uniqueViolation: ['UNIQUE constraint failed'],
+  /** `bet_legs_bi_one_side_per_game`, migrations/0008 (same-game parlays). */
+  oneSidePickPerGame: ['bet_legs: one side pick per game'],
 } as const;
 
 /** True when the thrown value (or its `cause` chain) mentions any needle. */

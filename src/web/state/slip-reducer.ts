@@ -16,6 +16,7 @@
 
 import { isTeaserPoints } from '../../shared/constants.js';
 import { LEAGUES } from '../../shared/types.js';
+import { legsConflict, sameGameConflict } from '../../shared/validate.js';
 import type { AmericanPrice, League, LineTenths, Market, Side } from '../../shared/types.js';
 
 export interface SlipLeg {
@@ -133,7 +134,7 @@ export function legKey(leg: Pick<SlipLeg, 'gameId' | 'market' | 'side'>): string
  *
  * v3 because the shape changed from per-league to a single cross-league draft.
  * A v2 entry cannot be migrated honestly — there were two of them and they may
- * hold conflicting modes, stakes and same-game picks — so `staleSlipKeys()`
+ * hold conflicting modes, stakes and picks — so `staleSlipKeys()`
  * lists the old keys for the provider to delete rather than leaving two dead
  * entries in every user's browser forever.
  */
@@ -189,10 +190,12 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
         const legs = slip.legs.filter((l) => legKey(l) !== key);
         return withSlip(state, { ...slip, legs, mode: modeFor(legs, slip.mode) });
       }
-      // A parlay may never carry two legs on the same game (correlated-parlay
-      // guard; the DB also has UNIQUE(bet_id, game_id)), so picking a second
-      // market on a game you already have REPLACES the existing pick.
-      const others = slip.legs.filter((l) => l.gameId !== action.leg.gameId);
+      // A game offers a bet two SLOTS — one side pick (spread or moneyline)
+      // and one total (`legsConflict`, the same rule `validatePlaceBet`
+      // enforces). A tap on the slot a game already occupies REPLACES that
+      // pick (the other side of the spread, or the moneyline for the spread);
+      // a tap on the game's other slot ADDS a leg, which is a same-game parlay.
+      const others = slip.legs.filter((l) => !legsConflict(l, action.leg));
       if (others.length >= action.maxLegs) {
         // Full. Change NOTHING — no new arrays, no re-render churn — and say so
         // out loud; this used to be a silent no-op that looked like a dead tap.
@@ -352,15 +355,13 @@ export function parseStoredSlip(raw: string | null): Slip | null {
   // default rather than losing the whole slip.
   const teaserPointsTenths = isTeaserPoints(points) ? points : DEFAULT_TEASER_POINTS_TENTHS;
   const legs: SlipLeg[] = [];
-  const seen = new Set<string>();
   for (const rawLeg of rawLegs) {
     const leg = parseLeg(rawLeg);
     if (leg === null) return null;
-    // The no-two-legs-from-one-game rule is a slip INVARIANT, so a hand-edited
-    // entry that breaks it is corrupt rather than something to submit and have
-    // the server reject.
-    if (seen.has(leg.gameId)) return null;
-    seen.add(leg.gameId);
+    // One leg per slot per game is a slip INVARIANT (`TOGGLE_LEG` cannot
+    // produce two), so a hand-edited entry that breaks it is corrupt rather
+    // than something to submit and have the server reject.
+    if (sameGameConflict(legs, leg) !== null) return null;
     legs.push(leg);
   }
   // Normalise on the way IN, not just on the way out: a slip persisted as a
