@@ -674,6 +674,11 @@ describe('stale phrases', () => {
     // still saying otherwise is an instruction to break production.
     'editable until',
     'edit 0001 in place',
+    // M11: a game may hold a side pick AND a total. Prose that still says a
+    // parlay cannot hold one game twice describes a rule 0008 removed.
+    'the same game twice',
+    'no two legs from the same game',
+    'UNIQUE(bet_id, game_id)`',
   ] as const;
 
   /**

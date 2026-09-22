@@ -22,13 +22,7 @@ import { ErrorBanner } from './ErrorBanner.js';
 import { deleteBet, getGame } from '../api/client.js';
 import { invalidate } from '../hooks/useResource.js';
 import { formatDateTime } from '../lib/datetime.js';
-import {
-  BET_LEAGUE_LABEL,
-  BET_STATUS_LABEL,
-  BET_TYPE_LABEL,
-  STATUS_TONE,
-  teaserPointsLabel,
-} from '../lib/labels.js';
+import { BET_LEAGUE_LABEL, BET_STATUS_LABEL, STATUS_TONE, betShapeLabel } from '../lib/labels.js';
 import { useBetSlip } from '../state/bet-slip.js';
 import { gameIdsToRefresh, refreshSlipLegs } from '../state/edit-bet.js';
 import { formatAmerican } from '../../shared/odds.js';
@@ -107,11 +101,8 @@ export function BetCard(props: BetCardProps): ReactElement {
           {BET_STATUS_LABEL[bet.status]}
         </span>
         <span className="bet-type">
-          {/* "6-pt teaser", "Parlay · 3 legs", "Straight". */}
-          {bet.teaserPoints === null
-            ? BET_TYPE_LABEL[bet.betType]
-            : `${teaserPointsLabel(bet.teaserPoints)} teaser`}
-          {bet.betType === 'straight' ? '' : ` · ${String(bet.legs.length)} legs`}
+          {/* "Straight", "Parlay · 3 legs", "Same game parlay · 2 legs", "6-pt teaser · 3 legs". */}
+          {betShapeLabel(bet)}
         </span>
         <span className="bet-price">{formatAmerican(bet.americanPrice)}</span>
         {/*

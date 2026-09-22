@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { TEASER_POINTS_TENTHS } from '../../src/shared/constants.js';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { seedGame } from './seed.js';
 
 /**
  * The money invariants live in migrations/0001_init.sql, not in application
@@ -248,6 +249,30 @@ describe('migration 0001', () => {
     await expect(
       env.DB.prepare('UPDATE secondary_budget SET consecutive_failures = -1 WHERE id = 1').run(),
     ).rejects.toThrow(/CHECK/);
+  });
+
+  it('0008 rebuilt bet_legs: UNIQUE is (bet_id, game_id, market) and the one-side trigger exists', async () => {
+    const indexes = await env.DB.prepare('PRAGMA index_list(bet_legs)').all<{
+      name: string;
+      unique: number;
+    }>();
+    const uniqueColumns: string[][] = [];
+    for (const idx of indexes.results.filter((i) => i.unique === 1)) {
+      const cols = await env.DB.prepare(`PRAGMA index_info(${idx.name})`).all<{ name: string }>();
+      uniqueColumns.push(cols.results.map((c) => c.name));
+    }
+    expect(uniqueColumns).toContainEqual(['bet_id', 'game_id', 'market']);
+    expect(uniqueColumns).toContainEqual(['bet_id', 'leg_index']);
+    // The pre-M11 constraint is GONE, not merely joined by a wider one.
+    expect(uniqueColumns).not.toContainEqual(['bet_id', 'game_id']);
+    const trigger = await env.DB.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'bet_legs_bi_one_side_per_game'`,
+    ).first<{ name: string }>();
+    expect(trigger?.name).toBe('bet_legs_bi_one_side_per_game');
+    // The two plain indexes came back with the table.
+    expect(indexes.results.map((i) => i.name)).toEqual(
+      expect.arrayContaining(['idx_bet_legs_bet', 'idx_bet_legs_game']),
+    );
   });
 
   it('bug_reports.user_id must reference an existing user', async () => {
@@ -552,5 +577,79 @@ describe('ledger invariants (DB-enforced)', () => {
     ).rejects.toThrow(/ledger: insufficient funds/);
     expect(await ledgerCount('l-ok')).toBe(0);
     expect(await balance()).toBe(100000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M11's same-game rule, DB half. A game may hold ONE side pick (spread OR
+// moneyline) and ONE total per bet: `UNIQUE (bet_id, game_id, market)` refuses
+// a repeated market and the BEFORE INSERT trigger refuses the second side pick.
+// ---------------------------------------------------------------------------
+
+describe('bet_legs same-game constraints (0008)', () => {
+  beforeEach(seedUserAndBankroll);
+
+  async function insertParlay(id: string): Promise<string> {
+    const betId = `${B}-${id}`;
+    await env.DB.prepare(
+      `INSERT INTO bets (id, user_id, bankroll_id, league, season, bet_type, leg_count,
+                         stake_cents, american_price, potential_payout_cents, status,
+                         placed_at, earliest_kickoff_at, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'nfl', 2026, 'parlay', 2, 1000, 264, 3644, 'pending', ?4, ?4, ?4, ?4)`,
+    )
+      .bind(betId, U, B, NOW)
+      .run();
+    return betId;
+  }
+
+  function insertLeg(
+    betId: string,
+    legIndex: number,
+    gameId: string,
+    market: string,
+    side: string,
+    lineTenths: number | null,
+  ): Promise<unknown> {
+    return env.DB.prepare(
+      `INSERT INTO bet_legs (id, bet_id, leg_index, game_id, league, market, side, line_tenths,
+                             american_price, provider, line_captured_at, snapshot_at,
+                             kickoff_at_snapshot, home_abbr, away_abbr)
+       VALUES (?1, ?2, ?3, ?4, 'nfl', ?5, ?6, ?7, -110, 'draftkings', ?8, ?8, ?8, 'SEA', 'NE')`,
+    )
+      .bind(`${betId}-l${String(legIndex)}`, betId, legIndex, gameId, market, side, lineTenths, NOW)
+      .run();
+  }
+
+  it('accepts a spread and a total on one game, and a moneyline and a total', async () => {
+    const game = `nfl:sgp-${String(seq)}`;
+    await seedGame(env.DB, { id: game, kickoffAt: NOW + 3_600_000 });
+    const a = await insertParlay('sgp-a');
+    await insertLeg(a, 0, game, 'spread', 'home', -35);
+    await insertLeg(a, 1, game, 'total', 'over', 455);
+    const b = await insertParlay('sgp-b');
+    await insertLeg(b, 0, game, 'moneyline', 'away', null);
+    await insertLeg(b, 1, game, 'total', 'under', 455);
+  });
+
+  it('refuses the same market twice (UNIQUE) and a spread beside a moneyline (trigger), in either order', async () => {
+    const game = `nfl:sgp-${String(seq)}`;
+    await seedGame(env.DB, { id: game, kickoffAt: NOW + 3_600_000 });
+    const a = await insertParlay('sgp-c');
+    await insertLeg(a, 0, game, 'spread', 'home', -35);
+    await expect(insertLeg(a, 1, game, 'spread', 'away', 35)).rejects.toThrow(
+      /UNIQUE constraint failed: bet_legs.bet_id, bet_legs.game_id, bet_legs.market/,
+    );
+    await expect(insertLeg(a, 1, game, 'moneyline', 'home', null)).rejects.toThrow(
+      /one side pick per game/,
+    );
+    const b = await insertParlay('sgp-d');
+    await insertLeg(b, 0, game, 'moneyline', 'home', null);
+    await expect(insertLeg(b, 1, game, 'spread', 'home', -35)).rejects.toThrow(
+      /one side pick per game/,
+    );
+    await expect(insertLeg(b, 1, game, 'total', 'over', 455)).resolves.toBeDefined();
+    // A second bet on the same game is a different bet: nothing crosses bets.
+    const c = await insertParlay('sgp-e');
+    await expect(insertLeg(c, 0, game, 'spread', 'home', -35)).resolves.toBeDefined();
   });
 });

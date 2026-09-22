@@ -18,6 +18,7 @@ import { pickLabel } from '../lib/labels.js';
 import { quoteFor } from '../lib/lines.js';
 import type { SlipLeg } from './slip-reducer.js';
 import type { BetView, GameCard } from '../../shared/api-types.js';
+import { distinctGameIds } from '../../shared/validate.js';
 
 export interface RefreshedEdit {
   readonly legs: readonly SlipLeg[];
@@ -84,5 +85,5 @@ export function refreshSlipLegs(bet: BetView, games: ReadonlyMap<string, GameCar
 
 /** The distinct game ids an edit has to re-read, in leg order. */
 export function gameIdsToRefresh(bet: BetView): readonly string[] {
-  return [...new Set(bet.legs.map((leg) => leg.gameId))];
+  return distinctGameIds(bet.legs);
 }

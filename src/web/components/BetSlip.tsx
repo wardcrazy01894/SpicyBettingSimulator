@@ -26,6 +26,7 @@ import { formatCents, formatLineTenths } from '../../shared/validate.js';
 import {
   LEAGUE_BADGE,
   MARKET_LABEL,
+  hasSameGameLegs,
   teaserPointsLabel,
   teaserTierOptionLabel,
 } from '../lib/labels.js';
@@ -144,6 +145,13 @@ export function BetSlip(): ReactElement {
               totals only — moneylines cannot be teased.
             </p>
           </>
+        )}
+
+        {hasSameGameLegs(slip.legs) && (
+          <p className="muted slip-hint">
+            Same game {teasing ? 'teaser' : 'parlay'}: a game can carry one side pick (spread or
+            moneyline) and one total, priced leg by leg like any other multi.
+          </p>
         )}
 
         {slip.legs.length === 0 ? (

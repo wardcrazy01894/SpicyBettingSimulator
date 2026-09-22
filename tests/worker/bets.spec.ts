@@ -919,7 +919,15 @@ describe('placeBet — parlays', () => {
     await expectLedgerMatchesBalance();
   });
 
-  it('two legs on the same game are rejected (validation AND the DB UNIQUE)', async () => {
+  // -------------------------------------------------------------------------
+  // Same-game parlays (M11). A game may contribute ONE side pick (spread OR
+  // moneyline) and ONE total to a bet. The placement guard counts DISTINCT
+  // games — `IN (…)` collapses a repeated id — and two DB backstops sit under
+  // validation: `UNIQUE (bet_id, game_id, market)` and the
+  // `bet_legs_bi_one_side_per_game` trigger (migration 0008).
+  // -------------------------------------------------------------------------
+
+  it('a spread and a total on ONE game place as a two-leg parlay, priced like any parlay', async () => {
     const alex = await register();
     await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
     const res = await post(
@@ -927,32 +935,161 @@ describe('placeBet — parlays', () => {
       {
         league: 'nfl',
         betType: 'parlay',
-        stakeCents: 500,
+        stakeCents: 1000,
         legs: [
-          { gameId: g(1), market: 'moneyline', side: 'home' },
+          { gameId: g(1), market: 'spread', side: 'home' },
           { gameId: g(1), market: 'total', side: 'over' },
         ],
       },
       alex.cookie,
     );
-    expect(res.status).toBe(400);
-    expect(await errorCode(res)).toBe('VALIDATION');
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+    expect(bet.betType).toBe('parlay');
+    expect(bet.legs.map((l) => l.gameId)).toEqual([g(1), g(1)]);
+    // -110 × -110 at 1000¢: (210/110)^2 → floor(1000 × 44100 / 12100) = 3644, +264.
+    expect(bet.potentialPayoutCents).toBe(3644);
+    expect(bet.americanPrice).toBe(264);
+    const row = await betRow(bet.id);
+    expect(row?.leg_count).toBe(2);
+    expect(await legRows(bet.id)).toHaveLength(2);
+    await expectLedgerMatchesBalance();
+  });
 
-    // ...and the DB is the backstop: UNIQUE(bet_id, game_id).
-    const ok = await post('/api/bets', straight(g(1), 500), alex.cookie);
+  it('a moneyline and a total on one game is legal; a spread AND a moneyline is not', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const ok = await post(
+      '/api/bets',
+      {
+        league: 'nfl',
+        betType: 'parlay',
+        stakeCents: 500,
+        legs: [
+          { gameId: g(1), market: 'moneyline', side: 'away' },
+          { gameId: g(1), market: 'total', side: 'under' },
+        ],
+      },
+      alex.cookie,
+    );
+    expect(ok.status, await ok.clone().text()).toBe(201);
+    const correlated = await post(
+      '/api/bets',
+      {
+        league: 'nfl',
+        betType: 'parlay',
+        stakeCents: 500,
+        legs: [
+          { gameId: g(1), market: 'spread', side: 'home' },
+          { gameId: g(1), market: 'moneyline', side: 'home' },
+        ],
+      },
+      alex.cookie,
+    );
+    expect(correlated.status).toBe(400);
+    const body = await correlated.json<ApiErrorBody>();
+    expect(body.error.code).toBe('VALIDATION');
+    expect(body.error.details).toMatchObject({ field: 'legs[1].market' });
+    const bothSides = await post(
+      '/api/bets',
+      {
+        league: 'nfl',
+        betType: 'parlay',
+        stakeCents: 500,
+        legs: [
+          { gameId: g(1), market: 'total', side: 'over' },
+          { gameId: g(1), market: 'total', side: 'under' },
+        ],
+      },
+      alex.cookie,
+    );
+    expect(bothSides.status).toBe(400);
+    expect(await betCount(alex.id)).toBe(1);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('a same-game parlay is refused when ITS game locks between the read and the batch', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const req: PlaceBetRequest = {
+      league: 'nfl',
+      betType: 'parlay',
+      stakeCents: 500,
+      legs: [
+        { gameId: g(1), market: 'spread', side: 'home' },
+        { gameId: g(1), market: 'total', side: 'over' },
+      ],
+    };
+    // The one game kicks off early inside the placement window: the DISTINCT
+    // count (1) must fail to match, not pass because two legs happened to
+    // share it.
+    const code = await codeOf(() =>
+      placeBet(env, alex.id, req, NOW, {
+        beforeBatch: () => updateGame(env.DB, g(1), { kickoffAt: NOW - 1 }),
+      }),
+    );
+    expect(code).toBe('BETTING_CLOSED');
+    expect(await betCount(alex.id)).toBe(0);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('the DB backstops: the same market twice hits the UNIQUE, a spread next to a moneyline hits the trigger', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const ok = await post('/api/bets', straight(g(1), 500), alex.cookie); // spread home
     expect(ok.status, await ok.clone().text()).toBe(201);
     const { bet } = await ok.json<BetResponse>();
-    await expect(
+    const insertLeg = (id: string, market: string, side: string, lineTenths: number | null) =>
       env.DB.prepare(
         `INSERT INTO bet_legs (id, bet_id, leg_index, game_id, league, market, side,
                                line_tenths, american_price, provider, line_captured_at,
                                snapshot_at, kickoff_at_snapshot, home_abbr, away_abbr)
-         VALUES (?3, ?1, 1, ?4, 'nfl', 'total', 'over', 455, -110, 'draftkings',
+         VALUES (?3, ?1, ?5, ?4, 'nfl', ?6, ?7, ?8, -110, 'draftkings',
                  ?2, ?2, ?2, 'SEA', 'NE')`,
       )
-        .bind(bet.id, NOW, `dup-${String(testIndex)}`, g(1))
-        .run(),
-    ).rejects.toThrow(/UNIQUE constraint failed/);
+        .bind(bet.id, NOW, `${id}-${String(testIndex)}`, g(1), id.length, market, side, lineTenths)
+        .run();
+    // Same market, other side: UNIQUE (bet_id, game_id, market).
+    await expect(insertLeg('a', 'spread', 'away', 35)).rejects.toThrow(/UNIQUE constraint failed/);
+    // The other side pick: the trigger.
+    await expect(insertLeg('bb', 'moneyline', 'home', null)).rejects.toThrow(
+      /one side pick per game/,
+    );
+    // The total slot is open.
+    await expect(insertLeg('ccc', 'total', 'over', 455)).resolves.toBeDefined();
+    expect(await legRows(bet.id)).toHaveLength(2);
+  });
+
+  it('an edit may turn a two-game parlay into a same-game parlay, and its guard counts distinct games', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 2 * HOUR });
+    const placed = await post('/api/bets', parlay([g(1), g(2)], 1000), alex.cookie);
+    expect(placed.status, await placed.clone().text()).toBe(201);
+    const { bet: original } = await placed.json<BetResponse>();
+    const edited = await put(
+      `/api/bets/${original.id}`,
+      {
+        league: 'nfl',
+        betType: 'parlay',
+        stakeCents: 1000,
+        legs: [
+          { gameId: g(1), market: 'spread', side: 'home' },
+          { gameId: g(1), market: 'total', side: 'over' },
+        ],
+      },
+      alex.cookie,
+    );
+    expect(edited.status, await edited.clone().text()).toBe(200);
+    const { bet } = await edited.json<BetResponse>();
+    expect(bet.replacesBetId).toBe(original.id);
+    expect(bet.legs.map((l) => l.gameId)).toEqual([g(1), g(1)]);
+    expect((await betRow(original.id))?.status).toBe('cancelled');
+    expect((await betRow(bet.id))?.status).toBe('pending');
+    // One stake out, one refund, one stake out again: the balance nets to one stake.
+    expect(await ledgerCount(alex.id, 'bet_refund')).toBe(1);
+    expect(await ledgerCount(alex.id, 'bet_stake')).toBe(2);
+    await expectLedgerMatchesBalance();
   });
 
   it("mixed-league legs are ACCEPTED and land as league='mixed'", async () => {
@@ -1399,14 +1536,23 @@ describe('editBet', () => {
 
 describe('in-batch guards — the generated SQL', () => {
   it('betInsertSql carries the §14.1 lock guard verbatim', () => {
-    const sql = betInsertSql(3, '');
+    const sql = betInsertSql(3, false);
     expect(sql).toContain(`AND status = 'scheduled'`);
     // STRICTLY greater: a kickoff exactly at the cutoff is CLOSED.
     expect(sql).toContain('AND kickoff_at > ?14');
     expect(sql).not.toContain('kickoff_at >= ?14');
     expect(sql).toContain('WHERE id IN (?16, ?17, ?18)');
-    // `?7` is leg_count: EVERY requested game must come back bettable.
-    expect(sql).toContain(') = ?7');
+    // `?19` is the DISTINCT game count, bound after the ids: EVERY requested
+    // game must come back bettable. NOT `?7` (leg_count) — a same-game parlay
+    // has more legs than games, and `IN (…)` collapses the repeated id, so a
+    // leg-count comparison would refuse every same-game bet (M11).
+    expect(sql).toContain(') = ?19');
+    expect(sql).not.toContain(') = ?7');
+    expect(betInsertSql(1, false)).toContain(') = ?17');
+    // The edit's cancelled-bet guard is numbered by the SAME function, right
+    // after the count, so no caller can drift it: 3 games -> count ?19, guard ?20.
+    expect(betInsertSql(3, true)).toContain("WHERE id = ?20 AND status = 'cancelled'");
+    expect(betInsertSql(3, false)).not.toContain("status = 'cancelled'");
     // M5b: the balance is named on the request, so OWNERSHIP is what has to be
     // re-checked inside the batch. This conjunct REPLACES `AND league = ?4 AND
     // season = ?5`, which existed only to pin the bet to the bankroll its legs

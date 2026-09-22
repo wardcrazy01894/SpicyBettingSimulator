@@ -44,7 +44,7 @@ export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   // server that predates the change.
   MIXED_LEAGUE_PARLAY: 'Every leg of a parlay has to be in the same league.',
   MIXED_SEASON_PARLAY: 'Every leg of a parlay has to be in the same season.',
-  DUPLICATE_GAME_IN_PARLAY: 'A parlay cannot include the same game twice.',
+  DUPLICATE_GAME_IN_PARLAY: 'A bet can hold one side pick and one total per game.',
   PAYOUT_LIMIT_EXCEEDED: 'That would pay out more than the $1,000,000 cap. Lower the stake.',
   BET_LOCKED: 'Too late — a game in this bet has already kicked off.',
   BET_NOT_PENDING: 'That bet has already been settled or cancelled.',

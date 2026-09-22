@@ -6,7 +6,7 @@
 
 import { MIN_TEASER_LEGS } from '../../shared/constants.js';
 import { formatAmerican } from '../../shared/odds.js';
-import { formatLineTenths } from '../../shared/validate.js';
+import { distinctGameIds, formatLineTenths } from '../../shared/validate.js';
 import type {
   BetLeague,
   BetStatus,
@@ -66,6 +66,35 @@ export const BET_TYPE_LABEL: Readonly<Record<BetType, string>> = {
   parlay: 'Parlay',
   teaser: 'Teaser',
 };
+
+/** Whether any two legs are on one game — a same-game parlay or teaser (M11). */
+export function hasSameGameLegs(legs: readonly { readonly gameId: string }[]): boolean {
+  return distinctGameIds(legs).length < legs.length;
+}
+
+/**
+ * The bet card's shape line: "Straight", "Parlay · 3 legs", "6.5-pt teaser ·
+ * 2 legs", and "Same game parlay · 2 legs" when two legs share a game. The
+ * word order is the industry's; nothing here changes how the bet is priced.
+ */
+export function betShapeLabel(bet: {
+  readonly betType: BetType;
+  readonly teaserPoints: number | null;
+  readonly legs: readonly { readonly gameId: string }[];
+}): string {
+  if (bet.betType === 'straight') return BET_TYPE_LABEL.straight;
+  // The noun is composed for its position in the sentence, never re-cased
+  // from a heading label: "6-pt teaser" / "parlay" mid-sentence after "Same
+  // game", or capitalised on its own.
+  const noun =
+    bet.teaserPoints === null ? 'parlay' : `${teaserPointsLabel(bet.teaserPoints)} teaser`;
+  const shape = hasSameGameLegs(bet.legs)
+    ? `Same game ${noun}`
+    : bet.teaserPoints === null
+      ? BET_TYPE_LABEL[bet.betType]
+      : noun;
+  return `${shape} · ${String(bet.legs.length)} legs`;
+}
 
 /**
  * A teaser tier in TENTHS rendered as points: 60 → "6-pt", 65 → "6.5-pt".

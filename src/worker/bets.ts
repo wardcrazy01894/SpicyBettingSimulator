@@ -54,7 +54,8 @@ import type {
   Side,
 } from '../shared/types.js';
 import { BET_CUTOFF_BUFFER_MS } from '../shared/constants.js';
-import { AppError } from '../shared/errors.js';
+import { AppError, DB_MESSAGES, thrownMentions } from '../shared/errors.js';
+import { distinctGameIds } from '../shared/validate.js';
 import { mergeEffectiveLine, usablePrice, usableTenths } from '../shared/lines.js';
 import type { EffectiveLine, LineRowView, MarketSource } from '../shared/lines.js';
 import { projectLeg } from '../shared/grading.js';
@@ -241,12 +242,15 @@ const USER_STATE_GUARD = `AND EXISTS (SELECT 1 FROM users
  * Statement 1 of placement, guarded INSIDE the batch so a reschedule cannot race
  * between the read and the write (PLAN.md §14.1).
  *
- * `?7` is `leg_count`, which is also the `= :n` the COUNT must reach.
- * `?14` is `nowPlusBuffer`; `?15` is `teaser_points_tenths`; `?16…` the game ids.
+ * `?7` is `leg_count`. `?14` is `nowPlusBuffer`; `?15` is `teaser_points_tenths`;
+ * `?16…` the DISTINCT game ids, and the parameter after them is their COUNT —
+ * the `= :n` the COUNT must reach. It is NOT `?7`: a same-game parlay (M11)
+ * has more legs than games and `IN (…)` collapses a repeated id, so comparing
+ * against `leg_count` would refuse every bet with two legs on one game.
  *
  * THE GUARDS ARE LORE, not decoration, and `tests/worker/bets.spec.ts` asserts
  * this string contains each of them:
- *   `id IN (…)` + `= ?7`   every requested game exists (none deleted under us)
+ *   `id IN (…)` + `= :n`   every requested game exists (none deleted under us)
  *   `status = 'scheduled'` a game that went `in_progress` between the
  *                          pre-flight read and this batch stops accepting bets
  *   `kickoff_at > ?14`     STRICTLY greater: kickoff exactly at `lockAt` is
@@ -276,16 +280,24 @@ const USER_STATE_GUARD = `AND EXISTS (SELECT 1 FROM users
  *
  * Exported for those assertions; nothing outside this module calls it.
  */
-export function betInsertSql(legCount: number, extraGuard: string): string {
+export function betInsertSql(gameCount: number, requiresCancelledBet: boolean): string {
+  // EVERY parameter index after the fixed fifteen is derived HERE, from
+  // `gameCount`, so a caller binds `...gameIds, gameIds.length` and then the
+  // cancelled-bet id in that order and never computes an offset of its own.
+  const countParam = 16 + gameCount;
+  const cancelledParam = countParam + 1;
+  const extraGuard = requiresCancelledBet
+    ? `\n   AND EXISTS (SELECT 1 FROM bets\n                WHERE id = ?${String(cancelledParam)} AND status = 'cancelled'\n                  AND replaced_by_bet_id = ?1)`
+    : '';
   return `INSERT INTO bets (id, user_id, bankroll_id, league, season, bet_type, leg_count,
                     stake_cents, american_price, potential_payout_cents, status,
                     placed_at, earliest_kickoff_at, replaces_bet_id,
                     teaser_points_tenths, created_at, updated_at)
 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?12, ?13, ?15, ?11, ?11
  WHERE (SELECT COUNT(*) FROM games
-         WHERE id IN (${placeholders(legCount, 16)})
+         WHERE id IN (${placeholders(gameCount, 16)})
            AND status = 'scheduled'
-           AND kickoff_at > ?14) = ?7
+           AND kickoff_at > ?14) = ?${String(countParam)}
    AND EXISTS (SELECT 1 FROM bankrolls WHERE id = ?3 AND user_id = ?2)
    ${USER_STATE_GUARD}${extraGuard}`;
 }
@@ -346,7 +358,8 @@ const CANCEL_UPDATE_SQL = `UPDATE bets
  * would cancel and refund the old bet while the new one matched nothing.
  *
  * `?1` old bet, `?2` user, `?3` now, `?4` nowPlusBuffer, `?5` new bet id,
- * `?6…` new leg game ids, then `:n` last. The `league`/`season` conjuncts M5
+ * `?6…` the new legs' DISTINCT game ids, then their count as `:n` last (not the
+ * leg count — see `betInsertSql`). The `league`/`season` conjuncts M5
  * carried are gone for the same reason they left `betInsertSql`: an edit is
  * pinned to the OLD BET'S BALANCE (read from `bets.bankroll_id`, immutable), not
  * to a league.
@@ -354,7 +367,7 @@ const CANCEL_UPDATE_SQL = `UPDATE bets
  * Exported so `tests/worker/bets.spec.ts` can assert the guard text is present;
  * nothing outside this module calls it.
  */
-export function editCancelSql(legCount: number): string {
+export function editCancelSql(gameCount: number): string {
   return `UPDATE bets
    SET status = 'cancelled', cancelled_at = ?3, updated_at = ?3,
        replaced_by_bet_id = ?5
@@ -364,9 +377,9 @@ export function editCancelSql(legCount: number): string {
       WHERE l.bet_id = ?1
         AND (g.status <> 'scheduled' OR g.kickoff_at <= ?4))
    AND (SELECT COUNT(*) FROM games
-         WHERE id IN (${placeholders(legCount, 6)})
+         WHERE id IN (${placeholders(gameCount, 6)})
            AND status = 'scheduled'
-           AND kickoff_at > ?4) = ?${String(6 + legCount)}
+           AND kickoff_at > ?4) = ?${String(6 + gameCount)}
    ${USER_STATE_GUARD}`;
 }
 
@@ -542,7 +555,7 @@ export async function resolveLegSnapshots(
   now: EpochMs,
 ): Promise<readonly ResolvedLeg[]> {
   const input = validated(req);
-  const gameIds = input.legs.map((l) => l.gameId);
+  const gameIds = distinctGameIds(input.legs);
   const [games, lines] = await Promise.all([loadGames(env, gameIds), loadLines(env, gameIds)]);
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
   const resolved: ResolvedLeg[] = [];
@@ -664,6 +677,11 @@ export interface PlacementArgs {
   readonly memo: string;
 }
 
+/** True for 0008's `bet_legs_bi_one_side_per_game` abort. */
+function isOneSidePickError(err: unknown): boolean {
+  return thrownMentions(err, DB_MESSAGES.oneSidePickPerGame);
+}
+
 /**
  * The league label for a bet: the legs' one league, or `'mixed'` when they span
  * both. INFORMATIONAL — it drives the stats filters and the UI, never the money.
@@ -765,14 +783,13 @@ export function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
     legs[0]?.kickoffAtSnapshot ?? now,
   );
   const betId = newId();
-  const gameIds = legs.map((l) => l.gameId);
+  // DISTINCT, in leg order: a same-game parlay names a game once in the guard
+  // and once in the count it must reach (`betInsertSql`).
+  const gameIds = distinctGameIds(legs);
 
-  const extraGuard =
-    args.requiresCancelledBetId === null
-      ? ''
-      : `\n   AND EXISTS (SELECT 1 FROM bets\n                WHERE id = ?${String(16 + legs.length)} AND status = 'cancelled'\n                  AND replaced_by_bet_id = ?1)`;
-
-  const betStatement = env.DB.prepare(betInsertSql(legs.length, extraGuard)).bind(
+  const betStatement = env.DB.prepare(
+    betInsertSql(gameIds.length, args.requiresCancelledBetId !== null),
+  ).bind(
     betId,
     args.userId,
     args.bankrollId,
@@ -789,6 +806,7 @@ export function buildPlacement(env: Env, args: PlacementArgs): PlacementPlan {
     now + BET_CUTOFF_BUFFER_MS,
     teaserPoints,
     ...gameIds,
+    gameIds.length,
     ...(args.requiresCancelledBetId === null ? [] : [args.requiresCancelledBetId]),
   );
 
@@ -887,10 +905,16 @@ async function runPlacementBatch(
       console.error('[bets] orphan bankroll on a guarded batch', err);
       throw new AppError('INTERNAL', 'Something went wrong.');
     }
-    if (isUniqueViolation(err, 'bet_legs.bet_id, bet_legs.game_id')) {
+    if (
+      isUniqueViolation(err, 'bet_legs.bet_id, bet_legs.game_id, bet_legs.market') ||
+      isOneSidePickError(err)
+    ) {
+      // Both are 0008's backstops under `sameGameConflict`, which `validated()`
+      // already ran, so reaching here means the two disagree — still a 409, and
+      // the code keeps its name and its wire meaning: one game, too many legs.
       throw new AppError(
         'DUPLICATE_GAME_IN_PARLAY',
-        'A parlay cannot include the same game twice.',
+        'A bet may hold one side pick and one total per game.',
       );
     }
     throw err;
@@ -929,7 +953,7 @@ async function rejectPlacement(
     // is gone rather than merely off.
     throw new AppError('ACCOUNT_DISABLED', 'This account can no longer place bets.');
   }
-  const gameIds = input.legs.map((l) => l.gameId);
+  const gameIds = distinctGameIds(input.legs);
   const games = await loadGames(env, gameIds);
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
   for (const gameId of gameIds) {
@@ -1066,7 +1090,7 @@ export async function editBet(
     memo: 'bet placed (edit)',
   });
   const nowPlusBuffer = now + BET_CUTOFF_BUFFER_MS;
-  const gameIds = legs.map((l) => l.gameId);
+  const gameIds = distinctGameIds(legs);
 
   const cancelStatement = env.DB.prepare(editCancelSql(gameIds.length)).bind(
     betId,

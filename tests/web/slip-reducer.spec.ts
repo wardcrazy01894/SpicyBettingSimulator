@@ -61,7 +61,11 @@ describe('slipReducer', () => {
     expect(active(none).legs).toHaveLength(0);
   });
 
-  it('REPLACES a pick on a game already in the slip — no same-game legs', () => {
+  // Same-game parlays (M11): a game may hold ONE side pick (spread OR
+  // moneyline) and ONE total. A tap on the OTHER slot adds; a tap on an
+  // occupied slot replaces what was there, which is what the old
+  // one-leg-per-game rule did for every tap.
+  it('ADDS a total to a game whose spread is already in the slip — a same-game parlay', () => {
     let state = slipReducer(start(), {
       type: 'TOGGLE_LEG',
       leg: leg('g1', 'spread', 'home'),
@@ -72,8 +76,69 @@ describe('slipReducer', () => {
       leg: leg('g1', 'total', 'over'),
       maxLegs: MAX_LEGS,
     });
+    expect(active(state).legs.map((l) => l.market)).toEqual(['spread', 'total']);
+    expect(active(state).mode).toBe('parlay');
+  });
+
+  it('REPLACES the other side of the same market, and a moneyline with a spread', () => {
+    let state = slipReducer(start(), {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'spread', 'home'),
+      maxLegs: MAX_LEGS,
+    });
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'spread', 'away'),
+      maxLegs: MAX_LEGS,
+    });
     expect(active(state).legs).toHaveLength(1);
-    expect(active(state).legs[0]?.market).toBe('total');
+    expect(active(state).legs[0]?.side).toBe('away');
+    // A spread and a moneyline on one game are the SAME slot: correlated.
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'moneyline', 'home'),
+      maxLegs: MAX_LEGS,
+    });
+    expect(active(state).legs).toHaveLength(1);
+    expect(active(state).legs[0]?.market).toBe('moneyline');
+    // ...and the total slot is untouched by any of that.
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'total', 'under'),
+      maxLegs: MAX_LEGS,
+    });
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'spread', 'home'),
+      maxLegs: MAX_LEGS,
+    });
+    expect(active(state).legs.map((l) => `${l.market}:${l.side}`)).toEqual([
+      'total:under',
+      'spread:home',
+    ]);
+  });
+
+  it('counts a replaced slot as free when the slip is full, and a new slot as not', () => {
+    let state = start();
+    state = slipReducer(state, { type: 'TOGGLE_LEG', leg: leg('g1', 'spread'), maxLegs: 2 });
+    state = slipReducer(state, { type: 'TOGGLE_LEG', leg: leg('g2', 'spread'), maxLegs: 2 });
+    // Full. The other side of g1's spread swaps in...
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'spread', 'away'),
+      maxLegs: 2,
+    });
+    expect(active(state).legs).toHaveLength(2);
+    expect(active(state).legs.find((l) => l.gameId === 'g1')?.side).toBe('away');
+    expect(state.notice).toBeNull();
+    // ...but g1's total would be a THIRD leg, and is refused with the notice.
+    const refused = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'total', 'over'),
+      maxLegs: 2,
+    });
+    expect(active(refused).legs).toBe(active(state).legs);
+    expect(refused.notice).not.toBeNull();
   });
 
   it('follows the leg count into and out of parlay mode', () => {
@@ -298,6 +363,25 @@ describe('persistence', () => {
     expect(parseStoredSlip(single)?.mode).toBe('straight');
   });
 
+  it('round-trips a same-game slip, and rejects a stored slip with two legs in one slot', () => {
+    const sgp = serialiseSlip({
+      mode: 'parlay',
+      stakeCents: 100,
+      legs: [leg('g1', 'spread', 'home'), leg('g1', 'total', 'over')],
+      teaserPointsTenths: 60,
+    });
+    expect(parseStoredSlip(sgp)?.legs).toHaveLength(2);
+    // Two side picks on one game (here a spread and a moneyline) can only come
+    // from a hand-edited entry, and would be refused by the server anyway.
+    const corrupt = JSON.stringify({
+      mode: 'parlay',
+      stakeCents: 100,
+      legs: [leg('g1', 'spread', 'home'), leg('g1', 'moneyline', 'away')],
+      teaserPointsTenths: 60,
+    });
+    expect(parseStoredSlip(corrupt)).toBeNull();
+  });
+
   it('rejects a hand-edited price that is not a safe integer', () => {
     const raw = JSON.stringify({
       mode: 'straight',
@@ -331,16 +415,5 @@ describe('persistence', () => {
     expect(parseStoredSlip(withLeague('nba'))).toBeNull();
     expect(parseStoredSlip(withLeague(7))).toBeNull();
     expect(parseStoredSlip(withLeague('nfl'))?.legs[0]?.league).toBe('nfl');
-  });
-
-  it('rejects a hand-edited entry holding two legs from ONE game', () => {
-    // The no-same-game rule is a slip invariant, so a corrupt entry is dropped
-    // rather than rehydrated into something the server would refuse.
-    const raw = JSON.stringify({
-      mode: 'parlay',
-      stakeCents: 100,
-      legs: [leg('g1', 'spread', 'home'), leg('g1', 'total', 'over')],
-    });
-    expect(parseStoredSlip(raw)).toBeNull();
   });
 });

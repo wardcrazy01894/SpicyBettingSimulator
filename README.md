@@ -27,6 +27,10 @@ no top-up button, so bet like it's real.
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 10 legs, and the legs
   can mix Saturday and Sunday.
+- **Same game parlays**: a game can carry one side pick (spread or moneyline)
+  and one total in the same bet, priced leg by leg like any parlay. A spread
+  and a moneyline on one team are the same question twice, so that pair is
+  the one thing the slip will not build.
 - **Teasers** from 3 to 14 points (plus 6.5). Every leg moves your way by that
   much, and you pay for it in the price. Spreads and totals only, since a
   moneyline has no line to move. A push still reduces the bet instead of
@@ -40,7 +44,8 @@ no top-up button, so bet like it's real.
 2. **Tap a price** on the board and it lands in your slip. There is one slip
    for both leagues, so switching tabs never loses a pick.
 3. **Pick the shape**: one leg is a straight, more is a parlay, or flip to
-   teaser and choose your points.
+   teaser and choose your points. Tap a game's total next to its spread and
+   you have a same game parlay.
 4. **Stake and place.** The server prices the bet from its own current lines.
    If a line moved while you were thinking, you get a "line changed" nudge, not
    a silent fill.

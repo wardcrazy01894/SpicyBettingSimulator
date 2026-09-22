@@ -61,10 +61,19 @@ async function snapshot(): Promise<Snapshot> {
   };
 }
 
-function migration0005(): readonly string[] {
-  const m = env.TEST_MIGRATIONS.find((x) => x.name.startsWith('0005_'));
-  if (m === undefined) throw new Error('0005 not in TEST_MIGRATIONS');
-  return m.queries;
+/**
+ * 0005's statements FOLLOWED BY 0008's. 0008 (same-game parlays) rebuilds
+ * `bet_legs` again on top of 0005's DDL — a wider UNIQUE and a new trigger — so
+ * re-running 0005 alone on a post-0008 database would put the OLD `bet_legs`
+ * back. The remote went through both files in order; so does this.
+ */
+function rebuildStatements(): readonly string[] {
+  const pick = (prefix: string): readonly string[] => {
+    const m = env.TEST_MIGRATIONS.find((x) => x.name.startsWith(prefix));
+    if (m === undefined) throw new Error(`${prefix} not in TEST_MIGRATIONS`);
+    return m.queries;
+  };
+  return [...pick('0005_'), ...pick('0008_')];
 }
 
 async function schemaNames(type: 'trigger' | 'index' | 'table'): Promise<string[]> {
@@ -129,7 +138,7 @@ describe('migration 0005 (bets rebuild)', () => {
 
     // THE REBUILD, as one atomic batch — exactly how `wrangler d1 migrations
     // apply` runs the file.
-    await env.DB.batch(migration0005().map((q) => env.DB.prepare(q)));
+    await env.DB.batch(rebuildStatements().map((q) => env.DB.prepare(q)));
 
     // Every row, every column, every value — and every balance — survives.
     const after = await snapshot();
@@ -155,7 +164,7 @@ describe('migration 0005 (bets rebuild)', () => {
       .bind(alex.id)
       .first<{ id: string; balance_cents: number }>();
     if (bankroll === null) throw new Error('no main bankroll');
-    await env.DB.batch(migration0005().map((q) => env.DB.prepare(q)));
+    await env.DB.batch(rebuildStatements().map((q) => env.DB.prepare(q)));
 
     // ledger_ai_apply: an insert moves the balance.
     await env.DB.prepare(
