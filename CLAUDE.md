@@ -397,6 +397,9 @@ auto-void decisions — check it first when something looks wrong. A refresh run
 line is missing a market or absent (PLAN.md §8.3); a market the book has pulled
 shows as `off the board`, not as a parser failure, and a full pull NULLs the
 stored row so the game stops being bettable on that refresh.
+`GET /api/admin/invite` (the "Invite a friend" box on the Users tab of `/admin`)
+hands the admin the join link `/login?invite=<code>`, which opens signup with the
+invite code prefilled; the server validates it like a typed one (PLAN.md §10.5).
 `GET /api/admin/bugs` (and the Bug reports section of `/admin`) lists what users
 filed through "Report a bug", including reports GitHub refused, each with the
 browser's diagnostics log. `wrangler tail` shows one `[api]` line per failed or

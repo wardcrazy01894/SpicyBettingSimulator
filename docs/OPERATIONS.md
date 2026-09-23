@@ -129,6 +129,10 @@ previous sha leaves the column in place and unused.
 ## Accounts
 
 - The FIRST signup becomes admin. Signup needs the invite code.
+- **Inviting someone**: `/admin` → Users → "Invite a friend" shows the join link
+  (`/login?invite=<code>`) with Copy and Share buttons. It opens the signup form with the code
+  filled in. It carries the shared code, so treat it like the code; rotating `INVITE_CODE`
+  (above) kills every link already sent.
 - Users rename themselves under Profile on `/account` (`POST /api/auth/display-name`). The
   display name is what the leaderboard shows; the username never changes (it salts the KDF).
 - **Refresh one game**: admins see a Refresh button on every game card. It pulls that game's

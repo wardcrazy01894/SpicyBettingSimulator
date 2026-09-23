@@ -2206,6 +2206,14 @@ Documented here so nobody has to invent it under pressure.
 - Signup requires `inviteCode === env.INVITE_CODE` when that secret is set (compared
   with a constant-time comparison). If `INVITE_CODE` is unset, signup is open —
   `GET /api/health` reports `inviteRequired: false` so a misconfiguration is visible.
+- **Join link.** `GET /api/admin/invite` (§11.6) hands an admin the code back, and the
+  admin page's Users tab turns it into `/login?invite=<code>` with Copy/Share buttons.
+  `AuthPage` reads `?invite=` once, on mount, opens the "Create account" tab and
+  prefills the invite field (with signup open the link is a valueless `/login?invite`,
+  which still selects the tab); the server still validates the code on `POST
+/api/auth/signup` exactly as if it were typed. The link is the same shared secret
+  every player was told, in a URL, so it is as sensitive as the code: rotating
+  `INVITE_CODE` (docs/OPERATIONS.md) is what revokes every link ever sent.
 - **First user to sign up becomes admin**, implemented as a conditional insert inside
   the signup batch (`is_admin = CASE WHEN (SELECT COUNT(*) FROM users) = 0 THEN 1 ELSE 0 END`
   evaluated in the same statement), so two simultaneous first signups cannot both win.
@@ -2643,6 +2651,7 @@ to sum, and `/all-time` is now literally the unfiltered board.)
 | POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                                                      |
 | GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                                                      |
 | GET    | `/api/admin/users`                     | list — `AdminUserView[]`, **including deleted accounts** (`isDeleted`, `deletedAt`). The only surface that still shows them.                                                                                  |
+| GET    | `/api/admin/invite`                    | `{inviteRequired, inviteCode}` — the shared signup code read back (null when unset), so the admin page can build the join link `/login?invite=<code>` (§10.5). No DB.                                         |
 | POST   | `/api/admin/users/:id/password`        | `{dk}` → resets. `404` for a deleted account.                                                                                                                                                                 |
 | POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}` → `204`. Disabling EVICTS every live session in the same batch. Refused with `400 VALIDATION` for your own account, or for the last enabled admin (§10.5). `404` for a deleted account. |
 | DELETE | `/api/admin/users/:id`                 | **SOFT delete** → `204` (also `204` when already deleted). Guards: `400` self, or an admin while only one enabled admin remains, `404` unknown, `409 ACCOUNT_HAS_PENDING_BETS`. Full semantics in §10.5.      |
