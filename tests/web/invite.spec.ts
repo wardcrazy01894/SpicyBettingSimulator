@@ -8,8 +8,12 @@ describe('inviteLink', () => {
     );
   });
 
-  it('is a bare /login when signup is open (no code set)', () => {
-    expect(inviteLink('https://spicy.example', null)).toBe('https://spicy.example/login');
+  it('keeps a valueless ?invite when signup is open, so the page still opens on signup', () => {
+    const link = inviteLink('https://spicy.example', null);
+    expect(link).toBe(`https://spicy.example/login?${INVITE_PARAM}`);
+    const params = new URL(link).searchParams;
+    expect(params.has(INVITE_PARAM)).toBe(true);
+    expect(inviteCodeFromParam(params.get(INVITE_PARAM))).toBeNull();
   });
 
   it('never doubles a slash when the origin carries one', () => {

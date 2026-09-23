@@ -10,11 +10,15 @@
 
 export const INVITE_PARAM = 'invite';
 
-/** `code` null = signup is open (no `INVITE_CODE` set), so the link is bare `/login`. */
+/**
+ * `code` null = signup is open (no `INVITE_CODE` set). The param is still
+ * present, valueless (`/login?invite`), because its PRESENCE is what tells
+ * `AuthPage` to open on "Create account"; only its value is the prefill.
+ */
 export function inviteLink(origin: string, code: string | null): string {
-  const base = `${origin.replace(/\/+$/, '')}/login`;
+  const base = `${origin.replace(/\/+$/, '')}/login?${INVITE_PARAM}`;
   if (code === null) return base;
-  return `${base}?${INVITE_PARAM}=${encodeURIComponent(code)}`;
+  return `${base}=${encodeURIComponent(code)}`;
 }
 
 /** The raw `?invite=` value → a code, or null when absent or blank (the form's own rule). */

@@ -40,11 +40,14 @@ export function AuthPage(): ReactElement {
   const [params] = useSearchParams();
   // Read once, as initial state: the link's job is to land the friend on the
   // signup form with the code filled in, not to pin the field for the visit.
-  const [linkedInvite] = useState(() => inviteCodeFromParam(params.get(INVITE_PARAM)));
-  const [tab, setTab] = useState<Tab>(linkedInvite === null ? 'login' : 'signup');
+  // PRESENCE of the param picks the tab (a valueless `?invite` is the open-signup
+  // link); its VALUE is the prefill.
+  const [tab, setTab] = useState<Tab>(() => (params.has(INVITE_PARAM) ? 'signup' : 'login'));
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [inviteCode, setInviteCode] = useState(linkedInvite ?? '');
+  const [inviteCode, setInviteCode] = useState(
+    () => inviteCodeFromParam(params.get(INVITE_PARAM)) ?? '',
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [localProblem, setLocalProblem] = useState<string | null>(null);

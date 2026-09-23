@@ -2209,7 +2209,8 @@ Documented here so nobody has to invent it under pressure.
 - **Join link.** `GET /api/admin/invite` (§11.6) hands an admin the code back, and the
   admin page's Users tab turns it into `/login?invite=<code>` with Copy/Share buttons.
   `AuthPage` reads `?invite=` once, on mount, opens the "Create account" tab and
-  prefills the invite field; the server still validates the code on `POST
+  prefills the invite field (with signup open the link is a valueless `/login?invite`,
+  which still selects the tab); the server still validates the code on `POST
 /api/auth/signup` exactly as if it were typed. The link is the same shared secret
   every player was told, in a URL, so it is as sensitive as the code: rotating
   `INVITE_CODE` (docs/OPERATIONS.md) is what revokes every link ever sent.
