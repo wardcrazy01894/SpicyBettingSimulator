@@ -1,6 +1,7 @@
 /**
  * Four tabs — Jobs, Ledger, Users, Bug reports — with the active one in the URL
  * (`/admin?tab=users`) so a reload or a pasted link lands on the same section.
+ * Users opens with "Invite a friend": the join link that prefills the invite code.
  *
  * All four panels are mounted from the start and the inactive ones are `hidden`
  * — the same three fetches the one-long-scroll page made. Staying mounted is
@@ -22,9 +23,15 @@ import {
   postAdminUserPassword,
 } from '../api/client.js';
 import { deriveKey } from '../api/kdf.js';
-import { useAdminBugReports, useAdminJobs, useAdminUsers } from '../hooks/useApi.js';
+import {
+  useAdminBugReports,
+  useAdminInvite,
+  useAdminJobs,
+  useAdminUsers,
+} from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
 import { ADMIN_TABS, parseAdminTab } from '../lib/admin-tabs.js';
+import { inviteLink } from '../lib/invite.js';
 import type { AdminTab } from '../lib/admin-tabs.js';
 import { formatDateTime } from '../lib/datetime.js';
 import { useSession } from '../state/session.js';
@@ -474,10 +481,98 @@ function ReconcilePanel(): ReactElement {
   );
 }
 
+/**
+ * "Invite a friend": the join link (`/login?invite=<code>`) with Copy and, where
+ * the browser offers a share sheet, Share. The code comes from
+ * `GET /api/admin/invite` — the same shared secret every player was told, read
+ * back so nobody has to dictate it over text. With no code set the link is a
+ * bare `/login` and the panel says so, because "signup is open" is a
+ * misconfiguration worth seeing here as well as in `/api/health`.
+ */
+function InvitePanel(): ReactElement {
+  const invite = useAdminInvite();
+  const [status, setStatus] = useState<string | null>(null);
+
+  if (invite.error !== undefined && invite.data === undefined) {
+    return <ErrorBanner error={invite.error} onRetry={invite.refetch} />;
+  }
+  if (invite.data === undefined) return <Spinner label="Loading invite link…" />;
+
+  const link = inviteLink(window.location.origin, invite.data.inviteCode);
+  const canShare = typeof navigator.share === 'function';
+
+  const copy = (): void => {
+    setStatus(null);
+    // `navigator.clipboard` is absent on an insecure origin (plain-http LAN dev);
+    // the link is in a selectable field either way, so the failure is not a dead end.
+    if (typeof navigator.clipboard === 'undefined') {
+      setStatus('Copy is unavailable here — select the link and copy it.');
+      return;
+    }
+    void navigator.clipboard
+      .writeText(link)
+      .then(() => {
+        setStatus('Copied.');
+      })
+      .catch(() => {
+        setStatus('Copy failed — select the link and copy it.');
+      });
+  };
+
+  const share = (): void => {
+    setStatus(null);
+    void navigator
+      .share({ title: 'Join Spicy Betting Simulator', url: link })
+      .then(() => {
+        setStatus('Shared.');
+      })
+      .catch((thrown: unknown) => {
+        // Closing the sheet rejects with AbortError; that is not a failure.
+        if (thrown instanceof DOMException && thrown.name === 'AbortError') return;
+        setStatus('Share failed — copy the link instead.');
+      });
+  };
+
+  return (
+    <div className="invite-box">
+      <h3 className="section-title">Invite a friend</h3>
+      <p className="muted">
+        {invite.data.inviteRequired
+          ? 'Opens the signup form with the invite code filled in. Anyone with this link can join.'
+          : 'No invite code is set, so signup is open to anyone who finds the site. The link below just opens the signup form.'}
+      </p>
+      <div className="admin-reset">
+        <label className="field invite-field">
+          <span className="field-label">Join link</span>
+          <input
+            className="field-input"
+            readOnly
+            value={link}
+            onFocus={(e) => {
+              e.target.select();
+            }}
+          />
+        </label>
+        <button type="button" className="btn btn-primary" onClick={copy}>
+          Copy link
+        </button>
+        {canShare && (
+          <button type="button" className="btn btn-quiet" onClick={share}>
+            Share…
+          </button>
+        )}
+      </div>
+      {status !== null && <p className="muted">{status}</p>}
+    </div>
+  );
+}
+
 function UsersPanel(props: { readonly meId: string | null }): ReactElement {
   const users = useAdminUsers();
   return (
     <>
+      <InvitePanel />
+      <h3 className="section-title">Accounts</h3>
       {users.error !== undefined && users.data === undefined && (
         <ErrorBanner error={users.error} onRetry={users.refetch} />
       )}

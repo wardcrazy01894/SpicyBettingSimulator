@@ -6,18 +6,23 @@
  * `inviteRequired` — when INVITE_CODE is unset the server allows open signup and
  * asking for a code would be a lie (PLAN.md §10.5).
  *
+ * A join link (`/login?invite=<code>`, built for the admin by `lib/invite.ts`)
+ * opens on the "Create account" tab with the invite field prefilled, so the
+ * friend only picks a name and a password.
+ *
  * The plaintext password never leaves `SessionProvider.login/signup`, which
  * derives `dk` first and posts only that.
  */
 import { useState } from 'react';
 import type { ReactElement, SyntheticEvent } from 'react';
 
-import { Navigate } from 'react-router-dom';
+import { Navigate, useSearchParams } from 'react-router-dom';
 
 import { ErrorBanner } from '../components/ErrorBanner.js';
 import { Segmented } from '../components/Segmented.js';
 import { Spinner } from '../components/Spinner.js';
 import { useHealth } from '../hooks/useApi.js';
+import { INVITE_PARAM, inviteCodeFromParam } from '../lib/invite.js';
 import { useSession } from '../state/session.js';
 import { PASSWORD_MIN_LENGTH, USERNAME_MAX, USERNAME_MIN } from '../../shared/constants.js';
 import { validateUsername } from '../../shared/validate.js';
@@ -32,10 +37,14 @@ const TABS: readonly { value: Tab; label: string }[] = [
 export function AuthPage(): ReactElement {
   const session = useSession();
   const health = useHealth();
-  const [tab, setTab] = useState<Tab>('login');
+  const [params] = useSearchParams();
+  // Read once, as initial state: the link's job is to land the friend on the
+  // signup form with the code filled in, not to pin the field for the visit.
+  const [linkedInvite] = useState(() => inviteCodeFromParam(params.get(INVITE_PARAM)));
+  const [tab, setTab] = useState<Tab>(linkedInvite === null ? 'login' : 'signup');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [inviteCode, setInviteCode] = useState('');
+  const [inviteCode, setInviteCode] = useState(linkedInvite ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [localProblem, setLocalProblem] = useState<string | null>(null);

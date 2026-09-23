@@ -616,3 +616,14 @@ export interface BugReportView {
 export interface AdminBugReportsResponse {
   readonly reports: readonly BugReportView[];
 }
+
+/**
+ * `GET /api/admin/invite` — the shared signup code, so an admin can hand a friend a
+ * join link (`/login?invite=<code>`) instead of dictating the code. `inviteCode`
+ * is null exactly when `inviteRequired` is false (`INVITE_CODE` unset, signup open).
+ * Admin-only: this is the one place the secret is read back out (PLAN.md §10.5).
+ */
+export interface AdminInviteResponse {
+  readonly inviteRequired: boolean;
+  readonly inviteCode: string | null;
+}

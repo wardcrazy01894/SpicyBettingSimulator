@@ -13,6 +13,7 @@
 
 import { Hono } from 'hono';
 import type {
+  AdminInviteResponse,
   AdminUsersResponse,
   JobRunResponse,
   JobRunsResponse,
@@ -47,6 +48,19 @@ export function adminRoutes(): Hono<AppContext> {
   // Anonymous callers get 401 like every other private route; a signed-in
   // NON-admin gets 404, so the admin surface is invisible to them (PLAN §11.6).
   app.use('*', requireAuth(), requireAdmin());
+
+  // --- invite link --------------------------------------------------------
+  // The shared invite code, read back so the admin page can build a join link.
+  // `inviteRequired` is the same boolean /api/health publishes; the code rides
+  // along only when it is set, and only past requireAdmin above (PLAN.md §10.5).
+  app.get('/invite', (c) => {
+    const required = c.var.config.inviteRequired;
+    const body: AdminInviteResponse = {
+      inviteRequired: required,
+      inviteCode: required ? (c.env.INVITE_CODE ?? null) : null,
+    };
+    return c.json(body, 200);
+  });
 
   // --- users (M3) ---------------------------------------------------------
   app.get('/users', async (c) => {

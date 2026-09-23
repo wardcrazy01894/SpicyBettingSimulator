@@ -20,6 +20,7 @@ import type { ErrorCode } from '../../shared/errors.js';
 import type {
   AdminAdjustRequest,
   AdminBugReportsResponse,
+  AdminInviteResponse,
   AdminSetDisabledRequest,
   AdminSetPasswordRequest,
   AdminUsersResponse,
@@ -382,6 +383,11 @@ export function postAdminGameRefresh(gameId: string): Promise<JobRunResponse> {
 
 export function getAdminJobs(): Promise<JobRunsResponse> {
   return apiGet<JobRunsResponse>('/api/admin/jobs');
+}
+
+/** The shared invite code (null when signup is open), for the admin page's join link. */
+export function getAdminInvite(): Promise<AdminInviteResponse> {
+  return apiGet<AdminInviteResponse>('/api/admin/invite');
 }
 
 export function getAdminUsers(): Promise<AdminUsersResponse> {

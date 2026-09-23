@@ -40,7 +40,8 @@ no top-up button, so bet like it's real.
 
 ## How a Saturday goes
 
-1. **Sign up** with the invite code. First account in becomes the admin.
+1. **Sign up** with the invite code — or tap the join link the admin copied
+   from `/admin`, which fills it in. First account in becomes the admin.
 2. **Tap a price** on the board and it lands in your slip. There is one slip
    for both leagues, so switching tabs never loses a pick.
 3. **Pick the shape**: one leg is a straight, more is a parlay, or flip to

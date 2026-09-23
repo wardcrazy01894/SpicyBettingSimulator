@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type {
+  AdminInviteResponse,
   AdminUsersResponse,
   LeaderboardResponse,
   UserResponse,
@@ -790,6 +791,37 @@ describe('signup throttling (PLAN §11.2 429 RATE_LIMITED)', () => {
 });
 
 describe('admin user routes (PLAN §11.6)', () => {
+  it('GET /api/admin/invite hands an admin the shared invite code', async () => {
+    const admin = await register('alex');
+    const res = await get('/api/admin/invite', { cookie: admin.cookie });
+    expect(res.status).toBe(200);
+    expect(await res.json<AdminInviteResponse>()).toEqual({
+      inviteRequired: true,
+      inviteCode: INVITE,
+    });
+  });
+
+  it('GET /api/admin/invite reports open signup with no code when INVITE_CODE is unset', async () => {
+    const admin = await register('alex');
+    const res = await get('/api/admin/invite', { cookie: admin.cookie, env: OPEN_ENV });
+    expect(res.status).toBe(200);
+    expect(await res.json<AdminInviteResponse>()).toEqual({
+      inviteRequired: false,
+      inviteCode: null,
+    });
+  });
+
+  it('GET /api/admin/invite is 404 to a non-admin and 401 anonymous, like the rest of /admin', async () => {
+    await register('alex');
+    const bob = await register('bob');
+    const asBob = await get('/api/admin/invite', { cookie: bob.cookie });
+    expect(asBob.status).toBe(404);
+    expect(await asBob.text()).not.toContain(INVITE);
+    const anon = await get('/api/admin/invite');
+    expect(anon.status).toBe(401);
+    expect(await anon.text()).not.toContain(INVITE);
+  });
+
   it('GET /api/admin/users lists everyone with the disabled flag', async () => {
     const admin = await register('alex');
     const bob = await register('bob');
