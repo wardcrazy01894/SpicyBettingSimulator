@@ -9,8 +9,14 @@
  * sample's own `commence_time`s — never a literal — so the two files cannot
  * drift apart silently.
  *
- *   node scripts/capture-espn-range.mjs            # both leagues
+ *   node scripts/capture-espn-range.mjs            # both football leagues
  *   node scripts/capture-espn-range.mjs nfl        # one league
+ *   node scripts/capture-espn-range.mjs mlb 20260922 [20260924 …]
+ *
+ * MLB has no Odds API sample (the secondary never sweeps it, PLAN.md §23.10),
+ * so its dates come from argv, and each date is written to its OWN file,
+ * `docs/samples/espn-mlb-scoreboard-YYYY-MM-DD.json` — the two committed MLB
+ * captures (§23.2) are reproducible this way.
  *
  * The merged file keeps the FIRST response's root object and replaces `events`
  * with the concatenation of every response's `events`. Its root `season`/`week`
@@ -61,7 +67,31 @@ const LEAGUES = {
   },
 };
 
+const iso = (k) => `${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}`;
+
+/** `mlb` + explicit YYYYMMDD dates from argv: one file per date, unmerged. */
+async function captureMlb(keys) {
+  if (keys.length === 0) throw new Error('mlb needs at least one YYYYMMDD date');
+  for (const key of keys) {
+    if (!/^\d{8}$/.test(key)) throw new Error(`mlb: ${key} is not YYYYMMDD`);
+    const url = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates=${key}&limit=100`;
+    const res = await fetch(url, {
+      headers: { accept: 'application/json', 'user-agent': USER_AGENT },
+    });
+    if (!res.ok) throw new Error(`mlb ${key}: HTTP ${res.status}`);
+    const body = await res.json();
+    if (!Array.isArray(body.events)) throw new Error(`mlb ${key}: no events[]`);
+    const out = `docs/samples/espn-mlb-scoreboard-${iso(key)}.json`;
+    writeFileSync(new URL(out, ROOT), JSON.stringify(body));
+    console.log(`mlb ${key}: wrote ${out} (${body.events.length} events)`);
+  }
+}
+
 const wanted = process.argv.slice(2);
+if (wanted[0] === 'mlb') {
+  await captureMlb(wanted.slice(1));
+  process.exit(0);
+}
 for (const [league, cfg] of Object.entries(LEAGUES)) {
   if (wanted.length > 0 && !wanted.includes(league)) continue;
   const sample = JSON.parse(read(cfg.sample));
@@ -85,7 +115,6 @@ for (const [league, cfg] of Object.entries(LEAGUES)) {
   // (`2026-09-17..28`), full ISO for the last date otherwise.
   const first = keys[0];
   const last = keys[keys.length - 1];
-  const iso = (k) => `${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}`;
   const lastPart = first.slice(0, 6) === last.slice(0, 6) ? last.slice(6, 8) : iso(last);
   const out = cfg.out(iso(first), lastPart);
   writeFileSync(new URL(out, ROOT), JSON.stringify({ ...root, events }));

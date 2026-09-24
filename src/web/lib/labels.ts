@@ -23,6 +23,7 @@ import type {
 export const LEAGUE_LABEL: Readonly<Record<League, string>> = {
   nfl: 'NFL',
   ncaaf: 'NCAAF',
+  mlb: 'MLB',
 };
 
 /**
@@ -34,7 +35,10 @@ export const LEAGUE_LABEL: Readonly<Record<League, string>> = {
 export const BET_LEAGUE_LABEL: Readonly<Record<BetLeague, string>> = {
   nfl: 'NFL',
   ncaaf: 'NCAAF',
-  mixed: 'NFL + NCAAF',
+  mlb: 'MLB',
+  // Not 'NFL + NCAAF' since M12a: that would be false for MLB + NFL. The slip's
+  // `leagueSummary` names the actual leagues from the legs (PLAN.md §23.12).
+  mixed: 'Mixed',
 };
 
 /**
@@ -46,6 +50,7 @@ export const BET_LEAGUE_LABEL: Readonly<Record<BetLeague, string>> = {
 export const LEAGUE_BADGE: Readonly<Record<League, string>> = {
   nfl: 'NFL',
   ncaaf: 'CFB',
+  mlb: 'MLB',
 };
 
 export const MARKET_LABEL: Readonly<Record<Market, string>> = {

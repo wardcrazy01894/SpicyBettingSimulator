@@ -3,6 +3,8 @@
 import { Hono } from 'hono';
 import type { LeaderboardResponse } from '../../shared/api-types.js';
 import { AppError } from '../../shared/errors.js';
+import { LEAGUES } from '../../shared/types.js';
+import { listWithOr } from '../../shared/validate.js';
 import { leaderboardFor } from '../leaderboard.js';
 import type { LeaderboardFilter } from '../leaderboard.js';
 import { requireAuth } from '../middleware.js';
@@ -50,5 +52,7 @@ export function leaderboardRoutes(): Hono<AppContext> {
 function readScope(raw: string | undefined): LeaderboardFilter['league'] {
   if (raw === undefined || raw === '' || raw === 'all') return 'all';
   if (isLeague(raw)) return raw;
-  throw new AppError('VALIDATION', 'league must be all, nfl or ncaaf', { field: 'league' });
+  throw new AppError('VALIDATION', `league must be ${listWithOr(['all', ...LEAGUES])}`, {
+    field: 'league',
+  });
 }

@@ -24,6 +24,9 @@ no top-up button, so bet like it's real.
   through Monday night. When DraftKings is missing a spread, total or moneyline
   on an NFL game or a ranked college game, the board fills it from another book
   via The Odds API and says which book on that market.
+- **MLB**, in time for the postseason: today's games only, with DraftKings'
+  run line, total and moneyline. The board is up now; betting on it opens once
+  the rules for rain-shortened and postponed games are in (PLAN.md §23).
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 10 legs, and the legs
   can mix Saturday and Sunday.
@@ -43,7 +46,7 @@ no top-up button, so bet like it's real.
 1. **Sign up** with the invite code — or tap the join link the admin copied
    from `/admin`, which fills it in. First account in becomes the admin.
 2. **Tap a price** on the board and it lands in your slip. There is one slip
-   for both leagues, so switching tabs never loses a pick.
+   for every league, so switching tabs never loses a pick.
 3. **Pick the shape**: one leg is a straight, more is a parlay, or flip to
    teaser and choose your points. Tap a game's total next to its spread and
    you have a same game parlay.

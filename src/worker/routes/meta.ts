@@ -32,13 +32,14 @@ export function metaRoutes(): Hono<AppContext> {
   });
 
   app.get('/config', async (c) => {
-    const [nfl, ncaaf] = await Promise.all([
+    const [nfl, ncaaf, mlb] = await Promise.all([
       currentSeasonFor(c.env, 'nfl', c.var.now),
       currentSeasonFor(c.env, 'ncaaf', c.var.now),
+      currentSeasonFor(c.env, 'mlb', c.var.now),
     ]);
     const body: ConfigResponse = {
       leagues: LEAGUES,
-      currentSeason: { nfl, ncaaf },
+      currentSeason: { nfl, ncaaf, mlb },
       minStakeCents: MIN_STAKE_CENTS,
       maxParlayLegs: MAX_PARLAY_LEGS,
       cutoffBufferMs: BET_CUTOFF_BUFFER_MS,

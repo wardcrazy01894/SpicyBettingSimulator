@@ -126,7 +126,7 @@ describe('groupBetsByWeek', () => {
     expect(groups[0]?.label).not.toMatch(/20\d\d/);
   });
 
-  it('labels a cross-league group as NFL + NCAAF', () => {
+  it("labels a cross-league group 'Mixed' (M12a: 'NFL + NCAAF' would be false for MLB + NFL)", () => {
     const groups = groupBetsByWeek([
       betView({
         id: 'mix',
@@ -134,7 +134,8 @@ describe('groupBetsByWeek', () => {
         legs: [{ gameId: 'g1', kickoffAt: localMs(2026, 9, 10, 20) }],
       }),
     ]);
-    expect(groups[0]?.label).toContain('NFL + NCAAF');
+    expect(groups[0]?.label).toContain('Mixed');
+    expect(groups[0]?.label).not.toContain('NFL + NCAAF');
   });
 
   it('returns nothing for no bets', () => {

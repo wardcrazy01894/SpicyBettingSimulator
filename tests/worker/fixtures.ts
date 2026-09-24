@@ -40,7 +40,7 @@ export interface EventSpecOdds {
 
 export interface EventSpec {
   readonly eventId: string;
-  readonly league: 'nfl' | 'ncaaf';
+  readonly league: 'nfl' | 'ncaaf' | 'mlb';
   readonly kickoffAt: number;
   readonly status: 'pre' | 'in' | 'post' | 'postponed' | 'canceled';
   readonly homeAbbr: string;
@@ -147,7 +147,7 @@ function teamId(league: string, abbr: string): string {
 }
 
 function teamLogo(league: string, abbr: string): string {
-  const path = league === 'nfl' ? 'nfl' : 'ncaa';
+  const path = league === 'ncaaf' ? 'ncaa' : league;
   return `https://a.espncdn.com/i/teamlogos/${path}/500/${abbr.toLowerCase()}.png`;
 }
 
@@ -310,7 +310,10 @@ function buildEvent(spec: EventSpec): Record<string, unknown> {
     name: `${spec.awayAbbr} Full Name at ${spec.homeAbbr} Full Name`,
     shortName: `${spec.awayAbbr} @ ${spec.homeAbbr}`,
     season: { year: spec.season ?? 2026, type: spec.seasonType ?? 2, slug: 'regular-season' },
-    week: { number: spec.week ?? 1 },
+    // MLB events carry no `week` at all (PLAN.md §23.2) unless a test asks.
+    ...(spec.league === 'mlb' && spec.week === undefined
+      ? {}
+      : { week: { number: spec.week ?? 1 } }),
     competitions: [competition],
     // Real ESPN keeps event.status and competitions[0].status in lock-step.
     status: JSON.parse(JSON.stringify(status)) as unknown,
@@ -335,11 +338,23 @@ export function buildScoreboard(events: readonly EventSpec[]): unknown {
 /** What the stub should do for one `dates=` key. */
 export type EspnResponder = () => Response | Promise<Response>;
 
+/**
+ * Which ESPN sport path a request is for. Football (NFL and CFB) share one
+ * namespace, exactly as before M12a — a football slate is served to both
+ * football URLs. `baseball` is separate, so the MLB target the planner now
+ * creates for every date never ingests a football test's events as
+ * `mlb:<id>` games (and a football responder never fails an MLB fetch).
+ */
+export type EspnSport = 'football' | 'baseball';
+
 export interface EspnStub {
-  /** Replace the slate served for one `dates=` key. */
+  /**
+   * Replace the slate served for one `dates=` key. Events are routed by their
+   * `league`: `'mlb'` specs to the baseball URL, the rest to the football URLs.
+   */
   set(dateKey: string, events: readonly EventSpec[]): void;
-  /** Serve an arbitrary response (or throw) for one `dates=` key. */
-  setResponder(dateKey: string, responder: EspnResponder): void;
+  /** Serve an arbitrary response (or throw) for one `dates=` key (football by default). */
+  setResponder(dateKey: string, responder: EspnResponder, sport?: EspnSport): void;
   /** Clear every configured key back to "no games on that date". */
   clear(): void;
   /** Number of upstream requests made, so tests can assert the request budget. */
@@ -363,6 +378,7 @@ export interface EspnStub {
  * `fetch`, so an unrelated subrequest in a test still behaves normally.
  */
 export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> = {}): EspnStub {
+  // Keyed `${sport}|${dateKey}`.
   const responders = new Map<string, EspnResponder>();
   const urls: string[] = [];
   const requestHeaders: Record<string, string>[] = [];
@@ -376,7 +392,12 @@ export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> 
         headers: { 'content-type': 'application/json' },
       });
 
-  for (const [key, events] of Object.entries(slates)) responders.set(key, jsonResponder(events));
+  const setSlate = (dateKey: string, events: readonly EventSpec[]): void => {
+    responders.set(`football|${dateKey}`, jsonResponder(events.filter((e) => e.league !== 'mlb')));
+    responders.set(`baseball|${dateKey}`, jsonResponder(events.filter((e) => e.league === 'mlb')));
+  };
+
+  for (const [key, events] of Object.entries(slates)) setSlate(key, events);
 
   const stub = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -391,8 +412,12 @@ export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> 
       sent[key.toLowerCase()] = value;
     });
     requestHeaders.push(sent);
-    const dateKey = new URL(url).searchParams.get('dates') ?? '';
-    const responder = responders.get(dateKey);
+    const parsedUrl = new URL(url);
+    const dateKey = parsedUrl.searchParams.get('dates') ?? '';
+    const sport: EspnSport = parsedUrl.pathname.includes('/sports/baseball/')
+      ? 'baseball'
+      : 'football';
+    const responder = responders.get(`${sport}|${dateKey}`);
     if (responder === undefined) return jsonResponder([])();
     return responder();
   };
@@ -401,10 +426,10 @@ export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> 
 
   return {
     set(dateKey, events) {
-      responders.set(dateKey, jsonResponder(events));
+      setSlate(dateKey, events);
     },
-    setResponder(dateKey, responder) {
-      responders.set(dateKey, responder);
+    setResponder(dateKey, responder, sport = 'football') {
+      responders.set(`${sport}|${dateKey}`, responder);
     },
     clear() {
       responders.clear();

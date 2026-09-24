@@ -2,10 +2,11 @@
  * ESPN HTTP client — the only place that knows ESPN URLs exist.
  * Parsing lives in src/shared/espn.ts (pure, fixture-testable).
  *
- * Endpoints (v1 -- both leagues fetched by US Eastern DATE):
+ * Endpoints (every league fetched by US Eastern DATE; `ESPN_SCOREBOARD` below):
  *   NFL   {base}/apis/site/v2/sports/football/nfl/scoreboard?dates=YYYYMMDD&limit=100
  *   NCAAF {base}/apis/site/v2/sports/football/college-football/scoreboard
  *           ?groups=80&limit=300&dates=YYYYMMDD
+ *   MLB   {base}/apis/site/v2/sports/baseball/mlb/scoreboard?dates=YYYYMMDD&limit=100
  *
  * Date targets, not week targets, because:
  *   1. `<season>-<week>` collides between regular season and postseason, so a
@@ -31,10 +32,32 @@ import type { OddsProvider, ProviderSlate, ScoreProvider, SlateTarget } from './
 import type { Env } from './env.js';
 import { readConfig } from './env.js';
 
-/** The path segment ESPN uses for each of our leagues. */
-const LEAGUE_PATH: Readonly<Record<League, string>> = {
-  nfl: 'nfl',
-  ncaaf: 'college-football',
+/**
+ * One scoreboard route per league: the two path segments and the query, with
+ * the parameter ORDER pinned exactly as PLAN.md §8.1 documents it. Keyed
+ * `Record<League, …>` so a fourth league is a compile error rather than a
+ * silent NCAAF URL (PLAN.md §23.4). Deliberately NOT in constants.ts — the
+ * browser has no business knowing a scoreboard path.
+ */
+interface EspnScoreboardRoute {
+  /** Path segment: 'football' | 'baseball'. */
+  readonly sport: string;
+  /** Path segment: 'nfl' | 'college-football' | 'mlb'. */
+  readonly league: string;
+  readonly query: (dateKey: string) => string;
+}
+
+const ESPN_SCOREBOARD: Readonly<Record<League, EspnScoreboardRoute>> = {
+  nfl: { sport: 'football', league: 'nfl', query: (d) => `dates=${d}&limit=100` },
+  ncaaf: {
+    sport: 'football',
+    league: 'college-football',
+    query: (d) => `groups=80&limit=300&dates=${d}`,
+  },
+  // A slate is at most ~16 events (15 games plus a makeup), so limit=100 is
+  // ample. No `seasontype`, for §8.1's reason — the 2025 Wild Card is reachable
+  // by date alone (PLAN.md §23.2).
+  mlb: { sport: 'baseball', league: 'mlb', query: (d) => `dates=${d}&limit=100` },
 };
 
 /**
@@ -57,10 +80,9 @@ export function buildScoreboardUrl(baseUrl: string, league: League, target: Slat
     throw new ProviderError(`week targets are not supported in v1 (league ${league})`, false, null);
   }
   const base = baseUrl.replace(/\/+$/, '');
-  const path = `${base}/apis/site/v2/sports/football/${LEAGUE_PATH[league]}/scoreboard`;
-  return league === 'nfl'
-    ? `${path}?dates=${target.dateKey}&limit=100`
-    : `${path}?groups=80&limit=300&dates=${target.dateKey}`;
+  const route = ESPN_SCOREBOARD[league];
+  const path = `${base}/apis/site/v2/sports/${route.sport}/${route.league}/scoreboard`;
+  return `${path}?${route.query(target.dateKey)}`;
 }
 
 /**

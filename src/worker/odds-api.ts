@@ -43,7 +43,7 @@ import { ODDS_API_BOOKMAKERS, ODDS_API_MARKETS, ODDS_API_TIMEOUT_MS } from '../s
 import type { ParseWarning } from '../shared/espn.js';
 import { parseOddsApi } from '../shared/odds-api.js';
 import type { OddsApiEvent } from '../shared/odds-api.js';
-import type { League } from '../shared/types.js';
+import type { SecondaryLeague } from '../shared/constants.js';
 
 /**
  * Validated config. `readConfig(env).oddsApi` (src/worker/env.ts) is the ONE
@@ -58,8 +58,12 @@ export interface OddsApiConfig {
   readonly baseUrl: string;
 }
 
-/** The API's sport keys for our two leagues. */
-export const ODDS_API_SPORT_KEY: Readonly<Record<League, string>> = {
+/**
+ * The API's sport keys for the leagues the secondary may sweep. Keyed by
+ * `SecondaryLeague`: MLB has no key, so sweeping it is a compile error
+ * (PLAN.md §23.10).
+ */
+export const ODDS_API_SPORT_KEY: Readonly<Record<SecondaryLeague, string>> = {
   nfl: 'americanfootball_nfl',
   ncaaf: 'americanfootball_ncaaf',
 };
@@ -102,7 +106,7 @@ export type OddsApiFailureKind = 'unauthorized' | 'rate_limited' | 'unavailable'
 export type OddsApiResult =
   | {
       readonly ok: true;
-      readonly league: League;
+      readonly league: SecondaryLeague;
       readonly events: readonly OddsApiEvent[];
       readonly warnings: readonly ParseWarning[];
       readonly credits: OddsApiCredits;
@@ -110,7 +114,7 @@ export type OddsApiResult =
     }
   | {
       readonly ok: false;
-      readonly league: League;
+      readonly league: SecondaryLeague;
       readonly kind: OddsApiFailureKind;
       /** HTTP status when there was one. Null for a timeout or a transport error. */
       readonly status: number | null;
@@ -142,7 +146,11 @@ export interface SweepWindow {
  * logged, never put in an error message and never echoed in stats. Nothing in
  * this module logs a URL at all; `redactUrl` exists for anything that ever does.
  */
-export function buildOddsUrl(config: OddsApiConfig, league: League, window: SweepWindow): string {
+export function buildOddsUrl(
+  config: OddsApiConfig,
+  league: SecondaryLeague,
+  window: SweepWindow,
+): string {
   const url = new URL(`${config.baseUrl}/v4/sports/${ODDS_API_SPORT_KEY[league]}/odds`);
   url.searchParams.set('apiKey', config.apiKey);
   url.searchParams.set('bookmakers', ODDS_API_BOOKMAKERS.join(','));
@@ -171,7 +179,7 @@ export function redactUrl(url: string): string {
  */
 export interface SecondaryOddsProvider {
   readonly name: string;
-  fetchOdds(league: League, window: SweepWindow, now: number): Promise<OddsApiResult>;
+  fetchOdds(league: SecondaryLeague, window: SweepWindow, now: number): Promise<OddsApiResult>;
 }
 
 export class TheOddsApiProvider implements SecondaryOddsProvider {
@@ -182,7 +190,11 @@ export class TheOddsApiProvider implements SecondaryOddsProvider {
     this.#config = config;
   }
 
-  async fetchOdds(league: League, window: SweepWindow, now: number): Promise<OddsApiResult> {
+  async fetchOdds(
+    league: SecondaryLeague,
+    window: SweepWindow,
+    now: number,
+  ): Promise<OddsApiResult> {
     const url = buildOddsUrl(this.#config, league, window);
     const outcome = await request(url, this.#config.apiKey);
     if (!outcome.ok) return { ok: false, league, ...outcome.failure };

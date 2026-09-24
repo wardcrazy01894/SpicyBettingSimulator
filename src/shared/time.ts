@@ -9,9 +9,9 @@
  *      belongs to Saturday's bucket). See PLAN.md §8.2 and Spike S4.
  *   2. The BOARD WINDOW ends on the Monday ET date that closes the football
  *      week, and rolls over at an ET instant on Sunday (`boardWindowEnd`,
- *      PLAN.md §22). A football week is a US Eastern calendar object; there is
- *      no UTC expression of "Monday Night Football" that is not wrong twice a
- *      year.
+ *      PLAN.md §22); for MLB it ends with today's ET date (§23.5). A
+ *      football week is a US Eastern calendar object; there is no UTC
+ *      expression of "Monday Night Football" that is not wrong twice a year.
  *
  * Nothing else in the system has a timezone: every stored instant is epoch ms.
  *
@@ -27,6 +27,7 @@ import {
   LINE_STALE_MULTIPLIER,
   WEEK_ROLLOVER_ET_HOUR,
 } from './constants.js';
+import type { WeeklyLeague } from './constants.js';
 import type { EpochMs, League } from './types.js';
 
 export const ET_TIME_ZONE = 'America/New_York';
@@ -152,7 +153,10 @@ export function etDateKeyRange(from: EpochMs, to: EpochMs): readonly string[] {
 
 /**
  * The LAST INSTANT (inclusive) of the board and ingest window for `league` at
- * `now`: the end of the Monday ET date that closes the current football week.
+ * `now`. For `'mlb'` it is the end of TODAY's ET date (PLAN.md §23.5 — a daily
+ * sport has no week, and ESPN carries MLB lines on game day only). For the two
+ * football leagues it is the end of the Monday ET date that closes the current
+ * football week, by the rule below.
  *
  * The rule, all in US Eastern:
  *
@@ -194,6 +198,25 @@ export function etDateKeyRange(from: EpochMs, to: EpochMs): readonly string[] {
  */
 export function boardWindowEnd(league: League, now: EpochMs): EpochMs {
   if (!Number.isFinite(now)) return now;
+  switch (league) {
+    case 'mlb':
+      // Today only (PLAN.md §23.5): the inclusive last millisecond of the
+      // current ET calendar date. `etDayBounds`, never `now + MS_PER_DAY` —
+      // the ET day is 25 h on 2026-11-01 and 23 h in March.
+      return etDayBounds(now).endAt - 1;
+    case 'nfl':
+    case 'ncaaf':
+      return footballWeekEnd(league, now);
+    default: {
+      // Exhaustive: a fourth league is a compile error here, not a silent week.
+      const unreachable: never = league;
+      return unreachable;
+    }
+  }
+}
+
+/** §22's rule for the two weekly leagues, unchanged since M9-0. */
+function footballWeekEnd(league: WeeklyLeague, now: EpochMs): EpochMs {
   const p = etParts(now);
   // Weekday of the ET calendar date, 0 = Sunday … 6 = Saturday. Built from the
   // ET parts with Date.UTC so no second Intl formatter is constructed.

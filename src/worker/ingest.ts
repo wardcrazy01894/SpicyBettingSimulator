@@ -41,6 +41,13 @@
  * `job_runs.stats`, and `tests/worker/ingest.spec.ts` carries the CI regression
  * guard for 96 live refreshes of an 86-game Saturday.
  *
+ * MLB (PLAN.md §23.11) is CHEAPER per live refresh than football: ESPN's MLB
+ * `displayClock` is always "0:00", so (B) writes only when the score or the
+ * inning (`period`) moves. ≈ 55 rows per game per day, ≈ 1,050/day for a
+ * 15-game slate including its target's reschedules — about 1% of the cap.
+ * `tests/worker/mlb.spec.ts` guards it at < 1,000 rows for 15 games over 96
+ * refreshes, beside the CFB guard.
+ *
  * STATEMENT COUNT: two per game plus one per line, chunked through `runBatch` at
  * MAX_BATCH_STATEMENTS. An 86-game target is ~172 statements in one invocation,
  * which is the deliberate exception to db.ts's per-invocation budget note.
@@ -288,14 +295,18 @@ export async function bumpTargetForGame(
 /**
  * Ensure an `ingest_targets` row exists for every US-Eastern calendar date in
  * each league's BOARD WINDOW — `now … boardWindowEnd(league, now)`, the Monday
- * that closes the football week (PLAN.md §22) — and retire targets whose window
+ * that closes the football week (PLAN.md §22), or TODAY for MLB (§23.5, one
+ * `mlb:date:YYYYMMDD` target per ET day) — and retire targets whose window
  * ended more than two days ago with no non-final games. Pure DB work, no
  * network, and no knowledge of the league calendar beyond "weeks end on Monday"
  * -- which is why the NFL postseason and bowl season need no special case.
  *
- * The day list is computed PER LEAGUE, not once: the two leagues differ for
- * part of every Sunday (CFB rolls over to next week at 00:00 ET, the NFL at
- * 20:00 ET). `INGEST_WINDOW_MS` is kept as a hard ceiling so that a bug in the
+ * The day list is computed PER LEAGUE, not once: the two football leagues
+ * differ for part of every Sunday (CFB rolls over to next week at 00:00 ET, the
+ * NFL at 20:00 ET), and MLB's window is a single day. Yesterday's MLB target is
+ * NOT deleted at midnight — the retirement rule keeps it until its games are
+ * final plus two days, so for an hour or two after midnight a late game keeps
+ * two MLB targets live. `INGEST_WINDOW_MS` is kept as a hard ceiling so that a bug in the
  * week arithmetic can never turn one invocation into thousands of statements.
  * The window only ever narrows day by day from Tuesday to the Sunday rollover,
  * and a target already created keeps refreshing until the retirement rule takes
@@ -419,11 +430,14 @@ function notInClause(count: number): string {
  * alone does not prevent that, because live targets are perpetually the most due.
  *
  * Budget (computed, PLAN.md §8.4/§22): the window spans at most 9 ET dates per
- * league (2 at its narrowest), so at most 18 targets — 16 on a Monday, 14 from
- * Tuesday on. Worst case 2 live leaves 16 discovery targets wanting 4
- * refreshes/day each = 64 slot-uses/day against a supply of 96. Fits with 32 to
- * spare. Two simultaneously-live targets alternate in slot 1 and each get a
- * 30-minute cadence. DST needs no footnote: a weekday-anchored window spans at
+ * football league (2 at its narrowest), plus MLB's one day (§23.5), so at most
+ * 19 targets — 17 on a Monday, 15 from Tuesday on — plus two or three past MLB
+ * dates lingering on the +24 h tier until retired. Worst case: 17 non-live
+ * football targets wanting 4 refreshes/day each plus ~2 lingering MLB dates at
+ * 1/day ≈ 70 slot-uses/day against the reserved slot's 96 (§23.11). Two
+ * simultaneously-live targets alternate in slot 1 and each get a 30-minute
+ * cadence; three (a CFB Saturday or NFL Sunday with MLB live) get 45 minutes,
+ * which §23.11 accepts until Spike S1 allows a third slot. DST needs no footnote: a weekday-anchored window spans at
  * most 9 dates however long its days are.
  *
  * ROLLOVER BURST: at a Sunday rollover the window gains

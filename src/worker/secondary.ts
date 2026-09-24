@@ -38,17 +38,18 @@ import {
   ODDS_API_COOLDOWN_MS,
   ODDS_API_COST_PER_SWEEP,
   ODDS_API_CREDIT_RESERVE,
+  SECONDARY_LEAGUES,
   SECONDARY_MIN_SWEEP_INTERVAL_MS,
   SECONDARY_RESWEEP_MARGIN_MS,
   SECONDARY_RETRY_MS,
 } from '../shared/constants.js';
+import type { SecondaryLeague } from '../shared/constants.js';
 import { mergeEffectiveLine, missingMarkets } from '../shared/lines.js';
 import type { EffectiveLine, LineRowView } from '../shared/lines.js';
 import { matchOddsApiEvents } from '../shared/odds-api.js';
 import type { MatchCandidate } from '../shared/odds-api.js';
 import { boardWindowEnd, lineStaleAfterMs } from '../shared/time.js';
-import { LEAGUES } from '../shared/types.js';
-import type { EpochMs, League } from '../shared/types.js';
+import type { EpochMs } from '../shared/types.js';
 import { queryAll, rowsWrittenOf } from './db.js';
 import type { Env } from './env.js';
 import { readConfig } from './env.js';
@@ -90,7 +91,8 @@ export type SweepSkipped =
 
 /** One league's outcome for one refresh run. Never `null`, always a value. */
 export interface SecondarySweep {
-  readonly league: League;
+  /** Never `'mlb'`: MLB is primary-only and is ABSENT from `sweeps[]` (PLAN.md §23.10). */
+  readonly league: SecondaryLeague;
   /** Null exactly when `skipped` is non-null. */
   readonly reason: SweepReason | null;
   /** Null exactly when the sweep actually called the API. */
@@ -177,7 +179,11 @@ export async function runSecondary(
   try {
     if (readConfig(env).oddsApi === null) return off;
     const sweeps: SecondarySweep[] = [];
-    for (const league of LEAGUES) sweeps.push(await sweepSecondary(env, league, now, options));
+    // SECONDARY_LEAGUES, not LEAGUES: MLB is never swept and gets no entry —
+    // not a `skipped` row an operator has to learn to ignore (PLAN.md §23.10).
+    for (const league of SECONDARY_LEAGUES) {
+      sweeps.push(await sweepSecondary(env, league, now, options));
+    }
     let budget: BudgetRow | null = null;
     try {
       budget = await readBudget(env);
@@ -216,7 +222,7 @@ function safeMessage(err: unknown, apiKey: string | null): string {
  * ------------------------------------------------------------------ */
 
 /** Constant SQL per league — the column name is NEVER interpolated from input. */
-const CLAIM_SQL: Readonly<Record<League, string>> = {
+const CLAIM_SQL: Readonly<Record<SecondaryLeague, string>> = {
   nfl: `UPDATE secondary_budget
            SET remaining_credits = remaining_credits - ?1, last_attempt_at = ?2,
                nfl_last_sweep_at = ?2, updated_at = ?2
@@ -313,6 +319,16 @@ interface BudgetRow {
   consecutive_failures: number;
   last_status: string | null;
 }
+
+/**
+ * Each secondary league's own throttle column. A lookup keyed by
+ * `SecondaryLeague`, not an `nfl ? … : …` ternary — with `League` there, an
+ * MLB sweep would silently have read the NCAAF column (PLAN.md §23.10).
+ */
+const LAST_SWEEP_OF: Readonly<Record<SecondaryLeague, (b: BudgetRow) => number>> = {
+  nfl: (b) => b.nfl_last_sweep_at,
+  ncaaf: (b) => b.ncaaf_last_sweep_at,
+};
 
 async function readBudget(env: Env): Promise<BudgetRow | null> {
   return env.DB.prepare('SELECT * FROM secondary_budget WHERE id = 1').first<BudgetRow>();
@@ -451,7 +467,11 @@ function toView(r: CandidateRow): LineRowView {
   };
 }
 
-async function loadCandidates(env: Env, league: League, now: EpochMs): Promise<Candidate[]> {
+async function loadCandidates(
+  env: Env,
+  league: SecondaryLeague,
+  now: EpochMs,
+): Promise<Candidate[]> {
   const rows = await queryAll<CandidateRow>(
     env.DB.prepare(CANDIDATES_SQL).bind(league, now, boardWindowEnd(league, now)),
   );
@@ -499,7 +519,7 @@ function needsResweep(c: Candidate, now: EpochMs): boolean {
  * The sweep
  * ------------------------------------------------------------------ */
 
-function skipped(league: League, why: SweepSkipped): SecondarySweep {
+function skipped(league: SecondaryLeague, why: SweepSkipped): SecondarySweep {
   return {
     league,
     reason: null,
@@ -527,7 +547,7 @@ interface SweepProgress {
 
 export async function sweepSecondary(
   env: Env,
-  league: League,
+  league: SecondaryLeague,
   now: EpochMs,
   options: SweepOptions,
 ): Promise<SecondarySweep> {
@@ -554,7 +574,7 @@ export async function sweepSecondary(
 
 async function sweepInner(
   env: Env,
-  league: League,
+  league: SecondaryLeague,
   now: EpochMs,
   options: SweepOptions,
   progress: SweepProgress,
@@ -567,7 +587,7 @@ async function sweepInner(
   const budget = await readBudget(env);
   if (budget === null) return skipped(league, 'no-budget-row');
   if (now < budget.cooldown_until) return skipped(league, 'cooldown');
-  const lastSweep = league === 'nfl' ? budget.nfl_last_sweep_at : budget.ncaaf_last_sweep_at;
+  const lastSweep = LAST_SWEEP_OF[league](budget);
   if (now - lastSweep < SECONDARY_MIN_SWEEP_INTERVAL_MS) return skipped(league, 'throttled');
   if (budget.remaining_credits - ODDS_API_COST_PER_SWEEP < ODDS_API_CREDIT_RESERVE) {
     const rows = await maybeResetProbe(env, cfg, now);

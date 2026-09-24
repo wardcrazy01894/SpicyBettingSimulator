@@ -18,6 +18,7 @@ import {
   MIN_PARLAY_LEGS,
   MIN_STAKE_CENTS,
   MIN_TEASER_LEGS,
+  TEASABLE_LEAGUES,
   TEASER_POINTS_TENTHS,
   USERNAME_MAX,
   USERNAME_MIN,
@@ -32,6 +33,7 @@ import type {
   BetLeague,
   BetType,
   Cents,
+  League,
   LineTenths,
   Market,
   Side,
@@ -82,6 +84,26 @@ const BET_LEAGUES: readonly BetLeague[] = [...LEAGUES, 'mixed'];
 /** Teasers move a LINE, so there has to be one: moneyline legs are refused. */
 const TEASABLE_MARKETS: readonly Market[] = ['spread', 'total'];
 export const DISPLAY_NAME_MAX = 40;
+
+/**
+ * `['nfl', 'ncaaf', 'mlb']` → `"nfl, ncaaf or mlb"`. Every "league must be …"
+ * message is built from `LEAGUES` through this, so a new league can never be
+ * missing from the copy that tells a caller what is allowed (PLAN.md §23.1
+ * item 11).
+ */
+export function listWithOr(values: readonly string[]): string {
+  if (values.length <= 1) return values.join('');
+  return `${values.slice(0, -1).join(', ')} or ${values[values.length - 1] ?? ''}`;
+}
+
+/**
+ * Whether a leg from `league` may be part of a TEASER — reads `TEASABLE_LEAGUES`
+ * (football only; MLB is refused with the existing `TEASER_INVALID`, PLAN.md
+ * §23.8). One definition for the server's gate and the slip's pre-check.
+ */
+export function isTeasableLeague(league: League): boolean {
+  return (TEASABLE_LEAGUES as readonly League[]).includes(league);
+}
 
 function bad<T>(message: string, field?: string): ValidationResult<T> {
   return field === undefined ? { ok: false, message } : { ok: false, message, field };
@@ -336,7 +358,9 @@ function validateTeaserPoints(
 export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput> {
   if (!isRecord(body)) return bad('body must be a JSON object');
   const league = body['league'];
-  if (!isIn(BET_LEAGUES, league)) return bad('league must be nfl, ncaaf or mixed', 'league');
+  if (!isIn(BET_LEAGUES, league)) {
+    return bad(`league must be ${listWithOr(BET_LEAGUES)}`, 'league');
+  }
   const betType = body['betType'];
   if (!isIn(BET_TYPES, betType)) {
     return bad('betType must be straight, parlay or teaser', 'betType');

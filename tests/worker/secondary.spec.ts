@@ -489,6 +489,8 @@ describe('secondary sweep — the decision (PLAN.md §21.2 / §21.5)', () => {
     const stats = await refresh(NOW);
     expect(oddsCalls()).toBe(2);
     expect(stats.secondary.sweeps.map((s) => s.league).sort()).toEqual(['ncaaf', 'nfl']);
+    // MLB is primary-only (PLAN.md §23.10): ABSENT from sweeps[], not skipped.
+    expect(stats.secondary.sweeps).toHaveLength(2);
   });
 });
 

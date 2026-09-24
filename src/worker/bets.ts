@@ -90,6 +90,28 @@ export interface PlaceBetResult {
   readonly bet: BetView;
 }
 
+/**
+ * Per-league kill switch for PLACING bets (PLAN.md §23.14). A closed league's
+ * games are on the board but never `bettable` (`routes/games.ts` ANDs this in),
+ * and `resolveLegSnapshots` refuses a leg on one with the EXISTING
+ * `409 GAME_NOT_BETTABLE` — no new error code. A pure check on
+ * `games.league`, which never changes for a game, so there is no race to
+ * guard in SQL.
+ *
+ * `mlb: false` until M12b ships the settlement rule for shortened and postponed
+ * games (§23.6/§23.7); M12b flips it. It stays afterwards as a one-line switch.
+ */
+export const LEAGUE_BETTING_OPEN: Readonly<Record<League, boolean>> = {
+  nfl: true,
+  ncaaf: true,
+  mlb: false,
+};
+
+/** True when `league` is a known league whose betting is open. */
+export function isBettingOpen(league: string): boolean {
+  return isLeague(league) && LEAGUE_BETTING_OPEN[league];
+}
+
 /** Default and ceiling for `GET /api/bets?limit=`. */
 export const DEFAULT_BET_PAGE = 50;
 export const MAX_BET_PAGE = 200;
@@ -573,6 +595,16 @@ export async function resolveLegSnapshots(
         gameId: leg.gameId,
         status: game.status,
       });
+    }
+    // The league gate (LEAGUE_BETTING_OPEN), beside the status check so it
+    // keeps the GAME_NOT_BETTABLE → BETTING_CLOSED order above. An unknown
+    // league falls through to the INTERNAL check below, unchanged.
+    if (isLeague(game.league) && !LEAGUE_BETTING_OPEN[game.league]) {
+      throw new AppError(
+        'GAME_NOT_BETTABLE',
+        `Betting on ${game.league.toUpperCase()} is not open yet.`,
+        { gameId: leg.gameId, status: game.status },
+      );
     }
     if (game.kickoff_at <= nowPlusBuffer) {
       throw new AppError('BETTING_CLOSED', `Betting on ${leg.gameId} has closed.`, {
