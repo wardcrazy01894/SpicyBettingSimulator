@@ -6996,7 +6996,7 @@ cannot be teased.', { field: 'legs[i]' })` — 400, before any statement is buil
   the same path. **No error code is added.**
 - **Client** (M12c): `GameCard.tsx`'s `unteasable` becomes
   `teasing && (cell.market === 'moneyline' || !isTeasableLeague(game.league))`
-  with its own hint; `BetSlip.tsx`'s `teaseText` renders "MLB can't be teased"
+  with its own hint; `teaseText` (in `state/slip-preview.ts`) renders "MLB can't be teased"
   for such a leg instead of silently dropping it (the same rule it applies to a
   moneyline today); `slip-preview.ts`'s `computePreview` returns an error for a
   teaser slip holding one, because slip legs DO carry `league`.
