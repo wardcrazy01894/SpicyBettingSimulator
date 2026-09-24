@@ -13,8 +13,11 @@ import type { GameCard, GameLinesView, GamesResponse } from '../../shared/api-ty
 import { BOARD_LOOKBACK_MS, BOARD_MAX_GAMES } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { lockAtFor } from '../../shared/time.js';
+import { LEAGUES } from '../../shared/types.js';
 import type { BetLeague, EpochMs, GameStatus, League } from '../../shared/types.js';
+import { listWithOr } from '../../shared/validate.js';
 import { currentSeasonFor, isLeague } from '../bankroll.js';
+import { isBettingOpen } from '../bets.js';
 import { queryAll } from '../db.js';
 import { requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
@@ -221,7 +224,10 @@ export function toGameCard(row: BoardRow, lineRows: readonly BoardRow[], now: Ep
     lockAt,
     // The server's verdict, in one place. A game with no line is NOT an error —
     // it is the normal CFB state early in the week — but it is not bettable.
+    // `isBettingOpen` is the per-league gate (LEAGUE_BETTING_OPEN, PLAN.md
+    // §23.14): MLB is on the board before its settlement rule ships, unbettable.
     bettable:
+      isBettingOpen(row.league) &&
       status === 'scheduled' &&
       now < lockAt &&
       lines !== null &&
@@ -310,7 +316,7 @@ export function toLinesView(
 
 export function readLeague(raw: string | undefined): League {
   if (raw === undefined || !isLeague(raw)) {
-    throw new AppError('VALIDATION', 'league must be nfl or ncaaf', { field: 'league' });
+    throw new AppError('VALIDATION', `league must be ${listWithOr(LEAGUES)}`, { field: 'league' });
   }
   return raw;
 }
@@ -325,7 +331,9 @@ export function readBetLeague(raw: string | undefined): BetLeague | undefined {
   if (raw === undefined || raw === '') return undefined;
   if (raw === 'all') return undefined;
   if (raw === 'mixed' || isLeague(raw)) return raw;
-  throw new AppError('VALIDATION', 'league must be nfl, ncaaf, mixed or all', { field: 'league' });
+  throw new AppError('VALIDATION', `league must be ${listWithOr([...LEAGUES, 'mixed', 'all'])}`, {
+    field: 'league',
+  });
 }
 
 export function readInt(raw: string | undefined, field: string): number | undefined {

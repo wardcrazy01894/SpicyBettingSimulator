@@ -14,6 +14,12 @@
  *      2 STATUS_FINAL, neither carries odds
  *     ET date buckets: { 20260909: 1, 20260910: 1, 20260913: 13, 20260914: 1 }
  *
+ *   espn-mlb-scoreboard-2026-09-24.json — a DATE query, 12 events
+ *      9 STATUS_SCHEDULED with DraftKings odds, 3 STATUS_IN_PROGRESS without
+ *   espn-mlb-scoreboard-2026-09-22.json — a DATE query, 16 events, no odds
+ *     14 finals in 9, 401817038 "Final/12", 401817035 STATUS_POSTPONED
+ *     (both asserted in tests/unit/mlb.spec.ts, PLAN.md §23.2)
+ *
  *   espn-cfb-scoreboard.json  — a WEEK query (NOT one slate), 86 events
  *      2 STATUS_SCHEDULED (both carry odds), 16 in progress, 3 halftime, 65 final
  *      0 of those 84 started/finished events carry odds
@@ -105,6 +111,10 @@ interface EspnScoreboard {
 const SAMPLE_FILES = {
   nfl: new URL('../../docs/samples/espn-nfl-scoreboard.json', import.meta.url),
   cfb: new URL('../../docs/samples/espn-cfb-scoreboard.json', import.meta.url),
+  /** One MLB DATE slate: 12 events, 9 scheduled with DraftKings odds, 3 live without. */
+  mlb0924: new URL('../../docs/samples/espn-mlb-scoreboard-2026-09-24.json', import.meta.url),
+  /** One MLB DATE slate, no odds: 15 finals (one Final/12) and one postponement. */
+  mlb0922: new URL('../../docs/samples/espn-mlb-scoreboard-2026-09-22.json', import.meta.url),
 } as const;
 
 export type SampleName = keyof typeof SAMPLE_FILES;
@@ -132,6 +142,14 @@ export function nflScoreboard(): unknown {
 /** Raw parsed JSON of docs/samples/espn-cfb-scoreboard.json. */
 export function cfbScoreboard(): unknown {
   return cloneSample('cfb');
+}
+
+/**
+ * Raw parsed JSON of an MLB date slate (PLAN.md §23.2): `'2026-09-24'`
+ * (docs/samples/espn-mlb-scoreboard-2026-09-24.json) or `'2026-09-22'`.
+ */
+export function mlbScoreboard(date: '2026-09-24' | '2026-09-22'): unknown {
+  return cloneSample(date === '2026-09-24' ? 'mlb0924' : 'mlb0922');
 }
 
 /**

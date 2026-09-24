@@ -231,8 +231,17 @@ export const NCAAF_WEEK_ROLLOVER_ET_HOUR = 0;
  */
 export const NFL_WEEK_ROLLOVER_ET_HOUR = 20;
 
+/**
+ * The leagues whose board is a football WEEK (PLAN.md §22). An `Extract` of
+ * explicit literals, not `Exclude<League, 'mlb'>`, so a fourth league is NOT
+ * silently weekly: MLB's board is today only (§23.5) and has no entry here, and
+ * `boardWindowEnd` is an exhaustive `switch` that cannot reach this table with
+ * it.
+ */
+export type WeeklyLeague = Extract<League, 'nfl' | 'ncaaf'>;
+
 /** The two above, keyed by league. `boardWindowEnd` reads only this. */
-export const WEEK_ROLLOVER_ET_HOUR: Readonly<Record<League, number>> = {
+export const WEEK_ROLLOVER_ET_HOUR: Readonly<Record<WeeklyLeague, number>> = {
   nfl: NFL_WEEK_ROLLOVER_ET_HOUR,
   ncaaf: NCAAF_WEEK_ROLLOVER_ET_HOUR,
 };

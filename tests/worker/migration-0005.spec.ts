@@ -62,10 +62,13 @@ async function snapshot(): Promise<Snapshot> {
 }
 
 /**
- * 0005's statements FOLLOWED BY 0008's. 0008 (same-game parlays) rebuilds
- * `bet_legs` again on top of 0005's DDL — a wider UNIQUE and a new trigger — so
- * re-running 0005 alone on a post-0008 database would put the OLD `bet_legs`
- * back. The remote went through both files in order; so does this.
+ * 0005's statements FOLLOWED BY 0008's and 0009's. 0008 (same-game parlays)
+ * rebuilds `bet_legs` again on top of 0005's DDL — a wider UNIQUE and a new
+ * trigger — and 0009 (MLB, PLAN.md §23.3) rebuilds six tables to widen the
+ * `league` CHECKs, so re-running 0005 alone on a post-0009 database would put
+ * pre-MLB DDL back. The remote went through all three files in order; so does
+ * this. (0005 cannot be re-run on a database holding a same-game parlay — its
+ * `bet_legs` has the old UNIQUE(bet_id, game_id) — and this spec seeds none.)
  */
 function rebuildStatements(): readonly string[] {
   const pick = (prefix: string): readonly string[] => {
@@ -73,7 +76,7 @@ function rebuildStatements(): readonly string[] {
     if (m === undefined) throw new Error(`${prefix} not in TEST_MIGRATIONS`);
     return m.queries;
   };
-  return [...pick('0005_'), ...pick('0008_')];
+  return [...pick('0005_'), ...pick('0008_'), ...pick('0009_')];
 }
 
 async function schemaNames(type: 'trigger' | 'index' | 'table'): Promise<string[]> {

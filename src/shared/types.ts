@@ -4,15 +4,16 @@
  * OWNERSHIP: this file is written in milestone M2d and FROZEN at the end of M2d.
  * Every other track treats it as read-only (PLAN.md §16). **M5b is the one
  * sanctioned re-opening of that freeze** — see PLAN.md §16's contract-change
- * note; it added `'teaser'` and `BetLeague`, and nothing else.
+ * note; it added `'teaser'` and `BetLeague`, and nothing else. **M12a is the
+ * second**: it added `'mlb'` to `LEAGUES` and nothing else (PLAN.md §23.14).
  */
 
-export const LEAGUES = ['nfl', 'ncaaf'] as const;
+export const LEAGUES = ['nfl', 'ncaaf', 'mlb'] as const;
 export type League = (typeof LEAGUES)[number];
 
 /**
  * What a BET's league column can hold. A GAME is always in exactly one league;
- * a bet whose legs span both is `'mixed'` (M5b — cross-league parlays and
+ * a bet whose legs span more than one is `'mixed'` (M5b — cross-league parlays and
  * teasers). Deliberately a separate alias rather than widening `League`: every
  * `Record<League, …>` label table, every `games.league` value and every board
  * query still means "one real league", and widening would have made all of them

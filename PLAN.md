@@ -259,6 +259,9 @@ itself, so a D1 dump does not hand an attacker live sessions. Plus `user_id`,
 **`games`** — the canonical game row.
 Notable columns:
 
+- `league ∈ {nfl, ncaaf, mlb}` — a `CHECK`; `'mlb'` since migration
+  `0009_mlb_league.sql` (M12a, §23.3). A game's league is part of its id and
+  never changes.
 - `home_conference_id` / `away_conference_id` (migration `0004_games_conference.sql`)
   — ESPN `team.conferenceId` as a TEXT id (`"8"` = SEC; the FBS list is
   `CFB_CONFERENCES` in constants.ts), NULL for the NFL. Denormalized like rank
@@ -277,6 +280,7 @@ Notable columns:
   detection (§7.5).
 - `week`, `season`, `season_type` from ESPN — `week` is the authoritative grouping
   key for the NFL Thu–Mon week, so we never have to compute week boundaries ourselves.
+  `week` is NULL for every MLB game: ESPN's MLB events carry no week (§23.2).
 
 Indexes: `(league, kickoff_at)` for the board, `(status, kickoff_at)` for the
 settlement/maintenance sweeps.
@@ -341,8 +345,8 @@ potential_payout_cents, status, payout_cents, placed_at, earliest_kickoff_at,
 settled_at, cancelled_at, settle_run_id, settle_attempts, settle_error,
 replaces_bet_id, replaced_by_bet_id, created_at, updated_at`.
 
-- `league ∈ {nfl, ncaaf, mixed}` and `season` are **informational labels** since
-  M5b. `mixed` means the legs span both leagues; `season` is the season of the
+- `league ∈ {nfl, ncaaf, mlb, mixed}` and `season` are **informational labels** since
+  M5b (`'mlb'` since 0009, M12a). `mixed` means the legs span more than one league; `season` is the season of the
   EARLIEST-KICKOFF leg. Neither selects a balance any more (`bankroll_id` does),
   so neither constrains what a bet may contain — they drive the stats filters and
   the UI, and nothing else.
@@ -393,6 +397,8 @@ replaces_bet_id, replaced_by_bet_id, created_at, updated_at`.
 original_line_tenths, american_price, provider, line_captured_at, snapshot_at,
 kickoff_at_snapshot, home_abbr, away_abbr, result, graded_at`.
 
+- `league ∈ {nfl, ncaaf, mlb}` (`'mlb'` since 0009, M12a) — the leg's game's
+  league, snapshotted at placement; never `'mixed'`.
 - `original_line_tenths` is the BOOK's line before a tease, for display and
   audit; `NULL` on a straight or parlay leg, which is never moved. `line_tenths`
   remains **the line the leg is graded on** in every case — for a teaser leg
@@ -442,11 +448,13 @@ It is NOT a money table and carries no trigger: the guard is a conditional
 permission to make the request. §21.3 / §21.5.
 
 **`ingest_targets`** — the ingestion work queue. §8.4.
-`id PRIMARY KEY` (`"<league>:<kind>:<key>"`), `league`, `kind ('week'|'date')`,
+`id PRIMARY KEY` (`"<league>:<kind>:<key>"`), `league ∈ {nfl, ncaaf, mlb}`
+(`'mlb'` since 0009, M12a), `kind ('week'|'date')`,
 `key`, `window_start_at`, `window_end_at`, `priority`, `next_run_at`,
 `last_run_at`, `last_status`, `last_error`, `consecutive_failures`, `games_seen`.
 
-**v1 uses `kind='date'` for BOTH leagues**, key `YYYYMMDD` in US Eastern. A
+**v1 uses `kind='date'` for EVERY league**, key `YYYYMMDD` in US Eastern — MLB's
+target id is `mlb:date:YYYYMMDD`, one per ET day (§23.5). A
 week-keyed target is unsafe: `<season>-<week>` cannot distinguish regular-season
 week 1 from Wild Card week 1, so `nfl:week:2026-1` collides and the NFL
 postseason — and CFB bowls, which Q5 puts explicitly in scope — would either be
@@ -1430,11 +1438,12 @@ in `GET /api/admin/jobs`.
 | ------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
 | NFL    | `{BASE}/apis/site/v2/sports/football/nfl/scoreboard?dates={YYYYMMDD}&limit=100`                        | Per ET date.                                           |
 | NCAAF  | `{BASE}/apis/site/v2/sports/football/college-football/scoreboard?groups=80&limit=300&dates={YYYYMMDD}` | FBS only (`groups=80` also covers bowls). Per ET date. |
+| MLB    | `{BASE}/apis/site/v2/sports/baseball/mlb/scoreboard?dates={YYYYMMDD}&limit=100`                        | Per ET date; today only (§23.4/§23.5). From M12a.      |
 
 `{BASE}` is the `ESPN_BASE_URL` var (default `https://site.api.espn.com`), pointed
 at the local fixture server in dev via `.dev.vars` (§15 M1).
 
-**Neither URL sends `seasontype`.** Doing so would filter out postseason games
+**No URL sends `seasontype`** (the three are `ESPN_SCOREBOARD` in `src/worker/espn.ts`, a `Record<League, …>`). Doing so would filter out postseason games
 that fall on a date inside the regular-season calendar, and vice versa.
 
 **Why both leagues are fetched by ET DATE, not by week.** Two reasons, and
@@ -1485,6 +1494,7 @@ An `ingest_targets` row is one request, and in v1 there is exactly one shape:
 
 - `nfl:date:20260913` → all NFL games on ET date 2026-09-13
 - `ncaaf:date:20260912` → all FBS games on ET date 2026-09-12
+- `mlb:date:20260929` → all MLB games on ET date 2026-09-29 (M12a; §23.5)
 
 **VERIFIED against the live ESPN API on 2026-09-13** (Spike S4 parts (a) and (b)
 — see §18). `dates=YYYYMMDD` with **no `seasontype` parameter** buckets by US
@@ -1649,8 +1659,10 @@ Each run:
    `(league, ET date)` covering `now … boardWindowEnd(league, now)` — the window
    that ends on the Monday closing the football week (§22): 2 ET dates on a
    Sunday morning for the NFL, 7 on a Tuesday, 8 on a Monday, at most 9 on a
-   Sunday after the rollover, so **≤ 18 rows**, created once and then reused. The two leagues differ by a week for
-   part of every Sunday, which is why the planner walks the dates PER LEAGUE.
+   Sunday after the rollover, so **≤ 18 football rows**, plus MLB's ONE row for
+   today (§23.5) — **≤ 19** — created once and then reused. The two football
+   leagues differ by a week for part of every Sunday, and MLB's window is a
+   single day, which is why the planner walks the dates PER LEAGUE.
    Delete targets whose window ended more than 2 days ago and that have no
    non-final games. Beyond that weekday rule the planner still needs no league
    calendar, which is what keeps bowls and the NFL postseason free (§8.2).
@@ -1679,9 +1691,12 @@ Each run:
    in slot 1 and each gets a **30-minute** cadence; settlement tolerates that (it
    is a fake-money app, and the settle job runs independently of ingest).
 
-   **From M12a, MLB adds one target per ET day** (`mlb:date:YYYYMMDD`, a
-   day-only window — §23.5), so at most **19** in-window targets (15 on a
-   Tuesday) plus two or three past MLB dates on the +24 h tier until retired.
+   **Since M12a, MLB adds one target per ET day** (`mlb:date:YYYYMMDD`, a
+   day-only window — §23.5), so at most **19** in-window targets (17 on a
+   Monday, 15 on a Tuesday) plus two or three past MLB dates on the +24 h tier
+   until retired — so for an hour or two after midnight there are TWO live MLB
+   targets (yesterday's late game and today's). 00:00 ET is also MLB's daily
+   rollover, so a CFB Sunday-rollover burst is eight new targets, not seven.
    Discovery demand at the widest point is ≈ 70 of the 96 slot-uses the reserved
    slot alone supplies. The MLB target is live ~10:00–01:00 ET daily, so on a
    football weekend slot 1 alternates among two or three live targets — 30- or
@@ -1959,11 +1974,19 @@ kickoff waves (scheduled → in_progress for 3.5 h → final), moving the clock 
 | sessions / throttle / job_runs      | —                                                        | < 300                         |
 | **Total**                           |                                                          | **≈ 5,100 / day — 5% of cap** |
 
-**MLB (from M12a) adds ≈ 1,050 rows/day** — 15 games × ≈ 55 rows plus the
+**MLB (since M12a) adds ≈ 1,050 rows/day** — 15 games × ≈ 55 rows plus the
 target's reschedules; cheaper per refresh than football because an MLB
 `display_clock` is always `"0:00"`, so the (B) live update fires only on a run or
-an inning. The arithmetic and the `< 1,000`-row regression bound are §23.11; the
-CFB-Saturday figures below are unchanged.
+an inning. The arithmetic and the `< 1,000`-row regression bound are §23.11;
+**measured** by `tests/worker/mlb.spec.ts` (15 games × 96 refreshes, ~12 live
+each, score and inning moving on every live refresh): **684 rows** for games +
+lines. The CFB-Saturday figures below are unchanged.
+
+| Stream (MLB, one day)               | Arithmetic                                     | Rows      |
+| ----------------------------------- | ---------------------------------------------- | --------- |
+| 15 MLB games `games` + `game_lines` | **measured**: 15 games × 96 refreshes          | **684**   |
+| the `mlb:date` target's reschedules | ≤ 96 runs × 2 (row + `idx_ingest_targets_due`) | ≤ 192     |
+| **MLB total**                       |                                                | **≈ 900** |
 
 For reference, the same fixture run through the **single-statement** upsert this
 replaces writes **6,978** rows; and the theoretical worst case of all 86 games
@@ -7027,7 +7050,8 @@ on all 96 refreshes — a day that cannot happen, since no game is live for 24 h
 It asserts **< 1,000** rows, cross-checked against
 an `env.DB.batch` probe. 1,000 is the CFB measurement scaled (2,979 × 15/86 ≈ 520)
 with the same ~2× headroom the CFB bound has; it is **to be measured**, and the
-measured value is recorded in the PR. If it exceeds 1,000 the arithmetic above
+measured value is recorded in the PR. **Measured in M12a: 684 rows** (games +
+lines; the target's reschedules are the separate ≤ 192 above). If it exceeds 1,000 the arithmetic above
 is wrong and is re-derived — the bound is not raised to fit. The CFB `< 5,000`
 assertion stays as it is, beside it.
 

@@ -1,9 +1,11 @@
 # CLAUDE.md — SpicyBettingSimulator
 
-Fake-money sports-betting simulator (NFL + FBS college football) for Alex and a
-few friends. Real lines, real odds, real payouts, **no real money**. MLB as a
-third league is PLANNED for the postseason (M12, PLAN.md §23) and not yet in
-`LEAGUES`.
+Fake-money sports-betting simulator (NFL + FBS college football, and MLB from
+M12) for Alex and a few friends. Real lines, real odds, real payouts, **no real
+money**. MLB is in `LEAGUES` since M12a: its board (today's ET date only) is
+live, but betting on it stays CLOSED (`LEAGUE_BETTING_OPEN.mlb` is `false` in
+`src/worker/bets.ts`) until M12b ships the shortened/postponed-game settlement
+rule (PLAN.md §23).
 
 **Read `PLAN.md` before changing anything.** It is the architecture of record:
 data model, odds math, settlement algorithm, ingestion design, milestones and the
@@ -181,8 +183,11 @@ the one failure mode the whole checklist has.
    bound after the ids, never against `leg_count`. MLB (M12) needs no change
    here: DraftKings' MLB same-game rule is the same one — run line OR moneyline,
    plus the total (PLAN.md §23.9).
-   8g. **MLB (planned — M12, PLAN.md §23).** Four rules the code must keep once
-   `'mlb'` is a `League`:
+   8g. **MLB (M12, PLAN.md §23; `'mlb'` is a `League` since M12a).** Five rules
+   the code must keep. (0) Betting per league is gated by `LEAGUE_BETTING_OPEN`
+   (`src/worker/bets.ts`): the board's `bettable` ANDs it in and
+   `resolveLegSnapshots` refuses a closed league's leg with the EXISTING
+   `409 GAME_NOT_BETTABLE` — `mlb: false` until M12b flips it.
    (i) a shortened game settles through `src/shared/action.ts`'s `GameAction`
    — computed from the game's league, status and `period` and handed to
    `gradeLeg` beside the score — so `gradeLeg` stays league-unaware and the
@@ -221,12 +226,12 @@ the one failure mode the whole checklist has.
      to replace `UNIQUE(bet_id, game_id)` with `UNIQUE(bet_id, game_id, market)`
      and add the `bet_legs_bi_one_side_per_game` trigger — same-game parlays,
      rule 8f and PLAN.md §5.2c.
-     `0009_mlb_league.sql` is PLANNED and does not exist yet: M12a writes it
-     from PLAN.md §23.3 (which carries it verbatim) in the same PR as the code
-     that writes `'mlb'` rows — a children-first rebuild of `games`,
-     `game_lines`, `bets`, `bet_legs`, `ledger` and `ingest_targets` to widen
-     four league CHECKs, ledger triggers recreated AFTER the copy. The M12
-     plan PR shipped no migration, for the reason below.
+     `0009_mlb_league.sql` (M12a, written from PLAN.md §23.3 verbatim, in the
+     same PR as the code that writes `'mlb'` rows) is a children-first rebuild
+     of `games`, `game_lines`, `bets`, `bet_legs`, `ledger` and
+     `ingest_targets` to widen four league CHECKs, ledger triggers recreated
+     AFTER the copy. The M12 plan PR shipped no migration, for the reason
+     below.
      `0007_secondary_odds.sql` shipped with M9b and is frozen like the rest;
      PLAN.md §21.3 carries the same text as its specification. The plan PR that
      added §21 and §22 deliberately shipped NO migration: the Deploy
@@ -365,8 +370,8 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               0006 adds bug_reports.diagnostics, 0007 adds the secondary
               provider's per-market book columns, games.secondary_tried_at and
               the secondary_budget row (PLAN.md §21.3), 0008 rebuilds bet_legs
-              for same-game parlays (PLAN.md §5.2c); 0009 (PLANNED, M12a)
-              rebuilds six tables to admit league 'mlb' (PLAN.md §23.3)
+              for same-game parlays (PLAN.md §5.2c), 0009 rebuilds six tables
+              to admit league 'mlb' (PLAN.md §23.3)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES

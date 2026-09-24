@@ -1,11 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { TEASER_PAYOUTS, TEASER_POINTS_TENTHS } from '../../src/shared/constants.js';
+import { LEAGUES } from '../../src/shared/types.js';
 import {
+  BET_LEAGUE_LABEL,
+  LEAGUE_BADGE,
+  LEAGUE_LABEL,
   betShapeLabel,
   hasSameGameLegs,
   teaserPointsLabel,
   teaserTierOptionLabel,
 } from '../../src/web/lib/labels.js';
+
+describe('league labels (M12a)', () => {
+  it('MLB is in all three tables, and a mixed bet is labelled "Mixed"', () => {
+    expect(LEAGUE_LABEL.mlb).toBe('MLB');
+    expect(LEAGUE_BADGE.mlb).toBe('MLB');
+    expect(BET_LEAGUE_LABEL.mlb).toBe('MLB');
+    // 'NFL + NCAAF' would be false for an MLB + NFL parlay (PLAN.md §23.12).
+    expect(BET_LEAGUE_LABEL.mixed).toBe('Mixed');
+  });
+
+  it('every League has a non-empty label and badge', () => {
+    for (const league of LEAGUES) {
+      expect(LEAGUE_LABEL[league]).not.toBe('');
+      expect(LEAGUE_BADGE[league]).not.toBe('');
+      expect(BET_LEAGUE_LABEL[league]).toBe(LEAGUE_LABEL[league]);
+    }
+  });
+});
 
 describe('teaserTierOptionLabel', () => {
   it("shows the tier and its card price for the slip's leg count", () => {

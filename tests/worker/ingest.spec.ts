@@ -38,9 +38,10 @@ import type { EspnStub, EventSpec, EventSpecOdds } from './fixtures.js';
 /** Sunday 2026-09-13, noon ET. `etDateKey(T0) === '20260913'`. */
 const T0 = Date.parse('2026-09-13T16:00:00Z');
 /**
- * Sunday 21:00 ET: BOTH leagues have rolled over (PLAN.md §22), so a plan at
- * this instant holds the widest queue — 9 dates per league, 18 targets — which
- * is what the slot-fairness tests need (they name dates up to the 18th).
+ * Sunday 21:00 ET: BOTH football leagues have rolled over (PLAN.md §22), so a
+ * plan at this instant holds the widest queue — 9 dates per football league
+ * plus MLB's one (today only, §23.5), 19 targets — which is what the
+ * slot-fairness tests need (they name dates up to the 18th).
  */
 const SUN_NIGHT = Date.parse('2026-09-14T01:00:00Z');
 const MIN = 60_000;
@@ -471,41 +472,47 @@ describe('planTargets', () => {
       'SELECT league, kind, key FROM ingest_targets ORDER BY key, league',
     ).all<{ league: string; kind: string; key: string }>();
     expect(rows.results.every((r) => r.kind === 'date')).toBe(true);
-    for (const league of ['nfl', 'ncaaf'] as const) {
+    for (const league of ['nfl', 'ncaaf', 'mlb'] as const) {
       const keys = etDateKeyRange(T0, boardWindowEnd(league, T0));
       expect(rows.results.filter((r) => r.league === league).map((r) => r.key)).toEqual(keys);
     }
   });
 
-  it('T0 is a Sunday at noon ET: 2 NFL dates + 9 CFB dates = 11 targets — the leagues are planned SEPARATELY', async () => {
+  it('T0 is a Sunday at noon ET: 2 NFL dates + 9 CFB dates + 1 MLB date = 12 targets — the leagues are planned SEPARATELY', async () => {
     // CFB rolled over at Sunday 00:00 ET, so its window already reaches the
-    // Monday after next; the NFL rolls at 20:00 ET, so it still ends tomorrow.
+    // Monday after next; the NFL rolls at 20:00 ET, so it still ends tomorrow;
+    // MLB's board is today only (PLAN.md §23.5).
     expect(etDateKeyRange(T0, boardWindowEnd('nfl', T0))).toEqual(['20260913', '20260914']);
     expect(etDateKeyRange(T0, boardWindowEnd('ncaaf', T0))).toHaveLength(9);
+    expect(etDateKeyRange(T0, boardWindowEnd('mlb', T0))).toEqual(['20260913']);
     const created = await planTargets(env, T0);
-    expect(created).toBe(11);
+    expect(created).toBe(12);
     const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM ingest_targets').first<{
       n: number;
     }>();
-    expect(row?.n).toBe(11);
+    expect(row?.n).toBe(12);
   });
 
-  it('a Tuesday plans 7 dates x 2 leagues = 14 targets, and is idempotent', async () => {
+  it('a Tuesday plans 7 dates x 2 football leagues + 1 MLB date = 15 targets, and is idempotent', async () => {
     const tue = Date.parse('2026-09-15T16:00:00Z'); // Tue 12:00 ET
-    expect(await planTargets(env, tue)).toBe(14);
+    expect(await planTargets(env, tue)).toBe(15);
     expect(await planTargets(env, tue + MIN)).toBe(0);
   });
 
-  it('a Monday plans 8 dates per league, creates none it did not create on Sunday night, and deletes nothing', async () => {
+  it('a Monday plans 8 dates per football league, creates only MLB’s new day, and deletes nothing', async () => {
     const sunNight = Date.parse('2026-09-14T01:00:00Z'); // Sun 21:00 ET, both leagues rolled over
-    expect(await planTargets(env, sunNight)).toBe(18); // 9 + 9
+    expect(await planTargets(env, sunNight)).toBe(19); // 9 + 9 + 1 (§8.4)
     const mon = Date.parse('2026-09-14T16:00:00Z'); // Mon 12:00 ET
     expect(etDateKeyRange(mon, boardWindowEnd('nfl', mon))).toHaveLength(8);
-    expect(await planTargets(env, mon)).toBe(0);
+    // Football created everything on Sunday night; MLB's window is TODAY, so
+    // Monday is its one new target — and Sunday's MLB target is NOT deleted.
+    expect(await planTargets(env, mon)).toBe(1);
+    expect(await targetDbRow('mlb:date:20260913')).not.toBeNull();
+    expect(await targetDbRow('mlb:date:20260914')).not.toBeNull();
     const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM ingest_targets').first<{
       n: number;
     }>();
-    expect(row?.n).toBe(18);
+    expect(row?.n).toBe(20);
   });
 
   it('never plans past INGEST_WINDOW_MS, the hard ceiling', async () => {
@@ -543,9 +550,9 @@ describe('planTargets', () => {
   it('target ids are <league>:date:YYYYMMDD and never collide', async () => {
     await planTargets(env, T0);
     const rows = await env.DB.prepare('SELECT id FROM ingest_targets').all<{ id: string }>();
-    expect(rows.results).toHaveLength(11);
-    expect(new Set(rows.results.map((r) => r.id)).size).toBe(11);
-    for (const { id } of rows.results) expect(id).toMatch(/^(nfl|ncaaf):date:\d{8}$/);
+    expect(rows.results).toHaveLength(12);
+    expect(new Set(rows.results.map((r) => r.id)).size).toBe(12);
+    for (const { id } of rows.results) expect(id).toMatch(/^(nfl|ncaaf|mlb):date:\d{8}$/);
   });
 
   it('needs no league calendar — NFL postseason dates are planned like any other day', async () => {
@@ -569,19 +576,20 @@ describe('planTargets', () => {
   });
 
   it('is idempotent — a second run creates nothing new', async () => {
-    expect(await planTargets(env, T0)).toBe(11);
+    expect(await planTargets(env, T0)).toBe(12);
     expect(await planTargets(env, T0 + MIN)).toBe(0);
     const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM ingest_targets').first<{
       n: number;
     }>();
-    expect(row?.n).toBe(11);
+    expect(row?.n).toBe(12);
   });
 
-  it("a rerun on Monday adds the NFL's seven new dates and nothing for CFB, which rolled on Sunday", async () => {
+  it("a rerun on Monday adds the NFL's seven new dates, nothing for CFB (rolled on Sunday) and MLB's one new day", async () => {
     await planTargets(env, T0);
     // Monday noon ET: the NFL window is now the following Monday (0914…0921);
-    // CFB already had 0913…0921 since Sunday 00:00 ET.
-    expect(await planTargets(env, T0 + DAY)).toBe(7);
+    // CFB already had 0913…0921 since Sunday 00:00 ET; MLB moves to 0914.
+    expect(await planTargets(env, T0 + DAY)).toBe(7 + 1);
+    expect(await targetDbRow('mlb:date:20260914')).not.toBeNull();
   });
 
   it('retires targets whose window ended > 2 days ago with no non-final games', async () => {
@@ -662,6 +670,23 @@ describe('request budget', () => {
     expect(slotUsesPerDay).toBeLessThan(supply);
   });
 
+  it('with MLB: 19 in-window targets, ≈ 70 discovery slot-uses/day against the reserved 96 (PLAN.md §23.11)', () => {
+    const sunNight = Date.parse('2026-09-14T01:00:00Z');
+    const football =
+      etDateKeyRange(sunNight, boardWindowEnd('nfl', sunNight)).length +
+      etDateKeyRange(sunNight, boardWindowEnd('ncaaf', sunNight)).length;
+    const mlb = etDateKeyRange(sunNight, boardWindowEnd('mlb', sunNight)).length;
+    expect(mlb).toBe(1);
+    expect(football + mlb).toBe(19);
+    // §23.11: 17 non-live football targets at +6 h, plus ~2 lingering past MLB
+    // dates on the +24 h tier. The MLB day target is live, so it is slot 1's.
+    const lingeringMlb = 2;
+    const demand = (football - 1) * (DAY / (6 * HOUR)) + lingeringMlb * (DAY / (24 * HOUR));
+    const supply = (DAY / (15 * MIN)) * RESERVED_DISCOVERY_SLOTS;
+    expect(demand).toBe(70);
+    expect(demand).toBeLessThan(supply);
+  });
+
   it('ROLLOVER BURST: the seven new CFB dates are created at once and drained a run at a time (PLAN.md §22.6)', async () => {
     const satNight = Date.parse('2026-09-13T03:30:00Z'); // Sat 23:30 ET
     await planTargets(env, satNight);
@@ -671,7 +696,8 @@ describe('request budget', () => {
     expect(before?.n).toBe(3); // 0912, 0913, 0914
 
     const sunEarly = Date.parse('2026-09-13T04:15:00Z'); // Sun 00:15 ET — rolled over
-    expect(await planTargets(env, sunEarly)).toBe(7); // 0915…0921, CFB only
+    // 0915…0921 for CFB, plus MLB's new day 0913 (its window is today, §23.5).
+    expect(await planTargets(env, sunEarly)).toBe(7 + 1);
     for (const key of etDateKeyRange(sunEarly, boardWindowEnd('ncaaf', sunEarly)))
       espn.set(key, []);
     for (const key of etDateKeyRange(sunEarly, boardWindowEnd('nfl', sunEarly))) espn.set(key, []);
@@ -686,7 +712,9 @@ describe('request budget', () => {
     const perRun = Number(env.REFRESH_TARGETS_PER_RUN);
     expect(perRun).toBe(2);
     let claimedSoFar = 0;
-    for (let run = 1; run <= 7; run += 1) {
+    // 00:00 ET is ALSO MLB's daily rollover (PLAN.md §23.5), so the burst holds
+    // eight new targets, not seven: one more run to drain it.
+    for (let run = 1; run <= 8; run += 1) {
       const now = sunEarly + run * 15 * MIN;
       const stats = await runRefresh(env, now, perRun);
       expect(stats.targetsProcessed).toBeLessThanOrEqual(perRun);
@@ -699,6 +727,10 @@ describe('request budget', () => {
       claimedSoFar = done?.n ?? 0;
     }
     expect(claimedSoFar).toBe(7);
+    const mlbNew = await env.DB.prepare(
+      "SELECT last_run_at AS t FROM ingest_targets WHERE id = 'mlb:date:20260913'",
+    ).first<{ t: number | null }>();
+    expect(mlbNew?.t).not.toBeNull();
   });
 });
 
@@ -1879,8 +1911,13 @@ describe('slot fairness (PLAN.md §8.4)', () => {
           .run();
       }
     }
-    // Every one of the 18 targets got at least one slot during the day.
-    expect(seen.size).toBe(18);
+    // Every one of the 19 targets (9 + 9 + MLB's 1, §8.4) got at least one slot
+    // during the day — the count is read from the planner, not assumed.
+    const planned = await env.DB.prepare('SELECT COUNT(*) AS n FROM ingest_targets').first<{
+      n: number;
+    }>();
+    expect(planned?.n).toBe(19);
+    expect(seen.size).toBe(planned?.n);
   }, 120_000);
 
   it('two simultaneously-live targets alternate in slot 1 (30-minute cadence each)', async () => {
@@ -1948,7 +1985,7 @@ describe('runRefresh', () => {
     )
       .bind(T0)
       .first<{ n: number }>();
-    expect(due?.n).toBe(9); // 11 planned at a Sunday noon, 2 just processed
+    expect(due?.n).toBe(10); // 12 planned at a Sunday noon (2 + 9 + 1), 2 just processed
   });
 
   it('the whole refresh is idempotent: a second identical run writes zero rows', async () => {

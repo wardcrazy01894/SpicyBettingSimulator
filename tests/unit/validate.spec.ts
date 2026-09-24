@@ -5,6 +5,7 @@ import {
   formatLineTenths,
   isCoherentMarketSide,
   legsConflict,
+  listWithOr,
   parseDollarsToCents,
   sameGameConflict,
   validateBugReport,
@@ -17,6 +18,7 @@ import {
 } from '../../src/shared/validate.js';
 import type { PlaceBetInput } from '../../src/shared/validate.js';
 import type { PlaceBetRequest } from '../../src/shared/api-types.js';
+import { LEAGUES } from '../../src/shared/types.js';
 import type { Market, Side } from '../../src/shared/types.js';
 import {
   BUG_REPORT_DESCRIPTION_MAX,
@@ -246,6 +248,20 @@ describe('validatePlaceBet', () => {
   });
   it("accepts league 'mixed' on the wire (M5b: the server re-derives it anyway)", () => {
     expect(ok(validatePlaceBet(straight({ league: 'mixed' }))).league).toBe('mixed');
+  });
+  it("accepts league 'mlb' on the wire (M12a: a third League)", () => {
+    expect(ok(validatePlaceBet(straight({ league: 'mlb' }))).league).toBe('mlb');
+  });
+  it('the unknown-league message lists every LEAGUES member, derived, never a literal', () => {
+    const message = fail(validatePlaceBet(straight({ league: 'nba' }))).message;
+    expect(message).toBe(`league must be ${listWithOr([...LEAGUES, 'mixed'])}`);
+    expect(message).toBe('league must be nfl, ncaaf, mlb or mixed');
+  });
+  it('listWithOr joins with commas and a final "or"', () => {
+    expect(listWithOr([])).toBe('');
+    expect(listWithOr(['a'])).toBe('a');
+    expect(listWithOr(['a', 'b'])).toBe('a or b');
+    expect(listWithOr(['a', 'b', 'c'])).toBe('a, b or c');
   });
   it('straight must have exactly 1 leg', () => {
     expect(fail(validatePlaceBet(straight({ legs: [] }))).field).toBe('legs');

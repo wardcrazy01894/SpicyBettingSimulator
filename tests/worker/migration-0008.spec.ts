@@ -75,10 +75,19 @@ async function snapshot(): Promise<Snapshot> {
   };
 }
 
+/**
+ * 0008's statements FOLLOWED BY 0009's: 0009 (MLB, PLAN.md §23.3) rebuilds
+ * `bet_legs` again with a widened `league` CHECK, so re-running 0008 alone on a
+ * post-0009 database would put pre-MLB DDL back. The remote went through both
+ * in order; so does this.
+ */
 function migration0008(): readonly string[] {
-  const m = env.TEST_MIGRATIONS.find((x) => x.name.startsWith('0008_'));
-  if (m === undefined) throw new Error('0008 not in TEST_MIGRATIONS');
-  return m.queries;
+  const pick = (prefix: string): readonly string[] => {
+    const m = env.TEST_MIGRATIONS.find((x) => x.name.startsWith(prefix));
+    if (m === undefined) throw new Error(`${prefix} not in TEST_MIGRATIONS`);
+    return m.queries;
+  };
+  return [...pick('0008_'), ...pick('0009_')];
 }
 
 async function schemaNames(type: 'trigger' | 'index' | 'table'): Promise<string[]> {
