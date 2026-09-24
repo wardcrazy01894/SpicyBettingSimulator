@@ -2,10 +2,10 @@
 
 Fake-money sports-betting simulator (NFL + FBS college football, and MLB from
 M12) for Alex and a few friends. Real lines, real odds, real payouts, **no real
-money**. MLB is in `LEAGUES` since M12a: its board (today's ET date only) is
-live, but betting on it stays CLOSED (`LEAGUE_BETTING_OPEN.mlb` is `false` in
-`src/worker/bets.ts`) until M12b ships the shortened/postponed-game settlement
-rule (PLAN.md §23).
+money**. MLB is in `LEAGUES` since M12a and its betting is OPEN since M12b
+(both 2026-09-24): the board shows today's ET date only, and
+`LEAGUE_BETTING_OPEN` in `src/worker/bets.ts` is the per-league kill switch
+(PLAN.md §23).
 
 **Read `PLAN.md` before changing anything.** It is the architecture of record:
 data model, odds math, settlement algorithm, ingestion design, milestones and the
@@ -354,7 +354,7 @@ errors. That is the ONLY transaction you get.
 src/shared/   pure domain: types, odds, grading, espn parser, validation, time,
               lines (the per-market merge), odds-api (the secondary's parser),
               action (which markets of a final game have action — MLB's
-              shortened-game rule, stubbed until M12b, PLAN.md §23.6)
+              shortened-game rule, PLAN.md §23.6)
 src/worker/   Hono API + cron jobs + D1 access; secondary.ts owns the Odds API
               sweep and its credit budget, and never edits ingest.ts's SQL
 src/worker/routes/  one file per API area; index.ts holds the route table.

@@ -4007,7 +4007,7 @@ phrasing.
 `npm run db:reconcile -- --remote` afterwards as for 0005, even though the
 ledger is never named in the file.
 
-### M12 — MLB as a third league — **PLANNED** _(plan 2026-09-24; betting live before the Wild Card, 2026-09-29)_
+### M12 — MLB as a third league — **IN PROGRESS: M12a + M12b DONE 2026-09-24, M12c remaining** _(plan 2026-09-24; betting live before the Wild Card, 2026-09-29)_
 
 "MLB for the postseason, today's games only, no teasers, primary odds only — and
 a rule for rain." **§23 is the specification**; §23.15 is the shipping order:
@@ -4019,7 +4019,7 @@ a rule for rain." **§23 is the specification**; §23.15 is the shipping order:
 | **M12b**     | **DONE 2026-09-24** — the FULL settlement rule (§23.6 table, `totalDecided`), postponed void + planner cap, canceled-terminal, MLB teaser refusal; betting OPEN             | M12a       |
 | **M12c**     | week-less board, innings label, client teaser greying                                                                                                                       | M12a       |
 
-**M12a and M12b merge back-to-back on 2026-09-25**, stacked branches reviewed in
+**M12a and M12b merged back-to-back on 2026-09-24** (PRs #50 and #51), stacked branches reviewed in
 parallel, M12a first: the six-table rebuild of 0009 is verified on the live D1
 (reconcile, `wrangler tail`, `coverage[]`) while no MLB stake can exist, and
 only then does M12b open betting. M12c follows within days. (A separate M12d for
@@ -6797,7 +6797,7 @@ action: GameAction }` — `GameResult` in the frozen `types.ts` is NOT widened.
 **`action` is REQUIRED**, on `gradeLeg`, `gradeBet`'s map
 (`ReadonlyMap<string, GradableGame>`) and `projectLeg` alike. An optional field
 defaulting to `FULL_ACTION` would fail OPEN: a production call site that forgot
-it (`settle.ts:497` via `gradeSettleableBet`, `src/worker/bets.ts:1353`'s projection) would
+it (`gradeSettleableBet` in `settle.ts`, `projectLeg` in `src/worker/bets.ts`) would
 grade an MLB Final/7's run line and pay it. Required, a missed site is a compile
 error. The existing `grading.spec.ts` vectors, which are all football, gain a
 test-only helper `full(result) = { ...result, action: FULL_ACTION }` — a
@@ -6825,7 +6825,7 @@ it learns only "a market can have no action", which is a sportsbook concept, and
 **Rule 7 holds.** The LINE is still `bet_legs.line_tenths`. `period` is a GAME
 fact read beside the score: §7.2's query gains ONLY `g.period AS g_period`.
 **The league comes from `bet_legs.league`**, which `loadLegsForBets` already reads
-into the snapshot (`settle.ts` `LegDbRow.league`; `src/worker/bets.ts:1338` for the
+into the snapshot (`settle.ts` `LegDbRow.league`; `projectLeg`'s snapshot in `src/worker/bets.ts` for the
 projection) — one source, not two. It is authoritative because it cannot
 disagree: it is snapshotted from the game row at placement, a game's league is
 part of its id (`"<league>:<eventId>"`, §3.1) and never changes, and every leg on
@@ -6842,8 +6842,8 @@ not, until maintenance cancels it.
 **The cross-sport trace the reviewer will ask for.** A parlay: MLB over 8.5 on a
 game that ends Final/7 with 6 runs, plus an NFL spread that LOSES. Legs grade
 `void` (not decided) and `loss`. `gradeBet` step 1 finds no pending leg; **step 2
-(`grading.ts:329`, `if (graded.some((l) => l.grade === 'loss'))`) returns `lost`,
-payout 0**, before step 3's survivor count (`:342`) is reached. A void leg never
+(`gradeBet` step 2 in `grading.ts`, `if (graded.some((l) => l.grade === 'loss'))`) returns `lost`,
+payout 0**, before step 3's survivor count is reached. A void leg never
 rescues a losing parlay. Had the NFL leg WON, step 3 keeps one survivor and the
 bet is `won` at the NFL leg's price alone, with `american_price` written back
 (§7.4). Both are `settle.spec`-level cases in `tests/worker/mlb.spec.ts` (M12b).
@@ -6936,7 +6936,7 @@ never "wrong". Two contracts pin it (`tests/worker/mlb.spec.ts`): a failed
 confirm fetch followed by a later OK fetch voids at the NEXT maintenance run;
 and a past MLB target holding a `postponed` game is NOT retired by
 `planTargets` (its `NOT EXISTS … status NOT IN ('final','canceled')` guard,
-`ingest.ts:342-353`), so the evidence can still arrive, and IS retired once the
+the retire guard in `planTargets`, `ingest.ts`), so the evidence can still arrive, and IS retired once the
 game is `canceled`. The slack is 1 h 30 m under EDT (03:00 EDT is 07:00 UTC; maintenance
 is 08:30 UTC) and 30 minutes under EST — i.e. only the World Series games after the
 2026-11-01 fall-back, when there is one game a day and nothing else competes for
@@ -6978,7 +6978,7 @@ Teasability today is by MARKET only (`TEASABLE_MARKETS`, `validate.ts:83`), and
 
 - **Pure helper** (M12a): `isTeasableLeague(league: League): boolean` in
   `validate.ts`, reading the constant. One definition for server and client.
-- **Server** (M12b): `applyTease` (`bets.ts:725`) runs on `ResolvedLeg`s, whose
+- **Server** (M12b): `applyTease` (`src/worker/bets.ts`) runs on `ResolvedLeg`s, whose
   `league` came from the `games` row (`bets.ts:619`). A leg with
   `!isTeasableLeague(leg.league)` throws `AppError('TEASER_INVALID', 'MLB legs
 cannot be teased.', { field: 'legs[i]' })` — 400, before any statement is built,
