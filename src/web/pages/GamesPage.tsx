@@ -22,7 +22,12 @@ import { useGames } from '../hooks/useApi.js';
 import { useNow, usePoll } from '../hooks/useNow.js';
 import { filterGames } from '../lib/board-filter.js';
 import type { BoardFilter } from '../lib/board-filter.js';
-import { groupGamesByLocalDate, weeksFromGames } from '../lib/grouping.js';
+import {
+  BOARD_HAS_WEEKS,
+  boardEmptyCopy,
+  groupBoardGames,
+  weeksFromGames,
+} from '../lib/grouping.js';
 import { useBetSlip } from '../state/bet-slip.js';
 import { useConfig } from '../state/config.js';
 
@@ -47,7 +52,8 @@ export function GamesPage(): ReactElement {
 
   const games = board.data?.games ?? [];
   const shown = league === 'ncaaf' ? filterGames(games, filter) : games;
-  const groups = groupGamesByLocalDate(shown);
+  const groups = groupBoardGames(league, shown);
+  const empty = boardEmptyCopy(league, games.length > 0 && shown.length === 0);
   // Weeks come from the UNFILTERED slate: a conference with no game this week
   // must not make the week disappear from the picker.
   const weeks = weeksFromGames(games, board.data?.week ?? null, week);
@@ -64,7 +70,9 @@ export function GamesPage(): ReactElement {
             slip.setBoardLeague(next);
           }}
         />
-        <WeekPicker week={week ?? board.data?.week ?? null} weeks={weeks} onChange={setWeek} />
+        {BOARD_HAS_WEEKS[league] && (
+          <WeekPicker week={week ?? board.data?.week ?? null} weeks={weeks} onChange={setWeek} />
+        )}
         {league === 'ncaaf' && <BoardFilterSelect filter={filter} onChange={setFilter} />}
       </div>
 
@@ -74,18 +82,7 @@ export function GamesPage(): ReactElement {
       {board.loading && board.data === undefined && <Spinner label="Loading the board…" />}
 
       {board.data !== undefined && groups.length === 0 && (
-        <EmptyState
-          title={
-            games.length > 0 && shown.length === 0
-              ? 'No games match that filter this week.'
-              : 'No games in this window.'
-          }
-          hint={
-            games.length > 0 && shown.length === 0
-              ? 'Pick another conference, or All games.'
-              : 'Try another week, or check back once the schedule is ingested.'
-          }
-        />
+        <EmptyState title={empty.title} hint={empty.hint} />
       )}
 
       {groups.map((group) => (

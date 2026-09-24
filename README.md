@@ -39,7 +39,7 @@ no top-up button, so bet like it's real.
   the one thing the slip will not build.
 - **Teasers** from 3 to 14 points (plus 6.5). Every leg moves your way by that
   much, and you pay for it in the price. Spreads and totals only, since a
-  moneyline has no line to move. A push still reduces the bet instead of
+  moneyline has no line to move, and football only: MLB legs can't be teased. A push still reduces the bet instead of
   killing it, at every tier.
 - A **Top 25 / conference filter** on the college tab, because 80 games is a
   lot of games.

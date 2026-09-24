@@ -59,6 +59,18 @@ export const MARKET_LABEL: Readonly<Record<Market, string>> = {
   total: 'Total',
 };
 
+/**
+ * The column heads over a game card's market grid. Baseball's spread is the
+ * RUN LINE (almost always ±1.5); it is stored and graded exactly like a
+ * football spread (`market = 'spread'`), so only the words change. The total
+ * stays "Total" everywhere. PLAN.md §23.12.
+ */
+export const MARKET_HEAD_LABEL: Readonly<Record<League, Readonly<Record<Market, string>>>> = {
+  nfl: { spread: 'Spread', total: 'Total', moneyline: 'Money' },
+  ncaaf: { spread: 'Spread', total: 'Total', moneyline: 'Money' },
+  mlb: { spread: 'Run line', total: 'Total', moneyline: 'Money' },
+};
+
 export const SIDE_LABEL: Readonly<Record<Side, string>> = {
   home: 'Home',
   away: 'Away',
@@ -203,13 +215,41 @@ export function pickLabel(
   return lineTenths === null ? `${ou} total` : `${ou} ${formatLineTenths(lineTenths, false)}`;
 }
 
-/** "Q3 · 4:12" from a game's period + clock, or the server's status detail. */
+/**
+ * How a league's live game reads its clock. Football has quarters and a game
+ * clock; baseball has innings and no clock at all — ESPN still sends
+ * `displayClock: "0:00"` for an MLB game, which is how the board came to say
+ * "Q7 · 0:00" in the seventh inning. A total `Record` so a fourth league has to
+ * choose (PLAN.md §23.12).
+ */
+const CLOCK_STYLE: Readonly<Record<League, 'quarters' | 'innings'>> = {
+  nfl: 'quarters',
+  ncaaf: 'quarters',
+  mlb: 'innings',
+};
+
+/**
+ * The status line on a game card or bet leg.
+ *
+ * Football: "Q3 · 4:12" from period + clock while live, else the server's status
+ * detail — unchanged since M8, and pinned byte-for-byte in `labels.spec.ts`.
+ *
+ * MLB: ESPN's own `statusDetail` ("Top 7th", "Bottom 1st", "Final/12",
+ * "Postponed", "Scheduled"), falling back to "Inning N" for a live game with no
+ * detail. Never a quarter, never a clock.
+ */
 export function gameClockLabel(
+  league: League,
   status: GameStatus,
   statusDetail: string | null,
   period: number | null,
   displayClock: string | null,
 ): string {
+  if (CLOCK_STYLE[league] === 'innings') {
+    if (statusDetail !== null) return statusDetail;
+    if (status === 'in_progress' && period !== null) return `Inning ${String(period)}`;
+    return GAME_STATUS_LABEL[status];
+  }
   if (status === 'in_progress' && period !== null && displayClock !== null) {
     return `Q${String(period)} · ${displayClock}`;
   }

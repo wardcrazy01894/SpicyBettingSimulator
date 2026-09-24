@@ -2949,11 +2949,12 @@ main.tsx
     │           │   │                       + <BetSlipBar> + <BetSlip>; redirects anon to /login
     │           │   ├── route "/"           <GamesPage>
     │           │   │   ├── <LeagueTabs>    moves the BOARD only — never the slip
-    │           │   │   ├── <WeekPicker>
+    │           │   │   ├── <WeekPicker>    football only — hidden for MLB (BOARD_HAS_WEEKS, §23.12)
     │           │   │   ├── <BoardFilterSelect>   CFB only: All / Top 25 / conference / Other
     │           │   │   │                          → filterGames() in lib/board-filter.ts, client-side;
     │           │   │   │                            a game matches when EITHER team does; reset on league change
-    │           │   │   └── groupGamesByLocalDate()   (viewer's LOCAL tz)
+    │           │   │   └── groupBoardGames(league)   football: groupGamesByLocalDate() (viewer's LOCAL tz);
+    │           │   │       │                          MLB: the ET calendar date (§23.12)
     │           │   │       └── <GameCard game now>
     │           │   │           ├── <TeamRow team score rank>
     │           │   │           └── <MarketButton market side line price selected>   ×6
@@ -3083,6 +3084,14 @@ friend in Denver sees Denver times.
 - **Games board grouping**: primary group = `week` (authoritative from ESPN, which
   correctly spans Thu→Mon for the NFL); within a week, subgroup by the viewer's local
   calendar date.
+- **The MLB board (M12c, §23.12)** has no week: the picker is hidden and the
+  day group is the only grouping, keyed on the **US Eastern** calendar date via
+  the shared `etDateKey` — the board IS an ET day (§23.5), so a 10:15 PM EDT
+  first pitch (02:15Z) stays under the day ESPN scheduled it on for every
+  viewer. The card's first-pitch time is still local. An in-progress MLB game
+  reads ESPN's `statusDetail` ("Top 7th") instead of `Q7 · 0:00`, the spread
+  column is headed "Run line", every MLB cell greys out in teaser mode, and an
+  empty MLB board says lines post on game day rather than "try another week".
 - **My Bets "weekend" grouping**: group by `(league, season, week)` of the bet's
   earliest leg and label it "Week N — Sep 11–15" using local dates. Using ESPN's week
   number rather than a computed Sat/Sun boundary is what makes Thursday and Monday
@@ -3653,7 +3662,7 @@ Live at https://spicybetting.wardcrazy01894.workers.dev, first deployed
 | M9-0 / M9a–c board window, secondary odds     | **DONE** — 2026-09-16 / 2026-09-17 (§21, §22)                       |
 | M10 player bet history                        | **DONE** — 2026-09-21 (§11.8)                                       |
 | M11 same-game parlays                         | **DONE** — 2026-09-21 (§5.2c)                                       |
-| M12 MLB as a third league                     | **PLANNED** — betting live by 2026-09-29; M12a–d (§23.15)           |
+| M12 MLB as a third league                     | **DONE** — 2026-09-24; M12a, M12b, M12c (§23.15)                    |
 
 Two things follow from the deploy having happened:
 
@@ -4007,7 +4016,7 @@ phrasing.
 `npm run db:reconcile -- --remote` afterwards as for 0005, even though the
 ledger is never named in the file.
 
-### M12 — MLB as a third league — **IN PROGRESS: M12a + M12b DONE 2026-09-24, M12c remaining** _(plan 2026-09-24; betting live before the Wild Card, 2026-09-29)_
+### M12 — MLB as a third league — **DONE** _(plan 2026-09-24; M12a, M12b and M12c merged 2026-09-24; betting live before the Wild Card, 2026-09-29)_
 
 "MLB for the postseason, today's games only, no teasers, primary odds only — and
 a rule for rain." **§23 is the specification**; §23.15 is the shipping order:
@@ -4017,7 +4026,7 @@ a rule for rain." **§23 is the specification**; §23.15 is the shipping order:
 | **M12-plan** | §23, five constants of record, `src/shared/action.ts` stubs, three `it.todo` contract files                                                                                 | —          |
 | **M12a**     | **DONE 2026-09-24** (PR #50; 0009 applied to the live D1 19:08 UTC, reconcile clean) — `migrations/0009_mlb_league.sql` + `'mlb'` in `LEAGUES` + ingest + a READ-ONLY board | M12-plan   |
 | **M12b**     | **DONE 2026-09-24** — the FULL settlement rule (§23.6 table, `totalDecided`), postponed void + planner cap, canceled-terminal, MLB teaser refusal; betting OPEN             | M12a       |
-| **M12c**     | week-less board, innings label, client teaser greying                                                                                                                       | M12a       |
+| **M12c**     | week-less board, innings label, client teaser greying — **DONE** 2026-09-24                                                                                                 | M12a       |
 
 **M12a and M12b merged back-to-back on 2026-09-24** (PRs #50 and #51), stacked branches reviewed in
 parallel, M12a first: the six-table rebuild of 0009 is verified on the live D1
@@ -6987,7 +6996,7 @@ cannot be teased.', { field: 'legs[i]' })` — 400, before any statement is buil
   the same path. **No error code is added.**
 - **Client** (M12c): `GameCard.tsx`'s `unteasable` becomes
   `teasing && (cell.market === 'moneyline' || !isTeasableLeague(game.league))`
-  with its own hint; `BetSlip.tsx`'s `teaseText` renders "MLB can't be teased"
+  with its own hint; `teaseText` (in `state/slip-preview.ts`) renders "MLB can't be teased"
   for such a leg instead of silently dropping it (the same rule it applies to a
   moneyline today); `slip-preview.ts`'s `computePreview` returns an error for a
   teaser slip holding one, because slip legs DO carry `league`.
@@ -7096,11 +7105,26 @@ assertion stays as it is, beside it.
 | `BET_LEAGUE_LABEL.mixed`                                         | `'NFL + NCAAF'` → `'Mixed'` — it would be false for MLB + NFL. `BetSlipBar`'s `leagueSummary` already builds "NFL + MLB" from the legs                                             | M12a      |
 | `gameClockLabel`                                                 | gains `league`; MLB in progress renders `statusDetail` ("Bottom 5th") or `Inning ${period}`, never `Q5 · 0:00`. Football unchanged                                                 | M12c      |
 | `routes/meta.ts` `currentSeason`                                 | a third key (`ConfigResponse.currentSeason` is `Record<League, …>`, additive on the wire)                                                                                          | M12a      |
-| `GamesPage.tsx` week picker                                      | hidden when the league has no weeks (`boardHasWeeks(league)`, a `Record<League, boolean>` in `src/web/lib/grouping.ts`); the day groups (`groupGamesByLocalDate`) are the grouping | M12c      |
-| `GameCard.tsx` market heads                                      | "Run line" instead of "Spread" for MLB (a `Record<League, string>` in `labels.ts`)                                                                                                 | M12c      |
+| `GamesPage.tsx` week picker                                      | hidden when the league has no weeks (`BOARD_HAS_WEEKS`, a `Record<League, boolean>` in `src/web/lib/grouping.ts`); `groupBoardGames` groups MLB games by their ET date (see §12.3) | M12c      |
+| `GameCard.tsx` market heads                                      | "Run line" instead of "Spread" for MLB (`MARKET_HEAD_LABEL`, a `Record<League, …>` in `labels.ts`)                                                                                 | M12c      |
 | teaser mode                                                      | §23.8's three client changes                                                                                                                                                       | M12c      |
 | My Bets grouping                                                 | none — `groupBetsByWeek` buckets by `(bet.league, footballWeekStart)`, a local Tuesday-anchored calendar week that is as good a bucket for MLB bets as for anything else           | —         |
 | default board league                                             | stays `'nfl'`                                                                                                                                                                      | —         |
+
+**Status: M12c DONE 2026-09-24.** As shipped: `gameClockLabel(league, status,
+statusDetail, period, displayClock)` — MLB returns ESPN's `statusDetail` as is
+("Top 7th", "Bottom 1st", "Final/12", "Postponed", "Scheduled", all from the
+committed samples), `Inning N` only for a live game with no detail; football is
+pinned byte-identical in `labels.spec.ts`. The MLB day groups are **US Eastern**
+dates (`groupBoardGames`, via the shared `etDateKey`), not the viewer-local
+`groupGamesByLocalDate` the row above first named: the board is an ET day
+(§23.5), and a viewer-local key would put a 10:15 PM EDT first pitch under
+tomorrow for anyone east of New York. `boardEmptyCopy` gives MLB "lines post on
+game day" instead of "try another week". Teaser mode: the cell reason is
+`unteasableReason(league, market)` in `lib/lines.ts`, and `teaseText` moved from
+`BetSlip.tsx` to `state/slip-preview.ts` so it is unit-tested; the preview's MLB
+error is checked BEFORE `validatePlaceBet`, so a one-leg MLB teaser is told the
+rule rather than "add a leg". My Bets is unchanged, as the row above says.
 
 The board query for MLB is `?league=mlb&season=<config.currentSeason.mlb>` with
 no `week`; postseason games are `season.type 3` of the same `season.year`
@@ -7185,13 +7209,13 @@ M12b as a one-line per-league kill switch.
 opener on 2026-09-29, ideally on 2026-09-25/26.** Each PR is green on the gate
 and leaves football behaviour byte-identical.
 
-| PR           | What lands                                                                                                                                                          | Depends on | Target merge         |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | -------------------- |
-| **M12-plan** | this chapter, five constants, `action.ts` stubs, three contract files, docs guard                                                                                   | —          | 2026-09-24           |
-| **M12a**     | `0009`, `'mlb'` in `LEAGUES`, every `Record<League>` (incl. `'Mixed'`), ESPN table, planner, window, sample, `isTeasableLeague` — **board visible, betting CLOSED** | plan       | **DONE** 2026-09-24  |
-| **M12b**     | the FULL §23.6 table (`>= 9`, `5 … 8`, `< 5`, `totalDecided`), postponed-void rule + planner cap, canceled-terminal, server MLB-teaser refusal — **betting OPENS**  | M12a       | **DONE** 2026-09-24  |
-| **M12c**     | week-less board, innings clock label, Run-line head, client teaser greying and pre-validation                                                                       | M12a       | within days, ≤ 10-02 |
-| ~~M12d~~     | folded into M12b — 2026-09-24                                                                                                                                       | —          | —                    |
+| PR           | What lands                                                                                                                                                          | Depends on | Target merge        |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------- |
+| **M12-plan** | this chapter, five constants, `action.ts` stubs, three contract files, docs guard                                                                                   | —          | 2026-09-24          |
+| **M12a**     | `0009`, `'mlb'` in `LEAGUES`, every `Record<League>` (incl. `'Mixed'`), ESPN table, planner, window, sample, `isTeasableLeague` — **board visible, betting CLOSED** | plan       | **DONE** 2026-09-24 |
+| **M12b**     | the FULL §23.6 table (`>= 9`, `5 … 8`, `< 5`, `totalDecided`), postponed-void rule + planner cap, canceled-terminal, server MLB-teaser refusal — **betting OPENS**  | M12a       | **DONE** 2026-09-24 |
+| **M12c**     | week-less board, innings clock label, Run-line head, client teaser greying and pre-validation                                                                       | M12a       | **DONE** 2026-09-24 |
+| ~~M12d~~     | folded into M12b — 2026-09-24                                                                                                                                       | —          | —                   |
 
 **Two PRs back-to-back, not one "M12ab".** Their file overlap is small —
 `bets.ts` (M12a adds `LEAGUE_BETTING_OPEN`, M12b flips it and adds the teaser

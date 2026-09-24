@@ -51,7 +51,7 @@ export function BetLegRow(props: { readonly leg: BetLegView }): ReactElement {
         <span className="muted">
           {leg.game.status === 'scheduled'
             ? formatDateTime(leg.game.kickoffAt)
-            : gameClockLabel(leg.game.status, leg.game.statusDetail, null, null)}
+            : gameClockLabel(leg.league, leg.game.status, leg.game.statusDetail, null, null)}
         </span>
       </div>
     </li>

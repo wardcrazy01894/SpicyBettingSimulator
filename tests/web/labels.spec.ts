@@ -5,7 +5,9 @@ import {
   BET_LEAGUE_LABEL,
   LEAGUE_BADGE,
   LEAGUE_LABEL,
+  MARKET_HEAD_LABEL,
   betShapeLabel,
+  gameClockLabel,
   hasSameGameLegs,
   teaserPointsLabel,
   teaserTierOptionLabel,
@@ -89,5 +91,76 @@ describe('betShapeLabel', () => {
     expect(betShapeLabel({ betType: 'teaser', teaserPoints: 60, legs: legs('a', 'a') })).toBe(
       'Same game 6-pt teaser · 2 legs',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M12c: the innings clock and the Run-line head (PLAN.md §23.12). The
+// statusDetail strings are ESPN's own `status.type.detail`, copied from
+// docs/samples/espn-mlb-scoreboard-2026-09-2{2,4}.json.
+// ---------------------------------------------------------------------------
+
+describe('gameClockLabel — MLB innings (M12c)', () => {
+  it('renders an in-progress game from statusDetail, never "Q7 · 0:00"', () => {
+    expect(gameClockLabel('mlb', 'in_progress', 'Top 7th', 7, '0:00')).toBe('Top 7th');
+    expect(gameClockLabel('mlb', 'in_progress', 'Bottom 1st', 1, '0:00')).toBe('Bottom 1st');
+  });
+
+  it('falls back to "Inning N" when a live game has no detail', () => {
+    expect(gameClockLabel('mlb', 'in_progress', null, 5, '0:00')).toBe('Inning 5');
+    expect(gameClockLabel('mlb', 'in_progress', null, null, null)).toBe('Live');
+  });
+
+  it('renders finals, extra-inning finals and postponements as ESPN says them', () => {
+    expect(gameClockLabel('mlb', 'final', 'Final', 9, '0:00')).toBe('Final');
+    expect(gameClockLabel('mlb', 'final', 'Final/12', 12, '0:00')).toBe('Final/12');
+    expect(gameClockLabel('mlb', 'postponed', 'Postponed', 0, '0:00')).toBe('Postponed');
+  });
+
+  it('renders a scheduled game as Scheduled', () => {
+    expect(gameClockLabel('mlb', 'scheduled', 'Scheduled', 0, '0:00')).toBe('Scheduled');
+    expect(gameClockLabel('mlb', 'scheduled', null, null, null)).toBe('Scheduled');
+  });
+});
+
+describe('gameClockLabel — football is byte-identical (M12c)', () => {
+  // The pre-M12c output, pinned literally: M12c must not move a football label.
+  const cases: readonly [
+    Parameters<typeof gameClockLabel>[1],
+    string | null,
+    number | null,
+    string | null,
+    string,
+  ][] = [
+    ['in_progress', '3rd Quarter', 3, '4:12', 'Q3 · 4:12'],
+    ['in_progress', 'Halftime', 2, '0:00', 'Q2 · 0:00'],
+    ['in_progress', 'End of 1st', null, null, 'End of 1st'],
+    ['in_progress', null, null, null, 'Live'],
+    ['final', 'Final', 4, '0:00', 'Final'],
+    ['final', 'Final/OT', 5, '0:00', 'Final/OT'],
+    ['scheduled', null, null, null, 'Scheduled'],
+    ['postponed', null, null, null, 'Postponed'],
+  ];
+  for (const league of ['nfl', 'ncaaf'] as const) {
+    it(`${league}: every status renders exactly as before`, () => {
+      for (const [status, detail, period, clock, expected] of cases) {
+        expect(gameClockLabel(league, status, detail, period, clock)).toBe(expected);
+      }
+    });
+  }
+});
+
+describe('MARKET_HEAD_LABEL (M12c)', () => {
+  it('says "Run line" over an MLB spread and "Spread" over a football one', () => {
+    expect(MARKET_HEAD_LABEL.mlb.spread).toBe('Run line');
+    expect(MARKET_HEAD_LABEL.nfl.spread).toBe('Spread');
+    expect(MARKET_HEAD_LABEL.ncaaf.spread).toBe('Spread');
+  });
+
+  it('keeps Total and Money for every league', () => {
+    for (const league of LEAGUES) {
+      expect(MARKET_HEAD_LABEL[league].total).toBe('Total');
+      expect(MARKET_HEAD_LABEL[league].moneyline).toBe('Money');
+    }
   });
 });

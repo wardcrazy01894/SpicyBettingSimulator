@@ -3,14 +3,17 @@
  *
  * Everything from the API is epoch ms UTC; everything here renders in the
  * VIEWER'S LOCAL timezone via `Intl.DateTimeFormat(undefined, ...)`, so a friend
- * in Denver sees Denver times. The only timezone name in the codebase is
- * `etDateKey()` on the ingest side — never here.
+ * in Denver sees Denver times. No timezone NAME is written here: the one US
+ * Eastern question the board asks — which ET calendar date an MLB game is on
+ * (PLAN.md §23.12) — is answered by the shared `etDateKey()`, the same
+ * `Intl`/`America/New_York` function the ingest planner uses.
  *
  * DOM-FREE ON PURPOSE: `tests/web/datetime.spec.ts` runs in the node vitest
  * project (jsdom is not installed), so nothing in this file may touch `window`,
  * `document` or `localStorage`.
  */
 
+import { etDateKey } from '../../shared/time.js';
 import type { EpochMs } from '../../shared/types.js';
 
 /**
@@ -40,6 +43,35 @@ const DAY_HEADING_FORMAT = new Intl.DateTimeFormat(undefined, {
 /** "Thu, Sep 11". The heading above a day group on the board. */
 export function formatDayHeading(at: EpochMs): string {
   return DAY_HEADING_FORMAT.format(new Date(at));
+}
+
+/**
+ * A pure calendar-date heading ("Thu, Sep 24") for a `YYYYMMDD` key, the
+ * shape `etDateKey()` returns. The key is ALREADY the date, so it is rendered at
+ * UTC noon in UTC — a formatting device with no zone arithmetic in it, which
+ * cannot shift the day for any viewer.
+ */
+const CALENDAR_HEADING_FORMAT = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+  timeZone: 'UTC',
+});
+
+/**
+ * The ET calendar date `at` falls on, as `{ dateKey: 'YYYY-MM-DD', label }`.
+ * MLB's board is "today, US Eastern" (§23.5), so its day groups are ET dates:
+ * a 10:15 PM EDT first pitch (02:15Z) stays on the day it was scheduled for.
+ */
+export function etCalendarDay(at: EpochMs): { readonly dateKey: string; readonly label: string } {
+  const key = etDateKey(at);
+  const year = Number(key.slice(0, 4));
+  const month = Number(key.slice(4, 6));
+  const day = Number(key.slice(6, 8));
+  return {
+    dateKey: `${key.slice(0, 4)}-${key.slice(4, 6)}-${key.slice(6, 8)}`,
+    label: CALENDAR_HEADING_FORMAT.format(new Date(Date.UTC(year, month - 1, day, 12))),
+  };
 }
 
 const SHORT_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {

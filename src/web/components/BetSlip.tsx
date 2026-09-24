@@ -12,6 +12,10 @@
  * ONE SLIP, CROSS-LEAGUE (M5b). Legs may come from either league tab, so each
  * carries an NFL / CFB badge — the tab you happen to be on no longer tells you
  * where a pick came from.
+ *
+ * Teasers are football only (PLAN.md §23.8): an MLB leg in a teaser slip reads
+ * "MLB can't be teased" (`teaseText`, in `state/slip-preview.ts` so it is
+ * unit-tested) and the preview blocks the submit with the reason.
  */
 import { useCallback, useRef } from 'react';
 import type { ReactElement } from 'react';
@@ -21,7 +25,7 @@ import { Segmented } from './Segmented.js';
 import { SlipSummary } from './SlipSummary.js';
 import { StakeInput } from './StakeInput.js';
 import { useFocusTrap } from '../hooks/useFocusTrap.js';
-import { formatAmerican, teasedLineTenths } from '../../shared/odds.js';
+import { formatAmerican } from '../../shared/odds.js';
 import { formatCents, formatLineTenths } from '../../shared/validate.js';
 import {
   LEAGUE_BADGE,
@@ -32,7 +36,8 @@ import {
 } from '../lib/labels.js';
 import { useBetSlip } from '../state/bet-slip.js';
 import { useConfig } from '../state/config.js';
-import type { SlipLeg, SlipMode } from '../state/slip-reducer.js';
+import { teaseText } from '../state/slip-preview.js';
+import type { SlipMode } from '../state/slip-reducer.js';
 import type { LineTenths } from '../../shared/types.js';
 
 const MODE_OPTIONS: readonly { value: SlipMode; label: string }[] = [
@@ -43,21 +48,6 @@ const MODE_OPTIONS: readonly { value: SlipMode; label: string }[] = [
 
 function lineText(lineTenths: LineTenths | null, signed: boolean): string {
   return lineTenths === null ? '' : ` ${formatLineTenths(lineTenths, signed)}`;
-}
-
-/**
- * "-7.5 → -1.5" for a teasable leg, or a reason it cannot be teased.
- *
- * A moneyline leg already in the slip when the user switches to Teaser is NOT
- * silently dropped — deleting somebody's pick to make their slip valid is worse
- * than telling them — so it renders as "no line to tease" and the preview's own
- * validation error blocks the submit until they remove it.
- */
-function teaseText(leg: SlipLeg, pointsTenths: number): string {
-  if (leg.market === 'moneyline' || leg.lineTenths === null) return 'no line to tease';
-  const signed = leg.market === 'spread';
-  const teased = teasedLineTenths(leg.market, leg.side, leg.lineTenths, pointsTenths);
-  return `${formatLineTenths(leg.lineTenths, signed)} → ${formatLineTenths(teased, signed)}`;
 }
 
 export function BetSlip(): ReactElement {
@@ -141,8 +131,8 @@ export function BetSlip(): ReactElement {
               </select>
             </div>
             <p className="muted slip-hint">
-              Every line moves {teaserPointsLabel(slip.teaserPointsTenths)} your way. Spreads and
-              totals only — moneylines cannot be teased.
+              Every line moves {teaserPointsLabel(slip.teaserPointsTenths)} your way. Football
+              spreads and totals only — moneylines and MLB cannot be teased.
             </p>
           </>
         )}

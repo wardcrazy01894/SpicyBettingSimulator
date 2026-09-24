@@ -12,7 +12,8 @@
 
 import type { GameLinesView } from '../../shared/api-types.js';
 import { MONEYLINE_NOT_OFFERED_SPREAD_TENTHS } from '../../shared/constants.js';
-import type { AmericanPrice, LineTenths, Market, Side } from '../../shared/types.js';
+import type { AmericanPrice, League, LineTenths, Market, Side } from '../../shared/types.js';
+import { isTeasableLeague } from '../../shared/validate.js';
 
 export interface MarketQuote {
   /** Always null for a moneyline; tenths of a point otherwise. */
@@ -74,4 +75,22 @@ export function moneylineNotOffered(lines: GameLinesView | null): boolean {
   const spread = lines?.spread ?? null;
   if (spread === null || lines?.moneyline !== null) return false;
   return Math.abs(spread.homeTenths) >= MONEYLINE_NOT_OFFERED_SPREAD_TENTHS;
+}
+
+/** Shown on a greyed cell while the slip is building a teaser. */
+const MONEYLINE_UNTEASABLE = 'moneylines cannot be teased';
+const LEAGUE_UNTEASABLE = 'MLB lines cannot be teased';
+
+/**
+ * Why a board cell cannot join a TEASER, or null when it can. A teaser moves a
+ * line, so a moneyline has nothing to move; and teasers are football only
+ * (PLAN.md §23.8), so every MLB cell is out. `isTeasableLeague` is the SAME
+ * function the server's `applyTease` uses, so the grey-out and the
+ * `TEASER_INVALID` refusal cannot disagree. The league reason wins over the
+ * market one: on an MLB card it is the whole story.
+ */
+export function unteasableReason(league: League, market: Market): string | null {
+  if (!isTeasableLeague(league)) return LEAGUE_UNTEASABLE;
+  if (market === 'moneyline') return MONEYLINE_UNTEASABLE;
+  return null;
 }

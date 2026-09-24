@@ -16,8 +16,8 @@ import { ErrorBanner } from './ErrorBanner.js';
 import { MarketButton } from './MarketButton.js';
 import { TeamRow } from './TeamRow.js';
 import { formatCountdown, formatTime } from '../lib/datetime.js';
-import { gameClockLabel, pickLabel } from '../lib/labels.js';
-import { MARKET_CELLS, moneylineNotOffered, quoteFor } from '../lib/lines.js';
+import { MARKET_HEAD_LABEL, gameClockLabel, pickLabel } from '../lib/labels.js';
+import { MARKET_CELLS, moneylineNotOffered, quoteFor, unteasableReason } from '../lib/lines.js';
 import { postAdminGameRefresh } from '../api/client.js';
 import { invalidate } from '../hooks/useResource.js';
 import { useBetSlip } from '../state/bet-slip.js';
@@ -30,8 +30,6 @@ export interface GameCardProps {
   readonly now: number;
 }
 
-/** Shown on a greyed moneyline cell while the slip is building a teaser. */
-const UNTEASABLE_HINT = 'moneylines cannot be teased';
 /** A moneyline cell on a 30+ point spread: absent by book policy, not missing. */
 const NO_ML_TEXT = 'No ML';
 const NO_ML_HINT = 'no moneyline is offered at this spread';
@@ -95,7 +93,13 @@ export function GameCard(props: GameCardProps): ReactElement {
         <span className="game-time">{formatTime(game.kickoffAt)}</span>
         {game.neutralSite && <span className="chip chip-quiet">Neutral</span>}
         <span className="game-status">
-          {gameClockLabel(game.status, game.statusDetail, game.period, game.displayClock)}
+          {gameClockLabel(
+            game.league,
+            game.status,
+            game.statusDetail,
+            game.period,
+            game.displayClock,
+          )}
         </span>
         {game.bettable && countdown !== null && (
           <span className="game-countdown">locks in {countdown}</span>
@@ -117,9 +121,10 @@ export function GameCard(props: GameCardProps): ReactElement {
         <>
           {stale && <p className="game-noline">Line is stale — not accepting bets right now.</p>}
           <div className="market-grid" role="group" aria-label="Markets">
-            <span className="market-head">Spread</span>
-            <span className="market-head">Total</span>
-            <span className="market-head">Money</span>
+            {/* "Run line" over an MLB spread (PLAN.md §23.12). */}
+            <span className="market-head">{MARKET_HEAD_LABEL[game.league].spread}</span>
+            <span className="market-head">{MARKET_HEAD_LABEL[game.league].total}</span>
+            <span className="market-head">{MARKET_HEAD_LABEL[game.league].moneyline}</span>
             {MARKET_CELLS.map((cell) => {
               const quote = quoteFor(game.lines, cell.market, cell.side);
               const lineTenths = quote?.lineTenths ?? null;
@@ -137,13 +142,16 @@ export function GameCard(props: GameCardProps): ReactElement {
               //
               // A teaser MOVES A LINE, so a moneyline has nothing to move: the
               // cell is greyed out while the slip is in teaser mode rather than
-              // accepting a tap the server would then refuse.
-              const unteasable = teasing && cell.market === 'moneyline';
+              // accepting a tap the server would then refuse. Teasers are also
+              // football only, so EVERY cell of an MLB card greys out the same
+              // way (PLAN.md §23.8) — `isTeasableLeague`, shared with the server.
+              const unteasableHint = teasing ? unteasableReason(game.league, cell.market) : null;
+              const unteasable = unteasableHint !== null;
               const notOffered = noMoneyline && cell.market === 'moneyline';
               const disabled = !game.bettable || stale || quote === null || unteasable;
               // "Not offered" is the more useful reason when both apply: there
               // is no moneyline to tease in the first place.
-              const hint = notOffered ? NO_ML_HINT : unteasable ? UNTEASABLE_HINT : undefined;
+              const hint = notOffered ? NO_ML_HINT : (unteasableHint ?? undefined);
               return (
                 <MarketButton
                   key={`${cell.market}:${cell.side}`}
