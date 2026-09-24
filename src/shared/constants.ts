@@ -533,3 +533,64 @@ export const SECONDARY_RESWEEP_MARGIN_MS = 45 * 60 * 1000;
  * Used ONLY with both mascots equal AND exactly one candidate. PLAN.md §21.7.
  */
 export const SECONDARY_MATCH_WINDOW_MS = 90 * 60 * 1000;
+
+/* ------------------------------------------------------------------ *
+ * MLB — a third league (PLAN.md §23)
+ *
+ * PLAN-PR VALUES: nothing reads any of these until M12a / M12b, and `'mlb'` is
+ * NOT yet a member of `LEAGUES` (adding it would break every
+ * `Record<League, …>` table in the repo until M12a fills them). They land now,
+ * with their docs-drift assertions, so the chapter's arithmetic is pinned to
+ * the code from the first commit — the M9-plan precedent.
+ * ------------------------------------------------------------------ */
+
+/**
+ * The leagues a TEASER leg may come from. Teasers are a football product:
+ * DraftKings offers none on baseball, and a ±1.5 run line moved six "points"
+ * is not a bet anybody prices. Enforced server-side where a leg is resolved to
+ * its `games` row (the request never carries a leg's league) and client-side
+ * from the slip leg's own `league` (PLAN.md §23.8). NFL + NCAAF cross-league
+ * teasers stay legal, exactly as since M5b.
+ */
+export const TEASABLE_LEAGUES = ['nfl', 'ncaaf'] as const satisfies readonly League[];
+
+/**
+ * The leagues the SECONDARY odds provider (The Odds API, PLAN.md §21) may
+ * sweep. MLB is deliberately absent: a daily sport cannot be funded from 500
+ * credits a month at 3 credits a sweep, and the matcher's pass 1 ignores start
+ * time, so a series or a doubleheader would collide (PLAN.md §23.10). The type
+ * is what `sweepSecondary`, `CLAIM_SQL` and `ODDS_API_SPORT_KEY` are keyed on
+ * from M12a, so sweeping MLB is a compile error rather than a code review.
+ */
+export const SECONDARY_LEAGUES = ['nfl', 'ncaaf'] as const satisfies readonly League[];
+export type SecondaryLeague = (typeof SECONDARY_LEAGUES)[number];
+
+/**
+ * A FINAL MLB game that went fewer innings than this was never an official
+ * game: EVERY market is void, totals included — DraftKings grades a decided
+ * total only when "the game is official" (§23.6). Read from M12b.
+ * `games.period` is the inning ESPN reports; a rain-shortened official game
+ * reads "Final/7" with `period` 7.
+ */
+export const MLB_OFFICIAL_INNINGS = 5;
+
+/**
+ * A FINAL MLB game that went at least this many innings (extras included) is
+ * graded on every market. Between `MLB_OFFICIAL_INNINGS` and this, only the
+ * moneyline has action; the run line is void and a total has action only if
+ * it was already decided (DraftKings' "4.5 / 8.5 innings" rules at the
+ * precision ESPN gives us, PLAN.md §23.6). Read from M12b.
+ */
+export const MLB_REGULATION_INNINGS = 9;
+
+/**
+ * A POSTPONED MLB game is voided (→ `canceled`) by the daily maintenance job
+ * only on EVIDENCE: a successful ingest of its own ET-date slate made at least
+ * this long after that ET day ENDED, which still called it postponed. That is
+ * what stops a rain delay — which ESPN may report as STATUS_DELAYED, mapped to
+ * `postponed` today — from voiding a game that resumed and finished. Three
+ * hours past ET midnight is 03:00 ET, after which no MLB game resumes; the
+ * refresh planner schedules one fetch of such a target at exactly that instant
+ * so the evidence exists before the 08:30 UTC maintenance run. PLAN.md §23.7.
+ */
+export const MLB_POSTPONED_CONFIRM_MS = 3 * 60 * 60 * 1000;
