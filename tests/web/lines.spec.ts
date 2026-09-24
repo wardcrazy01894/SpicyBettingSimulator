@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { MARKET_CELLS, moneylineNotOffered, quoteFor } from '../../src/web/lib/lines.js';
+import {
+  MARKET_CELLS,
+  moneylineNotOffered,
+  quoteFor,
+  unteasableReason,
+} from '../../src/web/lib/lines.js';
 import type { GameLinesView } from '../../src/shared/api-types.js';
 
 const FULL: GameLinesView = {
@@ -105,5 +110,21 @@ describe('moneylineNotOffered', () => {
   it('is false with no spread to judge by, or no line at all', () => {
     expect(moneylineNotOffered({ ...FULL, spread: null, moneyline: null })).toBe(false);
     expect(moneylineNotOffered(null)).toBe(false);
+  });
+});
+
+describe('unteasableReason (M12c)', () => {
+  it('greys moneylines on every league and every MLB cell', () => {
+    expect(unteasableReason('nfl', 'moneyline')).toBe('moneylines cannot be teased');
+    expect(unteasableReason('mlb', 'spread')).toBe('MLB lines cannot be teased');
+    expect(unteasableReason('mlb', 'total')).toBe('MLB lines cannot be teased');
+    expect(unteasableReason('mlb', 'moneyline')).toBe('MLB lines cannot be teased');
+  });
+
+  it('leaves football spreads and totals teasable', () => {
+    for (const league of ['nfl', 'ncaaf'] as const) {
+      expect(unteasableReason(league, 'spread')).toBeNull();
+      expect(unteasableReason(league, 'total')).toBeNull();
+    }
   });
 });

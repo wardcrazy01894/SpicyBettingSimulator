@@ -4,13 +4,34 @@
  * DOM-free so `tests/web/grouping.spec.ts` can run in the node vitest project.
  */
 
-import { footballWeekStart, formatDateRange, formatDayHeading, localDateKey } from './datetime.js';
+import {
+  etCalendarDay,
+  footballWeekStart,
+  formatDateRange,
+  formatDayHeading,
+  localDateKey,
+} from './datetime.js';
 import { BET_LEAGUE_LABEL } from './labels.js';
 import type { BetView, GameCard } from '../../shared/api-types.js';
-import type { BetLeague, EpochMs } from '../../shared/types.js';
+import type { BetLeague, EpochMs, League } from '../../shared/types.js';
+
+/**
+ * Whether a league's board is paged by ESPN's `week`. MLB has no weeks: its
+ * board is TODAY in US Eastern (PLAN.md §23.5), so the week picker is hidden
+ * and the day group is the only grouping (§23.12). A total `Record`, so a
+ * fourth league has to say which it is.
+ */
+export const BOARD_HAS_WEEKS: Readonly<Record<League, boolean>> = {
+  nfl: true,
+  ncaaf: true,
+  mlb: false,
+};
 
 export interface DayGroup {
-  /** `YYYY-MM-DD` in the viewer's local timezone. Stable React key. */
+  /**
+   * `YYYY-MM-DD` — in the viewer's local timezone for a weekly league, in US
+   * Eastern for MLB (see `groupBoardGames`). Stable React key.
+   */
   readonly dateKey: string;
   /** "Thu, Sep 11". */
   readonly label: string;
@@ -38,6 +59,60 @@ export function groupGamesByLocalDate(games: readonly GameCard[]): readonly DayG
       label: formatDayHeading(bucket[0]?.kickoffAt ?? 0),
       games: bucket,
     }));
+}
+
+/**
+ * The board's day groups for `league`.
+ *
+ * Football: `groupGamesByLocalDate`, unchanged — the viewer's local day inside
+ * the server's week.
+ *
+ * MLB: the ET calendar date, via the shared `etDateKey` (Intl +
+ * `America/New_York`, never an offset). The MLB board IS an ET day (§23.5) and
+ * ESPN schedules by it, so a 10:15 PM EDT first pitch — 02:15Z, already
+ * tomorrow in UTC and for any viewer east of New York — stays under the day it
+ * belongs to. The card's first-pitch TIME is still the viewer's local time.
+ */
+export function groupBoardGames(league: League, games: readonly GameCard[]): readonly DayGroup[] {
+  if (BOARD_HAS_WEEKS[league]) return groupGamesByLocalDate(games);
+  const buckets = new Map<string, { label: string; games: GameCard[] }>();
+  for (const game of [...games].sort(byKickoff)) {
+    const day = etCalendarDay(game.kickoffAt);
+    const bucket = buckets.get(day.dateKey);
+    if (bucket === undefined) buckets.set(day.dateKey, { label: day.label, games: [game] });
+    else bucket.games.push(game);
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([dateKey, bucket]) => ({ dateKey, label: bucket.label, games: bucket.games }));
+}
+
+/**
+ * The empty-board copy. Football's is unchanged; MLB's never mentions a week
+ * (there is no picker to try another one with) and says why the board can be
+ * thin: ESPN carries MLB lines on game day only, and tomorrow's games appear
+ * after midnight ET (PLAN.md §23.5).
+ */
+export function boardEmptyCopy(
+  league: League,
+  filteredOut: boolean,
+): { readonly title: string; readonly hint: string } {
+  if (filteredOut) {
+    return {
+      title: 'No games match that filter this week.',
+      hint: 'Pick another conference, or All games.',
+    };
+  }
+  if (!BOARD_HAS_WEEKS[league]) {
+    return {
+      title: 'No MLB games on the board today.',
+      hint: "Lines post on game day — tomorrow's games appear after midnight Eastern.",
+    };
+  }
+  return {
+    title: 'No games in this window.',
+    hint: 'Try another week, or check back once the schedule is ingested.',
+  };
 }
 
 function byKickoff(a: GameCard, b: GameCard): number {

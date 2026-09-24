@@ -19,8 +19,9 @@ import {
   priceFromLegs,
   priceToAmerican,
   profitCents,
+  teasedLineTenths,
 } from '../../shared/odds.js';
-import { validatePlaceBet } from '../../shared/validate.js';
+import { formatLineTenths, isTeasableLeague, validatePlaceBet } from '../../shared/validate.js';
 import { messageForCode } from '../api/messages.js';
 import { pickLabel } from '../lib/labels.js';
 import type { Slip, SlipLeg } from './slip-reducer.js';
@@ -50,6 +51,40 @@ export function slipLeague(legs: readonly SlipLeg[]): BetLeague {
   const first = legs[0]?.league;
   if (first === undefined) return 'nfl';
   return legs.every((leg) => leg.league === first) ? first : 'mixed';
+}
+
+/**
+ * Why a TEASER slip cannot be sent on league grounds, or null. Teasers are
+ * football only (PLAN.md §23.8): the server's `applyTease` refuses an MLB leg
+ * with `TEASER_INVALID`, and it uses the same `isTeasableLeague`, so this is
+ * that refusal said before the tap rather than after a 400. Slip legs carry
+ * their own `league`, which is what makes the check possible here.
+ */
+const TEASER_LEAGUE_ERROR =
+  'Teasers are football only — remove the MLB pick, or switch to a parlay.';
+
+function teaserLeagueError(slip: Slip): string | null {
+  if (slip.mode !== 'teaser') return null;
+  return slip.legs.every((leg) => isTeasableLeague(leg.league)) ? null : TEASER_LEAGUE_ERROR;
+}
+
+/**
+ * The slip row's price column in teaser mode: "-7.5 → -1.5" for a teasable
+ * leg, or the reason it cannot be teased.
+ *
+ * A moneyline or MLB leg already in the slip when the user switches to Teaser
+ * is NOT silently dropped — deleting somebody's pick to make their slip valid
+ * is worse than telling them — so it renders its reason and the preview's own
+ * error blocks the submit until they remove it. The league reason comes first:
+ * an MLB moneyline is not teasable for either reason, and "MLB" is the one that
+ * holds for every MLB leg.
+ */
+export function teaseText(leg: SlipLeg, pointsTenths: number): string {
+  if (!isTeasableLeague(leg.league)) return "MLB can't be teased";
+  if (leg.market === 'moneyline' || leg.lineTenths === null) return 'no line to tease';
+  const signed = leg.market === 'spread';
+  const teased = teasedLineTenths(leg.market, leg.side, leg.lineTenths, pointsTenths);
+  return `${formatLineTenths(leg.lineTenths, signed)} → ${formatLineTenths(teased, signed)}`;
 }
 
 /**
@@ -140,6 +175,13 @@ export function computePreview(
   const price = slipPrice(slip, teaserPayouts);
   const decimalOdds = price === null ? null : formatDecimalOdds(price);
   const americanPrice = displayAmerican(price);
+
+  // Before the shared validator, so a one-leg MLB teaser is told the rule that
+  // no second leg would fix rather than "add another leg".
+  const leagueError = teaserLeagueError(slip);
+  if (leagueError !== null) {
+    return { americanPrice, decimalOdds, toWinCents: 0, payoutCents: 0, error: leagueError };
+  }
 
   const validation = validatePlaceBet(buildPlaceBetRequest(slip, false));
   if (!validation.ok) {

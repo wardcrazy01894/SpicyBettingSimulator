@@ -12,6 +12,7 @@ import {
   buildPlaceBetRequest,
   computePreview,
   slipLeague,
+  teaseText,
 } from '../../src/web/state/slip-preview.js';
 import { DEFAULT_TEASER_POINTS_TENTHS } from '../../src/web/state/slip-reducer.js';
 import type { Slip, SlipLeg, SlipMode } from '../../src/web/state/slip-reducer.js';
@@ -346,5 +347,50 @@ describe('buildPlaceBetRequest — teaser tier', () => {
       );
       expect(body.teaserPoints).toBe(tenths);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M12c: teasers are football only (PLAN.md §23.8). The server refuses an MLB
+// leg with TEASER_INVALID; the slip says so first instead of earning a 400.
+// ---------------------------------------------------------------------------
+
+describe('computePreview — a teaser with an MLB leg (M12c)', () => {
+  const mlbSpread = leg('mlb:nyy', -110, 'spread', 'home', 'mlb');
+  const nflSpread = leg('nfl:pit', -110, 'spread', 'home', 'nfl');
+
+  it('is an error that names the rule, and prices nothing', () => {
+    const preview = computePreview(
+      slip([nflSpread, mlbSpread], 1000, 'teaser', 60),
+      100_000,
+      TEASER_PAYOUTS,
+    );
+    expect(preview.error).toMatch(/football only/i);
+    expect(preview.payoutCents).toBe(0);
+    expect(preview.toWinCents).toBe(0);
+  });
+
+  it('wins over the leg-count error on a one-leg MLB teaser', () => {
+    const preview = computePreview(slip([mlbSpread], 1000, 'teaser', 60), 100_000, TEASER_PAYOUTS);
+    expect(preview.error).toMatch(/football only/i);
+  });
+
+  it('does not touch the same legs as a PARLAY (cross-sport parlays are legal)', () => {
+    const preview = computePreview(slip([nflSpread, mlbSpread], 1000, 'parlay'), 100_000);
+    expect(preview.error).toBeNull();
+    expect(preview.payoutCents).toBe(3644);
+  });
+});
+
+describe('teaseText (M12c)', () => {
+  it('shows the teased line for a football spread', () => {
+    expect(teaseText(leg('a', -110, 'spread', 'home', 'nfl'), 60)).toBe('-3.5 → +2.5');
+  });
+
+  it('says why for a moneyline, and for any MLB leg', () => {
+    expect(teaseText(leg('a', 150, 'moneyline', 'home', 'nfl'), 60)).toBe('no line to tease');
+    expect(teaseText(leg('a', -110, 'spread', 'home', 'mlb'), 60)).toBe("MLB can't be teased");
+    expect(teaseText(leg('a', -110, 'total', 'over', 'mlb'), 60)).toBe("MLB can't be teased");
+    expect(teaseText(leg('a', 150, 'moneyline', 'home', 'mlb'), 60)).toBe("MLB can't be teased");
   });
 });

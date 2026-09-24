@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BOARD_HAS_WEEKS,
+  boardEmptyCopy,
+  groupBoardGames,
   groupBetsByWeek,
   groupGamesByLocalDate,
   weeksFromGames,
@@ -140,5 +143,82 @@ describe('groupBetsByWeek', () => {
 
   it('returns nothing for no bets', () => {
     expect(groupBetsByWeek([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M12c: the week-less MLB board (PLAN.md §23.12). MLB's board is "today, US
+// Eastern" (§23.5), so its day groups are ET calendar dates — computed by the
+// shared `etDateKey` (Intl + America/New_York), never an offset. The epochs
+// below are UTC literals ON PURPOSE: the point is that the answer does not
+// depend on the machine's timezone.
+// ---------------------------------------------------------------------------
+
+describe('BOARD_HAS_WEEKS (M12c)', () => {
+  it('football has weeks; MLB does not', () => {
+    expect(BOARD_HAS_WEEKS).toEqual({ nfl: true, ncaaf: true, mlb: false });
+  });
+});
+
+describe('groupBoardGames — MLB by ET date (M12c)', () => {
+  const at = (iso: string): number => Date.parse(iso);
+
+  it('puts a 02:15Z first pitch on the PREVIOUS ET date (22:15 EDT)', () => {
+    const groups = groupBoardGames('mlb', [
+      gameCard({ id: 'late', league: 'mlb', week: null, kickoffAt: at('2026-09-25T02:15:00Z') }),
+      gameCard({ id: 'noon', league: 'mlb', week: null, kickoffAt: at('2026-09-24T16:05:00Z') }),
+    ]);
+    expect(groups.map((g) => g.dateKey)).toEqual(['2026-09-24']);
+    expect(groups[0]?.games.map((g) => g.id)).toEqual(['noon', 'late']);
+    expect(groups[0]?.label).toMatch(/24/);
+  });
+
+  it("splits last night's final from today's slate at ET midnight (04:00Z in EDT)", () => {
+    const groups = groupBoardGames('mlb', [
+      gameCard({ id: 'today', league: 'mlb', week: null, kickoffAt: at('2026-09-24T04:00:00Z') }),
+      gameCard({ id: 'last', league: 'mlb', week: null, kickoffAt: at('2026-09-24T03:59:00Z') }),
+    ]);
+    expect(groups.map((g) => g.dateKey)).toEqual(['2026-09-23', '2026-09-24']);
+    expect(groups.map((g) => g.label)).not.toContain(undefined);
+    expect(groups[0]?.label).toMatch(/23/);
+  });
+
+  it('uses the EST midnight after DST ends (05:00Z on 2026-11-02)', () => {
+    const groups = groupBoardGames('mlb', [
+      gameCard({ id: 'a', league: 'mlb', week: null, kickoffAt: at('2026-11-02T04:30:00Z') }),
+      gameCard({ id: 'b', league: 'mlb', week: null, kickoffAt: at('2026-11-02T05:00:00Z') }),
+    ]);
+    expect(groups.map((g) => g.dateKey)).toEqual(['2026-11-01', '2026-11-02']);
+  });
+
+  it('football still groups by the viewer-local date, byte-identically', () => {
+    const games = [
+      gameCard({ id: 'sun', kickoffAt: localMs(2026, 9, 13, 13) }),
+      gameCard({ id: 'thu', kickoffAt: localMs(2026, 9, 10, 20) }),
+    ];
+    expect(groupBoardGames('nfl', games)).toEqual(groupGamesByLocalDate(games));
+    expect(groupBoardGames('ncaaf', games)).toEqual(groupGamesByLocalDate(games));
+  });
+});
+
+describe('boardEmptyCopy (M12c)', () => {
+  it('never tells an MLB user to try another week, and says lines post on game day', () => {
+    const copy = boardEmptyCopy('mlb', false);
+    expect(copy.title).toMatch(/MLB/);
+    expect(`${copy.title} ${copy.hint}`).not.toMatch(/week/i);
+    expect(copy.hint).toMatch(/game day/);
+  });
+
+  it('keeps the football copy exactly as it was', () => {
+    for (const league of ['nfl', 'ncaaf'] as const) {
+      expect(boardEmptyCopy(league, false)).toEqual({
+        title: 'No games in this window.',
+        hint: 'Try another week, or check back once the schedule is ingested.',
+      });
+    }
+    expect(boardEmptyCopy('ncaaf', true)).toEqual({
+      title: 'No games match that filter this week.',
+      hint: 'Pick another conference, or All games.',
+    });
   });
 });
