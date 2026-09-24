@@ -37,6 +37,9 @@ import {
   MAX_SETTLE_ATTEMPTS,
   MIN_STAKE_CENTS,
   MIN_TEASER_LEGS,
+  MLB_OFFICIAL_INNINGS,
+  MLB_POSTPONED_CONFIRM_MS,
+  MLB_REGULATION_INNINGS,
   MONEYLINE_NOT_OFFERED_SPREAD_TENTHS,
   NCAAF_WEEK_ROLLOVER_ET_HOUR,
   NFL_WEEK_ROLLOVER_ET_HOUR,
@@ -50,8 +53,10 @@ import {
   SECONDARY_MATCH_WINDOW_MS,
   SECONDARY_MIN_SWEEP_INTERVAL_MS,
   SECONDARY_RESWEEP_MARGIN_MS,
+  SECONDARY_LEAGUES,
   SECONDARY_RETRY_MS,
   SESSION_TTL_MS,
+  TEASABLE_LEAGUES,
   TEASER_PAYOUTS,
   TEASER_POINTS_TENTHS,
   VOID_AFTER_MS,
@@ -323,6 +328,13 @@ describe('constants.ts vs PLAN.md §3.1', () => {
     // Two readers, one fact: the "No ML" hint in the UI and the sweep rule that
     // stops the secondary chasing a moneyline no book posts (§21.2).
     MONEYLINE_NOT_OFFERED_SPREAD_TENTHS,
+    // MLB (PLAN §23). The two inning counts ARE the settlement rule for a
+    // shortened game — a PLAN that says 4.5 while the code says 5 grades real
+    // (fake) money differently from what the chapter promises — and the confirm
+    // window is what stands between a rain delay and a voided game (§23.7).
+    MLB_OFFICIAL_INNINGS,
+    MLB_REGULATION_INNINGS,
+    MLB_POSTPONED_CONFIRM_MS,
   };
 
   for (const [name, value] of Object.entries(expected)) {
@@ -357,6 +369,28 @@ describe('constants.ts vs PLAN.md §3.1', () => {
         `teaser gets priced as a 65-point one.`,
     ).toBe(true);
   });
+
+  /**
+   * The two league LISTS of PLAN §23 are exclusions, and an exclusion that
+   * silently gains a member is exactly the failure that matters: `'mlb'` in
+   * SECONDARY_LEAGUES spends Odds API credits on a daily sport, `'mlb'` in
+   * TEASABLE_LEAGUES lets a run line be teased. Same rendering rule as the
+   * teaser tiers above: the literal as constants.ts would print it.
+   */
+  const lists: readonly (readonly [string, readonly string[]])[] = [
+    ['TEASABLE_LEAGUES', TEASABLE_LEAGUES],
+    ['SECONDARY_LEAGUES', SECONDARY_LEAGUES],
+  ];
+  for (const [name, value] of lists) {
+    it(`PLAN spells out ${name}`, () => {
+      const rendered = `${name} = [${value.map((v) => `'${v}'`).join(', ')}]`;
+      expect(
+        PLAN.includes(rendered),
+        `PLAN.md does not say \`${rendered}\`, which is what src/shared/constants.ts ` +
+          `exports. §3.1 and §23 must name every league on this list and no other.`,
+      ).toBe(true);
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------

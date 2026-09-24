@@ -1,7 +1,9 @@
 # CLAUDE.md — SpicyBettingSimulator
 
 Fake-money sports-betting simulator (NFL + FBS college football) for Alex and a
-few friends. Real lines, real odds, real payouts, **no real money**.
+few friends. Real lines, real odds, real payouts, **no real money**. MLB as a
+third league is PLANNED for the postseason (M12, PLAN.md §23) and not yet in
+`LEAGUES`.
 
 **Read `PLAN.md` before changing anything.** It is the architecture of record:
 data model, odds math, settlement algorithm, ingestion design, milestones and the
@@ -98,7 +100,9 @@ the one failure mode the whole checklist has.
    `etDateKey()` (ESPN's `dates=` parameter), `boardWindowEnd()` (the board and
    ingest window END on the Monday that closes the football week, rolling over
    to next week at Sunday 00:00 ET for CFB and Sunday 20:00 ET for the NFL —
-   PLAN.md §22), and display formatting in the browser. Both server-side ones live in `src/shared/time.ts` and go through
+   PLAN.md §22; from M12a MLB's window is the rest of the CURRENT ET date,
+   `etDayBounds(now).endAt - 1`, PLAN.md §23.5), and display formatting in the
+   browser. Both server-side ones live in `src/shared/time.ts` and go through
    `Intl.DateTimeFormat` with an explicit `America/New_York`; nothing anywhere
    hard-codes −4 or −5 hours, and nothing adds `7 * 86_400_000` to cross a week.
 4. **`src/shared/` is platform-free.** No `fetch`, no `Request`/`Response`, no
@@ -174,7 +178,28 @@ the one failure mode the whole checklist has.
    product: there is no correlation model, and refusing spread+moneyline on one
    game IS the correlation guard. Because a game can repeat in `bet_legs`, the
    placement guards compare `COUNT(*) … IN (…)` against the DISTINCT game count
-   bound after the ids, never against `leg_count`.
+   bound after the ids, never against `leg_count`. MLB (M12) needs no change
+   here: DraftKings' MLB same-game rule is the same one — run line OR moneyline,
+   plus the total (PLAN.md §23.9).
+   8g. **MLB (planned — M12, PLAN.md §23).** Four rules the code must keep once
+   `'mlb'` is a `League`:
+   (i) a shortened game settles through `src/shared/action.ts`'s `GameAction`
+   — computed from the game's league, status and `period` and handed to
+   `gradeLeg` beside the score — so `gradeLeg` stays league-unaware and the
+   LINE still comes only from `bet_legs` (rule 7). A final under
+   `MLB_OFFICIAL_INNINGS` (5) voids EVERY market, totals included (not an
+   official game); under `MLB_REGULATION_INNINGS` (9) voids the run line and
+   grades a total only if already decided. `GradableGame.action` is REQUIRED,
+   so a call site that forgets it does not compile rather than paying; the
+   leg's league comes from `bet_legs.league`. M12b ships the whole table; only
+   a final whose `period` is NULL is `undecidable` (pending, `stuck[]`). (ii) A postponed MLB game is voided by maintenance
+   only on EVIDENCE — its own ET-date target fetched OK at least
+   `MLB_POSTPONED_CONFIRM_MS` after that day ended and ESPN still saying
+   postponed — never on "the day is over" alone, which voids rain-delayed games
+   that finished (§23.7); and `canceled` is terminal in the ingest upsert.
+   (iii) No teaser leg may be MLB: `TEASABLE_LEAGUES`, enforced in `applyTease`
+   with the existing `TEASER_INVALID`. (iv) The secondary never sweeps MLB:
+   `secondary.ts` loops `SECONDARY_LEAGUES`, never `LEAGUES`.
 9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
    2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will
    never replay it. **Every schema change is a new numbered
@@ -196,6 +221,12 @@ the one failure mode the whole checklist has.
      to replace `UNIQUE(bet_id, game_id)` with `UNIQUE(bet_id, game_id, market)`
      and add the `bet_legs_bi_one_side_per_game` trigger — same-game parlays,
      rule 8f and PLAN.md §5.2c.
+     `0009_mlb_league.sql` is PLANNED and does not exist yet: M12a writes it
+     from PLAN.md §23.3 (which carries it verbatim) in the same PR as the code
+     that writes `'mlb'` rows — a children-first rebuild of `games`,
+     `game_lines`, `bets`, `bet_legs`, `ledger` and `ingest_targets` to widen
+     four league CHECKs, ledger triggers recreated AFTER the copy. The M12
+     plan PR shipped no migration, for the reason below.
      `0007_secondary_odds.sql` shipped with M9b and is frozen like the rest;
      PLAN.md §21.3 carries the same text as its specification. The plan PR that
      added §21 and §22 deliberately shipped NO migration: the Deploy
@@ -234,6 +265,8 @@ the one failure mode the whole checklist has.
     code path that calls the API outside `sweepSecondary`, and never bypass the
     credit claim — the guard is a `WHERE` clause inside an `UPDATE`, and
     `meta.changes` is the only permission to make the request. PLAN.md §21.5.
+    MLB is never swept (`SECONDARY_LEAGUES`, rule 8g, PLAN.md §23.10): a daily
+    sport cannot be funded from 500 credits.
 11. **Docs are part of the change.** Any PR that changes behaviour updates
     `PLAN.md` / `CLAUDE.md` / `README.md` / `docs/OPERATIONS.md` **in the same
     PR** — not in a follow-up,
@@ -310,7 +343,9 @@ errors. That is the ONLY transaction you get.
 
 ```
 src/shared/   pure domain: types, odds, grading, espn parser, validation, time,
-              lines (the per-market merge), odds-api (the secondary's parser)
+              lines (the per-market merge), odds-api (the secondary's parser),
+              action (which markets of a final game have action — MLB's
+              shortened-game rule, stubbed until M12b, PLAN.md §23.6)
 src/worker/   Hono API + cron jobs + D1 access; secondary.ts owns the Odds API
               sweep and its credit budget, and never edits ingest.ts's SQL
 src/worker/routes/  one file per API area; index.ts holds the route table.
@@ -330,7 +365,8 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               0006 adds bug_reports.diagnostics, 0007 adds the secondary
               provider's per-market book columns, games.secondary_tried_at and
               the secondary_budget row (PLAN.md §21.3), 0008 rebuilds bet_legs
-              for same-game parlays (PLAN.md §5.2c)
+              for same-game parlays (PLAN.md §5.2c); 0009 (PLANNED, M12a)
+              rebuilds six tables to admit league 'mlb' (PLAN.md §23.3)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES
@@ -343,7 +379,11 @@ docs/samples/ captured payloads, read only by the unit project and deliberately
               committed (PLAN.md §19 Q8) so parsers are tested against the real
               thing: two ESPN week scoreboards (NFL 16 events, CFB 86), two Odds
               API slates (NFL 32, NCAAF 75), and two ESPN captures MERGED over
-              the same ET dates as those slates (PLAN.md §21.7's match counts)
+              the same ET dates as those slates (PLAN.md §21.7's match counts),
+              plus two MLB days read by M12a's parser tests (PLAN.md §23.2):
+              espn-mlb-scoreboard-2026-09-24.json (12 events, 9 with DraftKings
+              odds, 3 live) and -2026-09-22.json (16: finals incl. Final/12, a
+              postponement, a makeup under a new id)
 docs/         teaser-odds.md — the sourcing behind TEASER_PAYOUTS
 scripts/      fixture server, admin password tool, ledger reconcile, branch
               protection, icon rasteriser, teaser card generator, and the
