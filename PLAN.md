@@ -7209,13 +7209,13 @@ M12b as a one-line per-league kill switch.
 opener on 2026-09-29, ideally on 2026-09-25/26.** Each PR is green on the gate
 and leaves football behaviour byte-identical.
 
-| PR           | What lands                                                                                                                                                          | Depends on | Target merge         |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | -------------------- |
-| **M12-plan** | this chapter, five constants, `action.ts` stubs, three contract files, docs guard                                                                                   | —          | 2026-09-24           |
-| **M12a**     | `0009`, `'mlb'` in `LEAGUES`, every `Record<League>` (incl. `'Mixed'`), ESPN table, planner, window, sample, `isTeasableLeague` — **board visible, betting CLOSED** | plan       | **DONE** 2026-09-24  |
-| **M12b**     | the FULL §23.6 table (`>= 9`, `5 … 8`, `< 5`, `totalDecided`), postponed-void rule + planner cap, canceled-terminal, server MLB-teaser refusal — **betting OPENS**  | M12a       | **DONE** 2026-09-24  |
-| **M12c**     | week-less board, innings clock label, Run-line head, client teaser greying and pre-validation                                                                       | M12a       | **DONE**: 2026-09-24 |
-| ~~M12d~~     | folded into M12b — 2026-09-24                                                                                                                                       | —          | —                    |
+| PR           | What lands                                                                                                                                                          | Depends on | Target merge        |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------- |
+| **M12-plan** | this chapter, five constants, `action.ts` stubs, three contract files, docs guard                                                                                   | —          | 2026-09-24          |
+| **M12a**     | `0009`, `'mlb'` in `LEAGUES`, every `Record<League>` (incl. `'Mixed'`), ESPN table, planner, window, sample, `isTeasableLeague` — **board visible, betting CLOSED** | plan       | **DONE** 2026-09-24 |
+| **M12b**     | the FULL §23.6 table (`>= 9`, `5 … 8`, `< 5`, `totalDecided`), postponed-void rule + planner cap, canceled-terminal, server MLB-teaser refusal — **betting OPENS**  | M12a       | **DONE** 2026-09-24 |
+| **M12c**     | week-less board, innings clock label, Run-line head, client teaser greying and pre-validation                                                                       | M12a       | **DONE** 2026-09-24 |
+| ~~M12d~~     | folded into M12b — 2026-09-24                                                                                                                                       | —          | —                   |
 
 **Two PRs back-to-back, not one "M12ab".** Their file overlap is small —
 `bets.ts` (M12a adds `LEAGUE_BETTING_OPEN`, M12b flips it and adds the teaser
