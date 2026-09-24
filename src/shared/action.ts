@@ -35,12 +35,15 @@
  * `projectLeg` take (M12b): an optional field defaulting to `FULL_ACTION` would
  * fail OPEN — a call site that forgot it would pay an MLB Final/7's run line.
  *
- * M12b fills EVERY function here, the full §23.6 table included — betting
+ * M12b filled EVERY function here, the full §23.6 table included — betting
  * opens before the regular season ends, so a rain-shortened game is reachable.
- * Until then every function throws; nothing imports this module, and `'mlb'`
- * is not a member of `League` until M12a.
  */
 
+import {
+  MLB_OFFICIAL_INNINGS,
+  MLB_POSTPONED_CONFIRM_MS,
+  MLB_REGULATION_INNINGS,
+} from './constants.js';
 import type { EpochMs, GameStatus, League, LineTenths, Market } from './types.js';
 
 /** What one market of a final game is worth grading. */
@@ -83,9 +86,31 @@ export interface ActionFacts {
  *
  * M12b.
  */
-export function gameAction(_league: League, _game: ActionFacts): GameAction {
-  throw new Error('not implemented (M12b: PLAN.md §23.6)');
+export function gameAction(league: League, game: ActionFacts): GameAction {
+  switch (league) {
+    case 'nfl':
+    case 'ncaaf':
+      return FULL_ACTION;
+    case 'mlb':
+      return mlbGameAction(game);
+    default: {
+      const unreachable: never = league;
+      throw new Error(`gameAction: unknown league ${String(unreachable)}`);
+    }
+  }
 }
+
+/** Run line void, moneyline graded, total graded only if already decided. */
+const MLB_SHORTENED: GameAction = {
+  kind: 'graded',
+  markets: { moneyline: 'action', spread: 'no-action', total: 'no-action-unless-decided' },
+};
+
+/** Not an official game: every market is void, a decided total included. */
+const MLB_NOT_OFFICIAL: GameAction = {
+  kind: 'graded',
+  markets: { moneyline: 'no-action', spread: 'no-action', total: 'no-action' },
+};
 
 /**
  * MLB's verdict for a FINAL game, from its inning count (PLAN.md §23.6's
@@ -107,8 +132,18 @@ export function gameAction(_league: League, _game: ActionFacts): GameAction {
  * M12b ships every row. (A postseason final always has period >= 9; the
  * shortened rows matter for the regular season's last weekend and after.)
  */
-export function mlbGameAction(_game: ActionFacts): GameAction {
-  throw new Error('not implemented (M12b: PLAN.md §23.6)');
+export function mlbGameAction(game: ActionFacts): GameAction {
+  if (game.status !== 'final') return FULL_ACTION;
+  const { period } = game;
+  if (period === null) {
+    return {
+      kind: 'undecidable',
+      reason: 'final with no inning count (period is null); cannot tell if it was official',
+    };
+  }
+  if (period >= MLB_REGULATION_INNINGS) return FULL_ACTION;
+  if (period >= MLB_OFFICIAL_INNINGS) return MLB_SHORTENED;
+  return MLB_NOT_OFFICIAL;
 }
 
 /**
@@ -126,11 +161,11 @@ export function mlbGameAction(_game: ActionFacts): GameAction {
  * M12b.
  */
 export function totalDecided(
-  _homeScore: number,
-  _awayScore: number,
-  _lineTenths: LineTenths,
+  homeScore: number,
+  awayScore: number,
+  lineTenths: LineTenths,
 ): boolean {
-  throw new Error('not implemented (M12b: PLAN.md §23.6)');
+  return (homeScore + awayScore) * 10 > lineTenths;
 }
 
 /**
@@ -158,6 +193,16 @@ export function totalDecided(
  *
  * M12b.
  */
-export function postponedVoidConfirmAt(_league: League, _windowEndAt: EpochMs): EpochMs | null {
-  throw new Error('not implemented (M12b: PLAN.md §23.7)');
+export function postponedVoidConfirmAt(league: League, windowEndAt: EpochMs): EpochMs | null {
+  switch (league) {
+    case 'nfl':
+    case 'ncaaf':
+      return null;
+    case 'mlb':
+      return windowEndAt + MLB_POSTPONED_CONFIRM_MS;
+    default: {
+      const unreachable: never = league;
+      throw new Error(`postponedVoidConfirmAt: unknown league ${String(unreachable)}`);
+    }
+  }
 }

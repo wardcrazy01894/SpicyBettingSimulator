@@ -312,19 +312,31 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   board is primary-only until the 1st. If `last_status` in `secondary_budget` reads `unauthorized`:
   the key was revoked — `wrangler secret put ODDS_API_KEY` again. A ranked game whose two feeds
   disagree on home/away (neutral sites) is refused on purpose and named under `swapped`.
-- **MLB (M12, PLAN §23; live since M12a — board visible, betting closed until M12b).** One ingest target
+- **MLB (M12, PLAN §23; board live since M12a; MLB betting OPEN since M12b).** One ingest target
   per US-Eastern day, id `mlb:date:YYYYMMDD`, created by the first refresh after 00:00 ET — the
   MLB board shows TODAY only, so tomorrow's games appear at midnight, not when DraftKings posts
   them — which loses nothing, because ESPN carries MLB lines on game day only (measured
   2026-09-24: none of 2026-09-25's 16 games had one the afternoon before). **Empty price cells
   before ~noon ET are expected**; read the target's row in `stats.coverage[]` (`lineGaps`) before
   assuming a parser failure. MLB is **primary-only**:
-  `stats.secondary.sweeps` never has an MLB entry, by design. M12a ships the board with betting
-  CLOSED (`bettable: false`, and `POST /api/bets` answers `409 GAME_NOT_BETTABLE` for an MLB leg —
-  the `LEAGUE_BETTING_OPEN` switch in `src/worker/bets.ts`); M12b opens it. From M12b, a rained-out
-  game reads `postponed` all day and is voided by the NEXT morning's maintenance run (`stats.autoVoidedGames`), once a refresh at or
-  after 03:00 ET has confirmed ESPN still calls it postponed; the makeup is a separate game under a
-  new id. Before merging M12a, size the 0009 rebuild against the daily write cap (each row is
+  `stats.secondary.sweeps` never has an MLB entry, by design. **MLB betting is open**; the kill
+  switch is `LEAGUE_BETTING_OPEN` in `src/worker/bets.ts` — set `mlb: false` and deploy, and the
+  board shows `bettable: false` while `POST /api/bets` answers `409 GAME_NOT_BETTABLE` for an MLB
+  leg (open bets still settle). An MLB leg in a teaser is refused with `400 TEASER_INVALID`.
+  **The void rule** (PLAN §23.6/§23.7): a final that went 9+ innings (extras included) grades
+  every market; a final called in innings 5–8 grades the moneyline, VOIDS the run line, and grades
+  the total only if it was already decided (runs strictly over the line; otherwise void); a final
+  under 5 innings voids everything. A final with no inning count (`period` NULL, never observed)
+  is held pending and reaches settle's `stuck[]`. A rained-out game reads `postponed` all day and
+  is voided by the NEXT morning's maintenance run (`stats.autoVoidedGames`, `status_detail`
+  `auto-void: MLB postponed, not played on its date`) — but only once a SUCCESSFUL refresh of its
+  own date at or after 03:00 ET still saw it postponed (the planner schedules that fetch); the
+  settle run after it refunds the stakes. If that 03:00 fetch failed, the void is simply a day
+  late, never wrong. `canceled` is terminal: a later refresh can never un-cancel a game. The
+  makeup is a separate game under a new id. **`stats.mlbRescheduled[]`** on a maintenance run
+  names any MLB game whose current start is on a different ET date from its original one
+  (`originalDate` → `currentDate`) — never observed (makeups get new ids), so a row there is worth
+  a look: its bets will grade on the rescheduled game rather than void. Before merging M12a, size the 0009 rebuild against the daily write cap (each row is
   written twice plus its indexes):
   `npx wrangler d1 execute spicybetting --remote --command "SELECT (SELECT COUNT(*) FROM games) AS games, (SELECT COUNT(*) FROM game_lines) AS lines, (SELECT COUNT(*) FROM bets) AS bets, (SELECT COUNT(*) FROM bet_legs) AS legs, (SELECT COUNT(*) FROM ledger) AS ledger, (SELECT COUNT(*) FROM ingest_targets) AS targets"`.
   **Deploying M12a (0009) — verify the rebuild before M12b opens betting:** run the count above;

@@ -14,7 +14,8 @@
  * two-table mutation with no transaction to hold it together.
  */
 
-import { VOID_AFTER_MS } from '../shared/constants.js';
+import { MLB_POSTPONED_CONFIRM_MS, VOID_AFTER_MS } from '../shared/constants.js';
+import { etDateKey } from '../shared/time.js';
 import type { EpochMs } from '../shared/types.js';
 import { changesAt, rowsWrittenAt } from './db.js';
 import type { Env } from './env.js';
@@ -37,9 +38,26 @@ export interface AutoVoidResult {
   readonly rowsWritten: number;
 }
 
+/**
+ * An MLB game whose CURRENT `kickoff_at` falls on a different ET date from its
+ * `original_kickoff_at` (PLAN.md §23.7). Never observed — every makeup seen was
+ * a NEW event id — but if ESPN ever reschedules under the SAME id, its bets
+ * would grade on the rescheduled game rather than void; this names it so a
+ * human sees it rather than a rule guessing. Reported, never changed.
+ */
+export interface MlbRescheduledGame {
+  readonly gameId: string;
+  readonly status: string;
+  /** ET date keys (`YYYYMMDD`), from `etDateKey` — never an hour offset. */
+  readonly originalDate: string;
+  readonly currentDate: string;
+}
+
 export interface MaintenanceStats {
   readonly autoVoidedGames: readonly string[];
   readonly stuckGames: readonly string[];
+  /** PLAN.md §23.7: MLB games moved to another ET date under the same id. */
+  readonly mlbRescheduled: readonly MlbRescheduledGame[];
   readonly sessionsPruned: number;
   readonly throttleRowsPruned: number;
   readonly jobRunsPruned: number;
@@ -85,20 +103,54 @@ const AUTO_VOID_LIMIT = 90;
 const STUCK_REPORT_LIMIT = 50;
 
 /**
- * The two §7.5 auto-void situations, as ONE predicate:
+ * PLAN.md §23.7: the MLB next-day void. A postponed MLB game is voided once a
+ * SUCCESSFUL fetch of its own ET date (the target whose window holds its
+ * CURRENT `kickoff_at`) was made at or after `window_end_at + ?5`, bound to
+ * `MLB_POSTPONED_CONFIRM_MS` — 03:00 ET the next morning, i.e.
+ * `postponedVoidConfirmAt('mlb', window_end_at)` restated per row in SQL.
+ *
+ * Evidence, not the clock: "postponed and the day is over" alone would void a
+ * rain-delayed game that resumed after the last refresh and finished before
+ * this run (the rain-delay race). `last_status = 'ok'` is written only after
+ * the slate's upsert succeeded, so had that fetch seen the game final or in
+ * progress, the row would say so and would not match here.
+ *
+ * `kickoff_at`, not `original_kickoff_at`: a suspended game ESPN moves to its
+ * resumption date under the same id is judged against that date.
+ * `window_start_at`/`window_end_at` came from `etDayBounds`, so no timezone
+ * appears here and the 23 h / 25 h days are already right.
+ */
+const MLB_POSTPONED_CONFIRMED = `
+  (league = 'mlb' AND status = 'postponed'
+   AND EXISTS (SELECT 1 FROM ingest_targets t
+                WHERE t.league = games.league
+                  AND games.kickoff_at >= t.window_start_at
+                  AND games.kickoff_at <  t.window_end_at
+                  AND t.last_status = 'ok'
+                  AND t.last_run_at >= t.window_end_at + ?5))`;
+
+/**
+ * The §7.5 auto-void situations, as ONE predicate:
  *
  *   1. postponed and never replayed — `status='postponed'` and more than
  *      VOID_AFTER_MS past `original_kickoff_at`. No staleness test: a game ESPN
  *      still publishes as postponed a week after its original kickoff is not
- *      coming back.
+ *      coming back. Every league, MLB included.
  *   2. dropped from the feed — still `scheduled`/`in_progress`/`unknown`, more
  *      than VOID_AFTER_MS past `original_kickoff_at`, AND not seen for two days.
  *      The staleness conjunct is what stops us voiding a game that is merely
  *      mis-stated by a live feed.
+ *   3. MLB only — postponed, and confirmed so by a post-day fetch of its own
+ *      date (`MLB_POSTPONED_CONFIRMED` above, PLAN.md §23.7).
  *
  * `original_kickoff_at` (written once, never updated) rather than `kickoff_at`
- * is the reference on purpose: a postponed game's `kickoff_at` may have been
- * pushed forward by ESPN, which would reset the clock on every reschedule.
+ * is the reference for 1 and 2 on purpose: a postponed game's `kickoff_at` may
+ * have been pushed forward by ESPN, which would reset the clock on every
+ * reschedule.
+ *
+ * Bound parameters, shared by the SELECT and the UPDATE: ?1 now,
+ * ?2 VOID_AFTER_MS, ?3 FEED_STALE_MS, ?5 MLB_POSTPONED_CONFIRM_MS (?4 is the
+ * SELECT's LIMIT; the UPDATE's id list starts at ?6).
  */
 const AUTO_VOID_PREDICATE = `
   (
@@ -106,6 +158,7 @@ const AUTO_VOID_PREDICATE = `
     OR (status IN ('scheduled','in_progress','unknown')
         AND ?1 > original_kickoff_at + ?2
         AND last_seen_at < ?1 - ?3)
+    OR ${MLB_POSTPONED_CONFIRMED}
   )`;
 
 /**
@@ -123,7 +176,7 @@ export async function autoVoidStuckGames(env: Env, now: EpochMs): Promise<AutoVo
   const found = await env.DB.prepare(
     `SELECT id FROM games WHERE ${AUTO_VOID_PREDICATE} ORDER BY original_kickoff_at LIMIT ?4`,
   )
-    .bind(now, VOID_AFTER_MS, FEED_STALE_MS, AUTO_VOID_LIMIT)
+    .bind(now, VOID_AFTER_MS, FEED_STALE_MS, AUTO_VOID_LIMIT, MLB_POSTPONED_CONFIRM_MS)
     .all<{ id: string }>();
   const ids = found.results.map((row) => row.id);
   if (ids.length === 0) return { gameIds: [], rowsWritten: 0 };
@@ -138,17 +191,25 @@ export async function autoVoidStuckGames(env: Env, now: EpochMs): Promise<AutoVo
   //
   // `SET status = 'canceled'` in the same statement does not disturb the CASE:
   // SQLite evaluates every SET expression against the row's ORIGINAL values.
-  const placeholders = ids.map((_id, i) => `?${String(i + 4)}`).join(', ');
+  // The MLB branch is tested FIRST: a postponed MLB game is normally voided by
+  // it the morning after its date, long before 7 days; one that only matches
+  // the 7-day branch (no evidence ever arrived) still says `>7d`.
+  //
+  // ?4 is unused by the UPDATE (it is the SELECT's LIMIT) and is bound to the
+  // same value so the two statements share one numbering.
+  const placeholders = ids.map((_id, i) => `?${String(i + 6)}`).join(', ');
   const res = await env.DB.prepare(
     `UPDATE games
         SET status        = 'canceled',
-            status_detail = CASE WHEN status = 'postponed'
+            status_detail = CASE WHEN ${MLB_POSTPONED_CONFIRMED}
+                                 THEN 'auto-void: MLB postponed, not played on its date'
+                                 WHEN status = 'postponed'
                                  THEN 'auto-void: postponed >7d'
                                  ELSE 'auto-void: not seen >2d' END,
             updated_at    = ?1
       WHERE id IN (${placeholders}) AND ${AUTO_VOID_PREDICATE}`,
   )
-    .bind(now, VOID_AFTER_MS, FEED_STALE_MS, ...ids)
+    .bind(now, VOID_AFTER_MS, FEED_STALE_MS, AUTO_VOID_LIMIT, MLB_POSTPONED_CONFIRM_MS, ...ids)
     .run();
   return { gameIds: ids, rowsWritten: rowsWrittenAt([res], 0) };
 }
@@ -167,6 +228,40 @@ export async function findStuckInProgressGames(env: Env, now: EpochMs): Promise<
     .bind(now, IN_PROGRESS_STUCK_MS, IN_PROGRESS_UNSEEN_MS, STUCK_REPORT_LIMIT)
     .all<{ id: string }>();
   return res.results.map((row) => row.id);
+}
+
+/** How far back `mlbRescheduled[]` looks, by original first pitch. */
+const RESCHEDULE_LOOKBACK_MS = VOID_AFTER_MS;
+
+/**
+ * PLAN.md §23.7: MLB games whose `kickoff_at` ET date differs from their
+ * `original_kickoff_at` ET date — the "rescheduled under the SAME id" case no
+ * rule handles. Reported, never changed. SQL prefilters on the two instants
+ * differing at all (cheap, no timezone); the ET DATES are compared here with
+ * `etDateKey` — never an hour offset in SQL (CLAUDE.md rule 3) — so a start
+ * time moved within the same day is not reported.
+ */
+export async function findMlbRescheduled(
+  env: Env,
+  now: EpochMs,
+): Promise<readonly MlbRescheduledGame[]> {
+  const res = await env.DB.prepare(
+    `SELECT id, status, kickoff_at, original_kickoff_at FROM games
+      WHERE league = 'mlb' AND kickoff_at <> original_kickoff_at
+        AND original_kickoff_at > ?1 - ?2
+      ORDER BY original_kickoff_at LIMIT ?3`,
+  )
+    .bind(now, RESCHEDULE_LOOKBACK_MS, STUCK_REPORT_LIMIT)
+    .all<{ id: string; status: string; kickoff_at: number; original_kickoff_at: number }>();
+  const out: MlbRescheduledGame[] = [];
+  for (const row of res.results) {
+    const originalDate = etDateKey(row.original_kickoff_at);
+    const currentDate = etDateKey(row.kickoff_at);
+    if (originalDate !== currentDate) {
+      out.push({ gameId: row.id, status: row.status, originalDate, currentDate });
+    }
+  }
+  return out;
 }
 
 export async function pruneExpiredSessions(env: Env, now: EpochMs): Promise<SweepResult> {
@@ -239,6 +334,7 @@ function sweepResult(res: D1Result): SweepResult {
 export async function runMaintenance(env: Env, now: EpochMs): Promise<MaintenanceStats> {
   const autoVoid = await autoVoidStuckGames(env, now);
   const stuckGames = await findStuckInProgressGames(env, now);
+  const mlbRescheduled = await findMlbRescheduled(env, now);
   const sessions = await pruneExpiredSessions(env, now);
   const throttle = await pruneAuthThrottle(env, now);
   const jobRuns = await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB);
@@ -246,9 +342,16 @@ export async function runMaintenance(env: Env, now: EpochMs): Promise<Maintenanc
   if (autoVoid.gameIds.length > 0) {
     console.warn('[maintenance] auto-voided games', autoVoid.gameIds.join(', '));
   }
+  if (mlbRescheduled.length > 0) {
+    console.warn(
+      '[maintenance] MLB games moved to another ET date under the same id',
+      mlbRescheduled.map((g) => `${g.gameId} ${g.originalDate}->${g.currentDate}`).join(', '),
+    );
+  }
   return {
     autoVoidedGames: autoVoid.gameIds,
     stuckGames,
+    mlbRescheduled,
     sessionsPruned: sessions.count,
     throttleRowsPruned: throttle.count,
     jobRunsPruned: jobRuns.count,

@@ -184,10 +184,11 @@ the one failure mode the whole checklist has.
    here: DraftKings' MLB same-game rule is the same one — run line OR moneyline,
    plus the total (PLAN.md §23.9).
    8g. **MLB (M12, PLAN.md §23; `'mlb'` is a `League` since M12a).** Five rules
-   the code must keep. (0) Betting per league is gated by `LEAGUE_BETTING_OPEN`
-   (`src/worker/bets.ts`): the board's `bettable` ANDs it in and
-   `resolveLegSnapshots` refuses a closed league's leg with the EXISTING
-   `409 GAME_NOT_BETTABLE` — `mlb: false` until M12b flips it.
+   the code must keep. (0) MLB betting is OPEN (since M12b, 2026-09-24).
+   Betting per league is gated by `LEAGUE_BETTING_OPEN` (`src/worker/bets.ts`),
+   which stays as a one-line kill switch: set a league `false` and the board's
+   `bettable` goes false (it ANDs the switch in) and `resolveLegSnapshots`
+   refuses that league's legs with the EXISTING `409 GAME_NOT_BETTABLE`.
    (i) a shortened game settles through `src/shared/action.ts`'s `GameAction`
    — computed from the game's league, status and `period` and handed to
    `gradeLeg` beside the score — so `gradeLeg` stays league-unaware and the
@@ -196,14 +197,17 @@ the one failure mode the whole checklist has.
    official game); under `MLB_REGULATION_INNINGS` (9) voids the run line and
    grades a total only if already decided. `GradableGame.action` is REQUIRED,
    so a call site that forgets it does not compile rather than paying; the
-   leg's league comes from `bet_legs.league`. M12b ships the whole table; only
-   a final whose `period` is NULL is `undecidable` (pending, `stuck[]`). (ii) A postponed MLB game is voided by maintenance
+   leg's league comes from `bet_legs.league`. The whole table is live; only
+   a final whose `period` is NULL is `undecidable` (pending, `stuck[]`).
+   (ii) A postponed MLB game is voided by maintenance
    only on EVIDENCE — its own ET-date target fetched OK at least
    `MLB_POSTPONED_CONFIRM_MS` after that day ended and ESPN still saying
    postponed — never on "the day is over" alone, which voids rain-delayed games
-   that finished (§23.7); and `canceled` is terminal in the ingest upsert.
+   that finished (§23.7). `computeNextRunAt` caps such a target's next run at
+   `postponedVoidConfirmAt` so the evidence exists before maintenance, and
+   `canceled` is terminal in the ingest upsert (both (A) and (B), every league).
    (iii) No teaser leg may be MLB: `TEASABLE_LEAGUES`, enforced in `applyTease`
-   with the existing `TEASER_INVALID`. (iv) The secondary never sweeps MLB:
+   with the existing `400 TEASER_INVALID`, before any statement is built. (iv) The secondary never sweeps MLB:
    `secondary.ts` loops `SECONDARY_LEAGUES`, never `LEAGUES`.
 9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
    2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will

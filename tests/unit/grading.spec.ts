@@ -8,7 +8,8 @@ import {
   gradeTotal,
   projectLeg,
 } from '../../src/shared/grading.js';
-import type { BetPricing } from '../../src/shared/grading.js';
+import type { BetPricing, GradableGame } from '../../src/shared/grading.js';
+import { FULL_ACTION } from '../../src/shared/action.js';
 import { AppError } from '../../src/shared/errors.js';
 import {
   EVEN_MONEY_UNIT,
@@ -68,12 +69,21 @@ function makeLeg(overrides: Partial<BetLegSnapshot> = {}): BetLegSnapshot {
   return { ...BASE_LEG, ...overrides };
 }
 
-function final(homeScore: number | null, awayScore: number | null): GameResult {
-  return { status: 'final', homeScore, awayScore };
+/**
+ * TEST-ONLY: every vector in this file is football, so every game has FULL
+ * action (PLAN.md §23.6). `action` is REQUIRED on `GradableGame` and production
+ * code has no default — this helper is the one place it is supplied for free.
+ */
+function full(result: GameResult): GradableGame {
+  return { ...result, action: FULL_ACTION };
 }
 
-function notFinal(status: GameStatus): GameResult {
-  return { status, homeScore: null, awayScore: null };
+function final(homeScore: number | null, awayScore: number | null): GradableGame {
+  return full({ status: 'final', homeScore, awayScore });
+}
+
+function notFinal(status: GameStatus): GradableGame {
+  return full({ status, homeScore: null, awayScore: null });
 }
 
 /** Independent oracle: the exact rational for a set of American integers. */
@@ -90,7 +100,7 @@ function legForGrade(
   grade: LegGrade,
   index: number,
   americanPrice: AmericanPrice = -110,
-): { leg: BetLegSnapshot; game: GameResult } {
+): { leg: BetLegSnapshot; game: GradableGame } {
   const leg = makeLeg({
     gameId: `g${String(index)}`,
     market: 'moneyline',
@@ -116,9 +126,9 @@ function legForGrade(
 function betFor(
   grades: readonly LegGrade[],
   americanPrices?: readonly AmericanPrice[],
-): { legs: BetLegSnapshot[]; games: Map<string, GameResult> } {
+): { legs: BetLegSnapshot[]; games: Map<string, GradableGame> } {
   const legs: BetLegSnapshot[] = [];
-  const games = new Map<string, GameResult>();
+  const games = new Map<string, GradableGame>();
   grades.forEach((grade, i) => {
     const { leg, game } = legForGrade(grade, i, americanPrices?.[i] ?? -110);
     legs.push(leg);
@@ -301,7 +311,7 @@ describe('gradeLeg', () => {
   it("game 'canceled' -> 'void' regardless of score", () => {
     const leg = makeLeg({ market: 'spread', side: 'home', lineTenths: -35 });
     // A canceled game that nevertheless carries a score it would have LOST on.
-    expect(gradeLeg(leg, { status: 'canceled', homeScore: 10, awayScore: 45 })).toBe('void');
+    expect(gradeLeg(leg, full({ status: 'canceled', homeScore: 10, awayScore: 45 }))).toBe('void');
     expect(gradeLeg(leg, notFinal('canceled'))).toBe('void');
   });
 
@@ -310,7 +320,7 @@ describe('gradeLeg', () => {
   });
 
   it("game 'in_progress' -> 'pending'", () => {
-    expect(gradeLeg(makeLeg(), { status: 'in_progress', homeScore: 28, awayScore: 0 })).toBe(
+    expect(gradeLeg(makeLeg(), full({ status: 'in_progress', homeScore: 28, awayScore: 0 }))).toBe(
       'pending',
     );
   });
@@ -320,7 +330,7 @@ describe('gradeLeg', () => {
   });
 
   it("game 'unknown' -> 'pending' (never guess)", () => {
-    expect(gradeLeg(makeLeg(), { status: 'unknown', homeScore: 28, awayScore: 24 })).toBe(
+    expect(gradeLeg(makeLeg(), full({ status: 'unknown', homeScore: 28, awayScore: 24 }))).toBe(
       'pending',
     );
   });
@@ -400,8 +410,8 @@ describe('gradeLeg', () => {
   });
 
   it('reads the line from the SNAPSHOT, never from anything on the game', () => {
-    // The game object literally cannot carry a line — GameResult has three
-    // fields. This pins the contract of PLAN §14.3 at the type level and in
+    // The game object literally cannot carry a line — GradableGame has status,
+    // two scores and an action — no line. This pins the contract of PLAN §14.3 at the type level and in
     // behaviour: same game, two snapshots, two different grades.
     const game = final(28, 24);
     expect(gradeLeg(makeLeg({ lineTenths: -35 }), game)).toBe('win');
@@ -419,7 +429,7 @@ describe('projectLeg', () => {
       makeLeg({ market: 'moneyline', side: 'home', lineTenths: null }),
       makeLeg({ market: 'moneyline', side: 'away', lineTenths: null }),
     ];
-    const games: GameResult[] = [
+    const games: GradableGame[] = [
       final(28, 24),
       final(24, 24),
       final(24, 28),
@@ -439,7 +449,9 @@ describe('projectLeg', () => {
 
   it('projects a live in-progress game as pending, not as the current leader', () => {
     const leg = makeLeg({ market: 'moneyline', side: 'home', lineTenths: null });
-    expect(projectLeg(leg, { status: 'in_progress', homeScore: 35, awayScore: 0 })).toBe('pending');
+    expect(projectLeg(leg, full({ status: 'in_progress', homeScore: 35, awayScore: 0 }))).toBe(
+      'pending',
+    );
   });
 });
 
@@ -601,7 +613,7 @@ describe('gradeBet — the §7.3 truth table, exhaustively', () => {
     const unusable = betFor(['win']);
     const g0 = unusable.legs[0]?.gameId ?? '';
     const broken = new Map(unusable.games);
-    broken.set(g0, { status: 'final', homeScore: null, awayScore: 24 });
+    broken.set(g0, full({ status: 'final', homeScore: null, awayScore: 24 }));
     expect(gradeBet(1000, unusable.legs, broken).pendingReason).toBe(
       `leg 0: game ${g0} is final but its score is unusable`,
     );
@@ -671,7 +683,7 @@ describe('gradeBet — the §7.3 truth table, exhaustively', () => {
 
   it('a leg whose game is missing from the map is pending, never a guess', () => {
     const { legs } = betFor(['win', 'win']);
-    const games = new Map<string, GameResult>([[legs[0]!.gameId, final(27, 24)]]);
+    const games = new Map<string, GradableGame>([[legs[0]!.gameId, final(27, 24)]]);
     expect(gradeBet(1000, legs, games).status).toBe('pending');
   });
 });

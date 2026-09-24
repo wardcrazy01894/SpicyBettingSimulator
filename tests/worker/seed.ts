@@ -43,6 +43,8 @@ export interface SeedGameSpec {
   readonly awayConferenceId?: string | null;
   readonly homeRank?: number | null;
   readonly awayRank?: number | null;
+  /** `games.period` — the inning for MLB (PLAN.md §23.6). Default NULL. */
+  readonly period?: number | null;
 }
 
 export interface SeedLineSpec {
@@ -99,7 +101,7 @@ export async function seedGame(db: D1Database, spec: SeedGameSpec): Promise<void
          home_conference_id, away_conference_id,
          first_seen_at, last_seen_at, updated_at)
        VALUES (?1, 'espn', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-               NULL, NULL, ?13,
+               ?25, NULL, ?13,
                ?14, ?15, ?15, NULL, ?23, ?16,
                ?17, ?18, ?18, NULL, ?24, ?19,
                ?21, ?22,
@@ -130,6 +132,7 @@ export async function seedGame(db: D1Database, spec: SeedGameSpec): Promise<void
       spec.awayConferenceId ?? null,
       spec.homeRank ?? null,
       spec.awayRank ?? null,
+      spec.period ?? null,
     )
     .run();
 }
@@ -191,6 +194,8 @@ export async function updateGame(
     readonly homeScore?: number | null;
     readonly awayScore?: number | null;
     readonly lastSeenAt?: number;
+    /** The inning an MLB final ended in (PLAN.md §23.6); `null` writes NULL. */
+    readonly period?: number | null;
   },
 ): Promise<void> {
   const sets: string[] = [];
@@ -204,6 +209,7 @@ export async function updateGame(
   if (patch.homeScore !== undefined) push('home_score', patch.homeScore);
   if (patch.awayScore !== undefined) push('away_score', patch.awayScore);
   if (patch.lastSeenAt !== undefined) push('last_seen_at', patch.lastSeenAt);
+  if (patch.period !== undefined) push('period', patch.period);
   if (sets.length === 0) return;
   values.push(id);
   await db
