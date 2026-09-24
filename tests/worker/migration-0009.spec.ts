@@ -8,8 +8,15 @@
  * here is already post-0009. The rebuild is exercised the way
  * migration-0005.spec.ts exercises 0005: seed a full history through the real
  * triggers and HTTP, RE-RUN 0009's statements as ONE batch (exactly how
- * `wrangler d1 migrations apply` runs a file) and compare everything —
- * rows, balances, columns, and the `sqlite_master.sql` of every object.
+ * `wrangler d1 migrations apply` runs a file) and compare rows, balances,
+ * columns, and the `sqlite_master.sql` of every TRIGGER and INDEX (checked
+ * against source SQL).
+ *
+ * What this file does NOT prove: that 0009's TABLE DDL matches what it
+ * replaces. The pool has already applied 0009, so a before/after comparison of
+ * a table's `sqlite_master.sql` here compares 0009 with itself. That proof is
+ * tests/unit/migration-0009-ddl.spec.ts, which diffs each rebuilt
+ * `CREATE TABLE` against its source migration textually.
  */
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';

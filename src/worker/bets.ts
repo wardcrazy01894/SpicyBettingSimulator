@@ -55,9 +55,10 @@ import type {
 } from '../shared/types.js';
 import { BET_CUTOFF_BUFFER_MS } from '../shared/constants.js';
 import { AppError, DB_MESSAGES, thrownMentions } from '../shared/errors.js';
-import { distinctGameIds } from '../shared/validate.js';
+import { distinctGameIds, isTeasableLeague } from '../shared/validate.js';
 import { mergeEffectiveLine, usablePrice, usableTenths } from '../shared/lines.js';
 import type { EffectiveLine, LineRowView, MarketSource } from '../shared/lines.js';
+import { gameAction } from '../shared/action.js';
 import { projectLeg } from '../shared/grading.js';
 import {
   PUSH_AMERICAN_PRICE,
@@ -98,13 +99,14 @@ export interface PlaceBetResult {
  * `games.league`, which never changes for a game, so there is no race to
  * guard in SQL.
  *
- * `mlb: false` until M12b ships the settlement rule for shortened and postponed
- * games (§23.6/§23.7); M12b flips it. It stays afterwards as a one-line switch.
+ * `mlb` opened in M12b, with the settlement rule for shortened and postponed
+ * games (§23.6/§23.7). It stays as a one-line per-league kill switch: set a
+ * league `false` and its board goes read-only and placement refuses it.
  */
 export const LEAGUE_BETTING_OPEN: Readonly<Record<League, boolean>> = {
   nfl: true,
   ncaaf: true,
-  mlb: false,
+  mlb: true,
 };
 
 /** True when `league` is a known league whose betting is open. */
@@ -195,6 +197,8 @@ interface LegRow {
   g_kickoff_at: number;
   g_home_score: number | null;
   g_away_score: number | null;
+  /** `games.period` — for MLB the inning a final ended in (PLAN.md §23.6). */
+  g_period: number | null;
 }
 
 /**
@@ -751,11 +755,23 @@ export function betSeasonOf(legs: readonly ResolvedLeg[]): number {
  * the one value that is unambiguously "no price here". Nothing reads it —
  * `gradeBet` is handed `{kind:'teaser'}` and prices from the card.
  *
+ * @throws AppError TEASER_INVALID (400) for a leg whose league is not in
+ *   `TEASABLE_LEAGUES` — an MLB leg (PLAN.md §23.8). Placement and edit alike.
  * @throws AppError VALIDATION for a moneyline leg. `validatePlaceBet` already
  *   refuses one; this is the backstop that keeps the invariant local.
  */
 function applyTease(legs: readonly ResolvedLeg[], pointsTenths: number): readonly ResolvedLeg[] {
   return legs.map((leg) => {
+    // PLAN.md §23.8: teasability is by LEAGUE as well as by market. `league`
+    // came from the `games` row (`resolveLegSnapshots`), and a game's league
+    // never changes, so this pure check has no race to guard in SQL. It runs
+    // before any statement is built and before the teaser is priced, so no
+    // money moves. The EXISTING code — no new one (§23.14).
+    if (!isTeasableLeague(leg.league)) {
+      throw new AppError('TEASER_INVALID', `${leg.league.toUpperCase()} legs cannot be teased.`, {
+        field: `legs[${String(leg.legIndex)}]`,
+      });
+    }
     if (leg.market === 'moneyline' || leg.lineTenths === null) {
       throw new AppError('VALIDATION', 'A teaser leg must be a spread or a total.', {
         field: `legs[${String(leg.legIndex)}].market`,
@@ -1215,7 +1231,7 @@ async function loadLegs(env: Env, betIds: readonly string[]): Promise<Map<string
     env.DB.prepare(
       `SELECT l.*, g.status AS g_status, g.status_detail AS g_status_detail,
               g.kickoff_at AS g_kickoff_at, g.home_score AS g_home_score,
-              g.away_score AS g_away_score
+              g.away_score AS g_away_score, g.period AS g_period
          FROM bet_legs l JOIN games g ON g.id = l.game_id
         WHERE l.bet_id IN (${placeholders(betIds.length)})
         ORDER BY l.bet_id, l.leg_index`,
@@ -1381,11 +1397,18 @@ function toLegView(leg: LegRow, pending: boolean): BetLegView {
     awayAbbr: leg.away_abbr,
     result: leg.result === null ? null : (leg.result as LegResult),
     // Live only while the bet is open; a settled leg already carries `result`.
+    // The action is built exactly as settle.ts builds it — from the SNAPSHOT's
+    // league and the game's status/period — so a shortened MLB final shows its
+    // void legs before settle runs (PLAN.md §23.6).
     projected: pending
       ? projectLeg(snapshot, {
           status: leg.g_status as GameStatus,
           homeScore: leg.g_home_score,
           awayScore: leg.g_away_score,
+          action: gameAction(snapshot.league, {
+            status: leg.g_status as GameStatus,
+            period: leg.g_period,
+          }),
         })
       : null,
     game: {

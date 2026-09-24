@@ -3,8 +3,9 @@
  *
  * Pure: takes an immutable leg snapshot plus the game's score/status and returns
  * an outcome. It NEVER sees a live line — that is the whole point of the snapshot
- * (PLAN.md §14.3). `GameResult` carries exactly three fields (status + two
- * scores), so there is no line for this module to read even by accident.
+ * (PLAN.md §14.3). `GradableGame` carries status, two scores and the game's
+ * `action` verdict (§23.6) — no line — so there is no line for this module to
+ * read even by accident.
  *
  * All comparisons are integer arithmetic in TENTHS of a point, so a half-point
  * push is an exact `=== 0`, not an epsilon compare. All MONEY leaves through
@@ -38,6 +39,8 @@
  *    `effectiveAmericanPrice()` below and that trap is handled for you.
  */
 
+import { totalDecided } from './action.js';
+import type { GameAction } from './action.js';
 import { MIN_TEASER_LEGS } from './constants.js';
 import { AppError } from './errors.js';
 import {
@@ -59,6 +62,21 @@ import type {
   LegResult,
   Price,
 } from './types.js';
+
+/**
+ * A game as grading sees it: status and score (`GameResult`, frozen in
+ * `types.ts`) plus the GAME-level verdict on which markets have action
+ * (`action.ts`, PLAN.md §23.6). `action` is REQUIRED — an optional field
+ * defaulting to `FULL_ACTION` would fail OPEN: a call site that forgot it would
+ * grade (and pay) an MLB Final/7's run line. Required, a missed site is a
+ * compile error. Football callers pass `gameAction(league, …)`, which is
+ * `FULL_ACTION` for every football game.
+ *
+ * Still no line: the line is the snapshot's (PLAN.md §14.3, rule 7).
+ */
+export interface GradableGame extends GameResult {
+  readonly action: GameAction;
+}
 
 /**
  * A leg of a SETTLED bet. `grade` is a `LegResult`, never `'pending'`: a pending
@@ -134,23 +152,45 @@ function isGradeableLine(lineTenths: number | null): lineTenths is number {
 }
 
 /**
- * Grade a single leg.
- *   canceled game                         -> 'void'
- *   status !== 'final'                    -> 'pending'
- *   a score is null / not a finite integer -> 'pending'  (log and skip; never guess)
- *   otherwise                             -> win/loss/push per market
+ * Grade a single leg. The order is PLAN.md §7.3 / §23.6's, and is load-bearing:
+ *   canceled game                              -> 'void'
+ *   status !== 'final'                         -> 'pending'
+ *   action.kind === 'undecidable'              -> 'pending'  (never guess)
+ *   action.markets[market] === 'no-action'     -> 'void'     (no score needed)
+ *   a score is null / not a finite integer     -> 'pending'  (log and skip; never guess)
+ *   'no-action-unless-decided' && !decided     -> 'void'     (totals only)
+ *   otherwise                                  -> win/loss/push per market
+ *
+ * League-unaware: it never reads `leg.league`. Which markets of a finished
+ * game have action is decided by `action.ts` and handed in on the game.
  *
  * A malformed leg (spread/total with no line, or a market/side pairing that
  * cannot exist) also grades `pending`. It deliberately does NOT throw: a throw
  * inside the settle job would abort the whole chunk, whereas `pending` costs one
  * UPDATE and routes the bet to the `stuck[]` report (§7.1).
  */
-export function gradeLeg(leg: BetLegSnapshot, game: GameResult): LegGrade {
+export function gradeLeg(leg: BetLegSnapshot, game: GradableGame): LegGrade {
   if (game.status === 'canceled') return 'void';
   if (game.status !== 'final') return 'pending';
 
+  const { action } = game;
+  if (action.kind === 'undecidable') return 'pending';
+  const marketAction = action.markets[leg.market];
+  if (marketAction === 'no-action') return 'void';
+
   const { homeScore, awayScore } = game;
   if (!isGradeableScore(homeScore) || !isGradeableScore(awayScore)) return 'pending';
+
+  if (marketAction === 'no-action-unless-decided') {
+    // Totals only (a line is required to be decided at all). A malformed leg
+    // falls through to the per-market switch, which grades it 'pending'.
+    if (leg.market === 'total' && isGradeableLine(leg.lineTenths)) {
+      if (!totalDecided(homeScore, awayScore, leg.lineTenths)) return 'void';
+    } else if (leg.market !== 'total') {
+      // Never produced by action.ts; a side market cannot be "decided" early.
+      return 'void';
+    }
+  }
 
   switch (leg.market) {
     case 'moneyline':
@@ -231,11 +271,14 @@ function pendingOutcome(pendingReason: string): BetOutcome {
 function pendingReasonFor(
   legIndex: number,
   leg: BetLegSnapshot,
-  game: GameResult | undefined,
+  game: GradableGame | undefined,
 ): string {
   if (game === undefined) return `leg ${String(legIndex)}: game ${leg.gameId} not found`;
   if (game.status !== 'final')
     return `leg ${String(legIndex)}: game ${leg.gameId} is ${game.status}`;
+  if (game.action.kind === 'undecidable') {
+    return `leg ${String(legIndex)}: game ${leg.gameId} is undecidable: ${game.action.reason}`;
+  }
   if (!isGradeableScore(game.homeScore) || !isGradeableScore(game.awayScore)) {
     return `leg ${String(legIndex)}: game ${leg.gameId} is final but its score is unusable`;
   }
@@ -298,7 +341,7 @@ function pendingReasonFor(
 export function gradeBet(
   stakeCents: Cents,
   legs: readonly BetLegSnapshot[],
-  games: ReadonlyMap<string, GameResult>,
+  games: ReadonlyMap<string, GradableGame>,
   pricing: BetPricing = PARLAY_PRICING,
 ): BetOutcome {
   if (legs.length === 0) {
@@ -419,6 +462,6 @@ export function effectiveAmericanPrice(outcome: BetOutcome): AmericanPrice {
  * Identical logic to `gradeLeg` but callers must not write the result. An
  * in-progress game therefore projects as `pending`, never as whoever is ahead.
  */
-export function projectLeg(leg: BetLegSnapshot, game: GameResult): LegGrade {
+export function projectLeg(leg: BetLegSnapshot, game: GradableGame): LegGrade {
   return gradeLeg(leg, game);
 }

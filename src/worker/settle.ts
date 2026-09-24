@@ -76,19 +76,12 @@
  * divides or rounds a cent of its own.
  */
 
+import { gameAction } from '../shared/action.js';
 import { MAX_SETTLE_ATTEMPTS } from '../shared/constants.js';
 import { effectiveAmericanPrice, gradeBet } from '../shared/grading.js';
 import { AppError } from '../shared/errors.js';
-import type { BetOutcome, BetPricing } from '../shared/grading.js';
-import type {
-  BetLegSnapshot,
-  EpochMs,
-  GameResult,
-  GameStatus,
-  League,
-  Market,
-  Side,
-} from '../shared/types.js';
+import type { BetOutcome, BetPricing, GradableGame } from '../shared/grading.js';
+import type { BetLegSnapshot, EpochMs, GameStatus, League, Market, Side } from '../shared/types.js';
 import { EVEN_MONEY_UNIT } from '../shared/odds.js';
 import { changesAt, isUniqueViolation, newId, rowsWrittenAt, runBatch } from './db.js';
 import type { Env } from './env.js';
@@ -134,12 +127,15 @@ export interface SettleableBet {
   readonly legCount: number;
 }
 
-/** One leg, plus ONLY the score/status of its game. Never a line from `games`. */
+/**
+ * One leg, plus ONLY the score/status/inning-derived action of its game. Never
+ * a line from `games`.
+ */
 export interface SettleLeg {
   readonly betId: string;
   readonly legIndex: number;
   readonly snapshot: BetLegSnapshot;
-  readonly game: GameResult;
+  readonly game: GradableGame;
 }
 
 /**
@@ -241,8 +237,10 @@ UPDATE bets
 
 /**
  * §7.2. The line comes from `l.*` (the immutable snapshot); ONLY
- * `status`/`home_score`/`away_score` come from `games`. There is no code path in
- * this module that reads `game_lines` (CLAUDE.md rule 7).
+ * `status`/`home_score`/`away_score`/`period` come from `games`. `period` is a
+ * GAME fact — the inning count an MLB final ended in — that `gameAction`
+ * turns into which markets have action (§23.6). There is no code path in this
+ * module that reads `game_lines` (CLAUDE.md rule 7).
  */
 function selectLegsSql(count: number): string {
   const placeholders = Array.from({ length: count }, (_v, i) => `?${String(i + 1)}`).join(', ');
@@ -250,7 +248,8 @@ function selectLegsSql(count: number): string {
 SELECT l.bet_id, l.leg_index, l.game_id, l.league, l.market, l.side, l.line_tenths,
        l.american_price, l.provider, l.line_captured_at, l.snapshot_at,
        l.kickoff_at_snapshot, l.home_abbr, l.away_abbr,
-       g.status AS g_status, g.home_score AS g_home_score, g.away_score AS g_away_score
+       g.status AS g_status, g.home_score AS g_home_score, g.away_score AS g_away_score,
+       g.period AS g_period
   FROM bet_legs l JOIN games g ON g.id = l.game_id
  WHERE l.bet_id IN (${placeholders})
  ORDER BY l.bet_id, l.leg_index`;
@@ -409,9 +408,14 @@ interface LegDbRow {
   readonly g_status: string;
   readonly g_home_score: number | null;
   readonly g_away_score: number | null;
+  readonly g_period: number | null;
 }
 
-/** One query for all legs of the chunk, joined to games for score/status ONLY. */
+/**
+ * One query for all legs of the chunk, joined to games for score/status/period
+ * ONLY. The league for the action verdict is `bet_legs.league` — the snapshot,
+ * one source: a game's league is part of its id and never changes (§23.6).
+ */
 export async function loadLegsForBets(
   env: Env,
   betIds: readonly string[],
@@ -420,29 +424,34 @@ export async function loadLegsForBets(
   const res = await env.DB.prepare(selectLegsSql(betIds.length))
     .bind(...betIds)
     .all<LegDbRow>();
-  return res.results.map((row) => ({
-    betId: row.bet_id,
-    legIndex: row.leg_index,
-    snapshot: {
-      gameId: row.game_id,
-      league: row.league as League,
-      market: row.market as Market,
-      side: row.side as Side,
-      lineTenths: row.line_tenths,
-      americanPrice: row.american_price,
-      provider: row.provider,
-      lineCapturedAt: row.line_captured_at,
-      snapshotAt: row.snapshot_at,
-      kickoffAtSnapshot: row.kickoff_at_snapshot,
-      homeAbbr: row.home_abbr,
-      awayAbbr: row.away_abbr,
-    },
-    game: {
-      status: row.g_status as GameStatus,
-      homeScore: row.g_home_score,
-      awayScore: row.g_away_score,
-    },
-  }));
+  return res.results.map((row) => {
+    const league = row.league as League;
+    const status = row.g_status as GameStatus;
+    return {
+      betId: row.bet_id,
+      legIndex: row.leg_index,
+      snapshot: {
+        gameId: row.game_id,
+        league,
+        market: row.market as Market,
+        side: row.side as Side,
+        lineTenths: row.line_tenths,
+        americanPrice: row.american_price,
+        provider: row.provider,
+        lineCapturedAt: row.line_captured_at,
+        snapshotAt: row.snapshot_at,
+        kickoffAtSnapshot: row.kickoff_at_snapshot,
+        homeAbbr: row.home_abbr,
+        awayAbbr: row.away_abbr,
+      },
+      game: {
+        status,
+        homeScore: row.g_home_score,
+        awayScore: row.g_away_score,
+        action: gameAction(league, { status, period: row.g_period }),
+      },
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ *
@@ -472,7 +481,7 @@ export function gradeSettleableBet(bet: SettleableBet, legs: readonly SettleLeg[
   }
 
   const ordered = [...legs].sort((a, b) => a.legIndex - b.legIndex);
-  const games = new Map<string, GameResult>(ordered.map((l) => [l.snapshot.gameId, l.game]));
+  const games = new Map<string, GradableGame>(ordered.map((l) => [l.snapshot.gameId, l.game]));
   return gradeWithPricing(
     bet.stakeCents,
     ordered.map((l) => l.snapshot),
@@ -491,7 +500,7 @@ export function gradeSettleableBet(bet: SettleableBet, legs: readonly SettleLeg[
 function gradeWithPricing(
   stakeCents: number,
   snapshots: readonly BetLegSnapshot[],
-  games: ReadonlyMap<string, GameResult>,
+  games: ReadonlyMap<string, GradableGame>,
   pricing: BetPricing,
 ): BetOutcome {
   return gradeBet(stakeCents, snapshots, games, pricing);

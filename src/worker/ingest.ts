@@ -53,6 +53,7 @@
  * which is the deliberate exception to db.ts's per-invocation budget note.
  */
 
+import { postponedVoidConfirmAt } from '../shared/action.js';
 import {
   ESPN_MAX_WARNINGS_RECORDED,
   GAME_SEEN_TOUCH_MS,
@@ -652,6 +653,11 @@ ON CONFLICT(id) DO UPDATE SET
 WHERE
   -- (a) never regress a final game; but do allow score corrections
   (games.status <> 'final' OR excluded.status = 'final')
+  -- (a') CANCELED IS TERMINAL (PLAN.md §8.5 / §23.7). A game maintenance has
+  -- auto-voided may already have void legs; ESPN re-publishing the original
+  -- event (an MLB rainout stays STATUS_POSTPONED on its own date) must not flip
+  -- it back to postponed — or to anything else. League-neutral.
+  AND games.status <> 'canceled'
   -- (b) an INDEXED column must actually differ. Anything else is (B)'s job:
   -- naming status/kickoff_at/week in the SET list costs 4 rows even when the
   -- values are identical, so this statement must not run for clock churn.
@@ -693,6 +699,8 @@ WHERE id = ?
   -- the same never-regress-final guard as (A): a feed glitch reporting a played
   -- game as scheduled must not move its clock or scores either.
   AND (status <> 'final' OR ? = 'final')
+  -- and canceled is terminal, as in (A): the auto-void status_detail survives.
+  AND status <> 'canceled'
   AND (
     -- L1: only write if a value actually differs
     ${GAMES_LIVE_OLD} IS NOT ${GAMES_LIVE_NEW}
@@ -953,6 +961,9 @@ export async function upsertSlate(
  *   otherwise             -> +6 h
  *   all games final       -> +24 h
  * On failure: `min(15min * 2^consecutiveFailures, 6h)`.
+ * MLB only: a target holding an unfinished game is capped at
+ * `postponedVoidConfirmAt(league, windowEndAt)` while that is still ahead
+ * (PLAN.md §23.7) — see the end of the function.
  *
  * DELIBERATE ORDERING NOTE: §8.4's table lists "all final" last, but it is
  * checked FIRST here. A game that went final an hour ago still satisfies
@@ -1012,7 +1023,20 @@ export function computeNextRunAt(
   if (live) return now + REFRESH_LIVE_MS;
 
   const soon = unfinished.some((g) => within(g, SOON_HORIZON_MS));
-  return now + (soon ? REFRESH_SOON_MS : REFRESH_DISCOVERY_MS);
+  const tierNext = now + (soon ? REFRESH_SOON_MS : REFRESH_DISCOVERY_MS);
+
+  // THE CONFIRM CAP (PLAN.md §23.7). An MLB target still holding an unfinished
+  // game must be fetched at `postponedVoidConfirmAt` (03:00 ET after its date),
+  // so maintenance's evidence exists before its 08:30 UTC run — instead of
+  // whenever the +6 h tier next comes round, which after a late rain delay is
+  // AFTER maintenance. Only ever EARLIER than the tier (the `min`), never
+  // sooner than the live cadence (the `max`), and only while that instant is
+  // still ahead. `null` for football: no cap, behaviour unchanged.
+  const confirmAt = postponedVoidConfirmAt(target.league, target.windowEndAt);
+  if (confirmAt !== null && confirmAt > now) {
+    return Math.min(tierNext, Math.max(now + REFRESH_LIVE_MS, confirmAt));
+  }
+  return tierNext;
 }
 
 /* ------------------------------------------------------------------ *

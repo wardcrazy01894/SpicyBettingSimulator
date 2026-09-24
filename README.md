@@ -25,8 +25,11 @@ no top-up button, so bet like it's real.
   on an NFL game or a ranked college game, the board fills it from another book
   via The Odds API and says which book on that market.
 - **MLB**, in time for the postseason: today's games only, with DraftKings'
-  run line, total and moneyline. The board is up now; betting on it opens once
-  the rules for rain-shortened and postponed games are in (PLAN.md §23).
+  run line, total and moneyline, all bettable. A game called early by rain
+  settles the way DraftKings does: after 5 innings the moneyline stands, the
+  run line is void, and a total counts only if it was already decided; before
+  5 innings everything is void. A rainout is voided the next morning and your
+  stake comes back. MLB legs can't go in a teaser (PLAN.md §23).
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 10 legs, and the legs
   can mix Saturday and Sunday.

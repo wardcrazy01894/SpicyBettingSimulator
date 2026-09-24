@@ -1232,9 +1232,13 @@ test that mutates `game_lines` after placement and asserts the payout is unchang
 
 ```
 gradeLeg(leg, game) -> 'win' | 'loss' | 'push' | 'void' | 'pending'
+  // game: GradableGame = GameResult + a REQUIRED `action` (M12b, §23.6)
   game.status === 'canceled'                    -> 'void'
   game.status !== 'final'                       -> 'pending'
+  game.action.kind === 'undecidable'            -> 'pending'   (MLB final with NULL period)
+  game.action.markets[leg.market] === 'no-action' -> 'void'    (no score needed)
   scores not finite integers                    -> 'pending'   (log + skip; never guess)
+  'no-action-unless-decided' && !totalDecided   -> 'void'      (totals only)
   otherwise                                     -> §5.7
 
 gradeBet(bet, legs, games, pricing) -> BetOutcome
@@ -1254,6 +1258,16 @@ gradeBet(bet, legs, games, pricing) -> BetOutcome
   payout = floorDiv(stake * price.num, price.den)
   -> { status: 'won', payout }
 ```
+
+**The `action` (M12b).** `settle.ts` builds each game as
+`{ status, homeScore, awayScore, action: gameAction(bet_legs.league, { status, period }) }`
+— §7.2's query reads `g.period` beside the score, and the league is the leg
+snapshot's. `gameAction` (`src/shared/action.ts`) is `FULL_ACTION` for football,
+so every football grade is exactly what it was; for MLB it is §23.6's decision
+table (a Final/7 has a graded moneyline, a void run line and a total graded only
+if already decided). `gradeLeg` never reads `league`. `action` is REQUIRED on
+`GradableGame`, so a call site that forgot it is a compile error rather than a
+fail-open grade; the open-bet projection (`projectLeg`) builds the same object.
 
 Note the ordering: **a losing leg beats everything**, evaluated before push removal —
 a parlay with 1 loss and 4 pushes still loses. And a straight bet is just the
@@ -1416,14 +1430,16 @@ settle job's share of the budget.
 These convert "stuck" games into settleable ones so that money is never frozen
 forever:
 
-| Situation                           | Detection                                                                                                                   | Action                                                                                                   |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Game postponed and never replayed   | `status='postponed' AND now > original_kickoff_at + VOID_AFTER_MS (7d)`                                                     | set `status='canceled'`, `status_detail='auto-void: postponed >7d'` → legs void next settle run          |
-| ESPN dropped the game from the feed | `status IN ('scheduled','in_progress','unknown') AND now > original_kickoff_at + VOID_AFTER_MS AND last_seen_at < now - 2d` | same                                                                                                     |
-| Game stuck `in_progress`            | `status='in_progress' AND now > kickoff_at + 12h AND last_seen_at < now - 6h`                                               | leave; alert via `job_runs.stats.stuck[]` (do **not** auto-void a game that might just be a feed glitch) |
-| Expired sessions                    | `expires_at < now`                                                                                                          | delete                                                                                                   |
-| Auth throttle rows                  | `window_start < now - 1d`                                                                                                   | delete                                                                                                   |
-| `job_runs` history                  | keep newest 200 per job                                                                                                     | delete                                                                                                   |
+| Situation                                           | Detection                                                                                                                                                                                                                                   | Action                                                                                                                  |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Game postponed and never replayed                   | `status='postponed' AND now > original_kickoff_at + VOID_AFTER_MS (7d)`                                                                                                                                                                     | set `status='canceled'`, `status_detail='auto-void: postponed >7d'` → legs void next settle run                         |
+| MLB game postponed on its date (M12b, §23.7)        | `league='mlb' AND status='postponed' AND EXISTS` an `ingest_targets` row whose window holds the game's CURRENT `kickoff_at` with `last_status='ok' AND last_run_at >= window_end_at + MLB_POSTPONED_CONFIRM_MS` (03:00 ET the next morning) | set `status='canceled'`, `status_detail='auto-void: MLB postponed, not played on its date'` → legs void next settle run |
+| MLB game moved to another ET date under the same id | `league='mlb' AND kickoff_at <> original_kickoff_at`, ET dates compared with `etDateKey` in code                                                                                                                                            | leave; report in `job_runs.stats.mlbRescheduled[]` (§23.7)                                                              |
+| ESPN dropped the game from the feed                 | `status IN ('scheduled','in_progress','unknown') AND now > original_kickoff_at + VOID_AFTER_MS AND last_seen_at < now - 2d`                                                                                                                 | same                                                                                                                    |
+| Game stuck `in_progress`                            | `status='in_progress' AND now > kickoff_at + 12h AND last_seen_at < now - 6h`                                                                                                                                                               | leave; alert via `job_runs.stats.stuck[]` (do **not** auto-void a game that might just be a feed glitch)                |
+| Expired sessions                                    | `expires_at < now`                                                                                                                                                                                                                          | delete                                                                                                                  |
+| Auth throttle rows                                  | `window_start < now - 1d`                                                                                                                                                                                                                   | delete                                                                                                                  |
+| `job_runs` history                                  | keep newest 200 per job                                                                                                                                                                                                                     | delete                                                                                                                  |
 
 Every auto-void writes a `job_runs.stats` entry naming the game id, so it is visible
 in `GET /api/admin/jobs`.
@@ -1787,6 +1803,8 @@ ON CONFLICT(id) DO UPDATE SET
 WHERE
   -- (a) never regress a final game; but do allow score corrections
   (games.status <> 'final' OR excluded.status = 'final')
+  -- (a') canceled is terminal (M12b, §23.7): nothing un-cancels a game
+  AND games.status <> 'canceled'
   -- (b) an INDEXED column must actually differ
   AND (games.status, games.kickoff_at, COALESCE(games.week, -1))
       IS NOT
@@ -1811,6 +1829,7 @@ UPDATE games SET
   updated_at = CASE WHEN <compare tuple> IS NOT <new values> THEN ? ELSE updated_at END
 WHERE id = ?
   AND (status <> 'final' OR ? = 'final')          -- the same never-regress guard
+  AND status <> 'canceled'                        -- and canceled is terminal (M12b)
   AND (<compare tuple> IS NOT <new values>
        OR last_seen_at < ? - 21600000);           -- L3, GAME_SEEN_TOUCH_MS 6h
 ```
@@ -1836,6 +1855,7 @@ row of this table, against both the production accounting and an independent
 | kickoff reschedule           | **4**                              |
 | first insert                 | **6**                              |
 | final glitching to scheduled | **0** (both statements refuse)     |
+| canceled game re-reported    | **0** (both statements refuse)     |
 
 **Deliberate omission from (B)'s compare tuple: `status_detail`.** It is in the
 `SET` list but not in the tuple, so a change to _only_ the human-readable detail
@@ -1899,6 +1919,14 @@ Other upsert rules:
   cannot un-finalize it, and therefore cannot re-open betting on a played game.
   A final game is otherwise fully skipped, which is fine: `last_seen_at` is only
   consulted for non-final games.
+- **`canceled` is terminal** (M12b, §23.7): (A) gains `AND games.status <>
+'canceled'` and (B) `AND status <> 'canceled'`, so once maintenance has
+  auto-voided a game no refresh can flip it back — not to `postponed` (an MLB
+  rainout stays `STATUS_POSTPONED` on its own date, and its date target lives
+  two more days), not to `final`. League-neutral. It can only remove writes
+  (the "canceled game re-reported: 0" row above), and its auto-void
+  `status_detail` survives. The one football consequence: a game §7.5 voided as
+  "not seen > 2 d" that ESPN re-lists 9+ days late stays canceled.
 - Games are **never deleted** while any `bet_legs` row references them (there is
   no `DELETE` path in v1; pruning is future work and must respect the FK).
 
@@ -1974,19 +2002,22 @@ kickoff waves (scheduled → in_progress for 3.5 h → final), moving the clock 
 | sessions / throttle / job_runs      | —                                                        | < 300                         |
 | **Total**                           |                                                          | **≈ 5,100 / day — 5% of cap** |
 
-**MLB (since M12a) adds ≈ 1,050 rows/day** — 15 games × ≈ 55 rows plus the
-target's reschedules; cheaper per refresh than football because an MLB
-`display_clock` is always `"0:00"`, so the (B) live update fires only on a run or
-an inning. The arithmetic and the `< 1,000`-row regression bound are §23.11;
-**measured** by `tests/worker/mlb.spec.ts` (15 games × 96 refreshes, ~12 live
-each, score and inning moving on every live refresh): **684 rows** for games +
-lines. The CFB-Saturday figures below are unchanged.
+**MLB (since M12a) adds ≈ 900 rows/day, measured** — two figures, which are
+not a contradiction: the pre-measurement **ESTIMATE** was ≈ 1,050 rows/day
+(15 games × ≈ 55 rows plus the target's reschedules, §23.11's arithmetic), and
+the **MEASUREMENT** is ≈ 900 (the table below: 684 measured for games + lines,
+plus ≤ 192 for the target's reschedules). MLB is cheaper per refresh than
+football because an MLB `display_clock` is always `"0:00"`, so the (B) live
+update fires only on a run or an inning. The `< 1,000`-row regression bound is
+§23.11's; the 684 is **measured** by `tests/worker/mlb.spec.ts` (15 games × 96
+refreshes, ~12 live each, score and inning moving on every live refresh). The
+CFB-Saturday figures below are unchanged.
 
 | Stream (MLB, one day)               | Arithmetic                                     | Rows      |
 | ----------------------------------- | ---------------------------------------------- | --------- |
 | 15 MLB games `games` + `game_lines` | **measured**: 15 games × 96 refreshes          | **684**   |
 | the `mlb:date` target's reschedules | ≤ 96 runs × 2 (row + `idx_ingest_targets_due`) | ≤ 192     |
-| **MLB total**                       |                                                | **≈ 900** |
+| **MLB total (measured)**            | vs the ≈ 1,050 ESTIMATE above                  | **≈ 900** |
 
 For reference, the same fixture run through the **single-statement** upsert this
 replaces writes **6,978** rows; and the theoretical worst case of all 86 games
@@ -3976,19 +4007,19 @@ phrasing.
 `npm run db:reconcile -- --remote` afterwards as for 0005, even though the
 ledger is never named in the file.
 
-### M12 — MLB as a third league — **PLANNED** _(plan 2026-09-24; betting live before the Wild Card, 2026-09-29)_
+### M12 — MLB as a third league — **IN PROGRESS: M12a + M12b DONE 2026-09-24, M12c remaining** _(plan 2026-09-24; betting live before the Wild Card, 2026-09-29)_
 
 "MLB for the postseason, today's games only, no teasers, primary odds only — and
 a rule for rain." **§23 is the specification**; §23.15 is the shipping order:
 
-| PR           | What lands                                                                                                                                 | Depends on |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
-| **M12-plan** | §23, five constants of record, `src/shared/action.ts` stubs, three `it.todo` contract files                                                | —          |
-| **M12a**     | `migrations/0009_mlb_league.sql` + `'mlb'` in `LEAGUES` + ingest + a READ-ONLY board                                                       | M12-plan   |
-| **M12b**     | the FULL settlement rule (§23.6 table, `totalDecided`), postponed void + planner cap, canceled-terminal, MLB teaser refusal; betting opens | M12a       |
-| **M12c**     | week-less board, innings label, client teaser greying                                                                                      | M12a       |
+| PR           | What lands                                                                                                                                                                  | Depends on |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| **M12-plan** | §23, five constants of record, `src/shared/action.ts` stubs, three `it.todo` contract files                                                                                 | —          |
+| **M12a**     | **DONE 2026-09-24** (PR #50; 0009 applied to the live D1 19:08 UTC, reconcile clean) — `migrations/0009_mlb_league.sql` + `'mlb'` in `LEAGUES` + ingest + a READ-ONLY board | M12-plan   |
+| **M12b**     | **DONE 2026-09-24** — the FULL settlement rule (§23.6 table, `totalDecided`), postponed void + planner cap, canceled-terminal, MLB teaser refusal; betting OPEN             | M12a       |
+| **M12c**     | week-less board, innings label, client teaser greying                                                                                                                       | M12a       |
 
-**M12a and M12b merge back-to-back on 2026-09-25**, stacked branches reviewed in
+**M12a and M12b merged back-to-back on 2026-09-24** (PRs #50 and #51), stacked branches reviewed in
 parallel, M12a first: the six-table rebuild of 0009 is verified on the live D1
 (reconcile, `wrangler tail`, `coverage[]`) while no MLB stake can exist, and
 only then does M12b open betting. M12c follows within days. (A separate M12d for
@@ -6766,7 +6797,7 @@ action: GameAction }` — `GameResult` in the frozen `types.ts` is NOT widened.
 **`action` is REQUIRED**, on `gradeLeg`, `gradeBet`'s map
 (`ReadonlyMap<string, GradableGame>`) and `projectLeg` alike. An optional field
 defaulting to `FULL_ACTION` would fail OPEN: a production call site that forgot
-it (`settle.ts:497` via `gradeSettleableBet`, `src/worker/bets.ts:1353`'s projection) would
+it (`gradeSettleableBet` in `settle.ts`, `projectLeg` in `src/worker/bets.ts`) would
 grade an MLB Final/7's run line and pay it. Required, a missed site is a compile
 error. The existing `grading.spec.ts` vectors, which are all football, gain a
 test-only helper `full(result) = { ...result, action: FULL_ACTION }` — a
@@ -6794,7 +6825,7 @@ it learns only "a market can have no action", which is a sportsbook concept, and
 **Rule 7 holds.** The LINE is still `bet_legs.line_tenths`. `period` is a GAME
 fact read beside the score: §7.2's query gains ONLY `g.period AS g_period`.
 **The league comes from `bet_legs.league`**, which `loadLegsForBets` already reads
-into the snapshot (`settle.ts` `LegDbRow.league`; `src/worker/bets.ts:1338` for the
+into the snapshot (`settle.ts` `LegDbRow.league`; `projectLeg`'s snapshot in `src/worker/bets.ts` for the
 projection) — one source, not two. It is authoritative because it cannot
 disagree: it is snapshotted from the game row at placement, a game's league is
 part of its id (`"<league>:<eventId>"`, §3.1) and never changes, and every leg on
@@ -6811,8 +6842,8 @@ not, until maintenance cancels it.
 **The cross-sport trace the reviewer will ask for.** A parlay: MLB over 8.5 on a
 game that ends Final/7 with 6 runs, plus an NFL spread that LOSES. Legs grade
 `void` (not decided) and `loss`. `gradeBet` step 1 finds no pending leg; **step 2
-(`grading.ts:329`, `if (graded.some((l) => l.grade === 'loss'))`) returns `lost`,
-payout 0**, before step 3's survivor count (`:342`) is reached. A void leg never
+(`gradeBet` step 2 in `grading.ts`, `if (graded.some((l) => l.grade === 'loss'))`) returns `lost`,
+payout 0**, before step 3's survivor count is reached. A void leg never
 rescues a losing parlay. Had the NFL leg WON, step 3 keeps one survivor and the
 bet is `won` at the NFL leg's price alone, with `american_price` written back
 (§7.4). Both are `settle.spec`-level cases in `tests/worker/mlb.spec.ts` (M12b).
@@ -6905,7 +6936,7 @@ never "wrong". Two contracts pin it (`tests/worker/mlb.spec.ts`): a failed
 confirm fetch followed by a later OK fetch voids at the NEXT maintenance run;
 and a past MLB target holding a `postponed` game is NOT retired by
 `planTargets` (its `NOT EXISTS … status NOT IN ('final','canceled')` guard,
-`ingest.ts:342-353`), so the evidence can still arrive, and IS retired once the
+the retire guard in `planTargets`, `ingest.ts`), so the evidence can still arrive, and IS retired once the
 game is `canceled`. The slack is 1 h 30 m under EDT (03:00 EDT is 07:00 UTC; maintenance
 is 08:30 UTC) and 30 minutes under EST — i.e. only the World Series games after the
 2026-11-01 fall-back, when there is one game a day and nothing else competes for
@@ -6947,7 +6978,7 @@ Teasability today is by MARKET only (`TEASABLE_MARKETS`, `validate.ts:83`), and
 
 - **Pure helper** (M12a): `isTeasableLeague(league: League): boolean` in
   `validate.ts`, reading the constant. One definition for server and client.
-- **Server** (M12b): `applyTease` (`bets.ts:725`) runs on `ResolvedLeg`s, whose
+- **Server** (M12b): `applyTease` (`src/worker/bets.ts`) runs on `ResolvedLeg`s, whose
   `league` came from the `games` row (`bets.ts:619`). A leg with
   `!isTeasableLeague(leg.league)` throws `AppError('TEASER_INVALID', 'MLB legs
 cannot be teased.', { field: 'legs[i]' })` — 400, before any statement is built,
@@ -7034,7 +7065,8 @@ status transitions 8, ~9 inning changes + ~8 scoring changes ≈ 17 (B) rows, a
 few L3 touches, and pre-game line rows (L2 stops them at first pitch) — about
 20–25 over a morning of 45-minute touches and price moves. ≈ **55 rows/game**,
 × 15 games ≈ **850**, plus the MLB target's reschedules (≤ 96 × 2 = 192) ≈
-**1,050/day, about 1% of the cap**. Upper bound, every game changing on every
+**1,050/day ESTIMATED, about 1% of the cap** (MEASURED in M12a: 684 + ≤ 192 ≈
+900, below). Upper bound, every game changing on every
 refresh for all 96: 15 × 96 + 15 × 32 line touches + 210 ≈ 2,100. The
 postseason is 1–4 games a day. The §8.6 table gains the row; the CFB-Saturday
 figure is unchanged.
@@ -7140,7 +7172,8 @@ none of the four.
 | docs (`PLAN`, `CLAUDE`, `README`, `OPERATIONS`)                 | §3.2 enums, §8.1 row, §8.4/§8.6 numbers, 0009 row, target id                                                              | §7.3/§7.5 rows, the void rule in OPERATIONS                                                      | §12 notes                                              |
 
 **`LEAGUE_BETTING_OPEN`** (`src/worker/bets.ts`, M12a):
-`Readonly<Record<League, boolean>>`, `mlb: false` until M12b flips it. The board's
+`Readonly<Record<League, boolean>>`, `mlb: false` until M12b flipped it to `true`
+(2026-09-24). The board's
 `bettable` ANDs it in (`routes/games.ts:224`), and `resolveLegSnapshots` refuses a
 leg on a closed league with `409 GAME_NOT_BETTABLE` beside its `isLeague` check
 (`bets.ts:619`) — a pure check on an immutable column, so no race. It stays after
@@ -7155,8 +7188,8 @@ and leaves football behaviour byte-identical.
 | PR           | What lands                                                                                                                                                          | Depends on | Target merge         |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | -------------------- |
 | **M12-plan** | this chapter, five constants, `action.ts` stubs, three contract files, docs guard                                                                                   | —          | 2026-09-24           |
-| **M12a**     | `0009`, `'mlb'` in `LEAGUES`, every `Record<League>` (incl. `'Mixed'`), ESPN table, planner, window, sample, `isTeasableLeague` — **board visible, betting CLOSED** | plan       | 2026-09-25 (first)   |
-| **M12b**     | the FULL §23.6 table (`>= 9`, `5 … 8`, `< 5`, `totalDecided`), postponed-void rule + planner cap, canceled-terminal, server MLB-teaser refusal — **betting OPENS**  | M12a       | 2026-09-25 (second)  |
+| **M12a**     | `0009`, `'mlb'` in `LEAGUES`, every `Record<League>` (incl. `'Mixed'`), ESPN table, planner, window, sample, `isTeasableLeague` — **board visible, betting CLOSED** | plan       | **DONE** 2026-09-24  |
+| **M12b**     | the FULL §23.6 table (`>= 9`, `5 … 8`, `< 5`, `totalDecided`), postponed-void rule + planner cap, canceled-terminal, server MLB-teaser refusal — **betting OPENS**  | M12a       | **DONE** 2026-09-24  |
 | **M12c**     | week-less board, innings clock label, Run-line head, client teaser greying and pre-validation                                                                       | M12a       | within days, ≤ 10-02 |
 | ~~M12d~~     | folded into M12b — 2026-09-24                                                                                                                                       | —          | —                    |
 
