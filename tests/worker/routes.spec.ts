@@ -491,12 +491,14 @@ describe('games board', () => {
     const alex = await register('alex');
     const { gid, season } = scope();
     const now = Date.now();
-    // A normal CFB state early in the week: a game with no line row at all.
+    // A normal CFB state: a game with no line row at all. Two hours out, not
+    // three days: +3d fell PAST the board window on a Saturday (the week ends
+    // Monday), so the test failed one day a week. +2h is inside it every day.
     await seedGame(env.DB, {
       id: gid('nolines', 'ncaaf'),
       league: 'ncaaf',
       season,
-      kickoffAt: now + 3 * 24 * HOUR,
+      kickoffAt: now + 2 * HOUR,
     });
     const res = await get(`/api/games?league=ncaaf&season=${String(season)}`, alex.cookie);
     expect(res.status, await res.clone().text()).toBe(200);

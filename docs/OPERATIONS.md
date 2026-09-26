@@ -366,6 +366,11 @@ A settle run that could not settle a bet records `status='error'` with the stats
 retried automatically (`settle_attempts`) and parked in `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`
 (96 × the 15-minute cadence = 24 h).
 
+A parlay or teaser settles `lost` as soon as ONE leg loses, without waiting for its other games
+(PLAN §7.1b). The settle run counts these in `stats.earlyLost`. The legs it left open stay ungraded
+until their games finish, and later runs fill them in: `stats.legsGraded` counts those, with no
+money moved.
+
 ## Dependencies
 
 Dependabot (`.github/dependabot.yml`) opens bump PRs weekly on Monday morning ET: one grouped PR

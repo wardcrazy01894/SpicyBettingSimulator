@@ -1,6 +1,11 @@
 import { env } from 'cloudflare:workers';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { BetResponse, PlaceBetRequest, UserResponse } from '../../src/shared/api-types.js';
+import type {
+  BetResponse,
+  BetsResponse,
+  PlaceBetRequest,
+  UserResponse,
+} from '../../src/shared/api-types.js';
 import type { ApiErrorBody } from '../../src/shared/errors.js';
 import { INITIAL_BANKROLL_CENTS, MAX_SETTLE_ATTEMPTS } from '../../src/shared/constants.js';
 import { isAppError } from '../../src/shared/errors.js';
@@ -622,6 +627,182 @@ describe('runSettle — partial and pending', () => {
     expect(bet.settle_error).toMatch(/leg/i);
     expect(await ledgerRows(betId, 'bet_payout')).toHaveLength(0);
     await expectNoDrift();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Early loss (PLAN.md §7.1b): a parlay is dead the moment one leg loses
+ * ------------------------------------------------------------------ */
+
+describe('runSettle — early loss', () => {
+  it('settles a parlay LOST as soon as one leg loses, before the rest finish', async () => {
+    const user = await register();
+    const ids = await Promise.all([1, 2, 3].map((n) => seedScheduled(g(n))));
+    const betId = await place(
+      user.id,
+      ids.map((id) => mlLeg(id)),
+      1000,
+    );
+    const placed = await betRow(betId);
+    await finalize(ids[0]!, 10, 24); // home moneyline LOSES
+    for (const id of ids.slice(1)) await updateGame(env.DB, id, { status: 'in_progress' });
+
+    const stats = await runSettle(env, NOW + 1, 20);
+    expect(stats.selected).toBe(0); // not every game is final: §7.1 never saw it
+    expect(stats.earlyLost).toBe(1);
+    expect(stats.settled).toBe(1);
+    expect(stats.lost).toBe(1);
+    expect(stats.paidCents).toBe(0);
+
+    const bet = await betRow(betId);
+    expect(bet.status).toBe('lost');
+    expect(bet.payout_cents).toBe(0);
+    expect(bet.settled_at).toBe(NOW + 1);
+    // A lost bet keeps its placement price (§7.4).
+    expect(bet.american_price).toBe(placed.american_price);
+    const legs = await legRows(betId);
+    expect(legs.map((l) => l.result)).toEqual(['loss', null, null]);
+    expect(await ledgerRows(betId, 'bet_payout')).toHaveLength(0);
+    // The stake left at placement; nothing else moves.
+    expect(await balance(user.id)).toBe(INITIAL_BANKROLL_CENTS - 1000);
+    await expectNoDrift();
+  });
+
+  it('grades the remaining legs once their games finish, and moves NO money', async () => {
+    const user = await register();
+    const ids = await Promise.all([1, 2, 3].map((n) => seedScheduled(g(n))));
+    const betId = await place(
+      user.id,
+      ids.map((id) => mlLeg(id)),
+      1000,
+    );
+    await finalize(ids[0]!, 10, 24);
+    for (const id of ids.slice(1)) await updateGame(env.DB, id, { status: 'in_progress' });
+    await runSettle(env, NOW + 1, 20);
+    const settledBet = await betRow(betId);
+
+    await finalize(ids[1]!, 31, 17); // win
+    await updateGame(env.DB, ids[2]!, { status: 'canceled' }); // void
+    const stats = await runSettle(env, NOW + 2, 20);
+    expect(stats.legsGraded).toBe(2);
+    expect(stats.settled).toBe(0);
+    expect(stats.earlyLost).toBe(0);
+
+    const legs = await legRows(betId);
+    expect(legs.map((l) => l.result)).toEqual(['loss', 'win', 'void']);
+    expect(legs.map((l) => l.graded_at)).toEqual([NOW + 1, NOW + 2, NOW + 2]);
+    // The bet row is untouched by the follow-up pass.
+    expect(await betRow(betId)).toEqual(settledBet);
+    expect(await ledgerRows(betId, 'bet_payout')).toHaveLength(0);
+    expect(await balance(user.id)).toBe(INITIAL_BANKROLL_CENTS - 1000);
+    await expectNoDrift();
+
+    // Idempotent: a third run finds nothing left to grade.
+    const again = await runSettle(env, NOW + 3, 20);
+    expect(again.legsGraded).toBe(0);
+    expect((await legRows(betId)).map((l) => l.graded_at)).toEqual([NOW + 1, NOW + 2, NOW + 2]);
+  });
+
+  it('a partially final parlay whose finished legs all WON stays pending with zero writes', async () => {
+    const user = await register();
+    const ids = await Promise.all([1, 2].map((n) => seedScheduled(g(n))));
+    const betId = await place(
+      user.id,
+      ids.map((id) => mlLeg(id)),
+      1000,
+    );
+    await finalize(ids[0]!, 31, 17);
+    await updateGame(env.DB, ids[1]!, { status: 'in_progress' });
+
+    const stats = await runSettle(env, NOW + 1, 20);
+    expect(stats.earlyLost).toBe(0);
+    const bet = await betRow(betId);
+    expect(bet.status).toBe('pending');
+    expect(bet.settle_attempts).toBe(0);
+    expect(bet.settle_attempted_at).toBeNull();
+    expect((await legRows(betId)).every((l) => l.result === null)).toBe(true);
+  });
+
+  it('a final with an unusable score never ends a bet early', async () => {
+    const user = await register();
+    const ids = await Promise.all([1, 2].map((n) => seedScheduled(g(n))));
+    const betId = await place(
+      user.id,
+      ids.map((id) => mlLeg(id)),
+      1000,
+    );
+    await updateGame(env.DB, ids[0]!, { status: 'final' }); // scores never parsed
+    await updateGame(env.DB, ids[1]!, { status: 'in_progress' });
+
+    await runSettle(env, NOW + 1, 20);
+    expect((await betRow(betId)).status).toBe('pending');
+  });
+
+  it('fully final bets take the chunk first; the early-loss pass uses what is left', async () => {
+    const user = await register();
+    const a = await seedScheduled(g(1));
+    const straight = await place(user.id, [mlLeg(a)], 1000);
+    const ids = await Promise.all([2, 3].map((n) => seedScheduled(g(n))));
+    const parlay = await place(
+      user.id,
+      ids.map((id) => mlLeg(id)),
+      1000,
+    );
+    await finalize(a, 31, 17);
+    await finalize(ids[0]!, 10, 24);
+    await updateGame(env.DB, ids[1]!, { status: 'in_progress' });
+
+    const first = await runSettle(env, NOW + 1, 1);
+    expect(first.settled).toBe(1);
+    expect(first.earlyLost).toBe(0);
+    expect((await betRow(straight)).status).toBe('won');
+    expect((await betRow(parlay)).status).toBe('pending');
+
+    const second = await runSettle(env, NOW + 2, 1);
+    expect(second.earlyLost).toBe(1);
+    expect((await betRow(parlay)).status).toBe('lost');
+    await expectNoDrift();
+  });
+
+  it('never grades the legs of a CANCELLED bet, even after its game finishes', async () => {
+    const user = await register();
+    const gid = await seedScheduled(g(1));
+    const betId = await place(user.id, [mlLeg(gid)], 1000);
+    const res = await send(`/api/bets/${betId}`, {
+      method: 'DELETE',
+      headers: { cookie: user.cookie, 'X-SBS-Client': '1' },
+    });
+    expect(res.status, await res.clone().text()).toBeLessThan(300);
+    expect((await betRow(betId)).status).toBe('cancelled');
+    await finalize(gid, 31, 17);
+
+    const stats = await runSettle(env, NOW + 1, 20);
+    expect(stats.legsGraded).toBe(0);
+    expect((await legRows(betId)).map((l) => l.result)).toEqual([null]);
+  });
+
+  it('shows a live projection on the unfinished legs of an early-lost bet', async () => {
+    const user = await register();
+    const ids = await Promise.all([1, 2].map((n) => seedScheduled(g(n))));
+    const betId = await place(
+      user.id,
+      ids.map((id) => mlLeg(id)),
+      1000,
+    );
+    await finalize(ids[0]!, 10, 24);
+    await updateGame(env.DB, ids[1]!, { status: 'in_progress', homeScore: 7, awayScore: 3 });
+    await runSettle(env, NOW + 1, 20);
+
+    const res = await send('/api/bets?status=settled', {
+      headers: { cookie: user.cookie, 'X-SBS-Client': '1' },
+    });
+    expect(res.status).toBe(200);
+    const view = (await res.json<BetsResponse>()).bets.find((b) => b.id === betId);
+    expect(view?.status).toBe('lost');
+    expect(view?.legs.map((l) => [l.result, l.projected])).toEqual([
+      ['loss', null],
+      [null, 'pending'],
+    ]);
   });
 });
 

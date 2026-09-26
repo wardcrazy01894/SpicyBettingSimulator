@@ -268,9 +268,15 @@ export interface BetLegView {
   readonly kickoffAtSnapshot: EpochMs;
   readonly homeAbbr: string;
   readonly awayAbbr: string;
-  /** Persisted result once the bet settles. */
+  /**
+   * Persisted result once the leg is graded. NULL on an open bet, and on the
+   * legs an early loss left open until their games finish (PLAN.md §7.1b).
+   */
   readonly result: 'win' | 'loss' | 'push' | 'void' | null;
-  /** Live projection for OPEN bets. Computed on read, never persisted. */
+  /**
+   * Live projection while `result` is NULL (open bets, and the open legs of an
+   * early-lost bet). Computed on read, never persisted.
+   */
   readonly projected: LegGrade | null;
   /**
    * Current game state, for rendering "MIA 14 - 10 NE, Q3". Never null:
