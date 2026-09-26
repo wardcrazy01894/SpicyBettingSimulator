@@ -1233,7 +1233,7 @@ the bet read `lost`, count on the leaderboard, and leave the open-bets list.
    settles through §7.1 once its last game finishes.
 2. **Leg follow-up.** The legs an early loss left open keep `result = NULL`.
    Every run then reads up to `LEG_FOLLOW_UP_LIMIT` (40) ungraded legs of
-   NON-pending bets whose game is now `final`/`canceled` (kickoff within the
+   SETTLED bets (`won`/`lost`/`push`/`void`, never `cancelled`) whose game is now `final`/`canceled` (kickoff within the
    last 14 days, via `idx_games_status`), grades each with `gradeLeg`, and
    writes `result`/`graded_at` only — guarded on `result IS NULL` and on the bet
    not being pending. No bet row, no ledger, no money. A leg still grading

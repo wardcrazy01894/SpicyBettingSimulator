@@ -764,6 +764,23 @@ describe('runSettle — early loss', () => {
     await expectNoDrift();
   });
 
+  it('never grades the legs of a CANCELLED bet, even after its game finishes', async () => {
+    const user = await register();
+    const gid = await seedScheduled(g(1));
+    const betId = await place(user.id, [mlLeg(gid)], 1000);
+    const res = await send(`/api/bets/${betId}`, {
+      method: 'DELETE',
+      headers: { cookie: user.cookie, 'X-SBS-Client': '1' },
+    });
+    expect(res.status, await res.clone().text()).toBeLessThan(300);
+    expect((await betRow(betId)).status).toBe('cancelled');
+    await finalize(gid, 31, 17);
+
+    const stats = await runSettle(env, NOW + 1, 20);
+    expect(stats.legsGraded).toBe(0);
+    expect((await legRows(betId)).map((l) => l.result)).toEqual([null]);
+  });
+
   it('shows a live projection on the unfinished legs of an early-lost bet', async () => {
     const user = await register();
     const ids = await Promise.all([1, 2].map((n) => seedScheduled(g(n))));

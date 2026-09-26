@@ -266,7 +266,8 @@ SELECT b.id, b.bankroll_id, b.stake_cents, b.bet_type, b.teaser_points_tenths, b
 export const EARLY_LOSS_SCAN_LIMIT = 50;
 
 /**
- * §7.1b's leg follow-up: legs of SETTLED bets that are still ungraded (an early
+ * §7.1b's leg follow-up: legs of SETTLED bets (won/lost/push/void — never a
+ * cancelled one, whose legs stay NULL forever) that are still ungraded (an early
  * loss left them open) and whose game has since finished. Driven from
  * `idx_games_status` over a recent kickoff window so the scan stays small as
  * history grows; a leg whose game finished outside the window keeps its `NULL`
@@ -286,20 +287,21 @@ SELECT l.bet_id, l.leg_index, l.game_id, l.league, l.market, l.side, l.line_tent
  WHERE g.status IN ('final','canceled')
    AND g.kickoff_at > ?1
    AND l.result IS NULL
-   AND b.status <> 'pending'
+   AND b.status IN ('won','lost','push','void')
  ORDER BY g.updated_at DESC
  LIMIT ?2`;
 
 /**
  * The follow-up's only write. `result IS NULL` makes it idempotent (a second
  * run matches 0 rows and never re-stamps `graded_at`), and the `bets` guard
- * keeps it off a PENDING bet, whose legs are written only by its settlement
- * batch (§7.4) so a pending outcome still writes nothing.
+ * keeps it to SETTLED bets: never a PENDING one, whose legs are written only by
+ * its settlement batch (§7.4) so a pending outcome still writes nothing, and
+ * never a CANCELLED one, which had no action and must never show a grade.
  */
 export const FOLLOW_UP_LEG_UPDATE_SQL = `
 UPDATE bet_legs SET result = ?3, graded_at = ?4
  WHERE bet_id = ?1 AND leg_index = ?2 AND result IS NULL
-   AND EXISTS (SELECT 1 FROM bets WHERE id = ?1 AND status <> 'pending')`;
+   AND EXISTS (SELECT 1 FROM bets WHERE id = ?1 AND status IN ('won','lost','push','void'))`;
 
 /** Legs per follow-up run: one `batch()`, inside `runBatch`'s 40-statement budget. */
 export const LEG_FOLLOW_UP_LIMIT = 40;
