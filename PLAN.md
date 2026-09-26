@@ -1201,15 +1201,49 @@ Both halves are now fixed:
    the counter, for the case where the game row itself needed fixing.
 
 A _partially_ final parlay never enters this path at all: it fails the
-`NOT EXISTS`, is never selected, and costs zero writes.
-
-A parlay with 3 finals and 2 in-progress legs does not match → **stays pending**, no
-partial payout, no partially-written state. That is the whole answer to "partially
-graded parlay".
+`NOT EXISTS`, is never selected, and never touches `settle_attempts`. It is the
+early-loss pass's business instead (§7.1b): if one of its finished legs already
+LOST, it settles `lost` right then; otherwise it stays pending with zero writes.
+A parlay can never be partially PAID — only a loss ends a bet early, and a loss
+pays nothing.
 
 `postponed` deliberately does _not_ appear in the `IN` list: a postponed game keeps
 its bet pending until either it is played (→ `final`) or the maintenance job converts
 it to `canceled` (§7.5).
+
+### 7.1b Early loss and the leg follow-up (added 2026-09-26)
+
+**A parlay or teaser is dead the moment one leg loses, so it settles `lost` then**
+— not when its last game ends. The stake already left at placement (the
+`bet_stake` ledger row), so a loss moves no money; settling early is what makes
+the bet read `lost`, count on the leaderboard, and leave the open-bets list.
+
+1. **Early-loss pass.** After §7.1's chunk, with whatever is left of it
+   (`chunk − selected`), the job reads up to `EARLY_LOSS_SCAN_LIMIT` (50)
+   pending bets that have at least one leg on a `final` game AND at least one
+   on a game that is not yet `final`/`canceled` — the exact complement of §7.1's
+   set — newest-finished leg first. Each is graded with the ordinary
+   `gradeBet`; one that grades `lost` settles through the ordinary §7.4 batch
+   (`status='lost'`, `payout_cents=0`, the placement price kept, a
+   `bet_legs.result` for every DECIDED leg, no ledger row). Anything else is
+   skipped with **no write at all** — not even `settle_attempts`, which belongs
+   to §7.1's queue — so a partially final parlay whose finished legs won costs
+   reads only. Fully final bets always take the chunk first, so this pass can
+   never delay a payout. A candidate past the scan cap loses nothing: it still
+   settles through §7.1 once its last game finishes.
+2. **Leg follow-up.** The legs an early loss left open keep `result = NULL`.
+   Every run then reads up to `LEG_FOLLOW_UP_LIMIT` (40) ungraded legs of
+   NON-pending bets whose game is now `final`/`canceled` (kickoff within the
+   last 14 days, via `idx_games_status`), grades each with `gradeLeg`, and
+   writes `result`/`graded_at` only — guarded on `result IS NULL` and on the bet
+   not being pending. No bet row, no ledger, no money. A leg still grading
+   `pending` (an unusable score) is retried next run.
+3. **Display.** A leg with `result = NULL` on an open OR settled (not
+   cancelled) bet carries the live `projected` grade, so an early-lost parlay
+   shows its remaining games playing out.
+
+A garbage score cannot fake a loss: `gradeLeg` grades a final with an unusable
+score `pending`, so only a clean final ends a bet early.
 
 ### 7.2 Load legs (1 query)
 
@@ -1245,8 +1279,8 @@ gradeBet(bet, legs, games, pricing) -> BetOutcome
   // `pricing` comes from the BET ROW, never from the legs:
   //   bet_type = 'teaser' -> { kind: 'teaser', pointsTenths: teaser_points_tenths }
   //   otherwise           -> { kind: 'parlay' }   (the default)
+  if any leg 'loss'                             -> { status: 'lost',  payout: 0 }   // even with legs pending (§7.1b); legs = the decided ones
   if any leg 'pending'                          -> { status: 'pending' }          // no writes
-  if any leg 'loss'                             -> { status: 'lost',  payout: 0 }
   live = legs where result === 'win'
   minSurvivors = pricing.kind === 'teaser' ? 2 : 1
   if live.length < minSurvivors:
@@ -1269,8 +1303,10 @@ if already decided). `gradeLeg` never reads `league`. `action` is REQUIRED on
 `GradableGame`, so a call site that forgot it is a compile error rather than a
 fail-open grade; the open-bet projection (`projectLeg`) builds the same object.
 
-Note the ordering: **a losing leg beats everything**, evaluated before push removal —
-a parlay with 1 loss and 4 pushes still loses. And a straight bet is just the
+Note the ordering: **a losing leg beats everything**, evaluated before push removal
+and before the pending check — a parlay with 1 loss and 4 pushes still loses, and
+so does one with 1 loss and 4 games still going (§7.1b). Until 2026-09-26 the
+pending check came first and a dead parlay waited for its last game. And a straight bet is just the
 1-leg case of the same function; there is no separate straight code path.
 
 **Push semantics, confirmed 2026-09-14 (§19 Q4), in one sentence:** a pushed
@@ -1416,6 +1452,8 @@ the full per-bet detail is recorded alongside the one-line message.
 | `stuck[]`                  | ids parked at `MAX_SETTLE_ATTEMPTS`, capped at 50 — an alarm, not a work queue                                                                                                                                            |
 | `won`/`lost`/`push`/`void` | outcome counts among `settled`                                                                                                                                                                                            |
 | `paidCents`                | Σ payout among `settled`                                                                                                                                                                                                  |
+| `earlyLost`                | bets the §7.1b early-loss pass settled `lost` before all their games finished (already counted in `settled` and `lost`)                                                                                                   |
+| `legsGraded`               | legs of already-settled bets graded by the §7.1b follow-up (no money)                                                                                                                                                     |
 | `skippedAlreadySettled`    | see above                                                                                                                                                                                                                 |
 | `rowsWritten`              | D1 `meta.rows_written` summed over **every** statement the run issued, the opening reset sweep included — the unit the hard-enforced 100k/day cap counts, and the field `jobs.ts::dayRowsWritten` sums across jobs (§8.6) |
 | `errors[]`                 | `{betId, error}` per failed bet                                                                                                                                                                                           |
@@ -3177,8 +3215,10 @@ DDL, and a mock would not test them.
   holds when the pre-flight read is bypassed; a teaser stores the teased line, the
   book line and the card price; `expected` on a teaser is still the BOOK line.
 - `settle.spec.ts` — straight win/loss/push; parlay with a push leg re-priced;
-  parlay with a loss + pushes loses; partially-final parlay stays pending and
-  writes nothing; **running settle twice pays once** (assert ledger row count and
+  parlay with a loss + pushes loses; partially-final parlay whose finished legs
+  won stays pending and writes nothing; a partially-final parlay with a LOST leg
+  settles `lost` at once and its other legs are graded later with no money moved
+  (§7.1b); **running settle twice pays once** (assert ledger row count and
   balance); a `game_lines` row mutated _or deleted_ after placement does not change
   the payout; cancelled game → void → stake returned; **head-of-line blocking** (20
   undecidable bets do not starve a settleable one behind them; `settle_attempts`
@@ -6845,7 +6885,7 @@ one game therefore carries the same value. `loadLegsForBets` builds
 its own join, so a shortened final shows its void legs before settle runs.
 
 **§7.1 is unchanged**: selection still waits for every leg's game to be `final`
-or `canceled`. A shortened game is `final`, so it is selected; a postponed one is
+or `canceled` (a leg that already LOST ends the bet earlier through §7.1b). A shortened game is `final`, so it is selected; a postponed one is
 not, until maintenance cancels it.
 
 **The cross-sport trace the reviewer will ask for.** A parlay: MLB over 8.5 on a

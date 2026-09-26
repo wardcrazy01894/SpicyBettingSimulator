@@ -14,16 +14,16 @@
  *
  * ── The three readings of §7 this file commits to ────────────────────────────
  *
- * 1. **A losing leg does NOT short-circuit a pending one.** §7.3 orders the
- *    checks `pending` first, `loss` second, and the order is load-bearing: a
- *    parlay with one lost leg and one in-progress leg grades `pending`, not
- *    `lost`. That agrees with §7.1, whose selection query only picks up a bet
- *    when EVERY leg's game is already `final` or `canceled` — so in production
- *    this combination is only reachable when a "final" game's score is garbage,
- *    and the right answer there is to wait for ESPN to republish rather than to
- *    settle on data we distrust. It also keeps the invariant that a graded bet
- *    always writes a result for every leg. (Nothing is lost commercially: a dead
- *    parlay pays 0 whenever it does settle.)
+ * 1. **A decided losing leg DOES short-circuit a pending one (early loss).**
+ *    §7.3 checks `loss` first and `pending` second: a parlay or teaser is dead
+ *    the moment one leg loses, so it grades `lost` right then instead of waiting
+ *    for its last game. The outcome's `legs` carries only the DECIDED legs;
+ *    the pending ones stay `NULL` in `bet_legs` and settle.ts's follow-up leg
+ *    pass grades them (no money) once their games finish (§7.1b). A garbage
+ *    score cannot fake a loss: `gradeLeg` grades such a leg `pending`, so only
+ *    a clean final score can end a bet early. (This replaced the original
+ *    "pending beats loss" rule on 2026-09-26; nothing is lost commercially
+ *    either way — a dead parlay pays 0 — but the bettor sees the result sooner.)
  *
  * 2. **A `final` game with a null / non-integer / negative score is `pending`,
  *    not `loss` and not `void`.** §7.3 says "log + skip; never guess". §7.1
@@ -115,7 +115,11 @@ export interface BetOutcome {
   readonly status: BetStatus;
   /** Total return in cents (stake + profit). 0 for a loss, stake for push/void. */
   readonly payoutCents: Cents;
-  /** Per-leg results, only meaningful when `status !== 'pending'`. */
+  /**
+   * Per-leg results, only meaningful when `status !== 'pending'`. Every leg for
+   * `won`/`push`/`void`; for `lost` only the DECIDED legs — an early loss
+   * omits the legs whose games are still going (note 1 above).
+   */
   readonly legs: readonly GradedLeg[];
   /**
    * The effective price after pushed/voided legs are removed, i.e. what the bet
@@ -302,12 +306,14 @@ function pendingReasonFor(
  * and defer the bet otherwise.
  *
  * Never throws for a pending bet: grades are decided BEFORE any price is
- * derived, so a leg the DB CHECK would never allow (|price| < 100) cannot abort
+ * derived (a lost bet derives its placement price, as it always has), so a leg the DB CHECK would never allow (|price| < 100) cannot abort
  * a settle chunk while its game is still in progress.
  *
  * Order matters and is tested:
- *   1. ANY leg still 'pending'  -> the bet stays pending, nothing is written.
- *   2. ANY leg 'loss'           -> 'lost', payout 0. A loss beats every push.
+ *   1. ANY leg 'loss'           -> 'lost', payout 0. A loss beats every push AND
+ *                                  every pending leg (early loss); `legs` holds
+ *                                  only the decided legs.
+ *   2. ANY leg still 'pending'  -> the bet stays pending, nothing is written.
  *   3. Too few surviving 'win' legs -> 'void' if all legs voided, else 'push';
  *                                  payout = stake. The threshold is 1 for a
  *                                  parlay and MIN_TEASER_LEGS (2) for a teaser.
@@ -353,7 +359,26 @@ export function gradeBet(
     return game === undefined ? 'pending' : gradeLeg(leg, game);
   });
 
-  // 1. Pending beats everything, INCLUDING a loss. See note 1 in the header.
+  // 1. A decided loss beats EVERYTHING — every push, void and pending leg. The
+  //    bet is dead, so it settles now (early loss, note 1 in the header). Only
+  //    the decided legs are carried; the pending ones are graded later.
+  if (grades.includes('loss')) {
+    const decided: GradedLeg[] = [];
+    for (const [legIndex, leg] of legs.entries()) {
+      const grade = grades[legIndex];
+      if (grade === undefined || grade === 'pending') continue;
+      decided.push({ legIndex, grade, price: americanToPrice(leg.americanPrice) });
+    }
+    return {
+      status: 'lost',
+      payoutCents: 0,
+      legs: decided,
+      // §7.4: a lost bet keeps the price it was offered at — ALL its legs.
+      effectivePrice: priceForSurvivors(pricing, legs, legs.length),
+    };
+  }
+
+  // 2. With no loss, any pending leg keeps the bet pending: it might still win.
   //    Decided before any price derivation so this path can never throw.
   for (const [legIndex, leg] of legs.entries()) {
     if (grades[legIndex] === 'pending') {
@@ -367,17 +392,6 @@ export function gradeBet(
     grade: grades[legIndex] as LegResult,
     price: americanToPrice(leg.americanPrice),
   }));
-
-  // 2. A losing leg beats every push, and is evaluated BEFORE push removal.
-  if (graded.some((l) => l.grade === 'loss')) {
-    return {
-      status: 'lost',
-      payoutCents: 0,
-      legs: graded,
-      // §7.4: a lost bet keeps the price it was offered at.
-      effectivePrice: priceForSurvivors(pricing, legs, legs.length),
-    };
-  }
 
   // 3. Too few survivors: the stake comes back at even money. `void` only when
   //    EVERY leg voided, so one push among voids still reads as a push (§7.3).

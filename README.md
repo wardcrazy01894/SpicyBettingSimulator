@@ -58,7 +58,9 @@ no top-up button, so bet like it's real.
    a silent fill.
 5. **Change your mind** any time before the first leg locks, one minute before
    kickoff. Edits re-price against the current lines.
-6. **Watch it grade.** Settlement runs a few minutes after each refresh. Your
+6. **Watch it grade.** Settlement runs a few minutes after each refresh. A
+   parlay or teaser is marked lost as soon as any one leg loses; its other
+   legs keep grading as their games finish, just for the record. Your
    account page has the full ledger, every cent of it, and the leaderboard
    ranks everyone by **equity**: balance plus whatever is still riding.
    **Tap a name on the leaderboard** to see that player's bets: what's still

@@ -139,8 +139,10 @@ function betFor(
 
 /** PLAN §7.3, transcribed. Deliberately NOT the implementation. */
 function expectedStatus(grades: readonly LegGrade[]): BetStatus {
-  if (grades.includes('pending')) return 'pending';
+  // A decided loss beats a pending leg: the parlay is dead the moment one leg
+  // loses (early settlement, PLAN §7.3).
   if (grades.includes('loss')) return 'lost';
+  if (grades.includes('pending')) return 'pending';
   if (grades.includes('win')) return 'won';
   return grades.every((g) => g === 'void') ? 'void' : 'push';
 }
@@ -533,14 +535,14 @@ describe('gradeBet — the §7.3 truth table, exhaustively', () => {
         }
 
         // A pending bet writes NOTHING — not even partial leg results (§7.1).
+        // A lost bet carries every DECIDED leg and omits the pending ones,
+        // which the follow-up leg pass grades once their games finish.
         expect(outcome.legs).toEqual(
           status === 'pending'
             ? []
-            : grades.map((grade, legIndex) => ({
-                legIndex,
-                grade,
-                price: americanToPrice(-110),
-              })),
+            : grades.flatMap((grade, legIndex) =>
+                grade === 'pending' ? [] : [{ legIndex, grade, price: americanToPrice(-110) }],
+              ),
         );
       });
     }
@@ -625,11 +627,25 @@ describe('gradeBet — the §7.3 truth table, exhaustively', () => {
     );
   });
 
-  it('a loss with pending legs is PENDING, not lost — pending is checked first', () => {
-    // PLAN §7.3 orders the checks `pending` THEN `loss`, and §7.1 never even
-    // selects a bet whose games are not all final/canceled. So an already-dead
-    // parlay waits for its last game rather than settling early.
-    const { legs, games } = betFor(['loss', 'pending']);
+  it('a loss with pending legs is LOST immediately — a decided loss beats pending', () => {
+    // PLAN §7.3 checks `loss` BEFORE `pending`: a parlay is dead the moment one
+    // leg loses, so it settles then instead of waiting for its last game.
+    const { legs, games } = betFor(['pending', 'loss', 'win', 'pending']);
+    const outcome = gradeBet(1000, legs, games);
+    expect(outcome.status).toBe('lost');
+    expect(outcome.payoutCents).toBe(0);
+    expect(outcome.pendingReason).toBeUndefined();
+    // Only the decided legs are carried; the pending ones stay unwritten.
+    expect(outcome.legs.map((l) => [l.legIndex, l.grade])).toEqual([
+      [1, 'loss'],
+      [2, 'win'],
+    ]);
+    // §7.4: a lost bet keeps the price it was offered — ALL four legs.
+    expect(outcome.effectivePrice).toEqual(multiplyPrices(legs.map(() => americanToPrice(-110))));
+  });
+
+  it('pending legs with no loss keep the bet pending, however many legs won', () => {
+    const { legs, games } = betFor(['win', 'push', 'void', 'pending']);
     expect(gradeBet(1000, legs, games).status).toBe('pending');
   });
 
@@ -896,6 +912,16 @@ describe('gradeBet — teasers', () => {
     const outcome = gradeBet(1000, legs, games, SIX);
     expect(outcome.status).toBe('void');
     expect(outcome.payoutCents).toBe(1000);
+  });
+
+  it('a teaser loses early too: one lost leg settles it before the rest finish', () => {
+    const { legs, games } = betFor(['pending', 'loss', 'pending']);
+    const outcome = gradeBet(1000, legs, games, SIX);
+    expect(outcome.status).toBe('lost');
+    expect(outcome.payoutCents).toBe(0);
+    expect(outcome.legs.map((l) => l.legIndex)).toEqual([1]);
+    // The card's price for the FULL leg count — what the bet was offered at.
+    expect(effectiveAmericanPrice(outcome)).toBe(150);
   });
 
   it('any loss loses the whole teaser, however many legs pushed', () => {

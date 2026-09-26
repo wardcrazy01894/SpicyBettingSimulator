@@ -17,7 +17,11 @@
  * none of them names the table.
  *
  * A parlay with some legs final and some not does not match the selection query
- * at all, so it stays `pending` with zero writes.
+ * at all. It is looked at instead by the EARLY-LOSS pass (PLAN.md §7.1b): if one
+ * of its finished legs already lost, the bet settles `lost` right then, with
+ * only its decided legs graded; otherwise it stays `pending` with zero writes.
+ * The legs left ungraded by an early loss are filled in later by the LEG
+ * FOLLOW-UP pass, which writes `bet_legs.result` only and never touches money.
  *
  * HEAD-OF-LINE BLOCKING: a bet CAN be selected (all games final) and still grade
  * `pending` -- e.g. a final game whose score never parsed. Such a bet increments
@@ -78,7 +82,7 @@
 
 import { gameAction } from '../shared/action.js';
 import { MAX_SETTLE_ATTEMPTS } from '../shared/constants.js';
-import { effectiveAmericanPrice, gradeBet } from '../shared/grading.js';
+import { effectiveAmericanPrice, gradeBet, gradeLeg } from '../shared/grading.js';
 import { AppError } from '../shared/errors.js';
 import type { BetOutcome, BetPricing, GradableGame } from '../shared/grading.js';
 import type { BetLegSnapshot, EpochMs, GameStatus, League, Market, Side } from '../shared/types.js';
@@ -105,6 +109,16 @@ export interface SettleStats {
   readonly push: number;
   readonly void: number;
   readonly paidCents: number;
+  /**
+   * Bets settled `lost` by the early-loss pass (§7.1b) before all their games
+   * finished. Already counted in `settled` and `lost`; this names the subset.
+   */
+  readonly earlyLost: number;
+  /**
+   * Legs of ALREADY-SETTLED bets graded by the follow-up pass (§7.1b): the
+   * legs an early loss left open, written once their games finished. No money.
+   */
+  readonly legsGraded: number;
   readonly skippedAlreadySettled: number;
   /**
    * D1 `meta.rows_written` summed over every statement this run issued — the
@@ -216,6 +230,85 @@ SELECT b.id, b.bankroll_id, b.stake_cents, b.bet_type, b.teaser_points_tenths, b
    )
  ORDER BY b.settle_attempts ASC, b.earliest_kickoff_at ASC
  LIMIT ?2`;
+
+/**
+ * §7.1b's early-loss candidates: pending bets with at least one leg on a `final`
+ * game AND at least one leg on a game that is NOT yet final/canceled — the
+ * exact complement of `SELECT_SETTLEABLE_SQL`'s set, so a bet is never in both.
+ * Grading decides which of them actually lost; SQL does not replicate grading.
+ *
+ * READ-ONLY for every candidate that has not lost: no `settle_attempts`, no
+ * `settle_error`, no write of any kind. So a partially final parlay whose
+ * finished legs all won costs reads, never writes, and cannot starve §7.1's
+ * queue (it is not in it). Ordered by its most recently changed final game,
+ * newest first, so the bet whose leg JUST finished is looked at first — that is
+ * where a new loss can appear — and a scan cap cannot starve fresh work. A
+ * candidate beyond the cap loses nothing: it still settles through §7.1 once
+ * its last game finishes.
+ */
+export const SELECT_EARLY_LOSS_CANDIDATES_SQL = `
+SELECT b.id, b.bankroll_id, b.stake_cents, b.bet_type, b.teaser_points_tenths, b.leg_count
+  FROM bets b
+ WHERE b.status = 'pending'
+   AND EXISTS (SELECT 1 FROM bet_legs l JOIN games g ON g.id = l.game_id
+                WHERE l.bet_id = b.id AND g.status = 'final')
+   AND EXISTS (SELECT 1 FROM bet_legs l JOIN games g ON g.id = l.game_id
+                WHERE l.bet_id = b.id AND g.status NOT IN ('final','canceled'))
+ ORDER BY (SELECT MAX(g.updated_at) FROM bet_legs l JOIN games g ON g.id = l.game_id
+            WHERE l.bet_id = b.id AND g.status = 'final') DESC,
+          b.earliest_kickoff_at ASC
+ LIMIT ?1`;
+
+/**
+ * How many early-loss candidates one run grades. Bounded by D1's 100 bound
+ * parameters, because `loadLegsForBets` binds one id per bet.
+ */
+export const EARLY_LOSS_SCAN_LIMIT = 50;
+
+/**
+ * §7.1b's leg follow-up: legs of SETTLED bets that are still ungraded (an early
+ * loss left them open) and whose game has since finished. Driven from
+ * `idx_games_status` over a recent kickoff window so the scan stays small as
+ * history grows; a leg whose game finished outside the window keeps its `NULL`
+ * (display only — the bet's money settled long ago).
+ *
+ * Same column list as §7.2 so one row mapper serves both.
+ */
+export const SELECT_LEGS_TO_FOLLOW_UP_SQL = `
+SELECT l.bet_id, l.leg_index, l.game_id, l.league, l.market, l.side, l.line_tenths,
+       l.american_price, l.provider, l.line_captured_at, l.snapshot_at,
+       l.kickoff_at_snapshot, l.home_abbr, l.away_abbr,
+       g.status AS g_status, g.home_score AS g_home_score, g.away_score AS g_away_score,
+       g.period AS g_period
+  FROM games g
+  JOIN bet_legs l ON l.game_id = g.id
+  JOIN bets b ON b.id = l.bet_id
+ WHERE g.status IN ('final','canceled')
+   AND g.kickoff_at > ?1
+   AND l.result IS NULL
+   AND b.status <> 'pending'
+ ORDER BY g.updated_at DESC
+ LIMIT ?2`;
+
+/**
+ * The follow-up's only write. `result IS NULL` makes it idempotent (a second
+ * run matches 0 rows and never re-stamps `graded_at`), and the `bets` guard
+ * keeps it off a PENDING bet, whose legs are written only by its settlement
+ * batch (§7.4) so a pending outcome still writes nothing.
+ */
+export const FOLLOW_UP_LEG_UPDATE_SQL = `
+UPDATE bet_legs SET result = ?3, graded_at = ?4
+ WHERE bet_id = ?1 AND leg_index = ?2 AND result IS NULL
+   AND EXISTS (SELECT 1 FROM bets WHERE id = ?1 AND status <> 'pending')`;
+
+/** Legs per follow-up run: one `batch()`, inside `runBatch`'s 40-statement budget. */
+export const LEG_FOLLOW_UP_LIMIT = 40;
+
+/**
+ * How far back (by kickoff) the follow-up looks. Covers a game auto-voided by
+ * maintenance (7 days past its original kickoff, §7.5) with a week to spare.
+ */
+export const LEG_FOLLOW_UP_WINDOW_MS = 14 * 86_400_000;
 
 /** Bets past the attempt budget. They stay `pending`; money is never forfeited. */
 export const SELECT_STUCK_SQL = `
@@ -337,14 +430,29 @@ export async function selectSettleableBets(
   const res = await env.DB.prepare(SELECT_SETTLEABLE_SQL)
     .bind(maxAttempts, limit)
     .all<SettleableBetDbRow>();
-  return res.results.map((row) => ({
+  return res.results.map(toSettleableBet);
+}
+
+/** §7.1b: pending bets partly final — the ones an early loss could settle. */
+export async function selectEarlyLossCandidates(
+  env: Env,
+  limit: number,
+): Promise<readonly SettleableBet[]> {
+  const res = await env.DB.prepare(SELECT_EARLY_LOSS_CANDIDATES_SQL)
+    .bind(limit)
+    .all<SettleableBetDbRow>();
+  return res.results.map(toSettleableBet);
+}
+
+function toSettleableBet(row: SettleableBetDbRow): SettleableBet {
+  return {
     id: row.id,
     bankrollId: row.bankroll_id,
     stakeCents: row.stake_cents,
     betType: row.bet_type,
     teaserPointsTenths: row.teaser_points_tenths,
     legCount: row.leg_count,
-  }));
+  };
 }
 
 export async function selectStuckBetIds(
@@ -424,34 +532,73 @@ export async function loadLegsForBets(
   const res = await env.DB.prepare(selectLegsSql(betIds.length))
     .bind(...betIds)
     .all<LegDbRow>();
-  return res.results.map((row) => {
-    const league = row.league as League;
-    const status = row.g_status as GameStatus;
-    return {
-      betId: row.bet_id,
-      legIndex: row.leg_index,
-      snapshot: {
-        gameId: row.game_id,
-        league,
-        market: row.market as Market,
-        side: row.side as Side,
-        lineTenths: row.line_tenths,
-        americanPrice: row.american_price,
-        provider: row.provider,
-        lineCapturedAt: row.line_captured_at,
-        snapshotAt: row.snapshot_at,
-        kickoffAtSnapshot: row.kickoff_at_snapshot,
-        homeAbbr: row.home_abbr,
-        awayAbbr: row.away_abbr,
-      },
-      game: {
-        status,
-        homeScore: row.g_home_score,
-        awayScore: row.g_away_score,
-        action: gameAction(league, { status, period: row.g_period }),
-      },
-    };
-  });
+  return res.results.map(toSettleLeg);
+}
+
+/** One §7.2-shaped row to a `SettleLeg`. Score/status/period only from `games`. */
+function toSettleLeg(row: LegDbRow): SettleLeg {
+  const league = row.league as League;
+  const status = row.g_status as GameStatus;
+  return {
+    betId: row.bet_id,
+    legIndex: row.leg_index,
+    snapshot: {
+      gameId: row.game_id,
+      league,
+      market: row.market as Market,
+      side: row.side as Side,
+      lineTenths: row.line_tenths,
+      americanPrice: row.american_price,
+      provider: row.provider,
+      lineCapturedAt: row.line_captured_at,
+      snapshotAt: row.snapshot_at,
+      kickoffAtSnapshot: row.kickoff_at_snapshot,
+      homeAbbr: row.home_abbr,
+      awayAbbr: row.away_abbr,
+    },
+    game: {
+      status,
+      homeScore: row.g_home_score,
+      awayScore: row.g_away_score,
+      action: gameAction(league, { status, period: row.g_period }),
+    },
+  };
+}
+
+export interface FollowUpResult {
+  /** Legs this run graded — `meta.changes`, the human-facing count. */
+  readonly legsGraded: number;
+  readonly rowsWritten: number;
+}
+
+/**
+ * §7.1b's leg follow-up: grade the legs an early loss left open, now that their
+ * games have finished. `bet_legs.result` / `graded_at` only — no bet row, no
+ * ledger, no money; the bet's outcome was final the moment it lost. A leg that
+ * still grades `pending` (a final with an unusable score) is skipped and looked
+ * at again next run. One `batch()` of at most `LEG_FOLLOW_UP_LIMIT` UPDATEs.
+ */
+export async function followUpSettledLegs(env: Env, now: EpochMs): Promise<FollowUpResult> {
+  const res = await env.DB.prepare(SELECT_LEGS_TO_FOLLOW_UP_SQL)
+    .bind(now - LEG_FOLLOW_UP_WINDOW_MS, LEG_FOLLOW_UP_LIMIT)
+    .all<LegDbRow>();
+  const statements: D1PreparedStatement[] = [];
+  for (const leg of res.results.map(toSettleLeg)) {
+    const grade = gradeLeg(leg.snapshot, leg.game);
+    if (grade === 'pending') continue;
+    statements.push(
+      env.DB.prepare(FOLLOW_UP_LEG_UPDATE_SQL).bind(leg.betId, leg.legIndex, grade, now),
+    );
+  }
+  if (statements.length === 0) return { legsGraded: 0, rowsWritten: 0 };
+  const results = await runBatch(env.DB, statements);
+  let legsGraded = 0;
+  let rowsWritten = 0;
+  for (let i = 0; i < results.length; i += 1) {
+    legsGraded += changesAt(results, i);
+    rowsWritten += rowsWrittenAt(results, i);
+  }
+  return { legsGraded, rowsWritten };
 }
 
 /* ------------------------------------------------------------------ *
@@ -666,7 +813,9 @@ export class SettleRunError extends Error {
  * load) plus one per selected bet — one batch, or one deferral UPDATE, or (for a
  * bet whose batch threw) a failed batch followed by one deferral UPDATE. At the
  * chunk of 20 that is **24** calls in the ordinary case and at most 44 if every
- * bet in the chunk fails.
+ * bet in the chunk fails. The §7.1b passes add at most 2 reads + one batch per
+ * early loss (the early-loss batches share the SAME chunk budget, so selected
+ * plus early-lost never exceeds `chunk`) + 1 read + 1 batch for the follow-up.
  *
  * THROWS `SettleRunError` when `stats.errors` is non-empty — after the chunk is
  * finished, never during it. `runJob` lets it through so the run is recorded as
@@ -677,16 +826,12 @@ export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<
   const bets = await selectSettleableBets(env, chunk, MAX_SETTLE_ATTEMPTS);
   const stuck = await selectStuckBetIds(env, MAX_SETTLE_ATTEMPTS);
 
-  const legs = await loadLegsForBets(
-    env,
-    bets.map((b) => b.id),
+  const legsByBet = groupByBet(
+    await loadLegsForBets(
+      env,
+      bets.map((b) => b.id),
+    ),
   );
-  const legsByBet = new Map<string, SettleLeg[]>();
-  for (const leg of legs) {
-    const list = legsByBet.get(leg.betId);
-    if (list === undefined) legsByBet.set(leg.betId, [leg]);
-    else list.push(leg);
-  }
 
   let settled = 0;
   let deferred = 0;
@@ -695,6 +840,7 @@ export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<
   let push = 0;
   let voided = 0;
   let paidCents = 0;
+  let earlyLost = 0;
   let skippedAlreadySettled = 0;
   // The reset sweep's writes are part of THIS run's budget line (PLAN.md §8.6).
   let rowsWritten = resetSweep.rowsWritten;
@@ -756,6 +902,58 @@ export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<
     }
   }
 
+  // §7.1b EARLY LOSS, with whatever is left of the chunk: fully final bets
+  // always go first, so this pass can delay nothing §7.1 would have settled.
+  const earlyBudget = chunk - bets.length;
+  if (earlyBudget > 0) {
+    const candidates = await selectEarlyLossCandidates(env, EARLY_LOSS_SCAN_LIMIT);
+    const candidateLegs =
+      candidates.length === 0
+        ? new Map<string, SettleLeg[]>()
+        : groupByBet(
+            await loadLegsForBets(
+              env,
+              candidates.map((b) => b.id),
+            ),
+          );
+    let attempted = 0;
+    for (const bet of candidates) {
+      if (attempted >= earlyBudget) break;
+      try {
+        const outcome = gradeSettleableBet(bet, candidateLegs.get(bet.id) ?? []);
+        // Not lost (yet): it may still win. NO write of any kind — not even
+        // `settle_attempts`, which belongs to §7.1's queue.
+        if (outcome.status !== 'lost') continue;
+        attempted += 1;
+        const applied = await settleOneBet(env, bet, outcome, newId(), now);
+        rowsWritten += applied.rowsWritten;
+        if (applied.result === 'already-settled') {
+          skippedAlreadySettled += 1;
+          continue;
+        }
+        settled += 1;
+        lost += 1;
+        earlyLost += 1;
+      } catch (err) {
+        // The batch rolled back as a unit, so the bet is still fully pending
+        // and a later run (or §7.1, once its games finish) settles it.
+        errors.push({ betId: bet.id, error: errorText(err) });
+        console.error('[settle] failed to settle an early loss', bet.id, err);
+      }
+    }
+  }
+
+  // §7.1b follow-up: grade the legs earlier early losses left open. No money.
+  let legsGraded = 0;
+  try {
+    const followUp = await followUpSettledLegs(env, now);
+    legsGraded = followUp.legsGraded;
+    rowsWritten += followUp.rowsWritten;
+  } catch (err) {
+    errors.push({ betId: '(leg follow-up)', error: errorText(err) });
+    console.error('[settle] leg follow-up failed', err);
+  }
+
   const stats: SettleStats = {
     selected: bets.length,
     settled,
@@ -767,6 +965,8 @@ export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<
     push,
     void: voided,
     paidCents,
+    earlyLost,
+    legsGraded,
     skippedAlreadySettled,
     rowsWritten,
     errors,
@@ -795,6 +995,16 @@ export async function retrySettlement(
   if (row === null) return 'not-found';
   // A pending bet that matched 0 rows was already at zero: nothing to do.
   return row.status === 'pending' ? 'reset' : 'not-pending';
+}
+
+function groupByBet(legs: readonly SettleLeg[]): Map<string, SettleLeg[]> {
+  const byBet = new Map<string, SettleLeg[]>();
+  for (const leg of legs) {
+    const list = byBet.get(leg.betId);
+    if (list === undefined) byBet.set(leg.betId, [leg]);
+    else list.push(leg);
+  }
+  return byBet;
 }
 
 /** A short, safe rendering of a thrown value. Never carries a stack. */

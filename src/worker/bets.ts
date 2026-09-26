@@ -1360,11 +1360,16 @@ export function toBetView(bet: BetRow, legs: readonly LegRow[], now: EpochMs): B
       legs.every((l) => l.g_status === 'scheduled' && l.g_kickoff_at > nowPlusBuffer),
     replacesBetId: bet.replaces_bet_id,
     replacedByBetId: bet.replaced_by_bet_id,
-    legs: legs.map((leg) => toLegView(leg, pending)),
+    // A leg is projected live while it has no persisted grade: every leg of an
+    // open bet, and the legs an EARLY LOSS left open (PLAN.md §7.1b) until the
+    // follow-up pass grades them. Never on a cancelled bet — it has no action.
+    legs: legs.map((leg) =>
+      toLegView(leg, bet.status !== 'cancelled' && (pending || leg.result === null)),
+    ),
   };
 }
 
-function toLegView(leg: LegRow, pending: boolean): BetLegView {
+function toLegView(leg: LegRow, project: boolean): BetLegView {
   const snapshot: BetLegSnapshot = {
     gameId: leg.game_id,
     league: leg.league as League,
@@ -1396,11 +1401,11 @@ function toLegView(leg: LegRow, pending: boolean): BetLegView {
     homeAbbr: leg.home_abbr,
     awayAbbr: leg.away_abbr,
     result: leg.result === null ? null : (leg.result as LegResult),
-    // Live only while the bet is open; a settled leg already carries `result`.
-    // The action is built exactly as settle.ts builds it — from the SNAPSHOT's
+    // Live only while the leg is ungraded; a graded leg already carries
+    // `result`. The action is built exactly as settle.ts builds it — from the SNAPSHOT's
     // league and the game's status/period — so a shortened MLB final shows its
     // void legs before settle runs (PLAN.md §23.6).
-    projected: pending
+    projected: project
       ? projectLeg(snapshot, {
           status: leg.g_status as GameStatus,
           homeScore: leg.g_home_score,
