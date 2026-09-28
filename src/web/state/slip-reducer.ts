@@ -14,7 +14,7 @@
  * node vitest project; `BetSlipProvider` owns the `localStorage` side effects.
  */
 
-import { isTeaserPoints } from '../../shared/constants.js';
+import { isTeaserPoints, MAX_TEASER_LEGS } from '../../shared/constants.js';
 import { LEAGUES } from '../../shared/types.js';
 import { legsConflict, sameGameConflict } from '../../shared/validate.js';
 import type { AmericanPrice, League, LineTenths, Market, Side } from '../../shared/types.js';
@@ -125,6 +125,11 @@ export function parlayFullNotice(maxLegs: number): string {
   return `A parlay can hold at most ${String(maxLegs)} legs — remove one first.`;
 }
 
+/** The same refusal for a teaser, whose ceiling is the card's width, not the parlay cap. */
+export function teaserFullNotice(): string {
+  return `A teaser can hold at most ${String(MAX_TEASER_LEGS)} legs — remove one first.`;
+}
+
 export function legKey(leg: Pick<SlipLeg, 'gameId' | 'market' | 'side'>): string {
   return `${leg.gameId}|${leg.market}|${leg.side}`;
 }
@@ -196,10 +201,15 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
       // pick (the other side of the spread, or the moneyline for the spread);
       // a tap on the game's other slot ADDS a leg, which is a same-game parlay.
       const others = slip.legs.filter((l) => !legsConflict(l, action.leg));
-      if (others.length >= action.maxLegs) {
+      // `action.maxLegs` is the server's PARLAY cap (25). A teaser stops at the
+      // card's width, MAX_TEASER_LEGS (10), which the shared validator enforces
+      // on submit — refusing the tap here says so before the user builds past it.
+      const teaser = slip.mode === 'teaser';
+      const cap = teaser ? Math.min(action.maxLegs, MAX_TEASER_LEGS) : action.maxLegs;
+      if (others.length >= cap) {
         // Full. Change NOTHING — no new arrays, no re-render churn — and say so
         // out loud; this used to be a silent no-op that looked like a dead tap.
-        return { ...state, notice: parlayFullNotice(action.maxLegs) };
+        return { ...state, notice: teaser ? teaserFullNotice() : parlayFullNotice(cap) };
       }
       const legs = [...others, action.leg];
       return withSlip(state, { ...slip, legs, mode: modeFor(legs, slip.mode) });

@@ -4372,8 +4372,11 @@ ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
   (`tests/unit/migration-0010-ddl.spec.ts`), re-run lossless on a populated
   database by `tests/worker/migration-0010.spec.ts`. The 0005 / 0008 / 0009
   specs now compose forward through 0010. **No contract file changes shape**:
-  `ConfigResponse.maxParlayLegs` just reports 25, and the slip learns the
-  teaser ceiling from the shared validator, which it already runs.
+  `ConfigResponse.maxParlayLegs` just reports 25, and the browser reads
+  `MAX_TEASER_LEGS` straight from `src/shared/constants.ts`: the slip reducer
+  refuses an eleventh tap on a teaser with its own "full" notice
+  (`teaserFullNotice`), and the preview's shared validator rejects a parlay of
+  11+ legs switched to Teaser with "a teaser has 2-10 legs".
 
 ## 17. Risks and mitigations
 
