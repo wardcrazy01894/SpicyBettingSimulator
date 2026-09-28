@@ -33,6 +33,7 @@ import {
   INITIAL_BANKROLL_CENTS,
   LINE_STALE_MS,
   MAX_PARLAY_LEGS,
+  MAX_TEASER_LEGS,
   MAX_PAYOUT_CENTS,
   MAX_SETTLE_ATTEMPTS,
   MIN_STAKE_CENTS,
@@ -303,6 +304,7 @@ describe('constants.ts vs PLAN.md §3.1', () => {
     VOID_AFTER_MS,
     MAX_PARLAY_LEGS,
     MIN_TEASER_LEGS,
+    MAX_TEASER_LEGS,
     // The board window (PLAN §22). These two ET hours are the whole of "which
     // games are on the board": get one wrong and next week's slate appears a day
     // early or a day late, on a live app, with no error anywhere.

@@ -54,7 +54,7 @@ drive real architectural decisions.
 | D1 rows read                                 | 5,000,000 / day                                                                                                           | Plenty; see write budget in §8.6.                                                                                                                                                                                                                                                              |
 | D1 rows written                              | 100,000 / day                                                                                                             | **Hard-enforced since 2026-09-01**: past the cap D1 returns errors, which blocks bet placement and settlement — not just the board. Budget + the three levers that keep us under it: §8.6.                                                                                                     |
 | D1 storage                                   | 500 MB                                                                                                                    | ~1 season of both leagues ≈ a few MB.                                                                                                                                                                                                                                                          |
-| D1 bound params / statement                  | 100                                                                                                                       | 10-leg parlay insert must stay under this — it does.                                                                                                                                                                                                                                           |
+| D1 bound params / statement                  | 100                                                                                                                       | 25-leg parlay insert must stay under this — it does (41).                                                                                                                                                                                                                                      |
 | D1 statement length                          | 100 KB                                                                                                                    | Fine.                                                                                                                                                                                                                                                                                          |
 | D1 row size                                  | 2 MB                                                                                                                      | Fine.                                                                                                                                                                                                                                                                                          |
 | Worker requests                              | 100,000 / day                                                                                                             | Static asset requests **do not** invoke the Worker when `run_worker_first` is an allow-list (see §2.3), so page loads are free.                                                                                                                                                                |
@@ -190,8 +190,9 @@ section explains the _why_.
 | `SESSION_TTL_MS`                      | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                  |
 | `MAX_SETTLE_ATTEMPTS`                 | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                                                                                                                       |
 | `VOID_AFTER_MS`                       | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                               |
-| `MAX_PARLAY_LEGS`                     | `10`            | also `CHECK(leg_count BETWEEN 1 AND 10)` on `bets`; the teaser card stops here too (§5.8)                                                                                             |
+| `MAX_PARLAY_LEGS`                     | `25`            | DraftKings' parlay limit; also `CHECK(leg_count BETWEEN 1 AND 25)` on `bets` (10 until migration 0010, §16.2)                                                                         |
 | `MIN_TEASER_LEGS`                     | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                         |
+| `MAX_TEASER_LEGS`                     | `10`            | the teaser card's width (§5.8), below `MAX_PARLAY_LEGS`; also `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` on `bets` (0010)                                                      |
 | `NFL_WEEK_ROLLOVER_ET_HOUR`           | `20`            | Sunday 20:00 ET: the NFL board rolls over to next week's Monday (§22)                                                                                                                 |
 | `NCAAF_WEEK_ROLLOVER_ET_HOUR`         | `0`             | Sunday 00:00 ET: the CFB board rolls over to next week's Monday (§22)                                                                                                                 |
 | `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` | `300`           | 30.0 pt: past this a missing moneyline is normal, not a gap — the UI hint and the sweep rule (§21.2)                                                                                  |
@@ -495,7 +496,7 @@ value so a later optimisation needs no migration; nothing constructs one in v1.
 | A teaser has a tier and nothing else does                          | `CHECK ((bet_type = 'teaser') = (teaser_points_tenths IS NOT NULL))` + `CHECK (teaser_points_tenths IN (60,65,70))`             |
 | Payout ≤ `MAX_PAYOUT_CENTS` (so no money column can become `REAL`) | `CHECK(potential_payout_cents BETWEEN 0 AND 100000000)` and the same on `payout_cents`                                          |
 | A leg price is a small bounded integer                             | `CHECK(abs(american_price) BETWEEN 100 AND 100000)` on `bet_legs`                                                               |
-| 1–10 legs                                                          | `CHECK(leg_count BETWEEN 1 AND 10)` + validation                                                                                |
+| 1–25 legs; a teaser 2–10                                           | `CHECK(leg_count BETWEEN 1 AND 25)` + `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` (0010) + validation                     |
 | One side pick and one total per game per bet (§5.2c)               | `UNIQUE(bet_id, game_id, market)` + the `bet_legs_bi_one_side_per_game` trigger on `bet_legs` (0008)                            |
 
 The point of pushing these into DDL: a settlement bug becomes a failed `batch()`
@@ -758,8 +759,8 @@ that game (never guessed).
 parlayPrice(legs) = { num: Π legs[i].num, den: Π legs[i].den }
 ```
 
-BigInt, so no precision loss. Worst case (10 legs, price magnitude ≤ 100000) gives
-a 24-digit numerator — trivial for BigInt.
+BigInt, so no precision loss. Worst case (25 legs, `MAX_PARLAY_LEGS`) at −101 is
+`201^25`, a 58-digit numerator — still trivial for BigInt.
 
 **This is exactly why the product is never persisted.** Two hard limits sit below
 a 24-digit integer:
@@ -799,7 +800,8 @@ _or_ the moneyline — and one **total**. That is the whole rule, and it is the
 same rule for a parlay and a teaser (`legSlot` / `legsConflict` /
 `sameGameConflict` in `src/shared/validate.ts`; the slip and the server run the
 same functions). A game may therefore appear twice in `bet_legs` for one bet,
-and a 10-leg parlay can be five games at two legs each.
+and a 10-leg parlay can be five games at two legs each (a 25-leg one, thirteen
+games at most).
 
 **Pricing is unchanged.** A same-game parlay is `parlayPrice(legs)` over its
 legs exactly like any other parlay, and a same-game teaser reads the card at
@@ -845,8 +847,9 @@ profitCents = payoutCents - stakeCents
 ```
 
 BigInt `/` truncates toward zero and all operands are non-negative, so this **is**
-floor. Result is converted to `number` only at the end (max value ≈ 6.4e7 cents for a
-$1000 10-leg parlay — far below `Number.MAX_SAFE_INTEGER`).
+floor. Result is converted to `number` only at the end, and only after the BigInt
+cap check (§5.2b), so it is at most `MAX_PAYOUT_CENTS` = 1e8 — far below
+`Number.MAX_SAFE_INTEGER` however many legs the parlay has.
 
 **Why not floats.** Choosing this regression vector is subtle, and the obvious
 candidates are traps. There are two common float formulations of decimal odds —
@@ -927,10 +930,12 @@ Two sanity checks a reader can apply to this table without a REPL, and which an
 earlier revision failed: **profit is never negative on a winning bet**, and a
 payout at a positive American price is always more than double the stake.
 
-Note the 10-leg −110 row: 64,308,161¢ is the largest payout reachable from the
-full $1,000 bankroll at realistic prices, and it sits comfortably under
-`MAX_PAYOUT_CENTS` (100,000,000¢). The cap only bites on genuinely absurd
-parlays, like ten +2000 legs.
+Note the 10-leg −110 row: 64,308,161¢ from the full $1,000 bankroll sits under
+`MAX_PAYOUT_CENTS` (100,000,000¢). Since `MAX_PARLAY_LEGS` became 25 (migration
+0010, §16.2) the cap is what actually bounds a long parlay: an 11-leg −110 at the
+same stake would return 122,770,127¢ and is refused with `PAYOUT_LIMIT_EXCEEDED`,
+and a 25-leg −110 is refused even at the 100¢ minimum (1,048,733,737¢). All three
+REPL-verified.
 
 ### 5.5 Decimal → American (display only)
 
@@ -1390,8 +1395,8 @@ Corollaries, both stated so nothing downstream looks like a latent bug:
 - A `lost` bet keeps its placement price: there are no surviving legs to re-price
   from, and the price it was _offered_ is the honest thing to display.
 
-Statement count per bet: `1 + legCount + (payout>0 ? 1 : 0)` ≤ 12 for a settled
-bet (10-leg parlay: 1 + 10 + 1). A **deferred** bet (§7.1) writes exactly **1**
+Statement count per bet: `1 + legCount + (payout>0 ? 1 : 0)` ≤ 27 for a settled
+bet (25-leg parlay: 1 + 25 + 1). A **deferred** bet (§7.1) writes exactly **1**
 statement — the `settle_attempts` / `settle_attempted_at` / `settle_error` UPDATE —
 and no batch. A run therefore issues four fixed calls — reset sweep, select, stuck
 report, load legs — plus at most one per selected bet, i.e. `4 + ≤20 batches`:
@@ -3398,7 +3403,7 @@ and rolls the batch back → `409 INSUFFICIENT_FUNDS`. `PAYOUT_LIMIT_EXCEEDED` i
 checked in-process before the batch is built, and again by the `CHECK` on
 `potential_payout_cents`.
 
-Bound parameters: worst case 10 legs ≈ 10 (game ids) + ~14 (bet) + 10×15 (legs) —
+Bound parameters: worst case 25 legs ≈ 25 (game ids) + ~16 (bet) + 25×15 (legs) —
 that **exceeds the 100-parameter-per-statement limit if written as one
 statement**, which is exactly why the legs are `n` separate statements inside the
 batch (~15 parameters each). Called out because it is a real limit that is easy to
@@ -4354,6 +4359,24 @@ ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
   M12b merge back-to-back on 2026-09-25 so MLB betting is live before the Wild
   Card; M12c (UI) follows — neither M12b nor M12c touches the four contract
   files.
+- **`migrations/0010_parlay_25_legs.sql`** — parlays up to 25 legs, DraftKings'
+  limit (was 10). `MAX_PARLAY_LEGS` goes 10 → 25 and a new `MAX_TEASER_LEGS`
+  (10) keeps teasers at the card's width, since `TEASER_PAYOUTS` has no column
+  past 10. `bets.leg_count`'s CHECK widens to `BETWEEN 1 AND 25` and `bets`
+  gains `CHECK (bet_type <> 'teaser' OR leg_count <= 10)`, which the old column
+  CHECK used to cover. Nothing else changed: at 25 legs placement is 27
+  statements, an edit 29 and a settlement 27, all under `runBatch`'s 40, and the
+  bet INSERT binds 41 parameters against D1's 100. The migration is a
+  children-first rebuild of `ledger` → `bet_legs` → `bets` in 0005's pattern,
+  with 0009's DDL verbatim except those two CHECKs
+  (`tests/unit/migration-0010-ddl.spec.ts`), re-run lossless on a populated
+  database by `tests/worker/migration-0010.spec.ts`. The 0005 / 0008 / 0009
+  specs now compose forward through 0010. **No contract file changes shape**:
+  `ConfigResponse.maxParlayLegs` just reports 25, and the browser reads
+  `MAX_TEASER_LEGS` straight from `src/shared/constants.ts`: the slip reducer
+  refuses an eleventh tap on a teaser with its own "full" notice
+  (`teaserFullNotice`), and the preview's shared validator rejects a parlay of
+  11+ legs switched to Teaser with "a teaser has 2-10 legs".
 
 ## 17. Risks and mitigations
 

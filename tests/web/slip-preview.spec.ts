@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ERROR_CODES } from '../../src/shared/errors.js';
 import {
   MAX_PARLAY_LEGS,
+  MAX_TEASER_LEGS,
   MIN_STAKE_CENTS,
   TEASER_PAYOUTS,
   TEASER_POINTS_TENTHS,
@@ -108,7 +109,7 @@ describe('computePreview', () => {
     expect(preview.error).not.toBeNull();
   });
 
-  it('reports the payout cap BEFORE producing a number (10 legs @ +2000)', () => {
+  it('reports the payout cap BEFORE producing a number (25 legs @ +2000)', () => {
     const legs = Array.from({ length: MAX_PARLAY_LEGS }, (_, i) => leg(`g${String(i)}`, 2000));
     const preview = computePreview(slip(legs, 100_000), 100_000_000);
     expect(preview.error).toBe(ERROR_MESSAGES.PAYOUT_LIMIT_EXCEEDED);
@@ -219,6 +220,15 @@ describe('computePreview — teasers', () => {
     expect(teaser.americanPrice).toBe(150);
     expect(teaser.payoutCents).toBe(2500);
     expect(teaser.toWinCents).toBe(1500);
+  });
+
+  it('an 11-leg slip is a valid parlay but not a valid teaser — the card stops at 10', () => {
+    const legs = Array.from({ length: MAX_TEASER_LEGS + 1 }, (_, i) => teaserLeg(`t${String(i)}`));
+    const parlay = computePreview(slip(legs, 100, 'parlay'), 100_000, TEASER_PAYOUTS);
+    expect(parlay.error).toBeNull();
+    const teaser = computePreview(slip(legs, 100, 'teaser', 60), 100_000, TEASER_PAYOUTS);
+    expect(teaser.error).toBe('a teaser has 2-10 legs');
+    expect(teaser.payoutCents).toBe(0);
   });
 
   it('follows the tier selector', () => {

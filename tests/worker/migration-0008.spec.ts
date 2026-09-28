@@ -76,9 +76,10 @@ async function snapshot(): Promise<Snapshot> {
 }
 
 /**
- * 0008's statements FOLLOWED BY 0009's: 0009 (MLB, PLAN.md §23.3) rebuilds
- * `bet_legs` again with a widened `league` CHECK, so re-running 0008 alone on a
- * post-0009 database would put pre-MLB DDL back. The remote went through both
+ * 0008's statements FOLLOWED BY 0009's and 0010's: 0009 (MLB, PLAN.md §23.3)
+ * rebuilds `bet_legs` again with a widened `league` CHECK and 0010 rebuilds it
+ * once more beside `bets` (leg_count 1..25), so re-running 0008 alone on a
+ * post-0010 database would put old DDL back. The remote went through all three
  * in order; so does this.
  */
 function migration0008(): readonly string[] {
@@ -87,7 +88,7 @@ function migration0008(): readonly string[] {
     if (m === undefined) throw new Error(`${prefix} not in TEST_MIGRATIONS`);
     return m.queries;
   };
-  return [...pick('0008_'), ...pick('0009_')];
+  return [...pick('0008_'), ...pick('0009_'), ...pick('0010_')];
 }
 
 async function schemaNames(type: 'trigger' | 'index' | 'table'): Promise<string[]> {

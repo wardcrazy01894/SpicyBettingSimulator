@@ -22,6 +22,7 @@ import {
   EMPTY_SLIP,
   emptySlipState,
   parlayFullNotice,
+  teaserFullNotice,
   parseStoredSlip,
   serialiseSlip,
   slipReducer,
@@ -29,6 +30,7 @@ import {
 import type { Slip, SlipLeg, SlipState } from '../../src/web/state/slip-reducer.js';
 import type { LineChangedDetails } from '../../src/shared/api-types.js';
 import type { League, Market, Side } from '../../src/shared/types.js';
+import { MAX_PARLAY_LEGS, MAX_TEASER_LEGS } from '../../src/shared/constants.js';
 
 const MAX_LEGS = 10;
 
@@ -295,6 +297,39 @@ describe('a parlay that is already full', () => {
     // Identity, not just equality: the refusal allocates no new slip or legs.
     expect(after.slip).toBe(before.slip);
     expect(after.slip.legs).toBe(before.slip.legs);
+  });
+
+  it('a TEASER is full at MAX_TEASER_LEGS (10), below the parlay cap it is handed', () => {
+    // A slip only becomes a teaser once it has two legs to tease.
+    let state = emptySlipState('nfl');
+    for (let i = 0; i < MAX_TEASER_LEGS; i += 1) {
+      state = slipReducer(state, {
+        type: 'TOGGLE_LEG',
+        leg: leg(`t${String(i)}`),
+        maxLegs: MAX_PARLAY_LEGS,
+      });
+      if (i === 1) state = slipReducer(state, { type: 'SET_MODE', mode: 'teaser' });
+    }
+    expect(state.slip.mode).toBe('teaser');
+    expect(state.slip.legs).toHaveLength(MAX_TEASER_LEGS);
+    expect(state.notice).toBeNull();
+
+    const after = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('t-extra'),
+      maxLegs: MAX_PARLAY_LEGS,
+    });
+    expect(after.notice).toBe(teaserFullNotice());
+    expect(after.slip).toBe(state.slip);
+
+    // The same eleventh tap on a PARLAY is fine: its cap is 25.
+    const parlay = slipReducer(slipReducer(state, { type: 'SET_MODE', mode: 'parlay' }), {
+      type: 'TOGGLE_LEG',
+      leg: leg('t-extra'),
+      maxLegs: MAX_PARLAY_LEGS,
+    });
+    expect(parlay.notice).toBeNull();
+    expect(parlay.slip.legs).toHaveLength(MAX_TEASER_LEGS + 1);
   });
 
   it('still allows SWAPPING within a slot on a game already in the parlay', () => {

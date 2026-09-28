@@ -107,7 +107,7 @@ describe('routing', () => {
     expect(body.leagues).toEqual(['nfl', 'ncaaf', 'mlb']);
     expect(body.minStakeCents).toBe(MIN_STAKE_CENTS);
     expect(body.maxPayoutCents).toBe(MAX_PAYOUT_CENTS);
-    expect(body.maxParlayLegs).toBe(10);
+    expect(body.maxParlayLegs).toBe(25);
     expect(body.initialBankrollCents).toBe(100_000);
     expect(body.cutoffBufferMs).toBe(60_000);
     // No games ingested yet -> no current season for any league.

@@ -1390,6 +1390,29 @@ describe('runSettle — price recomputation', () => {
     await expectNoDrift();
   });
 
+  it('a 25-leg parlay (MAX_PARLAY_LEGS) settles in one batch with an exact payout', async () => {
+    const user = await register();
+    const ids: string[] = [];
+    for (let i = 0; i < 25; i += 1) {
+      ids.push(await seedScheduled(g(`q${String(i)}`), { mlHomePrice: -500 }));
+    }
+    const betId = await place(
+      user.id,
+      ids.map((id) => mlLeg(id)),
+      1000,
+    );
+    for (const id of ids) await finalize(id, 31, 17);
+    // 1 bet UPDATE + 25 leg UPDATEs + 1 payout = 27 statements, inside the
+    // 40-statement batch budget.
+    await runSettle(env, NOW + 1, 20);
+
+    const bet = await betRow(betId);
+    expect(bet.status).toBe('won');
+    // REPL: floor(1000 * (600/500)^25) = 95396.
+    expect(bet.payout_cents).toBe(95396);
+    await expectNoDrift();
+  });
+
   it('a payout that would exceed MAX_PAYOUT_CENTS cannot occur (rejected at placement)', async () => {
     const user = await register();
     const ids: string[] = [];
