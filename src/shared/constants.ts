@@ -30,14 +30,27 @@ export const MIN_STAKE_CENTS = 100;
  * Lives HERE and not in odds.ts because the browser needs it too: the bet slip
  * calls `exceedsPayoutCap()` for pre-flight, and `GET /api/config` echoes it as
  * `maxPayoutCents` so a deployed client cannot disagree with a deployed server.
- * For reference, the largest realistic payout — a 10-leg -110 parlay at the full
- * $1,000 bankroll — returns 64,308,161 cents, comfortably under the cap.
+ * For reference, a 10-leg -110 parlay at the full $1,000 bankroll returns
+ * 64,308,161 cents, under the cap; since MAX_PARLAY_LEGS became 25 an 11-leg
+ * one at the same stake would return 122,770,127 and is refused with
+ * PAYOUT_LIMIT_EXCEEDED, and a 25-leg -110 parlay is refused even at the
+ * 100-cent minimum stake (1,048,733,737). The cap, not the leg count, is what
+ * bounds a long parlay (REPL-verified).
  */
 export const MAX_PAYOUT_CENTS = 100_000_000;
 
-/** Parlay leg bounds. A straight bet is exactly 1 leg. */
+/**
+ * Parlay leg bounds. A straight bet is exactly 1 leg.
+ *
+ * 25 matches DraftKings' parlay limit. It was 10 until migration 0010; nothing
+ * but the old `bets.leg_count` CHECK depended on that. At 25 legs placement is
+ * 27 statements (edit 29, settlement 27) against runBatch's 40, and the bet
+ * INSERT binds 41 parameters against D1's 100. The price stays exact at any
+ * length (BigInt), and MAX_PAYOUT_CENTS bounds what a long parlay can pay.
+ * A TEASER stops at MAX_TEASER_LEGS — the card has no wider column.
+ */
 export const MIN_PARLAY_LEGS = 2;
-export const MAX_PARLAY_LEGS = 10;
+export const MAX_PARLAY_LEGS = 25;
 
 // ---------------------------------------------------------------------------
 // Teasers (M5b). Research and sources: docs/teaser-odds.md, summarised in
@@ -57,8 +70,14 @@ export const TEASER_POINTS_TENTHS = [
 ] as const;
 export type TeaserPointsTenths = (typeof TEASER_POINTS_TENTHS)[number];
 
-/** A teaser is a parlay shape: never fewer than two legs, never more than ten. */
+/**
+ * A teaser is a parlay shape: never fewer than two legs, never more than ten.
+ * The ceiling is the card's width (`TeaserLegCount`), NOT MAX_PARLAY_LEGS: the
+ * standard card we copy stops at 10 and a price is never invented past it.
+ * Migration 0010 backs it with `CHECK (bet_type <> 'teaser' OR leg_count <= 10)`.
+ */
 export const MIN_TEASER_LEGS = 2;
+export const MAX_TEASER_LEGS = 10;
 
 /**
  * Books stop posting a MONEYLINE once the spread is this wide: the favourite
@@ -73,7 +92,7 @@ export const MIN_TEASER_LEGS = 2;
  */
 export const MONEYLINE_NOT_OFFERED_SPREAD_TENTHS = 300;
 
-/** Leg counts the card prices. Same ceiling as a parlay. */
+/** Leg counts the card prices: MIN_TEASER_LEGS..MAX_TEASER_LEGS. */
 export type TeaserLegCount = 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 /**

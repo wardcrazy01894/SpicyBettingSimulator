@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_PARLAY_LEGS,
+  MAX_TEASER_LEGS,
   MIN_STAKE_CENTS,
+  TEASER_PAYOUTS,
   TEASER_POINTS_TENTHS,
 } from '../../src/shared/constants.js';
 import {
@@ -758,7 +759,7 @@ describe('teaserPrice — the fixed card', () => {
   });
 
   it('more points is always a worse price at the same leg count, across all 13 tiers', () => {
-    for (let legs = 2; legs <= MAX_PARLAY_LEGS; legs += 1) {
+    for (let legs = 2; legs <= MAX_TEASER_LEGS; legs += 1) {
       for (let i = 1; i < TEASER_POINTS_TENTHS.length; i += 1) {
         const fewer = TEASER_POINTS_TENTHS[i - 1] ?? 0;
         const more = TEASER_POINTS_TENTHS[i] ?? 0;
@@ -774,7 +775,7 @@ describe('teaserPrice — the fixed card', () => {
 
   it('more legs is always a better price at the same tier', () => {
     for (const points of TEASER_POINTS_TENTHS) {
-      for (let legs = 2; legs < MAX_PARLAY_LEGS; legs += 1) {
+      for (let legs = 2; legs < MAX_TEASER_LEGS; legs += 1) {
         const here = payoutCents(100_000, americanToPrice(teaserPrice(points, legs)));
         const more = payoutCents(100_000, americanToPrice(teaserPrice(points, legs + 1)));
         expect(more).toBeGreaterThan(here);
@@ -786,7 +787,7 @@ describe('teaserPrice — the fixed card', () => {
     // Settlement writes the effective price back through priceToAmerican, so a
     // cell that did not round-trip would display a price nobody was ever paid.
     for (const points of TEASER_POINTS_TENTHS) {
-      for (let legs = 2; legs <= MAX_PARLAY_LEGS; legs += 1) {
+      for (let legs = 2; legs <= MAX_TEASER_LEGS; legs += 1) {
         const american = teaserPrice(points, legs);
         expect(priceToAmerican(americanToPrice(american))).toBe(american);
       }
@@ -799,7 +800,7 @@ describe('teaserPrice — the fixed card', () => {
     // over the whole card rather than assumed.
     let worst = 0;
     for (const points of TEASER_POINTS_TENTHS) {
-      for (let legs = 2; legs <= MAX_PARLAY_LEGS; legs += 1) {
+      for (let legs = 2; legs <= MAX_TEASER_LEGS; legs += 1) {
         const payout = payoutCents(100_000, americanToPrice(teaserPrice(points, legs)));
         expect(exceedsPayoutCap(100_000, americanToPrice(teaserPrice(points, legs)))).toBe(false);
         if (payout > worst) worst = payout;
@@ -819,6 +820,15 @@ describe('teaserPrice — the fixed card', () => {
   it('rejects a leg count off the card — there is no one-team teaser', () => {
     for (const bad of [0, 1, 11, 2.5, -2]) {
       expectAppError(() => teaserPrice(60, bad), 'VALIDATION');
+    }
+  });
+
+  it('every tier prices exactly 2..MAX_TEASER_LEGS legs — the teaser cap IS the card width', () => {
+    // A parlay may run to MAX_PARLAY_LEGS (25); a teaser may not, because the
+    // card has no cell past 10 and a price must never be invented.
+    const legCounts = Array.from({ length: MAX_TEASER_LEGS - 1 }, (_, i) => i + 2);
+    for (const points of TEASER_POINTS_TENTHS) {
+      expect(Object.keys(TEASER_PAYOUTS[points]).map(Number)).toEqual(legCounts);
     }
   });
 });

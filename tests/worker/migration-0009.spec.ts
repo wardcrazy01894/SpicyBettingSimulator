@@ -116,6 +116,17 @@ async function rerun(...prefixes: string[]): Promise<void> {
   await env.DB.batch(queries.map((q) => env.DB.prepare(q)));
 }
 
+/**
+ * Re-run 0009 COMPOSED FORWARD with every later rebuild — today 0010, which
+ * rebuilds bets / bet_legs / ledger again (leg_count 1..25). 0009 alone would
+ * put the 10-leg CHECK back, and because the tests in this file share one
+ * database, every later comparison would then be against 0009's DDL rather
+ * than the live schema.
+ */
+async function rerun0009(): Promise<void> {
+  await rerun('0009_', '0010_');
+}
+
 async function all(sql: string): Promise<Record<string, unknown>[]> {
   return (await env.DB.prepare(sql).all()).results;
 }
@@ -391,15 +402,17 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
    * ever re-run COMPOSED FORWARD with every later one.
    */
   describe('composition', () => {
-    it('0005 + 0008 + 0009 and 0008 + 0009, composed forward, change nothing', async () => {
+    it('0005 + 0008 + 0009 + 0010 and 0008 + 0009 + 0010, composed forward, change nothing', async () => {
+      // 0010 (parlays to 25 legs) rebuilds bets / bet_legs / ledger once more,
+      // so composing forward now ends with it.
       await seedHistory({ sameGame: false });
       const before = await state();
-      await rerun('0005_', '0008_', '0009_');
+      await rerun('0005_', '0008_', '0009_', '0010_');
       expect(await state()).toEqual(before);
       // 0008 + 0009 also holds with a same-game parlay on the books.
       await seedHistory();
       const withSameGame = await state();
-      await rerun('0008_', '0009_');
+      await rerun('0008_', '0009_', '0010_');
       expect(await state()).toEqual(withSameGame);
       expect(await balanceDrift()).toBe(0);
     });
@@ -438,8 +451,8 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
       // 0008 ALONE recreates bet_legs from ITS text, which predates 'mlb'.
       await rerun('0008_');
       await expect(mlbLeg()).rejects.toThrow(/CHECK constraint failed/);
-      // 0009 on top restores the widened schema, byte for byte.
-      await rerun('0009_');
+      // 0009 (+ 0010) on top restores the widened schema, byte for byte.
+      await rerun0009();
       expect(await state()).toEqual(before);
       await expect(mlbLeg()).resolves.toBeDefined();
     });
@@ -447,8 +460,8 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
     it('re-running 0009 twice in a row is a no-op on every row and object', async () => {
       await seedHistory();
       const before = await state();
-      await rerun('0009_');
-      await rerun('0009_');
+      await rerun0009();
+      await rerun0009();
       expect(await state()).toEqual(before);
       expect(await balanceDrift()).toBe(0);
     });
@@ -471,7 +484,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
       const bal = await mainBankroll(userId);
       expect(bal.balance_cents).not.toBe(0);
 
-      await rerun('0009_');
+      await rerun0009();
       const after = await state();
 
       // Every row of all six tables, deep-equal.
@@ -505,7 +518,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
       const before = await env.DB.prepare('SELECT * FROM ingest_targets WHERE id = ?1')
         .bind(failedTarget)
         .first();
-      await rerun('0009_');
+      await rerun0009();
       const row = await env.DB.prepare('SELECT * FROM ingest_targets WHERE id = ?1')
         .bind(failedTarget)
         .first();
@@ -520,7 +533,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
 
     it('PRAGMA foreign_key_check returns no rows', async () => {
       await seedHistory();
-      await rerun('0009_');
+      await rerun0009();
       expect(await all('PRAGMA foreign_key_check')).toEqual([]);
     });
   });
@@ -529,7 +542,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
     it('every trigger and index by name AND sqlite_master.sql text', async () => {
       await seedHistory();
       const before = await state();
-      await rerun('0009_');
+      await rerun0009();
       const after = await state();
       expect(after.objects).toEqual(before.objects);
 
@@ -560,7 +573,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
     it('the table list is unchanged and no *_copy table survives', async () => {
       await seedHistory();
       const tables = await names('table');
-      await rerun('0009_');
+      await rerun0009();
       expect(await names('table')).toEqual(tables);
       expect(tables.some((t) => t.endsWith('_copy'))).toBe(false);
       for (const t of REBUILT_TABLES) expect(tables).toContain(t);
@@ -570,7 +583,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
   describe('the recreated triggers still guard money', () => {
     it('ledger: moves the balance, refuses overdraft, UPDATE, DELETE and orphans', async () => {
       const { userId } = await seedHistory();
-      await rerun('0009_');
+      await rerun0009();
       const bankroll = await mainBankroll(userId);
 
       await env.DB.prepare(
@@ -606,7 +619,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
 
     it('bet_legs: a moneyline beside a spread on one game in one bet aborts', async () => {
       const { cfbGame } = await seedHistory();
-      await rerun('0009_');
+      await rerun0009();
       // The same-game parlay placed in seedHistory holds a spread on the CFB game.
       const bet = await env.DB.prepare(
         `SELECT bet_id FROM bet_legs WHERE game_id = ?1 AND market = 'spread'`,
@@ -668,7 +681,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
 
     it("league = 'mlb' INSERTs succeed on games, bets, bet_legs and ingest_targets", async () => {
       const { userId } = await seedHistory();
-      await rerun('0009_');
+      await rerun0009();
       const { id: bankrollId } = await mainBankroll(userId);
       const ins = inserts(userId, bankrollId);
       await ins.game('mlb:401', 'mlb').run();
@@ -687,7 +700,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
 
     it("league = 'nba' fails CHECK on all four; 'mixed' is still bets-only", async () => {
       const { userId } = await seedHistory();
-      await rerun('0009_');
+      await rerun0009();
       const { id: bankrollId } = await mainBankroll(userId);
       const ins = inserts(userId, bankrollId);
       // Valid parents for the bet_legs probes.
@@ -710,7 +723,7 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
 
     it('every other CHECK on the six tables still refuses what it refused before', async () => {
       const { userId, wonBetId: betId, nflGame: game } = await seedHistory();
-      await rerun('0009_');
+      await rerun0009();
       const { id: bk } = await mainBankroll(userId);
       const refused: readonly (readonly [string, string, readonly unknown[]])[] = [
         [
@@ -736,7 +749,8 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
         ...(
           [
             ['bets.bet_type', `'mlb', 'accumulator', 2, NULL, 100`],
-            ['bets.leg_count', `'mlb', 'parlay', 11, NULL, 100`],
+            ['bets.leg_count', `'mlb', 'parlay', 26, NULL, 100`],
+            ['bets.teaser leg_count', `'mlb', 'teaser', 11, 60, 100`],
             ['bets.stake_cents', `'mlb', 'straight', 1, NULL, 99`],
             ['bets.teaser tier off-grid', `'mlb', 'teaser', 2, 33, 100`],
             ['bets.teaser REAL', `'mlb', 'teaser', 2, 65.5, 100`],

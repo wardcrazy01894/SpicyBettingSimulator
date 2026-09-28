@@ -31,8 +31,9 @@ no top-up button, so bet like it's real.
   5 innings everything is void. A rainout is voided the next morning and your
   stake comes back. MLB legs can't go in a teaser (PLAN.md §23).
 - **Moneylines, spreads and totals** on each game.
-- **Straight bets** on one thing, or **parlays** on 2 to 10 legs, and the legs
-  can mix Saturday and Sunday.
+- **Straight bets** on one thing, or **parlays** on 2 to 25 legs (as at
+  DraftKings), and the legs can mix Saturday and Sunday. Teasers stop at 10
+  legs, where the teaser card ends.
 - **Same game parlays**: a game can carry one side pick (spread or moneyline)
   and one total in the same bet, priced leg by leg like any parlay. A spread
   and a moneyline on one team are the same question twice, so that pair is

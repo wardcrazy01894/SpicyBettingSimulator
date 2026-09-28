@@ -27,6 +27,7 @@ import {
   BUG_REPORT_TITLE_MAX,
   MAX_ABS_LINE_TENTHS,
   MAX_PARLAY_LEGS,
+  MAX_TEASER_LEGS,
   MIN_STAKE_CENTS,
   TEASER_POINTS_TENTHS,
 } from '../../src/shared/constants.js';
@@ -267,20 +268,21 @@ describe('validatePlaceBet', () => {
     expect(fail(validatePlaceBet(straight({ legs: [] }))).field).toBe('legs');
     expect(fail(validatePlaceBet(straight({ legs: [leg('g1'), leg('g2')] }))).field).toBe('legs');
   });
-  it('parlay must have 2..10 legs', () => {
+  it('parlay must have 2..25 legs', () => {
+    expect(MAX_PARLAY_LEGS).toBe(25);
     expect(fail(validatePlaceBet(straight({ betType: 'parlay', legs: [leg('g1')] }))).field).toBe(
       'legs',
     );
     const two = validatePlaceBet(straight({ betType: 'parlay', legs: [leg('g1'), leg('g2')] }));
     expect(two.ok).toBe(true);
-    const ten = Array.from({ length: MAX_PARLAY_LEGS }, (_, i) => leg(`g${String(i)}`));
-    expect(validatePlaceBet(straight({ betType: 'parlay', legs: ten })).ok).toBe(true);
+    const max = Array.from({ length: MAX_PARLAY_LEGS }, (_, i) => leg(`g${String(i)}`));
+    expect(validatePlaceBet(straight({ betType: 'parlay', legs: max })).ok).toBe(true);
   });
-  it('rejects 11 legs', () => {
-    const eleven = Array.from({ length: 11 }, (_, i) => leg(`g${String(i)}`));
-    expect(fail(validatePlaceBet(straight({ betType: 'parlay', legs: eleven }))).field).toBe(
-      'legs',
-    );
+  it('rejects 26 legs', () => {
+    const over = Array.from({ length: MAX_PARLAY_LEGS + 1 }, (_, i) => leg(`g${String(i)}`));
+    const r = fail(validatePlaceBet(straight({ betType: 'parlay', legs: over })));
+    expect(r.field).toBe('legs');
+    expect(r.message).toBe('a parlay has 2-25 legs');
   });
   // Same-game parlays (M11). A game may contribute ONE side pick (spread OR
   // moneyline) and ONE total to a bet; anything else on that game is refused
@@ -555,12 +557,16 @@ describe('validatePlaceBet — teasers', () => {
     expect(r.message).toMatch(/spread or a total/);
   });
 
-  it('requires 2..10 legs, like a parlay', () => {
+  it('requires 2..10 legs — the teaser card stops at 10, below the parlay cap', () => {
+    expect(MAX_TEASER_LEGS).toBe(10);
+    expect(MAX_TEASER_LEGS).toBeLessThan(MAX_PARLAY_LEGS);
     expect(fail(validatePlaceBet(teaser({ legs: [leg('g1')] }))).field).toBe('legs');
     expect(fail(validatePlaceBet(teaser({ legs: [] }))).field).toBe('legs');
-    const ten = Array.from({ length: MAX_PARLAY_LEGS }, (_, i) => leg(`g${String(i)}`));
+    const ten = Array.from({ length: MAX_TEASER_LEGS }, (_, i) => leg(`g${String(i)}`));
     expect(validatePlaceBet(teaser({ legs: ten })).ok).toBe(true);
-    expect(fail(validatePlaceBet(teaser({ legs: [...ten, leg('g-extra')] }))).field).toBe('legs');
+    const eleven = fail(validatePlaceBet(teaser({ legs: [...ten, leg('g-extra')] })));
+    expect(eleven.field).toBe('legs');
+    expect(eleven.message).toBe('a teaser has 2-10 legs');
   });
 
   it('may tease a spread and a total on the same game, but not two spreads', () => {

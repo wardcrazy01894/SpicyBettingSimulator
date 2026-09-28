@@ -236,6 +236,10 @@ the one failure mode the whole checklist has.
      `ingest_targets` to widen four league CHECKs, ledger triggers recreated
      AFTER the copy. The M12 plan PR shipped no migration, for the reason
      below.
+     `0010_parlay_25_legs.sql` rebuilds `bets`/`bet_legs`/`ledger` the same
+     children-first way to widen `bets.leg_count` to 1–25 (`MAX_PARLAY_LEGS`,
+     DraftKings' limit) and add `CHECK (bet_type <> 'teaser' OR leg_count <= 10)`
+     — a teaser stops at `MAX_TEASER_LEGS`, the card's width. PLAN.md §16.2.
      `0007_secondary_odds.sql` shipped with M9b and is frozen like the rest;
      PLAN.md §21.3 carries the same text as its specification. The plan PR that
      added §21 and §22 deliberately shipped NO migration: the Deploy
@@ -289,8 +293,8 @@ the one failure mode the whole checklist has.
       `MAX_SETTLE_ATTEMPTS`, `LINE_STALE_MS`, `BET_CUTOFF_BUFFER_MS` and
       `SESSION_TTL_MS` match PLAN §3.1's constants-of-record table;
     - PLAN §5.8's teaser card equals `TEASER_PAYOUTS` **cell for cell**;
-    - `VOID_AFTER_MS`, `MAX_PARLAY_LEGS`, `MIN_TEASER_LEGS` and
-      `TEASER_POINTS_TENTHS` match that table too, as do the `wrangler.jsonc`
+    - `VOID_AFTER_MS`, `MAX_PARLAY_LEGS`, `MIN_TEASER_LEGS`,
+      `MAX_TEASER_LEGS` and `TEASER_POINTS_TENTHS` match that table too, as do the `wrangler.jsonc`
       vars `REFRESH_TARGETS_PER_RUN` and `SETTLE_CHUNK` against PLAN §9.1;
     - every cron expression in `wrangler.jsonc` appears in PLAN §9.1 **and** in
       `docs/OPERATIONS.md`;
@@ -337,7 +341,7 @@ the one failure mode the whole checklist has.
 | Worker CPU per invocation (free)    | **10 ms**                                                                                        | No server-side heavy PBKDF2 (hence the split KDF, PLAN.md §10). No parsing a full CFB week in one go (hence per-ET-date ingest, §8.1).                                                                                                                           |
 | `crypto.subtle` PBKDF2 iterations   | Cloudflare documents a 100,000 cap; local workerd 1.20260911 did NOT enforce it (measured in M3) | Design does not depend on it: the 10 ms CPU budget is why the heavy KDF runs in the browser. Server KDF is 1,000. Worker tests still use precomputed `dk` vectors.                                                                                               |
 | D1 statements per invocation        | 50 (docs) / 1000 (2026 changelog)                                                                | `MAX_BATCH_STATEMENTS = 40` is the size of ONE `batch()`, not a per-invocation total. Chunk settlement at 20 bets. **Ingest is the deliberate exception**: ~172 statements (2 per game + 1 per line) across ~5 batches. See Spike S2.                            |
-| D1 bound params per statement       | 100                                                                                              | A 10-leg parlay inserts legs as 10 separate statements, not one.                                                                                                                                                                                                 |
+| D1 bound params per statement       | 100                                                                                              | A 25-leg parlay inserts legs as 25 separate statements, not one.                                                                                                                                                                                                 |
 | D1 rows written per day (free)      | 100,000, **hard-enforced since 2026-09-01**                                                      | Past the cap D1 **errors**, which blocks bet placement and settlement. **Measured** ≈ 5.1k/day on a CFB Saturday with the §8.5 levers (L1 + the A/B split + L2 + L3); 33k for the `games` stream alone without the A/B split. Treat write budget as correctness. |
 | D1 `INTEGER` column                 | i64; larger values silently become `REAL`                                                        | Never store a parlay rational.                                                                                                                                                                                                                                   |
 | External subrequests per invocation | 50                                                                                               | We make ≤ 2 ESPN calls per cron run.                                                                                                                                                                                                                             |
@@ -375,7 +379,8 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               provider's per-market book columns, games.secondary_tried_at and
               the secondary_budget row (PLAN.md §21.3), 0008 rebuilds bet_legs
               for same-game parlays (PLAN.md §5.2c), 0009 rebuilds six tables
-              to admit league 'mlb' (PLAN.md §23.3)
+              to admit league 'mlb' (PLAN.md §23.3), 0010 rebuilds bets for
+              25-leg parlays (teasers stay at 10; PLAN.md §16.2)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES

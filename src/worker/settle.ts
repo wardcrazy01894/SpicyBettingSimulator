@@ -660,7 +660,7 @@ function gradeWithPricing(
  * "the Worker died between grading the legs and paying out" is a state that
  * cannot exist: D1 rolls the whole sequence back.
  *
- * `1 + legCount + (payout > 0 ? 1 : 0)` ≤ 12 for a 10-leg parlay, well inside
+ * `1 + legCount + (payout > 0 ? 1 : 0)` ≤ 27 for a 25-leg parlay, inside
  * `runBatch`'s 40-statement budget.
  */
 export function buildSettleBatch(
@@ -746,7 +746,7 @@ export async function settleOneBet(
 ): Promise<SettleOneResult> {
   const { statements, payoutIndex } = buildSettleBatch(env, bet, outcome, runId, now);
 
-  // `runBatch` enforces the 40-statement budget for us (12 is the worst case).
+  // `runBatch` enforces the 40-statement budget for us (27 is the worst case).
   let results: readonly D1Result[];
   try {
     results = await runBatch(env.DB, statements);

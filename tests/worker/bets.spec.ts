@@ -894,10 +894,10 @@ describe('placeBet — money and atomicity', () => {
 });
 
 describe('placeBet — parlays', () => {
-  it('2..10 legs are accepted; 1 and 11 are rejected', async () => {
+  it('2..25 legs are accepted; 1 and 26 are rejected', async () => {
     const alex = await register();
     const ids: string[] = [];
-    for (let i = 0; i < 11; i += 1) {
+    for (let i = 0; i < 26; i += 1) {
       const id = g(i);
       await seedGameWithLine(env.DB, { id, kickoffAt: NOW + 2 * HOUR });
       ids.push(id);
@@ -905,16 +905,18 @@ describe('placeBet — parlays', () => {
     const two = await post('/api/bets', parlay(ids.slice(0, 2), 100), alex.cookie);
     expect(two.status, await two.clone().text()).toBe(201);
 
-    const ten = await post('/api/bets', parlay(ids.slice(0, 10), 100), alex.cookie);
-    expect(ten.status, await ten.clone().text()).toBe(201);
+    // 25 legs at the fixture's -198 moneyline: (298/198)^25 ≈ 27,650x, so a
+    // 100c stake is ~2.77M cents — well under MAX_PAYOUT_CENTS.
+    const max = await post('/api/bets', parlay(ids.slice(0, 25), 100), alex.cookie);
+    expect(max.status, await max.clone().text()).toBe(201);
 
     const one = await post('/api/bets', parlay(ids.slice(0, 1), 100), alex.cookie);
     expect(one.status).toBe(400);
     expect(await errorCode(one)).toBe('VALIDATION');
 
-    const eleven = await post('/api/bets', parlay(ids, 100), alex.cookie);
-    expect(eleven.status).toBe(400);
-    expect(await errorCode(eleven)).toBe('VALIDATION');
+    const over = await post('/api/bets', parlay(ids, 100), alex.cookie);
+    expect(over.status).toBe(400);
+    expect(await errorCode(over)).toBe('VALIDATION');
     expect(await betCount(alex.id)).toBe(2);
     await expectLedgerMatchesBalance();
   });
@@ -1141,20 +1143,43 @@ describe('placeBet — parlays', () => {
     await expectLedgerMatchesBalance();
   });
 
-  it('a 10-leg parlay stays under the 100-bound-parameter limit per statement', async () => {
+  it('a 25-leg parlay stays under the 100-bound-parameter limit per statement', async () => {
     const alex = await register();
     const ids: string[] = [];
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < 25; i += 1) {
       const id = g(i);
       await seedGameWithLine(env.DB, { id, kickoffAt: NOW + 2 * HOUR });
       ids.push(id);
     }
-    // The legs MUST be 10 separate statements: one combined INSERT would need
-    // ~150 bound parameters and D1 caps a statement at 100.
+    // The legs MUST be 25 separate statements: one combined INSERT would need
+    // ~375 bound parameters and D1 caps a statement at 100. The bet INSERT
+    // itself binds 15 + 25 game ids + 1 count = 41.
     const res = await post('/api/bets', parlay(ids, 1000), alex.cookie);
     expect(res.status, await res.clone().text()).toBe(201);
     const { bet } = await res.json<BetResponse>();
-    expect(await legRows(bet.id)).toHaveLength(10);
+    expect(await legRows(bet.id)).toHaveLength(25);
+    expect((await betRow(bet.id))?.leg_count).toBe(25);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('editing a 25-leg parlay into another fits one batch (2 + 1 + 25 + 1 statements)', async () => {
+    const alex = await register();
+    const ids: string[] = [];
+    for (let i = 0; i < 26; i += 1) {
+      const id = g(i);
+      await seedGameWithLine(env.DB, { id, kickoffAt: NOW + 2 * HOUR });
+      ids.push(id);
+    }
+    const first = await post('/api/bets', parlay(ids.slice(0, 25), 1000), alex.cookie);
+    expect(first.status, await first.clone().text()).toBe(201);
+    const { bet: old } = await first.json<BetResponse>();
+
+    const res = await put(`/api/bets/${old.id}`, parlay(ids.slice(1), 500), alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(200);
+    const { bet } = await res.json<BetResponse>();
+    expect((await betRow(old.id))?.status).toBe('cancelled');
+    expect(await legRows(bet.id)).toHaveLength(25);
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS - 500);
     await expectLedgerMatchesBalance();
   });
 });
@@ -2458,6 +2483,22 @@ describe('placeBet — teasers', () => {
     expect(row?.potential_payout_cents).toBe(payoutCents(1000, americanToPrice(-120)));
     expect(bet.potentialPayoutCents).toBe(1833);
     expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS - 1000);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('rejects an 11-leg teaser (the card stops at 10) though an 11-leg parlay is fine', async () => {
+    const alex = await register();
+    const ids: string[] = [];
+    for (let i = 0; i < 11; i += 1) {
+      ids.push(await seedGameWithLine(env.DB, { id: g(i), kickoffAt: NOW + 2 * HOUR }));
+    }
+    const res = await post('/api/bets', teaser(ids), alex.cookie);
+    expect(res.status).toBe(400);
+    expect(await errorCode(res)).toBe('VALIDATION');
+    expect(await balanceOf(env.DB, alex.bkId)).toBe(INITIAL_BANKROLL_CENTS);
+
+    const ok = await post('/api/bets', teaser(ids.slice(0, 10)), alex.cookie);
+    expect(ok.status, await ok.clone().text()).toBe(201);
     await expectLedgerMatchesBalance();
   });
 

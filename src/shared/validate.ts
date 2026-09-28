@@ -14,6 +14,7 @@ import {
   MAX_ABS_AMERICAN_PRICE,
   MAX_ABS_LINE_TENTHS,
   MAX_PARLAY_LEGS,
+  MAX_TEASER_LEGS,
   MIN_ABS_AMERICAN_PRICE,
   MIN_PARLAY_LEGS,
   MIN_STAKE_CENTS,
@@ -338,7 +339,8 @@ function validateTeaserPoints(
 /**
  * Validate a bet request body. Checks, in order:
  *   - stakeCents is a safe integer >= MIN_STAKE_CENTS
- *   - betType 'straight' => exactly 1 leg; 'parlay'/'teaser' => 2..MAX_PARLAY_LEGS
+ *   - betType 'straight' => exactly 1 leg; 'parlay' => 2..MAX_PARLAY_LEGS;
+ *     'teaser' => 2..MAX_TEASER_LEGS (the card's width)
  *   - teaserPoints is present iff betType is 'teaser', and is one of TEASER_POINTS_TENTHS
  *   - a teaser's legs are spread or total only — a moneyline has no line to move
  *   - each leg's market/side combination is coherent
@@ -387,8 +389,8 @@ export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput>
   if (betType === 'parlay' && outsideRange(rawLegs.length, MIN_PARLAY_LEGS, MAX_PARLAY_LEGS)) {
     return bad(`a parlay has ${String(MIN_PARLAY_LEGS)}-${String(MAX_PARLAY_LEGS)} legs`, 'legs');
   }
-  if (betType === 'teaser' && outsideRange(rawLegs.length, MIN_TEASER_LEGS, MAX_PARLAY_LEGS)) {
-    return bad(`a teaser has ${String(MIN_TEASER_LEGS)}-${String(MAX_PARLAY_LEGS)} legs`, 'legs');
+  if (betType === 'teaser' && outsideRange(rawLegs.length, MIN_TEASER_LEGS, MAX_TEASER_LEGS)) {
+    return bad(`a teaser has ${String(MIN_TEASER_LEGS)}-${String(MAX_TEASER_LEGS)} legs`, 'legs');
   }
   const legs: PlaceBetLegInput[] = [];
   for (const [i, rawLeg] of rawLegs.entries()) {
