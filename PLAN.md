@@ -2767,6 +2767,14 @@ equally. (That used to be the interesting part of the all-time view, which summe
 across per-season bankrolls. With one balance per account there is nothing left
 to sum, and `/all-time` is now literally the unfiltered board.)
 
+ROI is profit per dollar WAGERED, not the change in the bankroll: a player at
+$192 can show -24% because the same dollars were bet, won back and bet again, so
+Σ stake is several times the $1,000 start. That was asked (2026-10-04), so every
+ROI label carries the help string in `src/web/lib/labels.ts` as a hover title,
+the account and player pages print its short form under the value (a title
+attribute is invisible on touch and to most screen readers), and the leaderboard
+note says it in a sentence.
+
 ### 11.6 Admin (requires `users.is_admin = 1`)
 
 | Method | Path                                   | Notes                                                                                                                                                                                                         |
