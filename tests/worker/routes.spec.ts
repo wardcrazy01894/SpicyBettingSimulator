@@ -461,9 +461,10 @@ describe('games board', () => {
     const now = Date.now();
     await seedGame(env.DB, { id: gid('crossed'), season, kickoffAt: now + 47 * HOUR });
     await seedLine(env.DB, fullLine(gid('crossed'), now - 4 * HOUR));
-    // 47 h out crosses the Monday that closes the NFL board on a Saturday or a
-    // Sunday (PLAN §22: the window ends Monday 23:59 ET, rolling over only at
-    // Sunday 20:00 ET), and this test ran red every weekend until 2026-10-04.
+    // 47 h out crosses the Monday that closes the NFL board on a Sunday between
+    // about 01:00 and 20:00 ET (PLAN §22: the window ends Monday 23:59 ET and
+    // rolls to the next week at Sunday 20:00 ET), so this test ran red every
+    // Sunday afternoon until 2026-10-04.
     // Widen the query explicitly: the subject is the staleness tier, not the
     // window, and the test above does the same for its five-day kickoff.
     const board = await (
