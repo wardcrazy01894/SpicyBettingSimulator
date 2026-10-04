@@ -920,17 +920,22 @@ describe('claims the docs make about the repo', () => {
    * One row per override. Adding an override without a row here is the
    * failure mode the last test below catches.
    */
-  const POOL_OVERRIDES = [
+  interface PoolOverride {
+    readonly pkg: string;
+    readonly patched: string;
+    readonly advisory: string;
+  }
+  const POOL_OVERRIDES: readonly PoolOverride[] = [
     { pkg: 'sharp', patched: '0.35.4', advisory: 'GHSA-rgj7-g3m4-5g8c' },
     {
       pkg: 'undici',
       patched: '7.29.1',
       advisory:
-        'GHSA-8436-99hf-9mmv (high, TLS validation bypass in BalancedPool) and five more: ' +
-        'GHSA-2jfj-6hjv-fm6j, GHSA-r53p-7pc4-xj5r, GHSA-2gqq-gqf2-x968, GHSA-pmjh-fq2x-6v4x, ' +
-        'GHSA-w293-vg96-wgc3',
+        'GHSA-w293-vg96-wgc3 (high, TLS validation bypass in BalancedPool) and five more: ' +
+        'GHSA-8436-99hf-9mmv, GHSA-2jfj-6hjv-fm6j, GHSA-r53p-7pc4-xj5r, GHSA-2gqq-gqf2-x968, ' +
+        'GHSA-pmjh-fq2x-6v4x',
     },
-  ] as const;
+  ];
 
   interface PoolMiniflare {
     version: string;
@@ -1012,23 +1017,36 @@ describe('claims the docs make about the repo', () => {
     // override parked anywhere else (a global `undici`, a version-qualified
     // `@cloudflare/vitest-pool-workers@0.22.0` key, a sibling of `miniflare`)
     // would take effect at install time while nothing here ever looked at it.
+    // When the table is empty the overrides block must be gone too — that is
+    // the state the per-row failure message walks the author towards, and
+    // `it.each([])` registers nothing (verified, vitest 4) rather than throwing.
     const pkg = JSON.parse(read('package.json')) as {
       overrides?: Record<string, unknown>;
     };
     const overrides = pkg.overrides ?? {};
+    const expectedKeys = POOL_OVERRIDES.length === 0 ? [] : ['@cloudflare/vitest-pool-workers'];
     expect(
       Object.keys(overrides),
-      'package.json overrides must contain exactly the vitest pool entry; every other key is ' +
-        'an override the POOL_OVERRIDES guard cannot see (PLAN §15, OPERATIONS "Dependencies").',
-    ).toEqual(['@cloudflare/vitest-pool-workers']);
+      'package.json overrides may contain exactly the vitest pool entry, and only while ' +
+        'POOL_OVERRIDES has rows; every other key is an override this guard cannot see. If an ' +
+        'override is genuinely needed elsewhere, extend the guard to read that path and record ' +
+        'the override in PLAN §15 and OPERATIONS "Dependencies" in the same PR.',
+    ).toEqual(expectedKeys);
+    if (expectedKeys.length === 0) return;
     const pool = overrides['@cloudflare/vitest-pool-workers'];
     expect(
       pool !== null && typeof pool === 'object' ? Object.keys(pool) : pool,
       "the pool's overrides entry must contain exactly `miniflare`; a sibling key is an " +
         'override the POOL_OVERRIDES guard cannot see.',
     ).toEqual(['miniflare']);
+    const miniflare = (pool as Record<string, unknown>)['miniflare'];
+    expect(
+      miniflare !== null && typeof miniflare === 'object',
+      "overrides …['@cloudflare/vitest-pool-workers'].miniflare must be an object of " +
+        '{ package: version }, not a version string for miniflare itself.',
+    ).toBe(true);
     const rows = new Set<string>(POOL_OVERRIDES.map((o) => o.pkg));
-    for (const [name, spec] of Object.entries(poolOverrides())) {
+    for (const [name, spec] of Object.entries(miniflare as Record<string, unknown>)) {
       expect(typeof spec, `overrides …miniflare.${name} must be a version string`).toBe('string');
       expect(
         rows.has(name),
