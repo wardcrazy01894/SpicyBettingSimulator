@@ -404,19 +404,22 @@ for fsevents) that will read identically on every bump, so the real check is the
 open the new version's `install.js` on npmjs.com or unpkg and skim what it does. One that does
 anything other than fetch its own binary is the review finding.
 
-`package.json` carries one `overrides` entry, scoped to
-`@cloudflare/vitest-pool-workers → miniflare → sharp: 0.35.4`, to patch a
-dev-only vulnerability in a package that pool's miniflare pins exactly (PLAN §15).
-It can only ever touch that one path. When a `@cloudflare/vitest-pool-workers`
-bump lands, ask npm what the pool's miniflare wants on its own —
-`npm view miniflare@<version pinned by the pool> dependencies.sharp` — and once
-that is ≥ 0.35.4, delete the override in the same PR (`npm ls sharp` shows
-"overridden" while it is in effect, which is the proxy, not the answer). If a
-future miniflare ever wants sharp 0.36+, the override would silently pin it
-back to 0.35.4 — another reason to remove it at the first opportunity. You will
-not have to remember: `tests/unit/docs.spec.ts` reads what the pool's miniflare
-wants and FAILS CI on the pool-bump PR until the override is deleted (and fails
-the reverse, if the override goes while the pin is still vulnerable).
+`package.json` carries `overrides` entries scoped to
+`@cloudflare/vitest-pool-workers → miniflare → <pkg>`, one per dev-only
+vulnerability in a package that pool's miniflare pins exactly (PLAN §15): today
+`sharp: 0.35.4` and `undici: 7.29.1`. Each can only ever touch that one path.
+When a `@cloudflare/vitest-pool-workers` bump lands, ask npm what the pool's
+miniflare wants on its own — `npm view miniflare@<version pinned by the pool>
+dependencies.<pkg>` — and once that is at or past the patched version, delete
+that override in the same PR (`npm ls <pkg>` shows "overridden" while it is in
+effect, which is the proxy, not the answer). A stale override would silently
+pin a future requirement back to the old version, which is the reason to remove
+each one at the first opportunity. You will not have to remember:
+`tests/unit/docs.spec.ts` keeps a `POOL_OVERRIDES` table (package, patched
+version, advisory), reads what the pool's miniflare wants and FAILS CI on the
+pool-bump PR until the override is deleted (and fails the reverse, if an
+override goes while the pin is still vulnerable, or an override is added with
+no table row).
 
 Security-only updates are enabled separately in the repo settings. They arrive as their own
 ungrouped PRs, outside `open-pull-requests-limit`, and the `ignore` rules apply to them too: a
