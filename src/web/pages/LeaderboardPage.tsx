@@ -52,7 +52,9 @@ export function LeaderboardPage(): ReactElement {
       <p className="muted page-note">
         Ranked by <strong>equity</strong> — your balance plus whatever is riding on open bets, so a
         stake in flight neither helps nor hurts you until it settles. The tabs filter each
-        player&rsquo;s record and ROI; the money is the whole account either way.
+        player&rsquo;s record and ROI; the money is the whole account either way. ROI is profit per
+        dollar wagered on decided bets, not the change in your balance &mdash; the same dollars can
+        be bet, won and bet again.
       </p>
 
       {board.error !== undefined && board.data === undefined && (

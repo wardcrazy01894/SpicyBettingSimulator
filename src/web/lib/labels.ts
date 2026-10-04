@@ -256,6 +256,18 @@ export function gameClockLabel(
   return statusDetail ?? GAME_STATUS_LABEL[status];
 }
 
+/**
+ * What the ROI figure means, as a hover title on every ROI label. ROI is net
+ * profit per dollar WAGERED on decided bets (PLAN.md §11.5), not the change in
+ * the $1,000 bankroll — a player can be down 80% of their money at -24% ROI
+ * because the same dollars were bet, won back and bet again. Written down once
+ * because the question was asked.
+ */
+export const ROI_HELP =
+  'Return on investment: net profit divided by the total amount wagered on bets that won or lost. ' +
+  'Pushes, voids and open bets are left out. It is per dollar bet, not the change in your balance — ' +
+  'the same money can be wagered many times.';
+
 /** ROI as a signed percentage, or "—" when there is no settled action. */
 export function formatRoi(roi: number | null): string {
   if (roi === null) return '—';

@@ -2763,7 +2763,11 @@ first money column is not the sorted one reads as if the sort is broken.
 
 ROI is pooled, never averaged: the numerator and denominator are summed across
 every bet in scope before dividing, so a $10 week and a $10,000 week do not count
-equally. (That used to be the interesting part of the all-time view, which summed
+equally. It is profit per dollar WAGERED, not the change in the bankroll: a
+player at $192 can show -24% because the same dollars were bet, won back and bet
+again, so Σ stake is several times the $1,000 start. That was asked (2026-10-04),
+so every ROI label carries the help string in `src/web/lib/labels.ts` as a hover title
+and the leaderboard note says it in a sentence for screens with no hover. (That used to be the interesting part of the all-time view, which summed
 across per-season bankrolls. With one balance per account there is nothing left
 to sum, and `/all-time` is now literally the unfiltered board.)
 

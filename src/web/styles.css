@@ -432,6 +432,14 @@ button:disabled {
   font-weight: 700;
 }
 
+/* A label with a hover explanation (the ROI header). The dotted underline is the
+   browser's own <abbr> cue; the cursor says "there is more here". */
+abbr.help {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
 .team-abbr {
   font-weight: 650;
   min-width: 3.2em;

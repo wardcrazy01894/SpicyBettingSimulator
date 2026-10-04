@@ -11,7 +11,7 @@
 import type { ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
-import { formatRoi } from '../lib/labels.js';
+import { ROI_HELP, formatRoi } from '../lib/labels.js';
 import { formatCents } from '../../shared/validate.js';
 import type { LeaderboardRow } from '../../shared/api-types.js';
 
@@ -40,7 +40,9 @@ export function LeaderboardTable(props: {
               W-L-P
             </th>
             <th scope="col" className="num">
-              ROI
+              <abbr className="help" title={ROI_HELP}>
+                ROI
+              </abbr>
             </th>
           </tr>
         </thead>
