@@ -922,7 +922,14 @@ describe('claims the docs make about the repo', () => {
    */
   const POOL_OVERRIDES = [
     { pkg: 'sharp', patched: '0.35.4', advisory: 'GHSA-rgj7-g3m4-5g8c' },
-    { pkg: 'undici', patched: '7.29.1', advisory: 'six undici advisories, 2026-10' },
+    {
+      pkg: 'undici',
+      patched: '7.29.1',
+      advisory:
+        'GHSA-8436-99hf-9mmv (high, TLS validation bypass in BalancedPool) and five more: ' +
+        'GHSA-2jfj-6hjv-fm6j, GHSA-r53p-7pc4-xj5r, GHSA-2gqq-gqf2-x968, GHSA-pmjh-fq2x-6v4x, ' +
+        'GHSA-w293-vg96-wgc3',
+    },
   ] as const;
 
   interface PoolMiniflare {
@@ -1000,11 +1007,32 @@ describe('claims the docs make about the repo', () => {
   );
 
   it('every pool override has a POOL_OVERRIDES row, so none can outlive its reason', () => {
+    // The shape is asserted first, because the per-row test above reads ONE
+    // path — overrides['@cloudflare/vitest-pool-workers'].miniflare — and an
+    // override parked anywhere else (a global `undici`, a version-qualified
+    // `@cloudflare/vitest-pool-workers@0.22.0` key, a sibling of `miniflare`)
+    // would take effect at install time while nothing here ever looked at it.
+    const pkg = JSON.parse(read('package.json')) as {
+      overrides?: Record<string, unknown>;
+    };
+    const overrides = pkg.overrides ?? {};
+    expect(
+      Object.keys(overrides),
+      'package.json overrides must contain exactly the vitest pool entry; every other key is ' +
+        'an override the POOL_OVERRIDES guard cannot see (PLAN §15, OPERATIONS "Dependencies").',
+    ).toEqual(['@cloudflare/vitest-pool-workers']);
+    const pool = overrides['@cloudflare/vitest-pool-workers'];
+    expect(
+      pool !== null && typeof pool === 'object' ? Object.keys(pool) : pool,
+      "the pool's overrides entry must contain exactly `miniflare`; a sibling key is an " +
+        'override the POOL_OVERRIDES guard cannot see.',
+    ).toEqual(['miniflare']);
     const rows = new Set<string>(POOL_OVERRIDES.map((o) => o.pkg));
-    for (const pkg of Object.keys(poolOverrides())) {
+    for (const [name, spec] of Object.entries(poolOverrides())) {
+      expect(typeof spec, `overrides …miniflare.${name} must be a version string`).toBe('string');
       expect(
-        rows.has(pkg),
-        `package.json overrides ${pkg} under the vitest pool's miniflare, but nothing in ` +
+        rows.has(name),
+        `package.json overrides ${name} under the vitest pool's miniflare, but nothing in ` +
           `tests/unit/docs.spec.ts says when that override may be deleted. Add a ` +
           `POOL_OVERRIDES row with the patched version and the advisory.`,
       ).toBe(true);
