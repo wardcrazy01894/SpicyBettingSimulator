@@ -268,6 +268,12 @@ export const ROI_HELP =
   'Pushes, voids and open bets are left out. It is per dollar bet, not the change in your balance — ' +
   'the same money can be wagered many times.';
 
+/**
+ * The visible short form under the ROI stat on the account and player pages,
+ * for touch screens and screen readers that never see an <abbr title>.
+ */
+export const ROI_HINT = 'profit per $1 wagered';
+
 /** ROI as a signed percentage, or "—" when there is no settled action. */
 export function formatRoi(roi: number | null): string {
   if (roi === null) return '—';

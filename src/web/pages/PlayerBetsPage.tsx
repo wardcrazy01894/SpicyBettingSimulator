@@ -32,7 +32,7 @@ import { useLeaderboard, usePlayerBets } from '../hooks/useApi.js';
 import { usePoll } from '../hooks/useNow.js';
 import { usePages } from '../hooks/usePages.js';
 import { groupBetsByWeek } from '../lib/grouping.js';
-import { ROI_HELP, formatRoi } from '../lib/labels.js';
+import { ROI_HELP, ROI_HINT, formatRoi } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
 import type { BetView, LeaderboardRow } from '../../shared/api-types.js';
@@ -76,7 +76,10 @@ function PlayerStats(props: { readonly row: LeaderboardRow }): ReactElement {
             ROI
           </abbr>
         </dt>
-        <dd>{formatRoi(row.roi)}</dd>
+        <dd>
+          {formatRoi(row.roi)}
+          <small className="stat-hint">{ROI_HINT}</small>
+        </dd>
       </div>
     </dl>
   );

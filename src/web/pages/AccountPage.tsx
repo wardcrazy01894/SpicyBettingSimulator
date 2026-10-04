@@ -18,7 +18,7 @@ import { Spinner } from '../components/Spinner.js';
 import { getLedger } from '../api/client.js';
 import { LEDGER_PAGE_SIZE, useBalances, useLedger } from '../hooks/useApi.js';
 import { usePages } from '../hooks/usePages.js';
-import { ROI_HELP, formatRoi } from '../lib/labels.js';
+import { ROI_HELP, ROI_HINT, formatRoi } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
 import { DISPLAY_NAME_MAX } from '../../shared/validate.js';
@@ -55,7 +55,10 @@ function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
               ROI
             </abbr>
           </dt>
-          <dd>{formatRoi(b.roi)}</dd>
+          <dd>
+            {formatRoi(b.roi)}
+            <small className="stat-hint">{ROI_HINT}</small>
+          </dd>
         </div>
         <div>
           <dt>Settled</dt>
