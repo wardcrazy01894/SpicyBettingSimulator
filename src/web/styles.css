@@ -650,6 +650,28 @@ abbr.help {
   color: var(--text-dim);
 }
 
+/* Bust badges (PLAN.md §4.5): one 💀 per refill not yet bought off. Inline
+   after a name, so the row's height does not change when one appears. */
+.bust-badges {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.bust-badge {
+  padding: 0 6px;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.bust-buyout,
+.admin-refill-details {
+  margin-top: 12px;
+}
+.admin-refill-details > summary {
+  cursor: pointer;
+}
+
 /* ------------------------------------------------------------- slip sheet */
 
 .slip-bar {

@@ -209,6 +209,17 @@ the one failure mode the whole checklist has.
    (iii) No teaser leg may be MLB: `TEASABLE_LEAGUES`, enforced in `applyTease`
    with the existing `400 TEASER_INVALID`, before any statement is built. (iv) The secondary never sweeps MLB:
    `secondary.ts` loops `SECONDARY_LEAGUES`, never `LEAGUES`.
+   8h. **Bust refills and badges (PLAN.md §4.5, migration 0011).** A refill
+   is its own ledger kind, `deposit_refill`, written ONLY by
+   `POST /api/admin/users/:id/refill`, and only for a BUSTED account
+   (`balance_cents < MIN_STAKE_CENTS` with no pending bet — both are WHERE
+   clauses inside the INSERT, `409 NOT_BUSTED` otherwise). Never book a refill
+   as `admin_adjust`: an adjustment is a correction and counts as profit or
+   loss; a refill joins "bought in" and is one bust badge. **The leaderboard
+   ranks by `netCents = equity − deposited`**, not equity. A `bust_buyout`
+   (`POST /api/bankroll/buyout`, `-BUST_BUYOUT_CENTS`) retires ONE refill by
+   `ref_id`, so the UNIQUE makes each badge sellable once; its guard is
+   `balance_cents > BUST_BUYOUT_CENTS`, strictly, inside the INSERT.
 9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
    2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will
    never replay it. **Every schema change is a new numbered
@@ -240,6 +251,9 @@ the one failure mode the whole checklist has.
      children-first way to widen `bets.leg_count` to 1–25 (`MAX_PARLAY_LEGS`,
      DraftKings' limit) and add `CHECK (bet_type <> 'teaser' OR leg_count <= 10)`
      — a teaser stops at `MAX_TEASER_LEGS`, the card's width. PLAN.md §16.2.
+     `0011_ledger_refill_buyout.sql` rebuilds `ledger` ALONE (a leaf, 0008's
+     pattern) to admit kinds `deposit_refill` and `bust_buyout` — bust
+     refills and badge buyouts, rule 8h and PLAN.md §4.5.
      `0007_secondary_odds.sql` shipped with M9b and is frozen like the rest;
      PLAN.md §21.3 carries the same text as its specification. The plan PR that
      added §21 and §22 deliberately shipped NO migration: the Deploy
@@ -380,7 +394,8 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               the secondary_budget row (PLAN.md §21.3), 0008 rebuilds bet_legs
               for same-game parlays (PLAN.md §5.2c), 0009 rebuilds six tables
               to admit league 'mlb' (PLAN.md §23.3), 0010 rebuilds bets for
-              25-leg parlays (teasers stay at 10; PLAN.md §16.2)
+              25-leg parlays (teasers stay at 10; PLAN.md §16.2), 0011 rebuilds
+              ledger alone for the deposit_refill / bust_buyout kinds (PLAN.md §4.5)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES

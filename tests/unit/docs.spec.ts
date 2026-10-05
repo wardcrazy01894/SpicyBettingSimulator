@@ -30,6 +30,7 @@ import { describe, expect, it } from 'vitest';
 import { ERROR_CODES } from '../../src/shared/errors.js';
 import {
   BET_CUTOFF_BUFFER_MS,
+  BUST_BUYOUT_CENTS,
   INITIAL_BANKROLL_CENTS,
   LINE_STALE_MS,
   MAX_PARLAY_LEGS,
@@ -38,6 +39,7 @@ import {
   MAX_SETTLE_ATTEMPTS,
   MIN_STAKE_CENTS,
   MIN_TEASER_LEGS,
+  REFILL_DEFAULT_CENTS,
   MLB_OFFICIAL_INNINGS,
   MLB_POSTPONED_CONFIRM_MS,
   MLB_REGULATION_INNINGS,
@@ -296,6 +298,8 @@ describe('constants.ts vs PLAN.md §3.1', () => {
   const expected: Readonly<Record<string, number>> = {
     INITIAL_BANKROLL_CENTS,
     MIN_STAKE_CENTS,
+    REFILL_DEFAULT_CENTS,
+    BUST_BUYOUT_CENTS,
     MAX_PAYOUT_CENTS,
     BET_CUTOFF_BUFFER_MS,
     LINE_STALE_MS,

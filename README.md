@@ -9,7 +9,8 @@ it.
 You sign up, get a fake **$1,000**, and bet it on this week's NFL and college
 games at the prices the books are posting. Games go final, bets grade
 themselves, the money moves, and a leaderboard settles the argument. There is
-no top-up button, so bet like it's real.
+no top-up button, so bet like it's real: lose the lot and an admin can refill
+you, but the loss stays on the board and a 💀 goes beside your name.
 
 ---
 
@@ -63,12 +64,19 @@ no top-up button, so bet like it's real.
    parlay or teaser is marked lost as soon as any one leg loses; its other
    legs keep grading as their games finish, just for the record. Your
    account page has the full ledger, every cent of it, and the leaderboard
-   ranks everyone by **equity**: balance plus whatever is still riding.
+   ranks everyone by **net profit**: equity (balance plus whatever is still
+   riding) minus what the house has put in.
    **Tap a name on the leaderboard** to see that player's bets: what's still
    open and how each leg is going, and everything that's settled, with what it
    won or lost. Everyone's history is open to everyone; it's a friend group,
    not a bank.
-7. **Something look wrong?** "Report a bug" is in the header on every page
+7. **Bust out, buy back in.** Lose the lot and an admin can refill you — but
+   the refill joins what you've bought in, so your net profit still shows the
+   $1,000 you lost, and a 💀 sits beside your name on the leaderboard. Get
+   back above $1,000 and your account page offers to remove a badge for
+   exactly $1,000, after telling you what it will deduct. The money is spent,
+   not refunded.
+8. **Something look wrong?** "Report a bug" is in the header on every page
    once you're signed in. It files an issue in
    [this repo](https://github.com/wardcrazy01894/SpicyBettingSimulator/issues)
    with your username, the page you were on, the app version, your browser and

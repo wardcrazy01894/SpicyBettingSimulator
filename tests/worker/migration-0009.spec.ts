@@ -118,13 +118,14 @@ async function rerun(...prefixes: string[]): Promise<void> {
 
 /**
  * Re-run 0009 COMPOSED FORWARD with every later rebuild — today 0010, which
- * rebuilds bets / bet_legs / ledger again (leg_count 1..25). 0009 alone would
+ * rebuilds bets / bet_legs / ledger again (leg_count 1..25), and 0011, which
+ * rebuilds ledger once more for the refill/buyout kinds. 0009 alone would
  * put the 10-leg CHECK back, and because the tests in this file share one
  * database, every later comparison would then be against 0009's DDL rather
  * than the live schema.
  */
 async function rerun0009(): Promise<void> {
-  await rerun('0009_', '0010_');
+  await rerun('0009_', '0010_', '0011_');
 }
 
 async function all(sql: string): Promise<Record<string, unknown>[]> {
@@ -407,12 +408,12 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
       // so composing forward now ends with it.
       await seedHistory({ sameGame: false });
       const before = await state();
-      await rerun('0005_', '0008_', '0009_', '0010_');
+      await rerun('0005_', '0008_', '0009_', '0010_', '0011_');
       expect(await state()).toEqual(before);
       // 0008 + 0009 also holds with a same-game parlay on the books.
       await seedHistory();
       const withSameGame = await state();
-      await rerun('0008_', '0009_', '0010_');
+      await rerun('0008_', '0009_', '0010_', '0011_');
       expect(await state()).toEqual(withSameGame);
       expect(await balanceDrift()).toBe(0);
     });

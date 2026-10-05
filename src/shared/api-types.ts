@@ -402,6 +402,26 @@ export interface BankrollView {
   readonly pendingStakeCents: Cents;
   /** balanceCents + pendingStakeCents. Holds under every filter. */
   readonly equityCents: Cents;
+  /**
+   * Σ `deposit_initial` + Σ `deposit_refill` on this balance: every cent the
+   * house has put in (PLAN.md §4.5). `admin_adjust` is NOT a deposit — it is
+   * a correction and counts as profit or loss — and a `bust_buyout` is money
+   * the player SPENT, so it lowers equity and leaves this untouched.
+   */
+  readonly depositedCents: Cents;
+  /**
+   * `equityCents − depositedCents`: profit or loss against everything the
+   * house put in. **THE RANKED COLUMN** on the leaderboard (decided
+   * 2026-10-05, superseding equity, PLAN.md §11.5): with every account
+   * opened at the same amount it orders identically to equity, and a refilled
+   * account keeps carrying the money it lost before the refill.
+   */
+  readonly netCents: Cents;
+  /**
+   * Bust badges currently on the name: refills minus buyouts. Never negative
+   * (a buyout retires one specific refill row).
+   */
+  readonly bustCount: number;
   readonly record: BettingRecord;
   /** (Σ payout − Σ stake) / Σ stake over won+lost bets only. null when no action. */
   readonly roi: number | null;
@@ -440,6 +460,18 @@ export interface AdminAdjustRequest {
   readonly memo?: string;
 }
 
+/**
+ * `POST /api/admin/users/:id/refill` — re-fund a BUSTED account (PLAN.md §4.5).
+ * `amountCents` is optional and defaults to `REFILL_DEFAULT_CENTS`; when sent
+ * it must be a positive integer no larger than `MAX_PAYOUT_CENTS`. The account
+ * must be busted — balance under `MIN_STAKE_CENTS` with no pending bet — or
+ * the server answers `409 NOT_BUSTED`; a plain top-up is `/adjust`.
+ */
+export interface AdminRefillRequest {
+  readonly amountCents?: Cents;
+  readonly memo?: string;
+}
+
 export interface LeaderboardRow {
   readonly userId: string;
   readonly username: string;
@@ -450,18 +482,38 @@ export interface LeaderboardRow {
    * Ranking on a filtered balance would be ranking on a number that does not
    * exist anywhere in the ledger.
    *
-   * NOT the ranked column: see `equityCents`.
+   * NOT the ranked column: see `netCents`.
    */
   readonly balanceCents: Cents;
   readonly pendingStakeCents: Cents;
   /**
    * `balanceCents + pendingStakeCents` — what the account is worth if every open
-   * bet were voided. **THE RANKED COLUMN** (decided 2026-09-14): a stake that is
-   * still in flight should neither help nor hurt your position, and ranking on
-   * the settled balance alone put a player with $2,000 and $1,500 riding on
-   * tonight's game below one sitting on $600.
+   * bet were voided. Was the ranked column from 2026-09-14 until 2026-10-05,
+   * when refills arrived: a stake in flight should neither help nor hurt your
+   * position, and that reasoning survives in `netCents`, which is equity less
+   * what the house put in.
    */
   readonly equityCents: Cents;
+  /**
+   * Σ `deposit_initial` + Σ `deposit_refill` on this balance: every cent the
+   * house has put in (PLAN.md §4.5). `admin_adjust` is NOT a deposit — it is
+   * a correction and counts as profit or loss — and a `bust_buyout` is money
+   * the player SPENT, so it lowers equity and leaves this untouched.
+   */
+  readonly depositedCents: Cents;
+  /**
+   * `equityCents − depositedCents`: profit or loss against everything the
+   * house put in. **THE RANKED COLUMN** on the leaderboard (decided
+   * 2026-10-05, superseding equity, PLAN.md §11.5): with every account
+   * opened at the same amount it orders identically to equity, and a refilled
+   * account keeps carrying the money it lost before the refill.
+   */
+  readonly netCents: Cents;
+  /**
+   * Bust badges currently on the name: refills minus buyouts. Never negative
+   * (a buyout retires one specific refill row).
+   */
+  readonly bustCount: number;
   readonly record: BettingRecord;
   readonly roi: number | null;
   readonly rank: number;
@@ -476,7 +528,7 @@ export interface LeaderboardRow {
  */
 export interface LeaderboardResponse {
   readonly league: League | 'all';
-  /** Ranked by equityCents desc, then roi desc, then username. PLAN.md §11.5. */
+  /** Ranked by netCents desc, then roi desc, then username. PLAN.md §11.5. */
   readonly rows: readonly LeaderboardRow[];
 }
 
@@ -541,6 +593,14 @@ export interface JobRunsResponse {
  */
 export interface AdminUserView extends UserSummary {
   readonly isDisabled: boolean;
+  /**
+   * The main balance's settled cash, so the operator can see who is busted
+   * without opening the leaderboard. `null` only for an account with no main
+   * balance, which signup makes impossible.
+   */
+  readonly balanceCents: Cents | null;
+  /** Bust badges currently on the account (refills minus buyouts). */
+  readonly bustCount: number;
   /** Epoch ms of the soft delete, or `null` for a live account. */
   readonly deletedAt: EpochMs | null;
   /** `deletedAt !== null`, precomputed so the UI never compares timestamps. */

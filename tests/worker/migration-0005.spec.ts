@@ -77,7 +77,7 @@ function rebuildStatements(): readonly string[] {
     if (m === undefined) throw new Error(`${prefix} not in TEST_MIGRATIONS`);
     return m.queries;
   };
-  return [...pick('0005_'), ...pick('0008_'), ...pick('0009_'), ...pick('0010_')];
+  return [...pick('0005_'), ...pick('0008_'), ...pick('0009_'), ...pick('0010_'), ...pick('0011_')];
 }
 
 async function schemaNames(type: 'trigger' | 'index' | 'table'): Promise<string[]> {

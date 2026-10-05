@@ -5,8 +5,10 @@ import {
   BET_LEAGUE_LABEL,
   LEAGUE_BADGE,
   LEAGUE_LABEL,
+  LEDGER_KIND_LABEL,
   MARKET_HEAD_LABEL,
   betShapeLabel,
+  bustBadgeTitle,
   gameClockLabel,
   hasSameGameLegs,
   teaserPointsLabel,
@@ -162,5 +164,19 @@ describe('MARKET_HEAD_LABEL (M12c)', () => {
       expect(MARKET_HEAD_LABEL[league].total).toBe('Total');
       expect(MARKET_HEAD_LABEL[league].moneyline).toBe('Money');
     }
+  });
+});
+
+describe('bust badges (PLAN.md §4.5)', () => {
+  it('the two 0011 ledger kinds have labels a player can read', () => {
+    expect(LEDGER_KIND_LABEL.deposit_refill).toBe('Bust refill');
+    expect(LEDGER_KIND_LABEL.bust_buyout).toBe('Bust badge removed');
+  });
+
+  it('bustBadgeTitle pluralises by hand and is empty at zero', () => {
+    expect(bustBadgeTitle(0)).toBe('');
+    expect(bustBadgeTitle(1)).toMatch(/^Busted once/);
+    expect(bustBadgeTitle(2)).toMatch(/^Busted twice/);
+    expect(bustBadgeTitle(5)).toMatch(/^Busted 5 times/);
   });
 });

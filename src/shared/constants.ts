@@ -15,6 +15,23 @@ import type { AmericanPrice, League } from './types.js';
  */
 export const INITIAL_BANKROLL_CENTS = 100_000;
 
+/**
+ * What the admin's Refill button proposes for a BUSTED account (PLAN.md §4.5).
+ * A default, not a rule: the admin may type any positive amount up to
+ * `MAX_PAYOUT_CENTS`. Each refill is one bust badge on the leaderboard and
+ * joins the account's "bought in" total, so net profit keeps showing the money
+ * that was lost before it.
+ */
+export const REFILL_DEFAULT_CENTS = INITIAL_BANKROLL_CENTS;
+
+/**
+ * The price of removing ONE bust badge, paid by the player from their own
+ * balance (`POST /api/bankroll/buyout`, PLAN.md §4.5). The balance must be
+ * STRICTLY above this after the account's open stakes are ignored — paying
+ * your whole balance to look un-busted would bust you again on the spot.
+ */
+export const BUST_BUYOUT_CENTS = 100_000;
+
 /** Minimum stake: $1.00. Also enforced by a CHECK constraint on `bets`. */
 export const MIN_STAKE_CENTS = 100;
 

@@ -8,6 +8,14 @@
  *   pendingStakeCents Σ stake of pending bets STAKED AGAINST THAT SAME MAIN
  *                     BALANCE ("exposure"). Also unfiltered by `?league=`
  *   equityCents       balanceCents + pendingStakeCents
+ *   depositedCents    Σ deposit_initial + Σ deposit_refill on the MAIN balance:
+ *                     what the house put in. admin_adjust is a correction, not
+ *                     a deposit; a bust_buyout is money spent (PLAN.md §4.5)
+ *   netCents          equityCents − depositedCents — THE RANKED COLUMN since
+ *                     2026-10-05. Every account opened at the same amount, so
+ *                     without a refill it orders exactly as equity did; with
+ *                     one, the refilled player keeps carrying the loss
+ *   bustCount         refills − buyouts: the badges beside the name
  *
  * BOTH HALVES OF EQUITY ARE SCOPED TO THE **MAIN** BALANCE, and they have to be.
  * `bankrolls` models balances as a list so side pots (`kind='custom'`) can exist
@@ -22,7 +30,7 @@
  *   roi               (Σ payout − Σ stake) over bets with status ∈ {won, lost};
  *                     push and void are excluded from BOTH sides; null when the
  *                     denominator is 0
- *   RANKED BY equityCents DESC, then roi DESC, then username ASC
+ *   RANKED BY netCents DESC, then roi DESC, then username ASC
  *
  * THE FILTER IS `?league=all|nfl|ncaaf` AND NARROWS `record` AND `roi` ONLY
  * (M5b). Money is account-level now — there is one pot, not one per league per
@@ -55,7 +63,13 @@
 import type { BettingRecord, LeaderboardResponse, LeaderboardRow } from '../shared/api-types.js';
 import type { League } from '../shared/types.js';
 import type { Env } from './env.js';
-import { statsFilterClauses } from './bankroll.js';
+import {
+  DEPOSIT_SUMS_COLUMNS,
+  DEPOSIT_SUMS_KINDS,
+  bustCountOf,
+  statsFilterClauses,
+} from './bankroll.js';
+import type { DepositSums } from './bankroll.js';
 import { queryAll } from './db.js';
 
 /** One `(user, status)` aggregate over the bets inside the requested scope. */
@@ -80,6 +94,8 @@ type MutableRecord = { -readonly [K in keyof BettingRecord]: BettingRecord[K] };
 interface Accumulator {
   balanceCents: number;
   pendingStakeCents: number;
+  depositedCents: number;
+  bustCount: number;
   record: MutableRecord;
   roiNumerator: number;
   roiDenominator: number;
@@ -89,6 +105,8 @@ function emptyAccumulator(balanceCents: number): Accumulator {
   return {
     balanceCents,
     pendingStakeCents: 0,
+    depositedCents: 0,
+    bustCount: 0,
     record: { won: 0, lost: 0, push: 0, void: 0 },
     roiNumerator: 0,
     roiDenominator: 0,
@@ -123,18 +141,19 @@ function applyStat(acc: Accumulator, row: StatRow): void {
 }
 
 /**
- * Ranked rows. Sorting: **EQUITY** DESC, then ROI DESC, then username ASC.
+ * Ranked rows. Sorting: **NET PROFIT** DESC, then ROI DESC, then username ASC.
  *
- * EQUITY, NOT BALANCE (decided 2026-09-14, PLAN.md §19 Q2). `balanceCents`
- * excludes stakes that are still in flight, so ranking on it puts someone
- * holding $2,000 with $1,500 riding on tonight's game BELOW someone sitting on
- * $600 — which is not what "who is winning" means to anyone playing. Equity is
- * what the account is worth if every open bet were voided, so a bet neither
- * helps nor hurts your position until it settles. Both numbers are in the row;
- * only the sort key changed.
+ * NET, NOT EQUITY (decided 2026-10-05, PLAN.md §11.5, superseding the
+ * 2026-09-14 choice in §19 Q2). Equity was right for the reason it was chosen —
+ * `balanceCents` excludes stakes in flight, so ranking on it put someone holding
+ * $2,000 with $1,500 riding on tonight's game BELOW someone sitting on $600 —
+ * and `netCents` keeps that: it is equity less what the house put in. What
+ * equity could not do is survive a refill: a busted player re-funded to $1,000
+ * would have ranked level with someone who never lost a cent. Net carries the
+ * loss forward, and a buyout (money spent) lowers it too.
  *
  * A null ROI ("no settled action") sorts below every real ROI at the same
- * equity; with two nulls the username decides, so the order is total and
+ * net; with two nulls the username decides, so the order is total and
  * deterministic.
  */
 function rank(
@@ -144,19 +163,23 @@ function rank(
   const rows = users.map((user) => {
     const acc = accumulators.get(user.user_id) ?? emptyAccumulator(user.balance_cents);
     const roi = acc.roiDenominator === 0 ? null : acc.roiNumerator / acc.roiDenominator;
+    const equityCents = acc.balanceCents + acc.pendingStakeCents;
     return {
       userId: user.user_id,
       username: user.username,
       displayName: user.display_name,
       balanceCents: acc.balanceCents,
       pendingStakeCents: acc.pendingStakeCents,
-      equityCents: acc.balanceCents + acc.pendingStakeCents,
+      equityCents,
+      depositedCents: acc.depositedCents,
+      netCents: equityCents - acc.depositedCents,
+      bustCount: acc.bustCount,
       record: acc.record,
       roi,
     };
   });
   rows.sort((a, b) => {
-    if (a.equityCents !== b.equityCents) return b.equityCents - a.equityCents;
+    if (a.netCents !== b.netCents) return b.netCents - a.netCents;
     const ra = a.roi ?? Number.NEGATIVE_INFINITY;
     const rb = b.roi ?? Number.NEGATIVE_INFINITY;
     if (ra !== rb) return rb - ra;
@@ -185,7 +208,7 @@ export async function leaderboardFor(
     filter.league === 'all' ? {} : { league: filter.league },
     values,
   );
-  const [users, stats, pending] = await Promise.all([
+  const [users, stats, pending, deposits] = await Promise.all([
     queryAll<BalanceRow>(
       env.DB.prepare(
         `SELECT bk.user_id AS user_id, u.username AS username, u.display_name AS display_name,
@@ -222,16 +245,28 @@ export async function leaderboardFor(
           GROUP BY b.user_id`,
       ),
     ),
+    // Deposits, scoped to the MAIN balance by the same join, for the same
+    // reason as exposure: `netCents = equityCents − depositedCents` has to be
+    // about one pot. Unfiltered by `?league=` — money, not a statistic.
+    queryAll<DepositSums & { user_id: string }>(
+      env.DB.prepare(
+        `SELECT bk.user_id AS user_id, ${DEPOSIT_SUMS_COLUMNS}
+           FROM ledger le JOIN bankrolls bk ON bk.id = le.bankroll_id AND bk.kind = 'main'
+          WHERE ${DEPOSIT_SUMS_KINDS}
+          GROUP BY bk.user_id`,
+      ),
+    ),
   ]);
   return {
     league: filter.league,
-    rows: rank(users, accumulate(users, [...stats, ...pending])),
+    rows: rank(users, accumulate(users, [...stats, ...pending], deposits)),
   };
 }
 
 function accumulate(
   users: readonly BalanceRow[],
   stats: readonly StatRow[],
+  deposits: readonly (DepositSums & { user_id: string })[],
 ): ReadonlyMap<string, Accumulator> {
   const accumulators = new Map<string, Accumulator>();
   for (const user of users) accumulators.set(user.user_id, emptyAccumulator(user.balance_cents));
@@ -240,6 +275,12 @@ function accumulate(
     // A bet whose user has no main balance is impossible (it is created at
     // signup and `bets.bankroll_id` is a FK), but skipping is the safe read.
     if (acc !== undefined) applyStat(acc, stat);
+  }
+  for (const row of deposits) {
+    const acc = accumulators.get(row.user_id);
+    if (acc === undefined) continue;
+    acc.depositedCents = row.deposited;
+    acc.bustCount = bustCountOf(row);
   }
   return accumulators;
 }

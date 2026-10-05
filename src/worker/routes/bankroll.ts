@@ -3,7 +3,7 @@
 import { Hono } from 'hono';
 import type { BankrollsResponse, LedgerResponse } from '../../shared/api-types.js';
 import { AppError } from '../../shared/errors.js';
-import { listBalances, listLedger } from '../bankroll.js';
+import { buyBustBadge, listBalances, listLedger } from '../bankroll.js';
 import type { StatsFilter } from '../bankroll.js';
 import { requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
@@ -15,6 +15,7 @@ const MAX_LEDGER_PAGE = 200;
 export function bankrollRoutes(): Hono<AppContext> {
   const app = new Hono<AppContext>();
   app.use('/bankroll', requireAuth());
+  app.use('/bankroll/buyout', requireAuth());
   app.use('/ledger', requireAuth());
 
   /**
@@ -34,6 +35,20 @@ export function bankrollRoutes(): Hono<AppContext> {
     const filter: StatsFilter = league === undefined ? {} : { league };
     const body: BankrollsResponse = await listBalances(c.env, user.id, filter);
     return c.json(body);
+  });
+
+  /**
+   * Pay `BUST_BUYOUT_CENTS` from the main balance to remove ONE bust badge
+   * (PLAN.md §4.5). No body: the price is a constant and the server picks the
+   * oldest badge. The guard — a badge exists and the balance is STRICTLY above
+   * the price — is a WHERE clause inside the ledger INSERT; `409 NO_BUST_BADGE`
+   * when it declines.
+   */
+  app.post('/bankroll/buyout', async (c) => {
+    const user = c.var.user;
+    if (user === null) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
+    await buyBustBadge(c.env, user.id, c.var.now);
+    return c.body(null, 204);
   });
 
   app.get('/ledger', async (c) => {

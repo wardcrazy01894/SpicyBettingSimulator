@@ -19,7 +19,7 @@ import type {
   JobRunsResponse,
   ReconcileResponse,
 } from '../../shared/api-types.js';
-import { JOB_NAMES, MAX_PAYOUT_CENTS } from '../../shared/constants.js';
+import { JOB_NAMES, MAX_PAYOUT_CENTS, REFILL_DEFAULT_CENTS } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
 import { validateDerivedKeyHex } from '../../shared/validate.js';
 import { deleteUser, listUsers, setDisabled, setPassword } from '../auth.js';
@@ -27,7 +27,7 @@ import { listBugReports } from '../bugs.js';
 import { bumpTargetForGame } from '../ingest.js';
 import { reconcileBankrolls } from '../db.js';
 import { retrySettlement } from '../settle.js';
-import { adminAdjust } from '../bankroll.js';
+import { adminAdjust, adminRefill } from '../bankroll.js';
 import { isOverdraftError } from '../db.js';
 import { recentRuns, runJob } from '../jobs.js';
 import type { JobName } from '../jobs.js';
@@ -170,6 +170,44 @@ export function adminRoutes(): Hono<AppContext> {
       }
       throw err;
     }
+    return c.body(null, 204);
+  });
+
+  /**
+   * `POST /api/admin/users/:id/refill {amountCents?, memo?}` — re-fund a BUSTED
+   * account with one `deposit_refill` row, which is also one bust badge
+   * (PLAN.md §4.5). `amountCents` defaults to `REFILL_DEFAULT_CENTS` and must
+   * otherwise be a positive integer within `MAX_PAYOUT_CENTS`; the busted
+   * check is a WHERE clause inside the INSERT and answers `409 NOT_BUSTED`.
+   */
+  app.post('/users/:id/refill', async (c) => {
+    const raw = await readJson(c);
+    const rawAmount = isRecord(raw) ? raw['amountCents'] : undefined;
+    let amountCents = REFILL_DEFAULT_CENTS;
+    if (rawAmount !== undefined && rawAmount !== null) {
+      if (typeof rawAmount !== 'number' || !Number.isSafeInteger(rawAmount)) {
+        throw new AppError('VALIDATION', 'amountCents must be an integer number of cents', {
+          field: 'amountCents',
+        });
+      }
+      if (rawAmount <= 0 || rawAmount > MAX_PAYOUT_CENTS) {
+        throw new AppError('VALIDATION', 'amountCents must be positive and within the cap', {
+          field: 'amountCents',
+        });
+      }
+      amountCents = rawAmount;
+    }
+    const rawMemo = isRecord(raw) ? raw['memo'] : undefined;
+    if (rawMemo !== undefined && rawMemo !== null && typeof rawMemo !== 'string') {
+      throw new AppError('VALIDATION', 'memo must be a string', { field: 'memo' });
+    }
+    await adminRefill(
+      c.env,
+      c.req.param('id'),
+      amountCents,
+      typeof rawMemo === 'string' && rawMemo !== '' ? rawMemo : null,
+      c.var.now,
+    );
     return c.body(null, 204);
   });
   // --- end balances (M5b) -------------------------------------------------

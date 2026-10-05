@@ -507,6 +507,11 @@ export function formatCents(cents: Cents): string {
   return `${sign}$${whole}.${frac}`;
 }
 
+/** Cents -> "+$12.00" / "-$12.00" / "$0.00": a profit-or-loss figure wears its sign. */
+export function formatSignedCents(cents: Cents): string {
+  return cents > 0 ? `+${formatCents(cents)}` : formatCents(cents);
+}
+
 /** Tenths -> "-3.5" / "+3.5" / "50.5". `signed` controls the leading plus. */
 export function formatLineTenths(tenths: LineTenths, signed: boolean): string {
   if (tenths === 0) return signed ? 'PK' : '0';

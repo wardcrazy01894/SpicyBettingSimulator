@@ -184,6 +184,8 @@ section explains the _why_.
 | ------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                         |
 | `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                     |
+| `REFILL_DEFAULT_CENTS`                | `100_000`       | what the admin's Refill button proposes for a BUSTED account; any positive amount up to `MAX_PAYOUT_CENTS` may be typed (§4.5)                                                        |
+| `BUST_BUYOUT_CENTS`                   | `100_000`       | the price of removing ONE bust badge, paid from the player's own balance, which must be STRICTLY above it (§4.5)                                                                      |
 | `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                  |
 | `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                |
 | `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5) |
@@ -329,9 +331,15 @@ would also forbid two custom pots.
 **`ledger`** — append-only, the source of truth for money.
 `id, bankroll_id, kind, ref_id, bet_id, amount_cents (signed), created_at, memo`
 with `UNIQUE(bankroll_id, kind, ref_id)`.
-`kind ∈ {deposit_initial, bet_stake, bet_payout, bet_refund, admin_adjust}`.
+`kind ∈ {deposit_initial, bet_stake, bet_payout, bet_refund, admin_adjust,
+deposit_refill, bust_buyout}` — the last two since migration 0011 (§4.5).
 `ref_id` is the **idempotency key**: the bet id for bet-related kinds, the literal
-`'init'` for the opening deposit, a caller-supplied UUID for admin adjustments.
+`'init'` for the opening deposit, a fresh SERVER-generated uuid for admin
+adjustments and refills (each call is a distinct event — "+5000 twice" means it
+twice, and a refill retried after a lost response is a second refill, which the
+busted guard stops for any amount of $1 or more), and for a `bust_buyout` the id
+of the `deposit_refill` row it retires (so a refill can be bought off at most
+once, by the UNIQUE).
 Five triggers (§4.2): TWO `BEFORE INSERT` value guards that `INSERT OR IGNORE`
 cannot suppress (`ledger_bi_bankroll_exists`, `ledger_bi_sufficient_funds`), an
 `AFTER INSERT` (`ledger_ai_apply`) that applies the amount to
@@ -638,15 +646,17 @@ Consequences worth spelling out:
 
 ### 4.3 Money flows
 
-| Event                 | Ledger rows written                                                           |
-| --------------------- | ----------------------------------------------------------------------------- |
-| **Signup**            | `deposit_initial` `+100000`, `ref_id='init'` — once per account, for its life |
-| Bet placed            | `bet_stake` `-stake`, `ref_id=betId`                                          |
-| Bet won               | `bet_payout` `+payout` (= stake + profit), `ref_id=betId`                     |
-| Bet pushed / voided   | `bet_payout` `+stake`, `ref_id=betId`                                         |
-| Bet lost              | **none** — the stake row already debited it                                   |
-| Bet cancelled by user | `bet_refund` `+stake`, `ref_id=betId`                                         |
-| Admin adjustment      | `admin_adjust` `±n`, `ref_id=<uuid>`                                          |
+| Event                 | Ledger rows written                                                               |
+| --------------------- | --------------------------------------------------------------------------------- |
+| **Signup**            | `deposit_initial` `+100000`, `ref_id='init'` — once per account, for its life     |
+| Bet placed            | `bet_stake` `-stake`, `ref_id=betId`                                              |
+| Bet won               | `bet_payout` `+payout` (= stake + profit), `ref_id=betId`                         |
+| Bet pushed / voided   | `bet_payout` `+stake`, `ref_id=betId`                                             |
+| Bet lost              | **none** — the stake row already debited it                                       |
+| Bet cancelled by user | `bet_refund` `+stake`, `ref_id=betId`                                             |
+| Admin adjustment      | `admin_adjust` `±n`, `ref_id=<uuid>` — a CORRECTION; counts as profit/loss        |
+| Bust refill (admin)   | `deposit_refill` `+n`, `ref_id=<uuid>` — one bust badge; joins "bought in" (§4.5) |
+| Bust badge buyout     | `bust_buyout` `-BUST_BUYOUT_CENTS`, `ref_id=<id of the refill retired>` (§4.5)    |
 
 A loss writing no row is deliberate: it keeps the ledger a pure cash-movement log,
 and `SUM(amount_cents) = balance_cents` stays trivially checkable
@@ -728,6 +738,61 @@ sign, with a fresh uuid `ref_id` — so an admin who types "+5000" twice means i
 twice. There is no overdraft branch in the application code: a debit larger than
 the balance is refused by `ledger_bi_sufficient_funds`, which rolls the batch
 back, and that abort is mapped to `409 INSUFFICIENT_FUNDS`.
+
+### 4.5 Bust refills, bust badges and buyouts (2026-10-05, migration 0011)
+
+The first player to lose the whole $1,000 filed a GitHub issue about it. The
+answer is a REFILL that leaves the loss visible rather than a reset that hides
+it, and the design is three rules on top of the ledger:
+
+1. **A refill is its own ledger kind, `deposit_refill`, written only by
+   `POST /api/admin/users/:id/refill {amountCents?, memo?}`** (one row, `+n`,
+   fresh uuid `ref_id`, `n` defaulting to `REFILL_DEFAULT_CENTS` = $1,000 and
+   otherwise any positive integer within `MAX_PAYOUT_CENTS`). It is NOT an
+   `admin_adjust`, because the two mean different things on the board: a
+   refill is money the house put in and **joins "bought in"**; an adjustment
+   is a correction and **counts as profit or loss**. The route refuses an
+   account that is not BUSTED with `409 NOT_BUSTED` — busted means
+   `balance_cents < MIN_STAKE_CENTS` (it cannot cover a $1 stake; exactly
+   zero is the common case, 40¢ is just as stuck) AND no `pending` bet that
+   may yet pay. Both halves are `WHERE` clauses inside the INSERT, beside the
+   deleted-account guard `/adjust` has (rule 5): a settlement landing between
+   a read and the write cannot turn a bonus into a badge. `/adjust` remains
+   the route for a plain top-up, badge-free. The admin reaches the route from
+   two places in the SPA, both the same `AdminRefillForm`: the Users tab of
+   `/admin` (an account dropdown showing each balance and badge count, then
+   the amount box) and the player's own page `/players/:userId`, which is
+   where an admin coming from the leaderboard actually lands; the form is
+   hidden there unless the viewer is an admin looking at somebody else.
+2. **The leaderboard ranks by NET PROFIT**, `netCents = equityCents −
+depositedCents`, where `depositedCents = Σ deposit_initial + Σ
+deposit_refill` on the MAIN balance. Every account opens at the same
+   amount, so without a refill the order is exactly what ranking by equity
+   gave (§19 Q2's reasoning survives intact: a stake in flight still neither
+   helps nor hurts); with one, the refilled player keeps carrying the money
+   lost before it instead of ranking level with someone who never lost a
+   cent. `BankrollView` and `LeaderboardRow` both carry `depositedCents`,
+   `netCents` and `bustCount` (§11.5), and `AdminUserView` carries
+   `balanceCents` and `bustCount` so the Users tab shows who is busted.
+3. **Each refill is one bust badge (💀) beside the name, and a player can
+   BUY one off for `BUST_BUYOUT_CENTS` ($1,000)**: `POST /api/bankroll/buyout`
+   writes one `bust_buyout` row, `-BUST_BUYOUT_CENTS`, whose `ref_id` is the
+   id of the OLDEST `deposit_refill` not yet retired — so `UNIQUE (bankroll_id,
+kind, ref_id)` makes "sold once" a schema fact and `bustCount = refills −
+buyouts` is never negative. The guard — a badge exists and `balance_cents`
+   is STRICTLY above the price, open stakes ignored because they are not cash
+   — is a `WHERE` inside the INSERT; `409 NO_BUST_BADGE` when it declines.
+   The money is SPENT: equity and net drop by the price and "bought in" does
+   not move, which is the deterrent. "Strictly above" is the whole rule: a
+   balance of $1,000.50 may buy a badge and be left with 50¢, which is
+   busted again and refillable (with a fresh badge). That is the player's
+   call — the confirm shows the balance after — not something the server
+   second-guesses. The account page shows the button only
+   when both conditions hold and makes the player confirm the exact deduction
+   inline before posting (§12).
+
+`migrations/0011_ledger_refill_buyout.sql` is the leaf rebuild of `ledger`
+(0008's pattern) that widens the kind CHECK — §16.2.
 
 ---
 
@@ -2477,6 +2542,8 @@ and never removed, only added.
 | `BANKROLL_NOT_FOUND`       | 404    | a balance that is not yours OR does not exist (§4.4)                                                                                                                                                                                                    |
 | `USERNAME_TAKEN`           | 409    | signup; also a soft delete whose 12- AND 16-hex tombstone names are both taken (§10.5) — a coded, actionable refusal instead of an `INTERNAL`                                                                                                           |
 | `ACCOUNT_HAS_PENDING_BETS` | 409    | `DELETE /api/admin/users/:id` while the target holds an open bet (§10.5). A NEW code, not a reused one: `BET_NOT_PENDING` is about one bet's status and says the opposite thing, and `VALIDATION` is a 400                                              |
+| `NOT_BUSTED`               | 409    | `POST /api/admin/users/:id/refill` on an account that can still cover `MIN_STAKE_CENTS` or holds a pending bet (§4.5). A refill is a bust badge, so it is refused rather than silently becoming a bonus — `/adjust` is the plain top-up                 |
+| `NO_BUST_BADGE`            | 409    | `POST /api/bankroll/buyout` with no badge to remove, or a balance not strictly above `BUST_BUYOUT_CENTS` (§4.5)                                                                                                                                         |
 | `GAME_NOT_BETTABLE`        | 409    | `status <> 'scheduled'`                                                                                                                                                                                                                                 |
 | `BETTING_CLOSED`           | 409    | past `lockAt`                                                                                                                                                                                                                                           |
 | `MARKET_UNAVAILABLE`       | 409    | no line for that market, or `seenAt` stale                                                                                                                                                                                                              |
@@ -2693,9 +2760,11 @@ what the slip promised); `payoutCents` is what was actually paid.
 | GET    | `/api/ledger?bankrollId=&limit=&cursor=`  | `200 {entries: LedgerEntry[], nextCursor}`. `bankrollId` defaults to the main balance.                                                        |
 | GET    | `/api/leaderboard?league=all\|nfl\|ncaaf` | `200 {league, rows: LeaderboardRow[]}`. `league` optional; `all` / absent is the default. **Enabled, non-deleted accounts only** — see below. |
 | GET    | `/api/leaderboard/all-time`               | `200 {league:'all', rows}` — an ALIAS of the unfiltered board, kept for the shipped client.                                                   |
+| POST   | `/api/bankroll/buyout`                    | `204`. Pays `BUST_BUYOUT_CENTS` from the main balance to remove ONE bust badge; `409 NO_BUST_BADGE` when nothing to buy (§4.5). No body.      |
 
 `BankrollView = { id, name, kind ('main'|'custom'), balanceCents,
-pendingStakeCents, equityCents, record:{w,l,p,v}, roi, settledCount }`.
+pendingStakeCents, equityCents, depositedCents, netCents, bustCount,
+record:{w,l,p,v}, roi, settledCount }` — the three in the middle since §4.5.
 
 A LIST even though v1 always returns exactly one, because the schema models
 balances as a list for future side pots and a single-object response would have
@@ -2748,17 +2817,22 @@ simply not exposed as a filter. An unknown query parameter is ignored, as
 everywhere else, so a stale client that still sends `?season=` gets a board
 rather than a 400.
 
-**Ranking is by `equityCents` descending** — `balanceCents + pendingStakeCents` —
-tie-broken by `roi` then `username`. Decided 2026-09-14 (§19 Q2), reversing the
-original choice of realized balance. The reasoning that reversed it: `balanceCents`
+**Ranking is by `netCents` descending** — `equityCents − depositedCents`, equity
+less what the house put in — tie-broken by `roi` then `username`. Decided
+2026-10-05 (§4.5), superseding equity, which had superseded realized balance on
+2026-09-14 (§19 Q2). Net keeps everything equity was chosen for: with every
+account opened at the same amount the two order identically until somebody is
+refilled, and then net is the one that still tells the truth. A `bust_buyout`
+lowers net too — it is money spent. `bustCount` rides in the row for the 💀.
+The reasoning that made equity beat balance, and that still holds: `balanceCents`
 excludes stakes that are still in flight, so ranking on it puts a player holding
 $2,000 with $1,500 riding on tonight's game BELOW one sitting on $600, which is
 not what "who is winning" means to anyone playing. Equity is what the account is
 worth if every open bet were voided, so a bet neither helps nor hurts your
 position until it settles. The counter-argument — "equity lets someone lead purely
 by having money in flight" — is wrong on inspection: staking money does not
-CREATE equity, it moves the same cents from one column to the other. All three
-figures are in the row and the table leads with equity, because a table whose
+CREATE equity, it moves the same cents from one column to the other. All the
+figures are in the row and the table leads with net, because a table whose
 first money column is not the sorted one reads as if the sort is broken.
 
 ROI is pooled, never averaged: the numerator and denominator are summed across
@@ -2777,20 +2851,21 @@ note says it in a sentence.
 
 ### 11.6 Admin (requires `users.is_admin = 1`)
 
-| Method | Path                                   | Notes                                                                                                                                                                                                         |
-| ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/admin/games/:id/refresh`         | pulls the slate this game is on, now (§9.3) → `200 {run}`; `404 GAME_NOT_FOUND`, `400 VALIDATION` (slate retired: all final > 2 days), `409 JOB_LOCKED`                                                       |
-| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                                                      |
-| GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                                                      |
-| GET    | `/api/admin/users`                     | list — `AdminUserView[]`, **including deleted accounts** (`isDeleted`, `deletedAt`). The only surface that still shows them.                                                                                  |
-| GET    | `/api/admin/invite`                    | `{inviteRequired, inviteCode}` — the shared signup code read back (null when unset), so the admin page can build the join link `/login?invite=<code>` (§10.5). No DB.                                         |
-| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets. `404` for a deleted account.                                                                                                                                                                 |
-| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}` → `204`. Disabling EVICTS every live session in the same batch. Refused with `400 VALIDATION` for your own account, or for the last enabled admin (§10.5). `404` for a deleted account. |
-| DELETE | `/api/admin/users/:id`                 | **SOFT delete** → `204` (also `204` when already deleted). Guards: `400` self, or an admin while only one enabled admin remains, `404` unknown, `409 ACCOUNT_HAS_PENDING_BETS`. Full semantics in §10.5.      |
-| POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check. `404` for a deleted account.    |
-| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                                                |
-| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                                                       |
-| GET    | `/api/admin/bugs`                      | last 50 `bug_reports`, newest first — `{reports: BugReportView[]}`, INCLUDING the ones GitHub refused (`issueNumber: null`, `error` set), which is the reason the list exists (§11.7)                         |
+| Method | Path                                   | Notes                                                                                                                                                                                                               |
+| ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/admin/games/:id/refresh`         | pulls the slate this game is on, now (§9.3) → `200 {run}`; `404 GAME_NOT_FOUND`, `400 VALIDATION` (slate retired: all final > 2 days), `409 JOB_LOCKED`                                                             |
+| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                                                            |
+| GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                                                            |
+| GET    | `/api/admin/users`                     | list — `AdminUserView[]`, **including deleted accounts** (`isDeleted`, `deletedAt`). The only surface that still shows them.                                                                                        |
+| GET    | `/api/admin/invite`                    | `{inviteRequired, inviteCode}` — the shared signup code read back (null when unset), so the admin page can build the join link `/login?invite=<code>` (§10.5). No DB.                                               |
+| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets. `404` for a deleted account.                                                                                                                                                                       |
+| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}` → `204`. Disabling EVICTS every live session in the same batch. Refused with `400 VALIDATION` for your own account, or for the last enabled admin (§10.5). `404` for a deleted account.       |
+| DELETE | `/api/admin/users/:id`                 | **SOFT delete** → `204` (also `204` when already deleted). Guards: `400` self, or an admin while only one enabled admin remains, `404` unknown, `409 ACCOUNT_HAS_PENDING_BETS`. Full semantics in §10.5.            |
+| POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check. `404` for a deleted account.          |
+| POST   | `/api/admin/users/:id/refill`          | `{amountCents?, memo?}` → `204`. Re-funds a BUSTED account: one `deposit_refill` row = one bust badge, amount defaulting to `REFILL_DEFAULT_CENTS`. `409 NOT_BUSTED` otherwise; `404` for a deleted account (§4.5). |
+| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                                                      |
+| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                                                             |
+| GET    | `/api/admin/bugs`                      | last 50 `bug_reports`, newest first — `{reports: BugReportView[]}`, INCLUDING the ones GitHub refused (`issueNumber: null`, `error` set), which is the reason the list exists (§11.7)                               |
 
 Non-admins get `404` on `/api/admin/*` (not `403`), so the surface is invisible.
 Anonymous callers get `401`, like every other private route.
@@ -4389,6 +4464,18 @@ ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
   refuses an eleventh tap on a teaser with its own "full" notice
   (`teaserFullNotice`), and the preview's shared validator rejects a parlay of
   11+ legs switched to Teaser with "a teaser has 2-10 legs".
+- **`migrations/0011_ledger_refill_buyout.sql`** — bust refills and badge
+  buyouts (§4.5). `ledger.kind`'s CHECK gains `'deposit_refill'` and
+  `'bust_buyout'`; nothing else changes. `ledger` is a LEAF, so this is 0008's
+  one-table pattern (copy, drop, recreate, copy back, then indexes and the five
+  triggers — `ledger_ai_apply` last, so the copy-back cannot double a balance)
+  rather than 0010's children-first one. Textually 0010's `ledger` with one
+  CHECK widened (`tests/unit/migration-0011-ddl.spec.ts`), re-run lossless on a
+  populated database by `tests/worker/migration-0011.spec.ts`. Contract files:
+  `LedgerKind` widens, `BankrollView` / `LeaderboardRow` gain `depositedCents`,
+  `netCents`, `bustCount`, `AdminUserView` gains `balanceCents`, `bustCount`,
+  `AdminRefillRequest` is new, and `NOT_BUSTED` / `NO_BUST_BADGE` (409) are
+  ADDED to the error vocabulary — never repurposed.
 
 ## 17. Risks and mitigations
 
@@ -4543,7 +4630,10 @@ Where an answer reversed an earlier default, the reversal is called out.
    I have $2,000 but $1,500 is tied up in a bet, that should be ahead of someone
    with $600." A stake in flight neither helps nor hurts your position until it
    settles. Full reasoning, including why the old "equity lets you lead on money
-   in flight" objection does not hold, is in §11.5.
+   in flight" objection does not hold, is in §11.5. **SUPERSEDED 2026-10-05 by
+   NET PROFIT** (`equityCents − depositedCents`, §4.5): identical ordering until
+   somebody is refilled, and the one that stays honest after. The reasoning
+   above is kept because it is why net is built on equity and not on balance.
 3. **No per-league bankrolls — ONE account balance.** Opened at signup, never
    rolled over, shared across NFL and CFB. `league` is therefore a property of
    the LEG, cross-league parlays and teasers are legal, and a bet spanning both

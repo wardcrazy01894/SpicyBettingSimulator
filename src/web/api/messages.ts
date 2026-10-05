@@ -50,6 +50,9 @@ export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   BET_NOT_PENDING: 'That bet has already been settled or cancelled.',
   ACCOUNT_HAS_PENDING_BETS:
     'That account still has open bets — cancel or settle them first, then delete it.',
+  NOT_BUSTED:
+    'That account is not busted — it can still cover a $1 stake, or has an open bet that may yet pay.',
+  NO_BUST_BADGE: 'Nothing to buy: no bust badge to remove, or the balance is not above the price.',
   JOB_LOCKED: 'That job is already running. Give it a minute.',
 
   RATE_LIMITED: 'Too many attempts. Wait 15 minutes and try again.',

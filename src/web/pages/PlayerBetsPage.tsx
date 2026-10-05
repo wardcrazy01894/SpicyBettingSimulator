@@ -32,9 +32,11 @@ import { useLeaderboard, usePlayerBets } from '../hooks/useApi.js';
 import { usePoll } from '../hooks/useNow.js';
 import { usePages } from '../hooks/usePages.js';
 import { groupBetsByWeek } from '../lib/grouping.js';
-import { ROI_HELP, ROI_HINT, formatRoi } from '../lib/labels.js';
+import { AdminRefillForm } from '../components/AdminRefillForm.js';
+import { BustBadges } from '../components/BustBadges.js';
+import { NET_HELP, NET_HINT, ROI_HELP, ROI_HINT, formatRoi } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
-import { formatCents } from '../../shared/validate.js';
+import { formatCents, formatSignedCents } from '../../shared/validate.js';
 import type { BetView, LeaderboardRow } from '../../shared/api-types.js';
 
 type Filter = 'open' | 'settled';
@@ -51,6 +53,17 @@ function PlayerStats(props: { readonly row: LeaderboardRow }): ReactElement {
   const { row } = props;
   return (
     <dl className="stat-grid">
+      <div>
+        <dt>
+          <abbr className="help" title={NET_HELP}>
+            Net
+          </abbr>
+        </dt>
+        <dd>
+          {formatSignedCents(row.netCents)}
+          <small className="stat-hint">{NET_HINT}</small>
+        </dd>
+      </div>
       <div>
         <dt>Equity</dt>
         <dd>{formatCents(row.equityCents)}</dd>
@@ -80,6 +93,10 @@ function PlayerStats(props: { readonly row: LeaderboardRow }): ReactElement {
           {formatRoi(row.roi)}
           <small className="stat-hint">{ROI_HINT}</small>
         </dd>
+      </div>
+      <div>
+        <dt>Busts</dt>
+        <dd>{row.bustCount === 0 ? '—' : <BustBadges count={row.bustCount} />}</dd>
       </div>
     </dl>
   );
@@ -143,6 +160,7 @@ export function PlayerBetsPage(): ReactElement {
           <h2 className="page-title">
             {name ?? 'Player'}
             {isMe ? ' (you)' : ''}
+            {row !== undefined && <BustBadges count={row.bustCount} />}
           </h2>
           {row !== undefined && (
             <span className="player-rank">#{String(row.rank)} on the board</span>
@@ -152,6 +170,12 @@ export function PlayerBetsPage(): ReactElement {
           </Link>
         </div>
         {row !== undefined && <PlayerStats row={row} />}
+        {session.user?.isAdmin === true && !isMe && (
+          <details className="admin-refill-details">
+            <summary className="muted">Admin: refill this account</summary>
+            <AdminRefillForm userId={userId} username={row?.username ?? null} />
+          </details>
+        )}
         {isMe && (
           <p className="muted">
             This is the read-only view everyone else sees. Edit or cancel from My Bets.
