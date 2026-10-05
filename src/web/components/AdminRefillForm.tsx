@@ -61,6 +61,10 @@ export function AdminRefillForm(props: {
                 setDone(`Refilled ${formatCents(entry.cents)}. One bust badge added.`);
                 invalidate('admin:users');
                 invalidate('leaderboard:');
+                // The dropdown lists the admin too: refilling yourself must
+                // refresh the header balance and the ledger, not just the board.
+                invalidate('bankroll:');
+                invalidate('ledger:');
               })
               .catch((thrown: unknown) => {
                 setError(thrown);

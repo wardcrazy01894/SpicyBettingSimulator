@@ -194,7 +194,7 @@ export const NET_HINT = 'equity minus what the house put in';
 export function bustBadgeTitle(count: number): string {
   if (count <= 0) return '';
   const times = count === 1 ? 'once' : count === 2 ? 'twice' : `${String(count)} times`;
-  return `Busted ${times} — balance hit zero and the house refilled it`;
+  return `Busted ${times} — ran out of money (under a $1 stake) and the house refilled it`;
 }
 
 /** CSS modifier suffix for win/loss/push colouring. */

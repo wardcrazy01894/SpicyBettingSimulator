@@ -366,7 +366,13 @@ function RefillPanel(props: { readonly users: readonly AdminUserView[] }): React
           ))}
         </select>
       </label>
-      <AdminRefillForm userId={chosen?.id ?? null} username={chosen?.username ?? null} />
+      {/* Keyed on the account so a receipt, an error or a typed amount from the
+          previous pick never shows under the next one's label. */}
+      <AdminRefillForm
+        key={chosen?.id ?? ''}
+        userId={chosen?.id ?? null}
+        username={chosen?.username ?? null}
+      />
     </div>
   );
 }

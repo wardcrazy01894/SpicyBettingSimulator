@@ -184,6 +184,8 @@ section explains the _why_.
 | ------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                         |
 | `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                     |
+| `REFILL_DEFAULT_CENTS`                | `100_000`       | what the admin's Refill button proposes for a BUSTED account; any positive amount up to `MAX_PAYOUT_CENTS` may be typed (§4.5)                                                        |
+| `BUST_BUYOUT_CENTS`                   | `100_000`       | the price of removing ONE bust badge, paid from the player's own balance, which must be STRICTLY above it (§4.5)                                                                      |
 | `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                  |
 | `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                |
 | `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5) |
@@ -332,9 +334,12 @@ with `UNIQUE(bankroll_id, kind, ref_id)`.
 `kind ∈ {deposit_initial, bet_stake, bet_payout, bet_refund, admin_adjust,
 deposit_refill, bust_buyout}` — the last two since migration 0011 (§4.5).
 `ref_id` is the **idempotency key**: the bet id for bet-related kinds, the literal
-`'init'` for the opening deposit, a caller-supplied UUID for admin adjustments
-and refills, and for a `bust_buyout` the id of the `deposit_refill` row it
-retires (so a refill can be bought off at most once, by the UNIQUE).
+`'init'` for the opening deposit, a fresh SERVER-generated uuid for admin
+adjustments and refills (each call is a distinct event — "+5000 twice" means it
+twice, and a refill retried after a lost response is a second refill, which the
+busted guard stops for any amount of $1 or more), and for a `bust_buyout` the id
+of the `deposit_refill` row it retires (so a refill can be bought off at most
+once, by the UNIQUE).
 Five triggers (§4.2): TWO `BEFORE INSERT` value guards that `INSERT OR IGNORE`
 cannot suppress (`ledger_bi_bankroll_exists`, `ledger_bi_sufficient_funds`), an
 `AFTER INSERT` (`ledger_ai_apply`) that applies the amount to

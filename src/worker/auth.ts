@@ -21,7 +21,13 @@ import type { EpochMs, UserSummary } from '../shared/types.js';
 import type { LoginInput, SignupInput } from '../shared/validate.js';
 import { RESERVED_USERNAME_PREFIX } from '../shared/validate.js';
 import type { Env } from './env.js';
-import { mainBalanceStatements } from './bankroll.js';
+import {
+  DEPOSIT_SUMS_COLUMNS,
+  DEPOSIT_SUMS_KINDS,
+  bustCountOf,
+  mainBalanceStatements,
+} from './bankroll.js';
+import type { DepositSums } from './bankroll.js';
 import {
   blobToBytes,
   hashDerivedKey,
@@ -503,19 +509,21 @@ export async function listUsers(env: Env): Promise<readonly AdminUserView[]> {
   // can see who is busted — and who still wears a badge — from the Users tab
   // (PLAN.md §4.5). LEFT JOIN: a row with no balance cannot exist after signup,
   // but the list must still show it rather than hide it.
+  // The badge count is the SAME aggregate the leaderboard and the account page
+  // use (`DEPOSIT_SUMS_COLUMNS` / `bustCountOf`), so the three surfaces cannot
+  // disagree about what a bust is.
   const rows = await queryAll<
-    UserRow & { balance_cents: number | null; bust_count: number | null }
+    UserRow & { balance_cents: number | null } & { [K in keyof DepositSums]: number | null }
   >(
     env.DB.prepare(
       `SELECT u.id, u.username, u.display_name, u.is_admin, u.is_disabled, u.created_at,
               u.deleted_at, bk.balance_cents AS balance_cents,
-              (SELECT COALESCE(SUM(le.kind = 'deposit_refill'), 0)
-                    - COALESCE(SUM(le.kind = 'bust_buyout'), 0)
-                 FROM ledger le
-                WHERE le.bankroll_id = bk.id
-                  AND le.kind IN ('deposit_refill', 'bust_buyout')) AS bust_count
+              d.deposited AS deposited, d.refills AS refills, d.buyouts AS buyouts
          FROM users u
          LEFT JOIN bankrolls bk ON bk.user_id = u.id AND bk.kind = 'main'
+         LEFT JOIN (SELECT le.bankroll_id AS bankroll_id, ${DEPOSIT_SUMS_COLUMNS}
+                      FROM ledger le WHERE ${DEPOSIT_SUMS_KINDS}
+                     GROUP BY le.bankroll_id) d ON d.bankroll_id = bk.id
         ORDER BY u.username ASC`,
     ),
   );
@@ -523,7 +531,11 @@ export async function listUsers(env: Env): Promise<readonly AdminUserView[]> {
     ...toSummary(r),
     isDisabled: r.is_disabled === 1,
     balanceCents: r.balance_cents,
-    bustCount: r.bust_count ?? 0,
+    bustCount: bustCountOf({
+      deposited: r.deposited ?? 0,
+      refills: r.refills ?? 0,
+      buyouts: r.buyouts ?? 0,
+    }),
     deletedAt: r.deleted_at,
     isDeleted: r.deleted_at !== null,
   }));

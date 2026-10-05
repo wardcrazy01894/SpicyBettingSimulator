@@ -9,7 +9,8 @@ it.
 You sign up, get a fake **$1,000**, and bet it on this week's NFL and college
 games at the prices the books are posting. Games go final, bets grade
 themselves, the money moves, and a leaderboard settles the argument. There is
-no top-up button, so bet like it's real.
+no top-up button, so bet like it's real: lose the lot and an admin can refill
+you, but the loss stays on the board and a 💀 goes beside your name.
 
 ---
 
