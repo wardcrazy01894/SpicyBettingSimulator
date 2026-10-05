@@ -666,7 +666,7 @@ describe('leaderboard semantics', () => {
     expect(rows.find((r) => r.username === s.names.bob)?.roi).toBeNull();
   });
 
-  it('ranks by equity desc, then roi desc, then username', async () => {
+  it('ranks by net profit desc, then roi desc, then username', async () => {
     const s = await seedSeason();
     const body = await board(s);
     // Scoped to this test's three users: balances are ACCOUNT-level since M5b,
@@ -680,6 +680,11 @@ describe('leaderboard semantics', () => {
     // Tied on equity too (neither alex nor carol has an open bet): alex's ROI
     // (0.3634) beats carol's (0.1272), so ROI is what separates them.
     expect(mine.map((r) => r.equityCents)).toEqual([101_272, 101_272, 100_000]);
+    // Net is equity less the one opening deposit (nobody here was refilled), so
+    // it orders exactly as equity did before 2026-10-05 — by construction.
+    expect(mine.map((r) => r.depositedCents)).toEqual([100_000, 100_000, 100_000]);
+    expect(mine.map((r) => r.netCents)).toEqual([1_272, 1_272, 0]);
+    expect(mine.map((r) => r.bustCount)).toEqual([0, 0, 0]);
     expect(mine.map((r) => r.username)).toEqual([s.names.alex, s.names.carol, s.names.bob]);
     // Ranks are ascending and dense within the slice, whatever the offset is.
     expect(mine.map((r) => r.rank)).toEqual([...mine].map((r) => r.rank).sort((a, b) => a - b));

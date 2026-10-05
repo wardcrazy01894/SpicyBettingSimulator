@@ -38,7 +38,12 @@ import type {
   LedgerKind,
   League,
 } from '../shared/types.js';
-import { BOARD_LOOKBACK_MS, INITIAL_BANKROLL_CENTS } from '../shared/constants.js';
+import {
+  BOARD_LOOKBACK_MS,
+  BUST_BUYOUT_CENTS,
+  INITIAL_BANKROLL_CENTS,
+  MIN_STAKE_CENTS,
+} from '../shared/constants.js';
 import { AppError } from '../shared/errors.js';
 import { LEAGUES } from '../shared/types.js';
 import type { Env } from './env.js';
@@ -241,6 +246,44 @@ export function statsFilterClauses(filter: StatsFilter, values: unknown[]): stri
   return ` AND league = ?${String(values.length)}`;
 }
 
+/**
+ * Per-balance "what the house put in" and the live bust-badge count, PLAN.md
+ * §4.5. One aggregate over the three deposit-shaped ledger kinds:
+ *
+ *   deposited  Σ amount of `deposit_initial` + `deposit_refill`. NOT
+ *              `admin_adjust` (a correction, which is profit or loss) and NOT
+ *              `bust_buyout` (money the player spent — it lowers equity and
+ *              is exactly the point).
+ *   refills    COUNT of `deposit_refill` rows — every bust, ever.
+ *   buyouts    COUNT of `bust_buyout` rows; each retires ONE refill (its
+ *              `ref_id` is that refill's id, and `UNIQUE (bankroll_id, kind,
+ *              ref_id)` means a refill cannot be bought off twice), so
+ *              `refills − buyouts` is never negative.
+ *
+ * `SUM(kind = '…')` is SQLite's idiom for a conditional count; it is wrapped
+ * in COALESCE only for symmetry — a group with no rows is simply absent.
+ */
+export interface DepositSums {
+  readonly deposited: number;
+  readonly refills: number;
+  readonly buyouts: number;
+}
+
+export const DEPOSIT_SUMS_COLUMNS = `
+  COALESCE(SUM(CASE WHEN le.kind IN ('deposit_initial', 'deposit_refill')
+                    THEN le.amount_cents ELSE 0 END), 0) AS deposited,
+  COALESCE(SUM(le.kind = 'deposit_refill'), 0) AS refills,
+  COALESCE(SUM(le.kind = 'bust_buyout'), 0) AS buyouts`;
+
+export const DEPOSIT_SUMS_KINDS = `le.kind IN ('deposit_initial', 'deposit_refill', 'bust_buyout')`;
+
+const NO_DEPOSITS: DepositSums = { deposited: 0, refills: 0, buyouts: 0 };
+
+/** Badges on the name right now. */
+export function bustCountOf(sums: DepositSums): number {
+  return sums.refills - sums.buyouts;
+}
+
 interface BalanceRow {
   id: string;
   name: string;
@@ -274,7 +317,7 @@ export async function listBalances(
 
   const values: unknown[] = [userId];
   const extra = statsFilterClauses(filter, values);
-  const [pending, stats] = await Promise.all([
+  const [pending, stats, deposits] = await Promise.all([
     // Deliberately UNFILTERED — see the note above.
     queryAll<{ bankroll_id: string; total: number }>(
       env.DB.prepare(
@@ -293,9 +336,19 @@ export async function listBalances(
           GROUP BY bankroll_id, status`,
       ).bind(...values),
     ),
+    // Also UNFILTERED: deposits are money, not a statistic.
+    queryAll<DepositSums & { bankroll_id: string }>(
+      env.DB.prepare(
+        `SELECT le.bankroll_id AS bankroll_id, ${DEPOSIT_SUMS_COLUMNS}
+           FROM ledger le JOIN bankrolls bk ON bk.id = le.bankroll_id
+          WHERE bk.user_id = ?1 AND ${DEPOSIT_SUMS_KINDS}
+          GROUP BY le.bankroll_id`,
+      ).bind(userId),
+    ),
   ]);
 
   const pendingBy = new Map(pending.map((r) => [r.bankroll_id, r.total]));
+  const depositsBy = new Map<string, DepositSums>(deposits.map((r) => [r.bankroll_id, r]));
   const statsBy = new Map<string, SettledStatusRow[]>();
   for (const row of stats) {
     const list = statsBy.get(row.bankroll_id);
@@ -307,13 +360,18 @@ export async function listBalances(
     balances: rows.map((row): BankrollView => {
       const settled = summariseSettled(statsBy.get(row.id) ?? []);
       const pendingStakeCents = pendingBy.get(row.id) ?? 0;
+      const sums = depositsBy.get(row.id) ?? NO_DEPOSITS;
+      const equityCents = row.balance_cents + pendingStakeCents;
       return {
         id: row.id,
         name: row.name,
         kind: row.kind as BankrollKind,
         balanceCents: row.balance_cents,
         pendingStakeCents,
-        equityCents: row.balance_cents + pendingStakeCents,
+        equityCents,
+        depositedCents: sums.deposited,
+        netCents: equityCents - sums.deposited,
+        bustCount: bustCountOf(sums),
         record: settled.record,
         roi: settled.roi,
         settledCount: settled.settledCount,
@@ -411,6 +469,109 @@ export async function adminAdjust(
   // The only guard in that WHERE is the account's state, so zero rows means
   // exactly one thing. Diagnosing a completed write, not gating one.
   if (changesAt(results, 0) === 0) throw new AppError('NOT_FOUND', 'No such user.');
+}
+
+/**
+ * `POST /api/admin/users/:id/refill` — re-fund a BUSTED account (PLAN.md §4.5).
+ *
+ * One `deposit_refill` row, fresh uuid `ref_id`, positive amount. The row IS the
+ * bust badge: the leaderboard counts these, and the amount joins "bought in" so
+ * `netCents` keeps carrying what was lost before the refill. That is why this is
+ * a separate kind and a separate route from `adminAdjust`: a top-up of a live
+ * account is a correction and must NOT grow a badge.
+ *
+ * BUSTED means the balance cannot cover `MIN_STAKE_CENTS` AND no pending bet may
+ * yet pay. Exactly zero is the common case, but a balance of 40¢ is just as
+ * stuck — the slip refuses anything under $1 — and a $0 balance with a live
+ * parlay is NOT busted until it settles. Both halves are `WHERE` clauses inside
+ * the INSERT (CLAUDE.md rule 5), beside the deleted-account guard `/adjust`
+ * uses, so a bet landing or a settlement paying between a read and the write
+ * cannot turn a bonus into a badge.
+ *
+ * @throws AppError BANKROLL_NOT_FOUND when the user has no balance;
+ *                  NOT_FOUND when the account is deleted;
+ *                  NOT_BUSTED when it can still bet.
+ */
+export async function adminRefill(
+  env: Env,
+  userId: string,
+  amountCents: Cents,
+  memo: string | null,
+  now: EpochMs,
+): Promise<void> {
+  const bankrollId = await mainBalanceId(env, userId);
+  if (bankrollId === null) {
+    throw new AppError('BANKROLL_NOT_FOUND', 'That user has no balance.');
+  }
+  const results = await runBatch(env.DB, [
+    env.DB.prepare(
+      `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
+       SELECT ?1, ?2, 'deposit_refill', ?1, NULL, ?3, ?4, ?5
+        WHERE EXISTS (SELECT 1 FROM users WHERE id = ?6 AND deleted_at IS NULL)
+          AND (SELECT balance_cents FROM bankrolls WHERE id = ?2) < ?7
+          AND NOT EXISTS (SELECT 1 FROM bets WHERE bankroll_id = ?2 AND status = 'pending')`,
+    ).bind(newId(), bankrollId, amountCents, now, memo, userId, MIN_STAKE_CENTS),
+  ]);
+  // `changes` counts the AFTER INSERT trigger's balance UPDATE too (2 on
+  // success), so the test is "nothing written", never "exactly one".
+  if (changesAt(results, 0) > 0) return;
+  // Two guards in that WHERE, so one diagnostic read picks the message. It runs
+  // AFTER the write declined, never before it: nothing here gates money.
+  const live = await queryOne<{ one: number }>(
+    env.DB.prepare(`SELECT 1 AS one FROM users WHERE id = ?1 AND deleted_at IS NULL`).bind(userId),
+  );
+  if (live === null) throw new AppError('NOT_FOUND', 'No such user.');
+  throw new AppError(
+    'NOT_BUSTED',
+    'That account is not busted: it can still cover a minimum stake, or has an open bet that may yet pay. Use Adjust for a plain top-up.',
+  );
+}
+
+/**
+ * `POST /api/bankroll/buyout` — the caller pays `BUST_BUYOUT_CENTS` from their
+ * main balance to retire ONE bust badge (PLAN.md §4.5).
+ *
+ * The row is a `bust_buyout` whose `ref_id` is the id of the OLDEST refill not
+ * yet bought off, so `UNIQUE (bankroll_id, kind, ref_id)` makes "each badge is
+ * sold once" a schema fact and the badge count is simply refills − buyouts.
+ * The amount is negative: the money is spent, equity and `netCents` drop by the
+ * price, and "bought in" is untouched — paying to look un-busted costs exactly
+ * what it says.
+ *
+ * `balance_cents > price`, STRICTLY, inside the INSERT's WHERE: a balance of
+ * exactly the price would be busted again the moment it paid, and the open
+ * stakes are ignored on purpose (they are not cash). `ledger_bi_sufficient_funds`
+ * remains the backstop, as everywhere.
+ *
+ * @throws AppError BANKROLL_NOT_FOUND when the caller has no balance;
+ *                  NO_BUST_BADGE when there is no badge or the balance is not
+ *                  strictly above the price — the UI shows the button only
+ *                  when both hold, so either is "nothing to buy" by now.
+ */
+export async function buyBustBadge(env: Env, userId: string, now: EpochMs): Promise<void> {
+  const bankrollId = await mainBalanceId(env, userId);
+  if (bankrollId === null) {
+    throw new AppError('BANKROLL_NOT_FOUND', 'You have no balance.');
+  }
+  const results = await runBatch(env.DB, [
+    env.DB.prepare(
+      `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
+       SELECT ?1, ?2, 'bust_buyout', r.id, NULL, ?3, ?4, 'bust badge removed'
+         FROM ledger r
+        WHERE r.bankroll_id = ?2 AND r.kind = 'deposit_refill'
+          AND NOT EXISTS (SELECT 1 FROM ledger b
+                           WHERE b.bankroll_id = ?2 AND b.kind = 'bust_buyout' AND b.ref_id = r.id)
+          AND (SELECT balance_cents FROM bankrolls WHERE id = ?2) > ?5
+        ORDER BY r.created_at ASC, r.id ASC
+        LIMIT 1`,
+    ).bind(newId(), bankrollId, -BUST_BUYOUT_CENTS, now, BUST_BUYOUT_CENTS),
+  ]);
+  if (changesAt(results, 0) === 0) {
+    throw new AppError(
+      'NO_BUST_BADGE',
+      'Nothing to buy: you have no bust badge, or your balance is not above the price.',
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ import { ERROR_STATUS } from '../../shared/errors.js';
 import type { ErrorCode } from '../../shared/errors.js';
 import type {
   AdminAdjustRequest,
+  AdminRefillRequest,
   AdminBugReportsResponse,
   AdminInviteResponse,
   AdminSetDisabledRequest,
@@ -209,6 +210,15 @@ function query(params: Readonly<Record<string, string | number | null | undefine
 // ---------------------------------------------------------------------------
 // §11.1 public
 // ---------------------------------------------------------------------------
+
+/**
+ * Pay `BUST_BUYOUT_CENTS` from the caller's main balance to remove ONE bust
+ * badge (PLAN.md §4.5). No body: the price is a constant and the server picks
+ * the oldest badge. 409 NO_BUST_BADGE when there is nothing to buy.
+ */
+export function postBustBuyout(): Promise<void> {
+  return apiVoid('POST', '/api/bankroll/buyout', {});
+}
 
 export async function getHealth(): Promise<HealthResponse> {
   const health = await apiGet<HealthResponse>('/api/health');
@@ -427,6 +437,22 @@ export function postAdminUserAdjust(
 ): Promise<void> {
   const body: AdminAdjustRequest = memo === undefined ? { amountCents } : { amountCents, memo };
   return apiVoid('POST', `/api/admin/users/${encodeURIComponent(userId)}/adjust`, body);
+}
+
+/**
+ * Re-fund a BUSTED account (PLAN.md §4.5). One `deposit_refill` row — and one
+ * bust badge on the leaderboard. `amountCents` is sent explicitly even at the
+ * default so what the admin saw in the box is what the server books. 409
+ * NOT_BUSTED when the account can still bet; `postAdminUserAdjust` is the
+ * route for a plain top-up.
+ */
+export function postAdminUserRefill(
+  userId: string,
+  amountCents: number,
+  memo?: string,
+): Promise<void> {
+  const body: AdminRefillRequest = memo === undefined ? { amountCents } : { amountCents, memo };
+  return apiVoid('POST', `/api/admin/users/${encodeURIComponent(userId)}/refill`, body);
 }
 
 export function postAdminRetrySettlement(betId: string): Promise<void> {

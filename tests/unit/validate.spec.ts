@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   RESERVED_USERNAME_PREFIX,
   formatCents,
+  formatSignedCents,
   formatLineTenths,
   isCoherentMarketSide,
   legsConflict,
@@ -657,6 +658,12 @@ describe('parseDollarsToCents', () => {
 });
 
 describe('formatters', () => {
+  it('formatSignedCents wears a plus on profit, a minus on loss, nothing at zero', () => {
+    expect(formatSignedCents(123456)).toBe('+$1,234.56');
+    expect(formatSignedCents(-100_000)).toBe('-$1,000.00');
+    expect(formatSignedCents(0)).toBe('$0.00');
+  });
+
   it('formatCents(123456) -> "$1,234.56"', () => {
     expect(formatCents(123456)).toBe('$1,234.56');
   });

@@ -50,11 +50,13 @@ export function LeaderboardPage(): ReactElement {
       </div>
 
       <p className="muted page-note">
-        Ranked by <strong>equity</strong> — your balance plus whatever is riding on open bets, so a
-        stake in flight neither helps nor hurts you until it settles. The tabs filter each
-        player&rsquo;s record and ROI; the money is the whole account either way. ROI is profit per
-        dollar wagered on decided bets, not the change in your balance &mdash; the same dollars can
-        be bet, won and bet again.
+        Ranked by <strong>net profit</strong> — your equity (balance plus whatever is riding on open
+        bets) minus what the house has put in, so a stake in flight neither helps nor hurts you
+        until it settles, and a bust refill never erases what was lost before it. A 💀 is a bust:
+        the balance hit zero and the house refilled it. The tabs filter each player&rsquo;s record
+        and ROI; the money is the whole account either way. ROI is profit per dollar wagered on
+        decided bets, not the change in your balance &mdash; the same dollars can be bet, won and
+        bet again.
       </p>
 
       {board.error !== undefined && board.data === undefined && (

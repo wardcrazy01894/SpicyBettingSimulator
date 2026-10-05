@@ -42,8 +42,19 @@ export type BetStatus = 'pending' | 'won' | 'lost' | 'push' | 'void' | 'cancelle
 export type LegResult = 'win' | 'loss' | 'push' | 'void';
 export type LegGrade = LegResult | 'pending';
 
+/**
+ * `deposit_refill` and `bust_buyout` arrived with migration 0011 (PLAN.md §4.5):
+ * a refill is an admin re-funding a BUSTED account and is what a bust badge
+ * counts; a buyout is the player paying `BUST_BUYOUT_CENTS` to retire one.
+ */
 export type LedgerKind =
-  'deposit_initial' | 'bet_stake' | 'bet_payout' | 'bet_refund' | 'admin_adjust';
+  | 'deposit_initial'
+  | 'bet_stake'
+  | 'bet_payout'
+  | 'bet_refund'
+  | 'admin_adjust'
+  | 'deposit_refill'
+  | 'bust_buyout';
 
 /** Epoch milliseconds, UTC. Every timestamp in the system is one of these. */
 export type EpochMs = number;

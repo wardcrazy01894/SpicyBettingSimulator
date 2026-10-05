@@ -22,6 +22,8 @@ import {
   postAdminUserDisabled,
   postAdminUserPassword,
 } from '../api/client.js';
+import { AdminRefillForm } from '../components/AdminRefillForm.js';
+import { BustBadges } from '../components/BustBadges.js';
 import { deriveKey } from '../api/kdf.js';
 import {
   useAdminBugReports,
@@ -217,6 +219,10 @@ function UserRow(props: {
           user.isDisabled && <span className="chip chip-loss">disabled</span>
         )}
         {isSelf && <span className="chip chip-quiet">you</span>}
+        {user.balanceCents !== null && (
+          <span className="muted">balance {formatCents(user.balanceCents)}</span>
+        )}
+        <BustBadges count={user.bustCount} />
       </div>
 
       {user.isDeleted && (
@@ -325,6 +331,43 @@ function UserRow(props: {
       {done !== null && <p className="muted">{done}</p>}
       {error !== null && <ErrorBanner error={error} />}
     </li>
+  );
+}
+
+/**
+ * "Refill a busted account": pick the account from a dropdown, then the shared
+ * form. Live accounts only — a deleted one is a 404 on the server and has no
+ * business in the list. The same control sits on each player's page, which is
+ * where an admin coming from the leaderboard actually lands (PLAN.md §4.5).
+ */
+function RefillPanel(props: { readonly users: readonly AdminUserView[] }): ReactElement {
+  const live = props.users.filter((u) => !u.isDeleted);
+  const [selected, setSelected] = useState<string>('');
+  const chosen = live.find((u) => u.id === selected) ?? null;
+  return (
+    <div className="card">
+      <h3 className="card-title">Refill a busted account</h3>
+      <label className="field">
+        <span className="field-label">Account</span>
+        <select
+          className="field-input"
+          value={selected}
+          onChange={(e) => {
+            setSelected(e.target.value);
+          }}
+        >
+          <option value="">Pick an account…</option>
+          {live.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.displayName} (@{u.username})
+              {u.balanceCents === null ? '' : ` — balance ${formatCents(u.balanceCents)}`}
+              {u.bustCount > 0 ? ` — busted ×${String(u.bustCount)}` : ''}
+            </option>
+          ))}
+        </select>
+      </label>
+      <AdminRefillForm userId={chosen?.id ?? null} username={chosen?.username ?? null} />
+    </div>
   );
 }
 
@@ -577,7 +620,12 @@ function UsersPanel(props: { readonly meId: string | null }): ReactElement {
         <ErrorBanner error={users.error} onRetry={users.refetch} />
       )}
       {users.loading && users.data === undefined && <Spinner label="Loading users…" />}
-      {users.data !== undefined && <UserList users={users.data.users} meId={props.meId} />}
+      {users.data !== undefined && (
+        <>
+          <RefillPanel users={users.data.users} />
+          <UserList users={users.data.users} meId={props.meId} />
+        </>
+      )}
     </>
   );
 }

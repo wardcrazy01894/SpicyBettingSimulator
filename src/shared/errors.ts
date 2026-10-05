@@ -56,6 +56,20 @@ export const ERROR_CODES = [
    * opposite thing, and `VALIDATION` is a 400 about a malformed field.
    */
   'ACCOUNT_HAS_PENDING_BETS',
+  /**
+   * `POST /api/admin/users/:id/refill` on an account that is not BUSTED: its
+   * balance can still cover `MIN_STAKE_CENTS`, or it has a pending bet that
+   * may yet pay. A refill is a bust badge, so it is refused rather than
+   * silently becoming a bonus — `/adjust` is the route for a plain top-up.
+   */
+  'NOT_BUSTED',
+  /**
+   * `POST /api/bankroll/buyout` with no bust badge left to remove, or a balance
+   * not strictly above `BUST_BUYOUT_CENTS`. One code for both because the UI
+   * shows the button only when both hold; either is "nothing to buy" by the
+   * time the request lands.
+   */
+  'NO_BUST_BADGE',
   'JOB_LOCKED',
   // 429 / 5xx
   'RATE_LIMITED',
@@ -100,6 +114,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   BET_LOCKED: 409,
   BET_NOT_PENDING: 409,
   ACCOUNT_HAS_PENDING_BETS: 409,
+  NOT_BUSTED: 409,
+  NO_BUST_BADGE: 409,
   JOB_LOCKED: 409,
   RATE_LIMITED: 429,
   UPSTREAM_UNAVAILABLE: 503,

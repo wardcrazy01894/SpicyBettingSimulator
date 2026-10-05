@@ -1157,6 +1157,8 @@ describe('DELETE /api/admin/users/:id (soft delete)', () => {
     expect(listed.find((u) => u.id === alex.id)).toMatchObject({
       isDeleted: false,
       deletedAt: null,
+      balanceCents: 100_000,
+      bustCount: 0,
     });
   });
 

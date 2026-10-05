@@ -15,20 +15,114 @@ import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
 import { LedgerList } from '../components/LedgerList.js';
 import { LoadMore } from '../components/LoadMore.js';
 import { Spinner } from '../components/Spinner.js';
-import { getLedger } from '../api/client.js';
+import { BustBadges } from '../components/BustBadges.js';
+import { getLedger, postBustBuyout } from '../api/client.js';
 import { LEDGER_PAGE_SIZE, useBalances, useLedger } from '../hooks/useApi.js';
+import { invalidate } from '../hooks/useResource.js';
 import { usePages } from '../hooks/usePages.js';
-import { ROI_HELP, ROI_HINT, formatRoi } from '../lib/labels.js';
+import { NET_HELP, NET_HINT, ROI_HELP, ROI_HINT, formatRoi } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
-import { formatCents } from '../../shared/validate.js';
+import { BUST_BUYOUT_CENTS } from '../../shared/constants.js';
+import { formatCents, formatSignedCents } from '../../shared/validate.js';
 import { DISPLAY_NAME_MAX } from '../../shared/validate.js';
 import type { BankrollView, LedgerEntry } from '../../shared/api-types.js';
+
+/**
+ * "Remove a bust badge" — the player pays BUST_BUYOUT_CENTS from this balance
+ * to retire one 💀 (PLAN.md §4.5). Shown only on the MAIN balance, only while
+ * a badge exists and the balance is STRICTLY above the price — the server
+ * enforces the same two conditions inside the ledger INSERT, so the button is
+ * a courtesy, not the guard.
+ *
+ * An INLINE two-step confirm that names the exact deduction, not
+ * `window.confirm`: the whole point is that nobody pays $1,000 by accident, and
+ * the confirm copy is the one place the price is stated in the player's face.
+ */
+function BustBuyout(props: { readonly balance: BankrollView }): ReactElement | null {
+  const b = props.balance;
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const [done, setDone] = useState(false);
+  if (b.kind !== 'main' || b.bustCount <= 0 || b.balanceCents <= BUST_BUYOUT_CENTS) return null;
+  const price = formatCents(BUST_BUYOUT_CENTS);
+  const after = formatCents(b.balanceCents - BUST_BUYOUT_CENTS);
+  return (
+    <div className="bust-buyout">
+      {!confirming && (
+        <button
+          type="button"
+          className="btn btn-quiet"
+          disabled={busy}
+          onClick={() => {
+            setConfirming(true);
+            setDone(false);
+            setError(null);
+          }}
+        >
+          Remove a bust badge for {price}
+        </button>
+      )}
+      {confirming && (
+        <>
+          <p className="muted">
+            This deducts <strong>{price}</strong> from your balance ({formatCents(b.balanceCents)} →{' '}
+            {after}) and removes one 💀 from your name on the leaderboard. It is not refundable, and
+            it counts against your net profit like any other money spent.
+          </p>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn btn-quiet tone-loss"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                setError(null);
+                void postBustBuyout()
+                  .then(() => {
+                    setConfirming(false);
+                    setDone(true);
+                    invalidate('bankroll:');
+                    invalidate('ledger:');
+                    invalidate('leaderboard:');
+                  })
+                  .catch((thrown: unknown) => {
+                    setError(thrown);
+                  })
+                  .finally(() => {
+                    setBusy(false);
+                  });
+              }}
+            >
+              {busy ? 'Paying…' : `Yes, pay ${price}`}
+            </button>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              disabled={busy}
+              onClick={() => {
+                setConfirming(false);
+              }}
+            >
+              Keep the badge
+            </button>
+          </div>
+        </>
+      )}
+      {done && <p className="muted">Badge removed. {price} deducted.</p>}
+      {error !== null && <ErrorBanner error={error} />}
+    </div>
+  );
+}
 
 function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
   const b = props.balance;
   return (
     <div className="card">
-      <h3 className="card-title">{b.name}</h3>
+      <h3 className="card-title">
+        {b.name}
+        <BustBadges count={b.bustCount} />
+      </h3>
       <dl className="stat-grid">
         <div>
           <dt>Balance</dt>
@@ -41,6 +135,21 @@ function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
         <div>
           <dt>Equity</dt>
           <dd>{formatCents(b.equityCents)}</dd>
+        </div>
+        <div>
+          <dt>
+            <abbr className="help" title={NET_HELP}>
+              Net
+            </abbr>
+          </dt>
+          <dd>
+            {formatSignedCents(b.netCents)}
+            <small className="stat-hint">{NET_HINT}</small>
+          </dd>
+        </div>
+        <div>
+          <dt>Bought in</dt>
+          <dd>{formatCents(b.depositedCents)}</dd>
         </div>
         <div>
           <dt>Record</dt>
@@ -65,6 +174,7 @@ function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
           <dd>{String(b.settledCount)}</dd>
         </div>
       </dl>
+      <BustBuyout balance={b} />
     </div>
   );
 }

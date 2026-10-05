@@ -175,7 +175,27 @@ export const LEDGER_KIND_LABEL: Readonly<Record<LedgerKind, string>> = {
   bet_payout: 'Bet payout',
   bet_refund: 'Bet refunded',
   admin_adjust: 'Admin adjustment',
+  deposit_refill: 'Bust refill',
+  bust_buyout: 'Bust badge removed',
 };
+
+/** Hover copy for the leaderboard's ranked column (PLAN.md §11.5). */
+export const NET_HELP =
+  'Net profit: equity minus everything the house has put in — the opening bankroll plus any bust ' +
+  'refills. The leaderboard ranks on this, so a refill never erases the money lost before it. ' +
+  'Paying to remove a bust badge counts as spent.';
+
+export const NET_HINT = 'equity minus what the house put in';
+
+/**
+ * Title text for a player's bust badges, so a screen reader and a hover both
+ * say what the skull means. Pluralised by hand: three cases, no library.
+ */
+export function bustBadgeTitle(count: number): string {
+  if (count <= 0) return '';
+  const times = count === 1 ? 'once' : count === 2 ? 'twice' : `${String(count)} times`;
+  return `Busted ${times} — balance hit zero and the house refilled it`;
+}
 
 /** CSS modifier suffix for win/loss/push colouring. */
 export const GRADE_TONE: Readonly<Record<LegGrade, string>> = {

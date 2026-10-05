@@ -499,15 +499,31 @@ function deleteStatements(
  * `deleted_<hex>`.
  */
 export async function listUsers(env: Env): Promise<readonly AdminUserView[]> {
-  const rows = await queryAll<UserRow>(
+  // The main balance and its live bust-badge count ride along so the operator
+  // can see who is busted — and who still wears a badge — from the Users tab
+  // (PLAN.md §4.5). LEFT JOIN: a row with no balance cannot exist after signup,
+  // but the list must still show it rather than hide it.
+  const rows = await queryAll<
+    UserRow & { balance_cents: number | null; bust_count: number | null }
+  >(
     env.DB.prepare(
-      `SELECT id, username, display_name, is_admin, is_disabled, created_at, deleted_at
-         FROM users ORDER BY username ASC`,
+      `SELECT u.id, u.username, u.display_name, u.is_admin, u.is_disabled, u.created_at,
+              u.deleted_at, bk.balance_cents AS balance_cents,
+              (SELECT COALESCE(SUM(le.kind = 'deposit_refill'), 0)
+                    - COALESCE(SUM(le.kind = 'bust_buyout'), 0)
+                 FROM ledger le
+                WHERE le.bankroll_id = bk.id
+                  AND le.kind IN ('deposit_refill', 'bust_buyout')) AS bust_count
+         FROM users u
+         LEFT JOIN bankrolls bk ON bk.user_id = u.id AND bk.kind = 'main'
+        ORDER BY u.username ASC`,
     ),
   );
   return rows.map((r) => ({
     ...toSummary(r),
     isDisabled: r.is_disabled === 1,
+    balanceCents: r.balance_cents,
+    bustCount: r.bust_count ?? 0,
     deletedAt: r.deleted_at,
     isDeleted: r.deleted_at !== null,
   }));
