@@ -44,8 +44,17 @@ function BustBuyout(props: { readonly balance: BankrollView }): ReactElement | n
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [done, setDone] = useState(false);
-  if (b.kind !== 'main' || b.bustCount <= 0 || b.balanceCents <= BUST_BUYOUT_CENTS) return null;
   const price = formatCents(BUST_BUYOUT_CENTS);
+  // Once the LAST badge is bought the refetch makes bustCount 0, and a plain
+  // `return null` here would take the "Badge removed" line with it — the one
+  // confirmation the player gets. So the receipt survives the button.
+  if (b.kind !== 'main' || b.bustCount <= 0 || b.balanceCents <= BUST_BUYOUT_CENTS) {
+    return done ? (
+      <div className="bust-buyout">
+        <p className="muted">Badge removed. {price} deducted.</p>
+      </div>
+    ) : null;
+  }
   const after = formatCents(b.balanceCents - BUST_BUYOUT_CENTS);
   return (
     <div className="bust-buyout">

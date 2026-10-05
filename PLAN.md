@@ -778,7 +778,11 @@ buyouts` is never negative. The guard — a badge exists and `balance_cents`
    is STRICTLY above the price, open stakes ignored because they are not cash
    — is a `WHERE` inside the INSERT; `409 NO_BUST_BADGE` when it declines.
    The money is SPENT: equity and net drop by the price and "bought in" does
-   not move, which is the deterrent. The account page shows the button only
+   not move, which is the deterrent. "Strictly above" is the whole rule: a
+   balance of $1,000.50 may buy a badge and be left with 50¢, which is
+   busted again and refillable (with a fresh badge). That is the player's
+   call — the confirm shows the balance after — not something the server
+   second-guesses. The account page shows the button only
    when both conditions hold and makes the player confirm the exact deduction
    inline before posting (§12).
 
