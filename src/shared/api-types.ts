@@ -425,6 +425,15 @@ export interface BankrollView {
   readonly record: BettingRecord;
   /** (Σ payout − Σ stake) / Σ stake over won+lost bets only. null when no action. */
   readonly roi: number | null;
+  /**
+   * Σ payout − Σ stake over won+lost bets, in cents: the ROI numerator before
+   * the division, so "how much have I made on MLB" has an exact integer
+   * answer. A push or void refunds the stake and contributes nothing.
+   * Narrowed by `?league=` exactly as `record` and `roi` are (added
+   * 2026-10-11, stats by sport). NOT `netCents`: that is equity less what the
+   * house put in, so it also carries open stakes, adjustments and buyouts.
+   */
+  readonly profitCents: Cents;
   readonly settledCount: number;
 }
 
@@ -516,6 +525,8 @@ export interface LeaderboardRow {
   readonly bustCount: number;
   readonly record: BettingRecord;
   readonly roi: number | null;
+  /** Settled P&L in cents over won+lost bets, under the same `?league=` as `record`. */
+  readonly profitCents: Cents;
   readonly rank: number;
 }
 

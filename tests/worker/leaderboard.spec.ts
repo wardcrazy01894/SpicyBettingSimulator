@@ -120,6 +120,7 @@ describe('GET /api/bankroll', () => {
       bustCount: 0,
       record: { won: 0, lost: 0, push: 0, void: 0 },
       roi: null,
+      profitCents: 0,
       settledCount: 0,
     });
     // The balance came from a ledger row, not from an application UPDATE.
@@ -182,6 +183,65 @@ describe('GET /api/bankroll', () => {
     expect(nfl.record).toEqual({ won: 0, lost: 1, push: 0, void: 0 });
     expect(cfb.record).toEqual({ won: 0, lost: 1, push: 0, void: 0 });
     expect(nfl.roi).toBeCloseTo(-1, 12);
+    // Profit narrows with the record: it is the ROI numerator in cents, so
+    // "how much did I lose on college football" has an exact integer answer.
+    expect(all.profitCents).toBe(-8000);
+    expect(nfl.profitCents).toBe(-5000);
+    expect(cfb.profitCents).toBe(-3000);
+  });
+
+  it('profitCents is Σ payout − Σ stake over won+lost; a push or void adds nothing', async () => {
+    const alex = await register();
+    const { season } = scope();
+    await seedSettledBet(env.DB, {
+      id: `won-${String(season)}`,
+      userId: alex.id,
+      league: 'mlb',
+      season,
+      status: 'won',
+      stakeCents: 2000,
+      payoutCents: 5500,
+    });
+    await seedSettledBet(env.DB, {
+      id: `lost-${String(season)}`,
+      userId: alex.id,
+      league: 'mlb',
+      season,
+      status: 'lost',
+      stakeCents: 1500,
+      payoutCents: 0,
+    });
+    // A push and a void both refund the stake: payout === stake, so neither
+    // can move the figure even if a future accumulator counted them.
+    await seedSettledBet(env.DB, {
+      id: `push-${String(season)}`,
+      userId: alex.id,
+      league: 'mlb',
+      season,
+      status: 'push',
+      stakeCents: 7000,
+      payoutCents: 7000,
+    });
+    await seedSettledBet(env.DB, {
+      id: `void-${String(season)}`,
+      userId: alex.id,
+      league: 'nfl',
+      season,
+      status: 'void',
+      stakeCents: 9000,
+      payoutCents: 9000,
+    });
+    const all = await mainBalance(await get('/api/bankroll', alex.cookie));
+    // (5500 − 2000) + (0 − 1500) = 2000
+    expect(all.profitCents).toBe(2000);
+    expect(all.settledCount).toBe(4);
+    const mlb = await mainBalance(await get('/api/bankroll?league=mlb', alex.cookie));
+    expect(mlb.profitCents).toBe(2000);
+    expect(mlb.record).toEqual({ won: 1, lost: 1, push: 1, void: 0 });
+    const nfl = await mainBalance(await get('/api/bankroll?league=nfl', alex.cookie));
+    expect(nfl.profitCents).toBe(0);
+    expect(nfl.roi).toBeNull();
+    expect(nfl.record).toEqual({ won: 0, lost: 0, push: 0, void: 1 });
   });
 
   it('a cross-league bet counts under `all` and under neither single league', async () => {
@@ -403,6 +463,7 @@ describe('GET /api/leaderboard', () => {
     const nflRow = nfl.rows.find((r) => r.username === alex.name);
     expect(nflRow?.balanceCents).toBe(expectedBalance);
     expect(nflRow?.record).toEqual({ won: 1, lost: 0, push: 0, void: 0 });
+    expect(nflRow?.profitCents).toBe(2000);
 
     const cfb = await (
       await get('/api/leaderboard?league=ncaaf', alex.cookie)
@@ -411,12 +472,15 @@ describe('GET /api/leaderboard', () => {
     // SAME balance under the other tab — that is the whole point of M5b.
     expect(cfbRow?.balanceCents).toBe(expectedBalance);
     expect(cfbRow?.record).toEqual({ won: 0, lost: 1, push: 0, void: 0 });
+    expect(cfbRow?.profitCents).toBe(-50_000);
 
     const all = await (await get('/api/leaderboard', alex.cookie)).json<LeaderboardResponse>();
     expect(all.league).toBe('all');
     const allRow = all.rows.find((r) => r.username === alex.name);
     expect(allRow?.balanceCents).toBe(expectedBalance);
     expect(allRow?.record).toEqual({ won: 1, lost: 1, push: 0, void: 0 });
+    // Profit is the settled P&L in cents, under the same filter as the record.
+    expect(allRow?.profitCents).toBe(2000 - 50_000);
   });
 
   it('a ?season= a stale client still sends is IGNORED, not a 400', async () => {

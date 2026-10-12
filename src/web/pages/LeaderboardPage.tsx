@@ -1,11 +1,12 @@
 /**
- * The leaderboard, with All / NFL / NCAAF filters.
+ * The leaderboard, with All / NFL / NCAAF / MLB filters.
  *
- * THE TABS FILTER THE RECORD, NOT THE MONEY (M5b). Everyone's money is their one
- * account balance under all three, because that is the only balance that exists;
- * the tabs answer "who is best at college football", which is a question about
- * W-L and ROI. The old third tab was "All-time", which meant "summed across
- * per-league bankrolls" — a sum with nothing left to add up.
+ * THE TABS FILTER THE RECORD, PROFIT AND ROI, NOT THE MONEY (M5b). Everyone's
+ * money is their one account balance under every tab, because that is the only
+ * balance that exists; the tabs answer "who is best at college football", which
+ * is a question about W-L, settled profit and ROI. The old third tab was
+ * "All-time", which meant "summed across per-league bankrolls" — a sum with
+ * nothing left to add up.
  *
  * THERE IS NO SEASON. Balances never roll over, so a per-season board would be a
  * slice of a number that was never reset (PLAN.md §19 Q5).
@@ -15,48 +16,33 @@ import type { ReactElement } from 'react';
 
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
 import { LeaderboardTable } from '../components/LeaderboardTable.js';
-import { Segmented } from '../components/Segmented.js';
-import type { SegmentedOption } from '../components/Segmented.js';
+import { ScopeTabs } from '../components/ScopeTabs.js';
 import { Spinner } from '../components/Spinner.js';
 import { useLeaderboard } from '../hooks/useApi.js';
-import { LEAGUE_LABEL } from '../lib/labels.js';
-import { useConfig } from '../state/config.js';
+import type { Scope } from '../lib/scope.js';
 import { useSession } from '../state/session.js';
-import type { League } from '../../shared/types.js';
-
-type Scope = League | 'all';
 
 export function LeaderboardPage(): ReactElement {
-  const config = useConfig();
   const session = useSession();
   const [scope, setScope] = useState<Scope>('all');
 
   const board = useLeaderboard(scope);
 
-  const options: readonly SegmentedOption<Scope>[] = [
-    { value: 'all', label: 'All' },
-    ...config.leagues.map((league) => ({ value: league, label: LEAGUE_LABEL[league] })),
-  ];
-
   return (
     <section className="page">
       <div className="page-controls">
-        <Segmented<Scope>
-          label="Leaderboard scope"
-          value={scope}
-          options={options}
-          onChange={setScope}
-        />
+        <ScopeTabs scope={scope} onChange={setScope} />
       </div>
 
       <p className="muted page-note">
         Ranked by <strong>net profit</strong> — your equity (balance plus whatever is riding on open
         bets) minus what the house has put in, so a stake in flight neither helps nor hurts you
         until it settles, and a bust refill never erases what was lost before it. A 💀 is a bust:
-        the player ran out of money and the house refilled it. The tabs filter each player&rsquo;s
-        record and ROI; the money is the whole account either way. ROI is profit per dollar wagered
-        on decided bets, not the change in your balance &mdash; the same dollars can be bet, won and
-        bet again.
+        the player ran out of money and the house refilled it. The sport tabs filter each
+        player&rsquo;s record, profit and ROI; the money is the whole account either way, and a
+        parlay that mixes sports counts under All only. Profit is what settled bets won minus what
+        they lost. ROI is that profit per dollar wagered on decided bets, not the change in your
+        balance &mdash; the same dollars can be bet, won and bet again.
       </p>
 
       {board.error !== undefined && board.data === undefined && (

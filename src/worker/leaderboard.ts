@@ -30,9 +30,13 @@
  *   roi               (Σ payout − Σ stake) over bets with status ∈ {won, lost};
  *                     push and void are excluded from BOTH sides; null when the
  *                     denominator is 0
+ *   profitCents       that same Σ payout − Σ stake, as integer cents — the
+ *                     per-sport money figure, narrowed by `?league=` with the
+ *                     record (the money columns above never are)
  *   RANKED BY netCents DESC, then roi DESC, then username ASC
  *
- * THE FILTER IS `?league=all|nfl|ncaaf` AND NARROWS `record` AND `roi` ONLY
+ * THE FILTER IS `?league=all|nfl|ncaaf|mlb` AND NARROWS `record`, `roi` AND
+ * `profitCents` ONLY
  * (M5b). Money is account-level now — there is one pot, not one per league per
  * season — so "NFL balance" is not a quantity that exists anywhere in the
  * ledger, and publishing one would mean ranking on a number no reconciliation
@@ -176,6 +180,7 @@ function rank(
       bustCount: acc.bustCount,
       record: acc.record,
       roi,
+      profitCents: acc.roiNumerator,
     };
   });
   rows.sort((a, b) => {

@@ -7,11 +7,13 @@
  * "what did I take", minus the buttons. `readOnly` on the card and
  * `cancellable: false` from the server say the same thing twice, deliberately.
  *
- * The header (rank, equity, balance, exposure, record, ROI) comes from the
- * leaderboard's `all` row, which is already cached when you arrive from the
- * board and is one request otherwise. The bets endpoint carries only the
- * player's name, so the two never disagree about a number: there is one source
- * for the stats, and it is the one the board ranks on.
+ * The header (rank, equity, balance, exposure, record, profit, ROI) comes from
+ * the leaderboard row under the SAME sport switch as the list — the `all` row
+ * is already cached when you arrive from the board, and a league's board is
+ * one request. The bets endpoint carries only the player's name, so the two
+ * never disagree about a number: there is one source for the stats, and it is
+ * the one the board ranks on. The switch narrows the record, profit and ROI
+ * and the list; the money is the whole account either way (PLAN.md §11.5).
  *
  * `404 NOT_FOUND` is a player who is disabled, deleted or never existed — the
  * leaderboard's own visibility rule. It is shown as an empty state rather than
@@ -26,15 +28,19 @@ import { getPlayerBets } from '../api/client.js';
 import { BetCard } from '../components/BetCard.js';
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
 import { LoadMore } from '../components/LoadMore.js';
+import { RecordStats, ScopeNote } from '../components/RecordStats.js';
+import { ScopeTabs } from '../components/ScopeTabs.js';
 import { Segmented } from '../components/Segmented.js';
 import { Spinner } from '../components/Spinner.js';
 import { useLeaderboard, usePlayerBets } from '../hooks/useApi.js';
 import { usePoll } from '../hooks/useNow.js';
 import { usePages } from '../hooks/usePages.js';
 import { groupBetsByWeek } from '../lib/grouping.js';
+import { betsEmptyTitle, scopeLeague } from '../lib/scope.js';
+import type { Scope } from '../lib/scope.js';
 import { AdminRefillForm } from '../components/AdminRefillForm.js';
 import { BustBadges } from '../components/BustBadges.js';
-import { NET_HELP, NET_HINT, ROI_HELP, ROI_HINT, formatRoi } from '../lib/labels.js';
+import { NET_HELP, NET_HINT } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
 import type { BetView, LeaderboardRow } from '../../shared/api-types.js';
@@ -76,24 +82,7 @@ function PlayerStats(props: { readonly row: LeaderboardRow }): ReactElement {
         <dt>Open exposure</dt>
         <dd>{formatCents(row.pendingStakeCents)}</dd>
       </div>
-      <div>
-        <dt>Record</dt>
-        <dd>
-          {String(row.record.won)}-{String(row.record.lost)}-{String(row.record.push)}
-          {row.record.void > 0 ? ` (${String(row.record.void)} void)` : ''}
-        </dd>
-      </div>
-      <div>
-        <dt>
-          <abbr className="help" title={ROI_HELP}>
-            ROI
-          </abbr>
-        </dt>
-        <dd>
-          {formatRoi(row.roi)}
-          <small className="stat-hint">{ROI_HINT}</small>
-        </dd>
-      </div>
+      <RecordStats stats={row} />
       <div>
         <dt>Busts</dt>
         <dd>{row.bustCount === 0 ? '—' : <BustBadges count={row.bustCount} />}</dd>
@@ -106,9 +95,10 @@ export function PlayerBetsPage(): ReactElement {
   const { userId = '' } = useParams<{ userId: string }>();
   const session = useSession();
   const [filter, setFilter] = useState<Filter>('open');
+  const [scope, setScope] = useState<Scope>('all');
 
-  const bets = usePlayerBets(userId, filter);
-  const board = useLeaderboard('all');
+  const bets = usePlayerBets(userId, filter, scope);
+  const board = useLeaderboard(scope);
   const notFound =
     bets.data === undefined && bets.error instanceof ApiError && bets.error.code === 'NOT_FOUND';
   // A player who is not on the board stays not on the board; re-asking every
@@ -121,13 +111,17 @@ export function PlayerBetsPage(): ReactElement {
   );
 
   const paged = usePages<BetView>(
-    `${userId}:${filter}`,
+    `${userId}:${filter}:${scope}`,
     bets.data === undefined
       ? undefined
       : { items: bets.data.bets, nextCursor: bets.data.nextCursor },
     (bet) => bet.id,
     async (cursor) => {
-      const page = await getPlayerBets(userId, { status: filter, cursor });
+      const page = await getPlayerBets(userId, {
+        status: filter,
+        league: scopeLeague(scope) ?? null,
+        cursor,
+      });
       return { items: page.bets, nextCursor: page.nextCursor };
     },
   );
@@ -169,7 +163,12 @@ export function PlayerBetsPage(): ReactElement {
             Board
           </Link>
         </div>
+        <div className="stats-head">
+          <span className="muted">Stats</span>
+          <ScopeTabs scope={scope} onChange={setScope} />
+        </div>
         {row !== undefined && <PlayerStats row={row} />}
+        <ScopeNote scope={scope} />
         {session.user?.isAdmin === true && !isMe && (
           <details className="admin-refill-details">
             <summary className="muted">Admin: refill this account</summary>
@@ -198,13 +197,7 @@ export function PlayerBetsPage(): ReactElement {
       {bets.loading && bets.data === undefined && <Spinner label="Loading their bets…" />}
 
       {bets.data !== undefined && groups.length === 0 && (
-        <EmptyState
-          title={
-            filter === 'open'
-              ? `${name ?? 'This player'} has no open bets.`
-              : `${name ?? 'This player'} has nothing settled yet.`
-          }
-        />
+        <EmptyState title={betsEmptyTitle(filter, scope, name ?? 'This player')} />
       )}
 
       {groups.map((group) => (

@@ -175,6 +175,8 @@ export interface SettledStatusRow {
 export interface SettledSummary {
   readonly record: BettingRecord;
   readonly roi: number | null;
+  /** The ROI numerator, in cents: Σ payout − Σ stake over won+lost. */
+  readonly profitCents: number;
   readonly settledCount: number;
 }
 
@@ -202,6 +204,9 @@ export interface StatsFilter {
  *   roi     (Σ payout − Σ stake) / Σ stake over `won` + `lost` ONLY. Push and
  *           void are excluded from BOTH sides — a push is a no-action bet — and
  *           the result is `null` when the denominator is 0.
+ *   profit  the numerator of `roi`, kept as integer cents so the per-sport
+ *           stats can print "+$120.00 on MLB" exactly. It is a SUM of stored
+ *           cent columns, never a product, so no float is involved.
  *
  * The division is an ordinary float because `roi` is a display-only statistic
  * (it is typed `number | null` in the wire contract); no cent is derived from it.
@@ -235,6 +240,7 @@ export function summariseSettled(rows: readonly SettledStatusRow[]): SettledSumm
   return {
     record,
     roi: denominator === 0 ? null : numerator / denominator,
+    profitCents: numerator,
     settledCount: record.won + record.lost + record.push + record.void,
   };
 }
@@ -296,8 +302,8 @@ interface BalanceRow {
  *
  * WHAT THE FILTER DOES AND DOES NOT TOUCH, stated because it is the one place
  * this endpoint could be misread: `balanceCents`, `pendingStakeCents` and
- * `equityCents` are ALWAYS the whole balance. Only `record`, `roi` and
- * `settledCount` respect `?league=`. Filtering the money would publish a
+ * `equityCents` are ALWAYS the whole balance. Only `record`, `roi`,
+ * `profitCents` and `settledCount` respect `?league=`. Filtering the money would publish a
  * "balance" that appears nowhere in the ledger, and would break
  * `equityCents === balanceCents + pendingStakeCents`.
  */
@@ -374,6 +380,7 @@ export async function listBalances(
         bustCount: bustCountOf(sums),
         record: settled.record,
         roi: settled.roi,
+        profitCents: settled.profitCents,
         settledCount: settled.settledCount,
       };
     }),
