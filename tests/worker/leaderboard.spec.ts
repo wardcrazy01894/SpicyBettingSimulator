@@ -10,6 +10,7 @@ import type {
 import type { ApiErrorBody } from '../../src/shared/errors.js';
 import { INITIAL_BANKROLL_CENTS } from '../../src/shared/constants.js';
 import { buildApp } from '../../src/worker/index.js';
+import { summariseSettled } from '../../src/worker/bankroll.js';
 import {
   balanceOf,
   bankrollDrift,
@@ -231,10 +232,21 @@ describe('GET /api/bankroll', () => {
       stakeCents: 9000,
       payoutCents: 9000,
     });
+    // A pending bet is money in flight, not a result: it must not touch the
+    // figure, the record or the settled count.
+    await seedSettledBet(env.DB, {
+      id: `open-${String(season)}`,
+      userId: alex.id,
+      league: 'mlb',
+      season,
+      status: 'pending',
+      stakeCents: 4000,
+    });
     const all = await mainBalance(await get('/api/bankroll', alex.cookie));
     // (5500 − 2000) + (0 − 1500) = 2000
     expect(all.profitCents).toBe(2000);
     expect(all.settledCount).toBe(4);
+    expect(all.pendingStakeCents).toBe(4000);
     const mlb = await mainBalance(await get('/api/bankroll?league=mlb', alex.cookie));
     expect(mlb.profitCents).toBe(2000);
     expect(mlb.record).toEqual({ won: 1, lost: 1, push: 1, void: 0 });
@@ -420,6 +432,33 @@ describe('GET /api/ledger', () => {
     const missing = await get('/api/ledger?bankrollId=no-such-balance', bob.cookie);
     expect(missing.status).toBe(404);
     expect(await errorCode(missing)).toBe('BANKROLL_NOT_FOUND');
+  });
+});
+
+describe('summariseSettled', () => {
+  // Real data cannot produce a push or void whose payout differs from its
+  // stake, so the HTTP tests above cannot tell "excluded" from "added zero".
+  // This can: a push paying 999 on a 100 stake moves the figure by 899 if it
+  // is ever counted.
+  it('profitCents sums won and lost only; push, void and anything else add nothing', () => {
+    const summary = summariseSettled([
+      { status: 'won', n: 1, stake: 100, payout: 250 },
+      { status: 'lost', n: 2, stake: 300, payout: 0 },
+      { status: 'push', n: 1, stake: 100, payout: 999 },
+      { status: 'void', n: 1, stake: 100, payout: 999 },
+      { status: 'pending', n: 1, stake: 5000, payout: 0 },
+      { status: 'cancelled', n: 1, stake: 5000, payout: 5000 },
+    ]);
+    // (250 − 100) + (0 − 300) = −150
+    expect(summary.profitCents).toBe(-150);
+    expect(summary.record).toEqual({ won: 1, lost: 2, push: 1, void: 1 });
+    expect(summary.settledCount).toBe(5);
+    expect(summary.roi).toBeCloseTo(-150 / 400, 12);
+  });
+
+  it('is zero, not null, with no decided bets', () => {
+    expect(summariseSettled([]).profitCents).toBe(0);
+    expect(summariseSettled([]).roi).toBeNull();
   });
 });
 

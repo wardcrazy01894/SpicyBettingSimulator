@@ -194,7 +194,7 @@ function rank(
 }
 
 export interface LeaderboardFilter {
-  /** `'all'` means "every bet"; a league narrows `record`/`roi` only. */
+  /** `'all'` means "every bet"; a league narrows `record`/`roi`/`profitCents` only. */
   readonly league: League | 'all';
 }
 

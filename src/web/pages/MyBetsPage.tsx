@@ -43,13 +43,19 @@ const FILTERS: readonly { value: Filter; label: string }[] = [
 /** Open bets carry a live `projected` grade, so they are worth re-reading. */
 const OPEN_POLL_MS = 60_000;
 
-/** The main balance's statistics under the chosen sport, in a card with the switch. */
+/**
+ * The main balance's statistics under the chosen sport, in a card with the
+ * switch. Polled at the LIST's interval: a bet that settles leaves the Open
+ * list within a minute, and the record above it has to move at the same time.
+ */
 function StatsCard(props: {
   readonly scope: Scope;
   readonly onScope: (scope: Scope) => void;
+  readonly pollMs: number;
 }): ReactElement {
-  const { scope, onScope } = props;
+  const { scope, onScope, pollMs } = props;
   const balances = useBalanceStats(scope);
+  usePoll(balances.refetch, pollMs);
   const main = balances.data?.balances.find((b) => b.kind === 'main');
   return (
     <div className="card">
@@ -77,7 +83,8 @@ export function MyBetsPage(): ReactElement {
   const [filter, setFilter] = useState<Filter>('open');
   const [scope, setScope] = useState<Scope>('all');
   const bets = useBets(filter, scope);
-  usePoll(bets.refetch, filter === 'open' ? OPEN_POLL_MS : 5 * OPEN_POLL_MS);
+  const pollMs = filter === 'open' ? OPEN_POLL_MS : 5 * OPEN_POLL_MS;
+  usePoll(bets.refetch, pollMs);
 
   // `/api/bets` pages with a cursor (§11.4); without this the list stopped dead
   // at the server's default page size with no way to reach anything older.
@@ -97,7 +104,7 @@ export function MyBetsPage(): ReactElement {
 
   return (
     <section className="page">
-      <StatsCard scope={scope} onScope={setScope} />
+      <StatsCard scope={scope} onScope={setScope} pollMs={pollMs} />
 
       <div className="page-controls">
         <Segmented<Filter>

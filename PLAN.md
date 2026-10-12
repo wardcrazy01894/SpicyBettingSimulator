@@ -2817,8 +2817,9 @@ switch (`<ScopeTabs>`, `lib/scope.ts`) sits on My Bets, on a player's page and
 on the leaderboard. On My Bets and a player's page it drives BOTH the list
 (`GET /api/bets?league=` / `GET /api/users/:id/bets?league=`) and the stats
 strip (`GET /api/bankroll?league=` / the leaderboard row under the same
-`?league=`), so the record, profit and ROI shown are over exactly the bets
-listed beneath them. The account page's balance card stays the whole account
+`?league=`), so the record, profit and ROI shown are over the same sport's
+bets as the list beneath them (the stats are settled bets; the list is whichever
+tab is open). The account page's balance card stays the whole account
 and points at My Bets for the per-sport view.
 
 `league` matches `bets.league` EXACTLY, so a cross-league (`'mixed'`) bet counts

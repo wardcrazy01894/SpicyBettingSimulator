@@ -7,13 +7,15 @@
  * "what did I take", minus the buttons. `readOnly` on the card and
  * `cancellable: false` from the server say the same thing twice, deliberately.
  *
- * The header (rank, equity, balance, exposure, record, profit, ROI) comes from
- * the leaderboard row under the SAME sport switch as the list — the `all` row
- * is already cached when you arrive from the board, and a league's board is
- * one request. The bets endpoint carries only the player's name, so the two
- * never disagree about a number: there is one source for the stats, and it is
- * the one the board ranks on. The switch narrows the record, profit and ROI
- * and the list; the money is the whole account either way (PLAN.md §11.5).
+ * The header comes from the leaderboard. Rank, the money (net, equity,
+ * balance, exposure) and the bust badges are from the `all` row — already
+ * cached when you arrive from the board, and the rank is the WHOLE-ACCOUNT
+ * one: a league's board breaks net ties on that league's ROI, so "#2 on the
+ * board" must not turn into "#1" when you tap NFL. Record, profit and ROI are
+ * from the row under the SAME sport switch as the list. The bets endpoint
+ * carries only the player's name, so no two numbers can disagree: there is
+ * one source for the stats, and it is the one the board ranks on. (PLAN.md
+ * §11.5, §11.8.)
  *
  * `404 NOT_FOUND` is a player who is disabled, deleted or never existed — the
  * leaderboard's own visibility rule. It is shown as an empty state rather than
@@ -55,8 +57,16 @@ const FILTERS: readonly { value: Filter; label: string }[] = [
 /** Open bets carry a live `projected` grade, so they are worth re-reading. */
 const OPEN_POLL_MS = 60_000;
 
-function PlayerStats(props: { readonly row: LeaderboardRow }): ReactElement {
-  const { row } = props;
+/**
+ * `row` is the `all` row (money, never per sport); `stats` is the row under
+ * the chosen sport, undefined while that board loads — the money stays put and
+ * only the record slots wait, so a tab switch never blanks the header.
+ */
+function PlayerStats(props: {
+  readonly row: LeaderboardRow;
+  readonly stats: LeaderboardRow | undefined;
+}): ReactElement {
+  const { row, stats } = props;
   return (
     <dl className="stat-grid">
       <div>
@@ -82,7 +92,16 @@ function PlayerStats(props: { readonly row: LeaderboardRow }): ReactElement {
         <dt>Open exposure</dt>
         <dd>{formatCents(row.pendingStakeCents)}</dd>
       </div>
-      <RecordStats stats={row} />
+      {stats === undefined ? (
+        <div>
+          <dt>Record</dt>
+          <dd>
+            <Spinner label="Loading…" />
+          </dd>
+        </div>
+      ) : (
+        <RecordStats stats={stats} />
+      )}
       <div>
         <dt>Busts</dt>
         <dd>{row.bustCount === 0 ? '—' : <BustBadges count={row.bustCount} />}</dd>
@@ -98,7 +117,10 @@ export function PlayerBetsPage(): ReactElement {
   const [scope, setScope] = useState<Scope>('all');
 
   const bets = usePlayerBets(userId, filter, scope);
-  const board = useLeaderboard(scope);
+  // The `all` board is the header's source for rank and money; the scoped
+  // board (the same request when scope is 'all') is the source for the record.
+  const board = useLeaderboard('all');
+  const scoped = useLeaderboard(scope);
   const notFound =
     bets.data === undefined && bets.error instanceof ApiError && bets.error.code === 'NOT_FOUND';
   // A player who is not on the board stays not on the board; re-asking every
@@ -128,6 +150,7 @@ export function PlayerBetsPage(): ReactElement {
 
   const groups = groupBetsByWeek(paged.items);
   const row = board.data?.rows.find((r) => r.userId === userId);
+  const stats = scoped.data?.rows.find((r) => r.userId === userId);
   const isMe = session.user?.id === userId;
   const name = bets.data?.player.displayName ?? row?.displayName;
 
@@ -167,7 +190,7 @@ export function PlayerBetsPage(): ReactElement {
           <span className="muted">Stats</span>
           <ScopeTabs scope={scope} onChange={setScope} />
         </div>
-        {row !== undefined && <PlayerStats row={row} />}
+        {row !== undefined && <PlayerStats row={row} stats={stats} />}
         <ScopeNote scope={scope} />
         {session.user?.isAdmin === true && !isMe && (
           <details className="admin-refill-details">
