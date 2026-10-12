@@ -3885,8 +3885,11 @@ is allowed to differ; today both are `1.20261006.1` and the date is 2026-10-06),
 and the plugin's peerDependencies bound the `vitest` major. Moving the date is
 a PRODUCTION RUNTIME change, not a dependency bump, so it gets its own PR and
 its own reading of workerd's `src/workerd/io/compatibility-date.capnp` at the
-bundled tag for every `compatEnableDate` inside the window. 2026-08-22 →
-2026-10-06 (2026-10-12) crossed two: `spec_compliant_dispatch_exceptions`
+bundled tag for every `compatEnableDate` AND `impliedByAfterDate` inside the
+window. 2026-08-22 → 2026-10-06 (checked 2026-10-12) crossed two enable dates
+and one implied flag — `python_workers_314`, implied by `python_workers` after
+2026-09-08, which is moot for a TypeScript Worker — the two being
+`spec_compliant_dispatch_exceptions`
 (2026-09-15; exceptions thrown by `dispatchEvent` / `AbortSignal` abort
 listeners are reported, not propagated — the Worker registers no event
 listener and uses `AbortSignal.timeout()` only as a fetch timeout) and
