@@ -3846,12 +3846,12 @@ passes; CI green on a throwaway PR.
 `package.json` are not "whatever was newest on npm today"; four of them are
 constrained:
 
-| Package                | Pinned    | Why not latest                                                                                                                                                                                                                                                                                                                                        |
-| ---------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `vitest`               | `^4.1.11` | `@cloudflare/vitest-plugin@1.4.0` accepts `vitest: "^4.1.0 \|\| ^5.0.0"`, so since the rename (2026-10-12) the Workers plugin no longer blocks vitest 5 — the deprecated `vitest-pool-workers` did. The ceiling stays until vitest 5 is adopted DELIBERATELY in its own PR (a major, with `@vitest/coverage-v8` riding along), not by a grouped bump. |
-| `@vitest/*`            | `^4.1.11` | `@vitest/coverage-v8` declares `peerDependencies: { vitest: "4.1.11" }` — an EXACT version — so it bumps in the same PR as `vitest` and never past it. Ignored alongside `vitest` for that reason.                                                                                                                                                    |
-| `typescript`           | `~6.0.3`  | `typescript-eslint@8.70` declares `typescript: ">=4.8.4 <6.1.0"`. 6.0.x is inside that range; TypeScript **7.0.2** (the Go port) is not, so `npm run lint` would fail on it.                                                                                                                                                                          |
-| `@vitejs/plugin-react` | `^5.2.0`  | 5.2.0 is the first v5 that accepts `vite@^8`. v6 accepts vite 8 too but pulls in extra optional peers (`oxc-transform-react`, `@rolldown/plugin-babel`) we do not need.                                                                                                                                                                               |
+| Package                | Pinned    | Why not latest                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vitest`               | `^4.1.11` | `@cloudflare/vitest-plugin@1.4.0` accepts `vitest: "^4.1.0 \|\| ^5.0.0"`, so since the rename (2026-10-12) the Workers plugin no longer blocks vitest 5 — the deprecated `vitest-pool-workers` did. The ceiling stays until vitest 5 is adopted DELIBERATELY in its own PR (a major, with `@vitest/coverage-v8` riding along), not by a grouped bump. Tried 2026-10-12 with plugin 1.4.0 + vitest 5.0.4: every worker spec fails at load (`readAll node_modules/.vitest-cache/<hash>`, a cache vitest 5 no longer writes); workers-sdk#15618 stays open for it. |
+| `@vitest/*`            | `^4.1.11` | `@vitest/coverage-v8` declares `peerDependencies: { vitest: "4.1.11" }` — an EXACT version — so it bumps in the same PR as `vitest` and never past it. Ignored alongside `vitest` for that reason.                                                                                                                                                                                                                                                                                                                                                              |
+| `typescript`           | `~6.0.3`  | `typescript-eslint@8.70` declares `typescript: ">=4.8.4 <6.1.0"`. 6.0.x is inside that range; TypeScript **7.0.2** (the Go port) is not, so `npm run lint` would fail on it.                                                                                                                                                                                                                                                                                                                                                                                    |
+| `@vitejs/plugin-react` | `^5.2.0`  | 5.2.0 is the first v5 that accepts `vite@^8`. v6 accepts vite 8 too but pulls in extra optional peers (`oxc-transform-react`, `@rolldown/plugin-babel`) we do not need.                                                                                                                                                                                                                                                                                                                                                                                         |
 
 `vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.149` are current and unconstrained.
 
@@ -3881,9 +3881,21 @@ PR, and `wrangler` + `@cloudflare/*` as one PR so the two toolchain constraints
 are reviewed side by side: `compatibility_date` in `wrangler.jsonc` is pinned to
 the newest date the workerd bundled with `@cloudflare/vitest-plugin` supports
 (the plugin pins its own wrangler exactly, so the top-level `wrangler`'s workerd
-is allowed to differ; today both are `1.20261006.1` and the date is still
-2026-08-22 — moving it is a production runtime change and gets its own PR), and
-the plugin's peerDependencies bound the `vitest` major. The three ceilings above are `ignore`
+is allowed to differ; today both are `1.20261006.1` and the date is 2026-10-06),
+and the plugin's peerDependencies bound the `vitest` major. Moving the date is
+a PRODUCTION RUNTIME change, not a dependency bump, so it gets its own PR and
+its own reading of workerd's `src/workerd/io/compatibility-date.capnp` at the
+bundled tag for every `compatEnableDate` AND `impliedByAfterDate` inside the
+window. 2026-08-22 → 2026-10-06 (checked 2026-10-12) crossed two enable dates
+and one implied flag — `python_workers_314`, implied by `python_workers` after
+2026-09-08, which is moot for a TypeScript Worker — the two enable dates being
+`spec_compliant_dispatch_exceptions`
+(2026-09-15; exceptions thrown by `dispatchEvent` / `AbortSignal` abort
+listeners are reported, not propagated — the Worker registers no event
+listener and uses `AbortSignal.timeout()` only as a fetch timeout) and
+`durable_object_io_tasks_prevent_eviction` (2026-10-01; no Durable Objects
+here). The worker test project loads `wrangler.jsonc`, so a date the bundled
+workerd refuses fails `npm test` before it can deploy. The three ceilings above are `ignore`
 entries there — `vitest` and `@vitest/*` (`@vitest/coverage-v8` peers on an
 EXACT vitest version, so the two must bump together), `typescript` at
 `>=6.1.0` (the real edge of typescript-eslint's range; 6.0.x is not ignored),
