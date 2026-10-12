@@ -3853,18 +3853,19 @@ constrained:
 | `typescript`           | `~6.0.3`  | `typescript-eslint@8.70` declares `typescript: ">=4.8.4 <6.1.0"`. 6.0.x is inside that range; TypeScript **7.0.2** (the Go port) is not, so `npm run lint` would fail on it.                                                  |
 | `@vitejs/plugin-react` | `^5.2.0`  | 5.2.0 is the first v5 that accepts `vite@^8`. v6 accepts vite 8 too but pulls in extra optional peers (`oxc-transform-react`, `@rolldown/plugin-babel`) we do not need.                                                       |
 
-`vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.147` are current and unconstrained.
+`vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.149` are current and unconstrained.
 
 **Scoped `overrides` entries, `@cloudflare/vitest-pool-workers → miniflare →
-sharp: 0.35.4` and `→ undici: 7.29.1`** (package.json). Neither is our
+sharp: 0.35.5` and `→ undici: 7.29.1`** (package.json). Neither is our
 dependency: `@cloudflare/vitest-pool-workers@0.22.0` → `miniflare@5.20260815.0-alpha`
 pins `sharp` EXACTLY at 0.35.2, which carries GHSA-rgj7-g3m4-5g8c (libheif,
-high; dev-only here — miniflare uses sharp to emulate the Images binding, which
+high, fixed in 0.35.4) and GHSA-wq5f-xc86-pv6w (librsvg, high, fixed in 0.35.5;
+dev-only here — miniflare uses sharp to emulate the Images binding, which
 this project has no binding for), and pins `undici` EXACTLY at 7.29.0, which
 carries six 2026-10 advisories (one high, a TLS certificate validation bypass in
 BalancedPool; dev-only, miniflare's local fetch). No pool release moves either
 pin yet, so the scoped overrides force those two copies to the patched versions
-(wrangler's own miniflare, `5.20261001.0-alpha` from `wrangler@4.147`, already
+(wrangler's own miniflare, `5.20261006.1-alpha` from `wrangler@4.149`, already
 wants both, so each dedupes); `npm audit` is clean and the worker pool runs
 unchanged. Drop each override once a pool bump carries a miniflare that wants
 the patched version on its own — docs/OPERATIONS.md "Dependencies" has the

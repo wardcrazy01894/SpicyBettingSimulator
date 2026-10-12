@@ -61,7 +61,7 @@
     "typescript-eslint": "^8.71.1",
     "vite": "^8.3.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.147.0"
+    "wrangler": "^4.149.0"
   },
   "allowScripts": {
     "esbuild": true,
@@ -71,7 +71,7 @@
   "overrides": {
     "@cloudflare/vitest-pool-workers": {
       "miniflare": {
-        "sharp": "0.35.4",
+        "sharp": "0.35.5",
         "undici": "7.29.1"
       }
     }

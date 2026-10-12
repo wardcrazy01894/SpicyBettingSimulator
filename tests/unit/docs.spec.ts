@@ -930,7 +930,11 @@ describe('claims the docs make about the repo', () => {
     readonly advisory: string;
   }
   const POOL_OVERRIDES: readonly PoolOverride[] = [
-    { pkg: 'sharp', patched: '0.35.4', advisory: 'GHSA-rgj7-g3m4-5g8c' },
+    {
+      pkg: 'sharp',
+      patched: '0.35.5',
+      advisory: 'GHSA-wq5f-xc86-pv6w (high, librsvg RCE) and GHSA-rgj7-g3m4-5g8c (high, libheif)',
+    },
     {
       pkg: 'undici',
       patched: '7.29.1',
