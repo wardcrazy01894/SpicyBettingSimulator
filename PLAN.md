@@ -3307,7 +3307,7 @@ plus the docs-drift guard. No Workers runtime, instant feedback.
   `package.json` actually runs, or a banned stale phrase outside a history note.
   See CLAUDE.md rule 11.
 
-**Project 2 — `worker` (`@cloudflare/vitest-pool-workers`, `tests/worker/`)**: real
+**Project 2 — `worker` (`@cloudflare/vitest-plugin`, `tests/worker/`)**: real
 Miniflare D1 with `applyD1Migrations`, so the schema, the triggers and the `CHECK`
 constraints are exercised for real. This is important: the money invariants live in
 DDL, and a mock would not test them.
@@ -3846,32 +3846,32 @@ passes; CI green on a throwaway PR.
 `package.json` are not "whatever was newest on npm today"; four of them are
 constrained:
 
-| Package                | Pinned    | Why not latest                                                                                                                                                                                                                |
-| ---------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `vitest`               | `^4.1.11` | `@cloudflare/vitest-pool-workers@0.22.0` declares `peerDependencies: { vitest: "^4.1.0" }`. Vitest **5.0.0** exists but is not supported by the pool. Bumping vitest without the pool breaks the whole `worker` test project. |
-| `@vitest/*`            | `^4.1.11` | `@vitest/coverage-v8` declares `peerDependencies: { vitest: "4.1.11" }` — an EXACT version — so it bumps in the same PR as `vitest` and never past it. Ignored alongside `vitest` for that reason.                            |
-| `typescript`           | `~6.0.3`  | `typescript-eslint@8.70` declares `typescript: ">=4.8.4 <6.1.0"`. 6.0.x is inside that range; TypeScript **7.0.2** (the Go port) is not, so `npm run lint` would fail on it.                                                  |
-| `@vitejs/plugin-react` | `^5.2.0`  | 5.2.0 is the first v5 that accepts `vite@^8`. v6 accepts vite 8 too but pulls in extra optional peers (`oxc-transform-react`, `@rolldown/plugin-babel`) we do not need.                                                       |
+| Package                | Pinned    | Why not latest                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vitest`               | `^4.1.11` | `@cloudflare/vitest-plugin@1.4.0` accepts `vitest: "^4.1.0 \|\| ^5.0.0"`, so since the rename (2026-10-12) the Workers plugin no longer blocks vitest 5 — the deprecated `vitest-pool-workers` did. The ceiling stays until vitest 5 is adopted DELIBERATELY in its own PR (a major, with `@vitest/coverage-v8` riding along), not by a grouped bump. |
+| `@vitest/*`            | `^4.1.11` | `@vitest/coverage-v8` declares `peerDependencies: { vitest: "4.1.11" }` — an EXACT version — so it bumps in the same PR as `vitest` and never past it. Ignored alongside `vitest` for that reason.                                                                                                                                                    |
+| `typescript`           | `~6.0.3`  | `typescript-eslint@8.70` declares `typescript: ">=4.8.4 <6.1.0"`. 6.0.x is inside that range; TypeScript **7.0.2** (the Go port) is not, so `npm run lint` would fail on it.                                                                                                                                                                          |
+| `@vitejs/plugin-react` | `^5.2.0`  | 5.2.0 is the first v5 that accepts `vite@^8`. v6 accepts vite 8 too but pulls in extra optional peers (`oxc-transform-react`, `@rolldown/plugin-babel`) we do not need.                                                                                                                                                                               |
 
 `vite@^8`, `react@19`, `eslint@10`, `wrangler@^4.149` are current and unconstrained.
 
-**Scoped `overrides` entries, `@cloudflare/vitest-pool-workers → miniflare →
-sharp: 0.35.5` and `→ undici: 7.29.1`** (package.json). Neither is our
-dependency: `@cloudflare/vitest-pool-workers@0.22.0` → `miniflare@5.20260815.0-alpha`
-pins `sharp` EXACTLY at 0.35.2, which carries GHSA-rgj7-g3m4-5g8c (libheif,
-high, fixed in 0.35.4) and GHSA-wq5f-xc86-pv6w (librsvg, high, fixed in 0.35.5;
-dev-only here — miniflare uses sharp to emulate the Images binding, which
-this project has no binding for), and pins `undici` EXACTLY at 7.29.0, which
-carries six 2026-10 advisories (one high, a TLS certificate validation bypass in
-BalancedPool; dev-only, miniflare's local fetch). No pool release moves either
-pin yet, so the scoped overrides force those two copies to the patched versions
-(wrangler's own miniflare, `5.20261006.1-alpha` from `wrangler@4.149`, already
-wants both, so each dedupes); `npm audit` is clean and the worker pool runs
-unchanged. Drop each override once a pool bump carries a miniflare that wants
-the patched version on its own — docs/OPERATIONS.md "Dependencies" has the
-check, and `tests/unit/docs.spec.ts`'s `POOL_OVERRIDES` table fails CI on that
-PR until it is done. Scoped rather than global so an override can never
-silently pin a future requirement elsewhere.
+**`package.json` has NO `overrides` block, and `tests/unit/docs.spec.ts`
+asserts it** (the `POOL_OVERRIDES` guard, table empty). The Workers test
+integration is `@cloudflare/vitest-plugin` — the renamed, maintained
+`@cloudflare/vitest-pool-workers`, whose 0.23.0 (2026-10-07) is a deprecation
+release that only adds a warning. The plugin declares the SAME `miniflare` and
+`wrangler` as the top-level `wrangler`, so there is one copy of each of
+miniflare, wrangler, workerd, sharp and undici in the tree and nothing to pin.
+If the two ever drift and the plugin's miniflare pins a vulnerable package
+exactly again, the lever is a `overrides` entry SCOPED to
+`@cloudflare/vitest-plugin → miniflare → <pkg>` (never global, so it can never
+silently pin a future requirement elsewhere) plus a `POOL_OVERRIDES` row with
+the patched version and advisory; the guard then fails the plugin-bump PR that
+makes the override dead weight until it is deleted. History: the old pool's
+`miniflare@5.20260815.0-alpha` pinned `sharp` at 0.35.2 (GHSA-rgj7-g3m4-5g8c,
+then GHSA-wq5f-xc86-pv6w) and `undici` at 7.29.0 (six 2026-10 advisories), all
+dev-only; scoped overrides (PRs #26, #59, #67) carried both until the rename
+(2026-10-12) removed the need.
 
 If a dependency bump is proposed, check these four first — and note Alex's
 standing rule that dependency-bump PRs also get an adversarial review.
@@ -3879,10 +3879,11 @@ standing rule that dependency-bump PRs also get an adversarial review.
 patch bumps arrive as ONE grouped PR, majors one PR each, GitHub Actions as one
 PR, and `wrangler` + `@cloudflare/*` as one PR so the two toolchain constraints
 are reviewed side by side: `compatibility_date` in `wrangler.jsonc` is pinned to
-the newest date the workerd bundled with `@cloudflare/vitest-pool-workers`
-supports (the pool ships its own nested wrangler, so the top-level `wrangler`'s
-workerd is allowed to differ and does today), and the pool pins the `vitest`
-major through its peerDependencies. The three ceilings above are `ignore`
+the newest date the workerd bundled with `@cloudflare/vitest-plugin` supports
+(the plugin pins its own wrangler exactly, so the top-level `wrangler`'s workerd
+is allowed to differ; today both are `1.20261006.1` and the date is still
+2026-08-22 — moving it is a production runtime change and gets its own PR), and
+the plugin's peerDependencies bound the `vitest` major. The three ceilings above are `ignore`
 entries there — `vitest` and `@vitest/*` (`@vitest/coverage-v8` peers on an
 EXACT vitest version, so the two must bump together), `typescript` at
 `>=6.1.0` (the real edge of typescript-eslint's range; 6.0.x is not ignored),
@@ -4590,7 +4591,7 @@ already over and the remedy is R1's "split the mapping across two invocations"
 rung, not a smaller chunk. `MAX_BATCH_STATEMENTS` is the size of ONE batch, not a
 per-invocation total, and db.ts now says so.
 
-**S3 — `@cloudflare/vitest-pool-workers` + D1 migrations ergonomics. RESOLVED.**
+**S3 — `@cloudflare/vitest-plugin` (then `vitest-pool-workers`) + D1 migrations ergonomics. RESOLVED.**
 `readD1Migrations('./migrations')` + `applyD1Migrations` in
 `tests/worker/setup.ts` applies `0001_init.sql` in full — all seven triggers and
 every `CHECK` — and `tests/worker/schema.spec.ts` exercises them directly,
@@ -4599,7 +4600,9 @@ was not needed. The secondary question is answered too: the pool tolerates
 `assets.directory` pointing at a `dist/client` that `npm run pretest` creates, so
 `wrangler.configPath` stayed. (Pool 0.22 on vitest 4 exposes itself as the
 `cloudflareTest` Vite plugin rather than `defineWorkersProject`; same options,
-new location.) Original framing, kept for the record:
+new location. The package was renamed `@cloudflare/vitest-plugin` and the repo
+followed on 2026-10-12 — same plugin, same `cloudflare:test` module.) Original
+framing, kept for the record:
 _Question_: does `applyD1Migrations` from `cloudflare:test` apply
 `migrations/0001_init.sql` — **including the four `ledger` triggers and every
 `CHECK`** — cleanly per test, and is per-test isolation fast enough? Secondary:

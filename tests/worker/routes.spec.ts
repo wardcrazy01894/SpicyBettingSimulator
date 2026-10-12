@@ -46,7 +46,7 @@ const HOUR = 60 * 60 * 1000;
 /**
  * Sign a NEW user up and hand back their cookie + id.
  *
- * vitest-pool-workers 0.22 gives each test FILE fresh storage but does NOT roll
+ * @cloudflare/vitest-plugin gives each test FILE fresh storage but does NOT roll
  * back between tests, and `ledger` has a BEFORE DELETE trigger so no cleanup
  * hook could truncate it. Every test therefore gets its own user, its own game
  * ids (`gid()`) and — where a query is scoped by season — its own season.

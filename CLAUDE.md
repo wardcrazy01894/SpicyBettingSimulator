@@ -44,7 +44,7 @@ npm run lint                # eslint
 npm run format:check        # prettier
 npm test                    # vitest: `unit` + `worker` + `web` projects
 npm run test:unit           # pure logic + the docs-drift guard (fast)
-npm run test:worker         # Worker + real D1 via vitest-pool-workers
+npm run test:worker         # Worker + real D1 via @cloudflare/vitest-plugin
 npm run coverage            # vitest --coverage; gate is on src/shared/** only
 npm run build               # vite build + wrangler dry-run bundle
 
@@ -398,7 +398,7 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               ledger alone for the deposit_refill / bust_buyout kinds (PLAN.md §4.5)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
-tests/worker/ vitest-pool-workers tests with a real D1; fixtures.ts SYNTHESISES
+tests/worker/ @cloudflare/vitest-plugin tests with a real D1; fixtures.ts SYNTHESISES
               small slates (workerd has no fs, and the tsconfig project boundary
               does not span tests/unit)
 tests/web/    node-env tests for src/web's PURE logic — slip reducer, payout

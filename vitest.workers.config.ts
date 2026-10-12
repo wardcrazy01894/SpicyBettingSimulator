@@ -1,14 +1,15 @@
 import { defineProject } from 'vitest/config';
-import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
+import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
 
 // The real migrations are applied to Miniflare's D1 before each test file (see
 // tests/worker/setup.ts). That matters more than usual here: the money
 // invariants live in the DDL (triggers, CHECK, UNIQUE), so a mocked DB would not
 // test them at all. See PLAN.md §4.1 and Spike S3.
 //
-// vitest-pool-workers 0.22 (vitest 4) exposes the pool as a Vite plugin
-// (`cloudflareTest`) instead of the old `defineWorkersProject` +
-// `test.poolOptions.workers`. Same options, new location.
+// `@cloudflare/vitest-plugin` is the renamed `@cloudflare/vitest-pool-workers`
+// (deprecated at 0.23, 2026-10-07): same `cloudflareTest` Vite plugin, same
+// options, same `cloudflare:test` module. Pool 0.22 (vitest 4) had already moved
+// from `defineWorkersProject` + `test.poolOptions.workers` to this shape.
 const migrations = await readD1Migrations('./migrations');
 
 export default defineProject({

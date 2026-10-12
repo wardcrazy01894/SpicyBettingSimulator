@@ -44,7 +44,7 @@ import { bankrollDrift, mainBankrollId, seedGameWithLine, seedLine, updateGame }
  * `runSettle` selects from the WHOLE database, so — unlike `bets.spec.ts`, where
  * every assertion is scoped to one user — a bet left `pending` by an earlier test
  * in this file would be re-selected by a later test's run and pollute
- * `stats.selected` / `stats.deferred`. vitest-pool-workers gives each FILE fresh
+ * `stats.selected` / `stats.deferred`. @cloudflare/vitest-plugin gives each FILE fresh
  * storage but does not roll back between tests, and `ledger` has a BEFORE DELETE
  * trigger so nothing can be truncated. Flipping the leftovers to `cancelled`
  * removes them from the selection set and writes NO ledger row, so
