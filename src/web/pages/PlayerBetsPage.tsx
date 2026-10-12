@@ -59,16 +59,18 @@ const OPEN_POLL_MS = 60_000;
 
 /**
  * `row` is the `all` row (money, never per sport); `stats` is the row under
- * the chosen sport, undefined while that board loads — the money stays put and
- * only the record slots wait, so a tab switch never blanks the header.
+ * the chosen sport, undefined while that board loads or after it fails — the
+ * money stays put and only the three record slots wait, so a tab switch never
+ * blanks the header and never moves the cells around it.
  */
 function PlayerStats(props: {
   readonly row: LeaderboardRow;
   readonly stats: LeaderboardRow | undefined;
+  readonly statsFailed: boolean;
 }): ReactElement {
-  const { row, stats } = props;
+  const { row, stats, statsFailed } = props;
   return (
-    <dl className="stat-grid">
+    <dl className="stat-grid" aria-busy={stats === undefined && !statsFailed}>
       <div>
         <dt>
           <abbr className="help" title={NET_HELP}>
@@ -93,12 +95,7 @@ function PlayerStats(props: {
         <dd>{formatCents(row.pendingStakeCents)}</dd>
       </div>
       {stats === undefined ? (
-        <div>
-          <dt>Record</dt>
-          <dd>
-            <Spinner label="Loading…" />
-          </dd>
-        </div>
+        <RecordStatsPlaceholder value={statsFailed ? '—' : '…'} />
       ) : (
         <RecordStats stats={stats} />
       )}
@@ -107,6 +104,26 @@ function PlayerStats(props: {
         <dd>{row.bustCount === 0 ? '—' : <BustBadges count={row.bustCount} />}</dd>
       </div>
     </dl>
+  );
+}
+
+/** The same three cells `<RecordStats>` fills, holding "…" or "—" for now. */
+function RecordStatsPlaceholder(props: { readonly value: string }): ReactElement {
+  return (
+    <>
+      <div>
+        <dt>Record</dt>
+        <dd>{props.value}</dd>
+      </div>
+      <div>
+        <dt>Profit</dt>
+        <dd>{props.value}</dd>
+      </div>
+      <div>
+        <dt>ROI</dt>
+        <dd>{props.value}</dd>
+      </div>
+    </>
   );
 }
 
@@ -124,10 +141,15 @@ export function PlayerBetsPage(): ReactElement {
   const notFound =
     bets.data === undefined && bets.error instanceof ApiError && bets.error.code === 'NOT_FOUND';
   // A player who is not on the board stays not on the board; re-asking every
-  // minute would be a 404 forever, against a free-tier request budget.
+  // minute would be a 404 forever, against a free-tier request budget. The
+  // header polls with the list: a bet that settles leaves Open within a
+  // minute, and the record above it has to move at the same time.
   usePoll(
     () => {
-      if (!notFound) bets.refetch();
+      if (notFound) return;
+      bets.refetch();
+      board.refetch();
+      if (scope !== 'all') scoped.refetch();
     },
     filter === 'open' ? OPEN_POLL_MS : 5 * OPEN_POLL_MS,
   );
@@ -190,7 +212,9 @@ export function PlayerBetsPage(): ReactElement {
           <span className="muted">Stats</span>
           <ScopeTabs scope={scope} onChange={setScope} />
         </div>
-        {row !== undefined && <PlayerStats row={row} stats={stats} />}
+        {row !== undefined && (
+          <PlayerStats row={row} stats={stats} statsFailed={scoped.error !== undefined} />
+        )}
         <ScopeNote scope={scope} />
         {session.user?.isAdmin === true && !isMe && (
           <details className="admin-refill-details">

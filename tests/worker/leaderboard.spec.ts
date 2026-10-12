@@ -11,6 +11,7 @@ import type { ApiErrorBody } from '../../src/shared/errors.js';
 import { INITIAL_BANKROLL_CENTS } from '../../src/shared/constants.js';
 import { buildApp } from '../../src/worker/index.js';
 import { summariseSettled } from '../../src/worker/bankroll.js';
+import { applyStat, emptyAccumulator } from '../../src/worker/leaderboard.js';
 import {
   balanceOf,
   bankrollDrift,
@@ -459,6 +460,31 @@ describe('summariseSettled', () => {
   it('is zero, not null, with no decided bets', () => {
     expect(summariseSettled([]).profitCents).toBe(0);
     expect(summariseSettled([]).roi).toBeNull();
+  });
+});
+
+describe('applyStat (the leaderboard accumulator)', () => {
+  // The board does not go through `summariseSettled`, so the same proof is
+  // owed here: a push or void paying 999 on a 100 stake moves the sum by 899
+  // the moment anybody counts it.
+  it('profit and the ROI denominator take won and lost only; pending is exposure', () => {
+    const acc = emptyAccumulator(1000);
+    for (const row of [
+      { user_id: 'u', status: 'won', n: 1, stake: 100, payout: 250 },
+      { user_id: 'u', status: 'lost', n: 2, stake: 300, payout: 0 },
+      { user_id: 'u', status: 'push', n: 1, stake: 100, payout: 999 },
+      { user_id: 'u', status: 'void', n: 1, stake: 100, payout: 999 },
+      { user_id: 'u', status: 'pending', n: 1, stake: 5000, payout: 0 },
+      { user_id: 'u', status: 'cancelled', n: 1, stake: 5000, payout: 5000 },
+    ]) {
+      applyStat(acc, row);
+    }
+    // (250 − 100) + (0 − 300) = −150, over a 400 denominator
+    expect(acc.roiNumerator).toBe(-150);
+    expect(acc.roiDenominator).toBe(400);
+    expect(acc.record).toEqual({ won: 1, lost: 2, push: 1, void: 1 });
+    expect(acc.pendingStakeCents).toBe(5000);
+    expect(acc.balanceCents).toBe(1000);
   });
 });
 

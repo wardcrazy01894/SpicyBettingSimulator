@@ -77,7 +77,7 @@ import type { DepositSums } from './bankroll.js';
 import { queryAll } from './db.js';
 
 /** One `(user, status)` aggregate over the bets inside the requested scope. */
-interface StatRow {
+export interface StatRow {
   user_id: string;
   status: string;
   n: number;
@@ -95,7 +95,7 @@ interface BalanceRow {
 /** A mutable mirror of the readonly wire `BettingRecord`. */
 type MutableRecord = { -readonly [K in keyof BettingRecord]: BettingRecord[K] };
 
-interface Accumulator {
+export interface Accumulator {
   balanceCents: number;
   pendingStakeCents: number;
   depositedCents: number;
@@ -105,7 +105,7 @@ interface Accumulator {
   roiDenominator: number;
 }
 
-function emptyAccumulator(balanceCents: number): Accumulator {
+export function emptyAccumulator(balanceCents: number): Accumulator {
   return {
     balanceCents,
     pendingStakeCents: 0,
@@ -117,7 +117,13 @@ function emptyAccumulator(balanceCents: number): Accumulator {
   };
 }
 
-function applyStat(acc: Accumulator, row: StatRow): void {
+/**
+ * Exported for its test only: the board keeps its own accumulator (it also
+ * folds in the pending exposure rows), so `summariseSettled`'s test does not
+ * cover this sum, and a seeded push or void pays back its exact stake, which
+ * would hide a bug that counted them.
+ */
+export function applyStat(acc: Accumulator, row: StatRow): void {
   switch (row.status) {
     case 'pending':
       acc.pendingStakeCents += row.stake;
