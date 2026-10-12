@@ -3888,7 +3888,7 @@ its own reading of workerd's `src/workerd/io/compatibility-date.capnp` at the
 bundled tag for every `compatEnableDate` AND `impliedByAfterDate` inside the
 window. 2026-08-22 → 2026-10-06 (checked 2026-10-12) crossed two enable dates
 and one implied flag — `python_workers_314`, implied by `python_workers` after
-2026-09-08, which is moot for a TypeScript Worker — the two being
+2026-09-08, which is moot for a TypeScript Worker — the two enable dates being
 `spec_compliant_dispatch_exceptions`
 (2026-09-15; exceptions thrown by `dispatchEvent` / `AbortSignal` abort
 listeners are reported, not propagated — the Worker registers no event
