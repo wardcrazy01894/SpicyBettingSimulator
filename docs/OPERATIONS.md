@@ -408,7 +408,7 @@ anything other than fetch its own binary is the review finding.
 `package.json` carries `overrides` entries scoped to
 `@cloudflare/vitest-pool-workers → miniflare → <pkg>`, one per dev-only
 vulnerability in a package that pool's miniflare pins exactly (PLAN §15): today
-`sharp: 0.35.4` and `undici: 7.29.1`. Each can only ever touch that one path.
+`sharp: 0.35.5` and `undici: 7.29.1`. Each can only ever touch that one path.
 When a `@cloudflare/vitest-pool-workers` bump lands, ask npm what the pool's
 miniflare wants on its own — `npm view miniflare@<version pinned by the pool>
 dependencies.<pkg>` — and once that is at or past the patched version, delete
