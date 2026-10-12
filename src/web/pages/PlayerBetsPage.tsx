@@ -7,11 +7,15 @@
  * "what did I take", minus the buttons. `readOnly` on the card and
  * `cancellable: false` from the server say the same thing twice, deliberately.
  *
- * The header (rank, equity, balance, exposure, record, ROI) comes from the
- * leaderboard's `all` row, which is already cached when you arrive from the
- * board and is one request otherwise. The bets endpoint carries only the
- * player's name, so the two never disagree about a number: there is one source
- * for the stats, and it is the one the board ranks on.
+ * The header comes from the leaderboard. Rank, the money (net, equity,
+ * balance, exposure) and the bust badges are from the `all` row — already
+ * cached when you arrive from the board, and the rank is the WHOLE-ACCOUNT
+ * one: a league's board breaks net ties on that league's ROI, so "#2 on the
+ * board" must not turn into "#1" when you tap NFL. Record, profit and ROI are
+ * from the row under the SAME sport switch as the list. The bets endpoint
+ * carries only the player's name, so no two numbers can disagree: there is
+ * one source for the stats, and it is the one the board ranks on. (PLAN.md
+ * §11.5, §11.8.)
  *
  * `404 NOT_FOUND` is a player who is disabled, deleted or never existed — the
  * leaderboard's own visibility rule. It is shown as an empty state rather than
@@ -26,15 +30,19 @@ import { getPlayerBets } from '../api/client.js';
 import { BetCard } from '../components/BetCard.js';
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
 import { LoadMore } from '../components/LoadMore.js';
+import { RecordStats, ScopeNote } from '../components/RecordStats.js';
+import { ScopeTabs } from '../components/ScopeTabs.js';
 import { Segmented } from '../components/Segmented.js';
 import { Spinner } from '../components/Spinner.js';
 import { useLeaderboard, usePlayerBets } from '../hooks/useApi.js';
 import { usePoll } from '../hooks/useNow.js';
 import { usePages } from '../hooks/usePages.js';
 import { groupBetsByWeek } from '../lib/grouping.js';
+import { betsEmptyTitle, scopeLeague } from '../lib/scope.js';
+import type { Scope } from '../lib/scope.js';
 import { AdminRefillForm } from '../components/AdminRefillForm.js';
 import { BustBadges } from '../components/BustBadges.js';
-import { NET_HELP, NET_HINT, ROI_HELP, ROI_HINT, formatRoi } from '../lib/labels.js';
+import { NET_HELP, NET_HINT } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
 import type { BetView, LeaderboardRow } from '../../shared/api-types.js';
@@ -49,10 +57,20 @@ const FILTERS: readonly { value: Filter; label: string }[] = [
 /** Open bets carry a live `projected` grade, so they are worth re-reading. */
 const OPEN_POLL_MS = 60_000;
 
-function PlayerStats(props: { readonly row: LeaderboardRow }): ReactElement {
-  const { row } = props;
+/**
+ * `row` is the `all` row (money, never per sport); `stats` is the row under
+ * the chosen sport, undefined while that board loads or after it fails — the
+ * money stays put and only the three record slots wait, so a tab switch never
+ * blanks the header and never moves the cells around it.
+ */
+function PlayerStats(props: {
+  readonly row: LeaderboardRow;
+  readonly stats: LeaderboardRow | undefined;
+  readonly statsFailed: boolean;
+}): ReactElement {
+  const { row, stats, statsFailed } = props;
   return (
-    <dl className="stat-grid">
+    <dl className="stat-grid" aria-busy={stats === undefined && !statsFailed}>
       <div>
         <dt>
           <abbr className="help" title={NET_HELP}>
@@ -76,24 +94,11 @@ function PlayerStats(props: { readonly row: LeaderboardRow }): ReactElement {
         <dt>Open exposure</dt>
         <dd>{formatCents(row.pendingStakeCents)}</dd>
       </div>
-      <div>
-        <dt>Record</dt>
-        <dd>
-          {String(row.record.won)}-{String(row.record.lost)}-{String(row.record.push)}
-          {row.record.void > 0 ? ` (${String(row.record.void)} void)` : ''}
-        </dd>
-      </div>
-      <div>
-        <dt>
-          <abbr className="help" title={ROI_HELP}>
-            ROI
-          </abbr>
-        </dt>
-        <dd>
-          {formatRoi(row.roi)}
-          <small className="stat-hint">{ROI_HINT}</small>
-        </dd>
-      </div>
+      {stats === undefined ? (
+        <RecordStatsPlaceholder value={statsFailed ? '—' : '…'} />
+      ) : (
+        <RecordStats stats={stats} />
+      )}
       <div>
         <dt>Busts</dt>
         <dd>{row.bustCount === 0 ? '—' : <BustBadges count={row.bustCount} />}</dd>
@@ -102,38 +107,72 @@ function PlayerStats(props: { readonly row: LeaderboardRow }): ReactElement {
   );
 }
 
+/** The same three cells `<RecordStats>` fills, holding "…" or "—" for now. */
+function RecordStatsPlaceholder(props: { readonly value: string }): ReactElement {
+  return (
+    <>
+      <div>
+        <dt>Record</dt>
+        <dd>{props.value}</dd>
+      </div>
+      <div>
+        <dt>Profit</dt>
+        <dd>{props.value}</dd>
+      </div>
+      <div>
+        <dt>ROI</dt>
+        <dd>{props.value}</dd>
+      </div>
+    </>
+  );
+}
+
 export function PlayerBetsPage(): ReactElement {
   const { userId = '' } = useParams<{ userId: string }>();
   const session = useSession();
   const [filter, setFilter] = useState<Filter>('open');
+  const [scope, setScope] = useState<Scope>('all');
 
-  const bets = usePlayerBets(userId, filter);
+  const bets = usePlayerBets(userId, filter, scope);
+  // The `all` board is the header's source for rank and money; the scoped
+  // board (the same request when scope is 'all') is the source for the record.
   const board = useLeaderboard('all');
+  const scoped = useLeaderboard(scope);
   const notFound =
     bets.data === undefined && bets.error instanceof ApiError && bets.error.code === 'NOT_FOUND';
   // A player who is not on the board stays not on the board; re-asking every
-  // minute would be a 404 forever, against a free-tier request budget.
+  // minute would be a 404 forever, against a free-tier request budget. The
+  // header polls with the list: a bet that settles leaves Open within a
+  // minute, and the record above it has to move at the same time.
   usePoll(
     () => {
-      if (!notFound) bets.refetch();
+      if (notFound) return;
+      bets.refetch();
+      board.refetch();
+      if (scope !== 'all') scoped.refetch();
     },
     filter === 'open' ? OPEN_POLL_MS : 5 * OPEN_POLL_MS,
   );
 
   const paged = usePages<BetView>(
-    `${userId}:${filter}`,
+    `${userId}:${filter}:${scope}`,
     bets.data === undefined
       ? undefined
       : { items: bets.data.bets, nextCursor: bets.data.nextCursor },
     (bet) => bet.id,
     async (cursor) => {
-      const page = await getPlayerBets(userId, { status: filter, cursor });
+      const page = await getPlayerBets(userId, {
+        status: filter,
+        league: scopeLeague(scope) ?? null,
+        cursor,
+      });
       return { items: page.bets, nextCursor: page.nextCursor };
     },
   );
 
   const groups = groupBetsByWeek(paged.items);
   const row = board.data?.rows.find((r) => r.userId === userId);
+  const stats = scoped.data?.rows.find((r) => r.userId === userId);
   const isMe = session.user?.id === userId;
   const name = bets.data?.player.displayName ?? row?.displayName;
 
@@ -169,7 +208,14 @@ export function PlayerBetsPage(): ReactElement {
             Board
           </Link>
         </div>
-        {row !== undefined && <PlayerStats row={row} />}
+        <div className="stats-head">
+          <span className="muted">Stats</span>
+          <ScopeTabs scope={scope} onChange={setScope} />
+        </div>
+        {row !== undefined && (
+          <PlayerStats row={row} stats={stats} statsFailed={scoped.error !== undefined} />
+        )}
+        <ScopeNote scope={scope} />
         {session.user?.isAdmin === true && !isMe && (
           <details className="admin-refill-details">
             <summary className="muted">Admin: refill this account</summary>
@@ -198,13 +244,7 @@ export function PlayerBetsPage(): ReactElement {
       {bets.loading && bets.data === undefined && <Spinner label="Loading their bets…" />}
 
       {bets.data !== undefined && groups.length === 0 && (
-        <EmptyState
-          title={
-            filter === 'open'
-              ? `${name ?? 'This player'} has no open bets.`
-              : `${name ?? 'This player'} has nothing settled yet.`
-          }
-        />
+        <EmptyState title={betsEmptyTitle(filter, scope, name ?? 'This player')} />
       )}
 
       {groups.map((group) => (

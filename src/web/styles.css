@@ -618,6 +618,26 @@ abbr.help {
   gap: 8px;
 }
 
+/* The sport switch beside a stats card's title (My Bets, a player's page). */
+.stats-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.stats-head .card-title {
+  margin: 0;
+}
+
+/* "A parlay that mixes sports counts under All only" under a sport's figures. */
+.scope-note {
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
 /* ------------------------------------------------------------------ chips */
 
 .chip {

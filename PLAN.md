@@ -2754,17 +2754,19 @@ what the slip promised); `payoutCents` is what was actually paid.
 
 ### 11.5 Balances, ledger, leaderboard
 
-| Method | Path                                      | Response                                                                                                                                      |
-| ------ | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/bankroll?league=`                   | `200 {balances: BankrollView[]}` — every balance the caller owns, `main` first. Creates nothing.                                              |
-| GET    | `/api/ledger?bankrollId=&limit=&cursor=`  | `200 {entries: LedgerEntry[], nextCursor}`. `bankrollId` defaults to the main balance.                                                        |
-| GET    | `/api/leaderboard?league=all\|nfl\|ncaaf` | `200 {league, rows: LeaderboardRow[]}`. `league` optional; `all` / absent is the default. **Enabled, non-deleted accounts only** — see below. |
-| GET    | `/api/leaderboard/all-time`               | `200 {league:'all', rows}` — an ALIAS of the unfiltered board, kept for the shipped client.                                                   |
-| POST   | `/api/bankroll/buyout`                    | `204`. Pays `BUST_BUYOUT_CENTS` from the main balance to remove ONE bust badge; `409 NO_BUST_BADGE` when nothing to buy (§4.5). No body.      |
+| Method | Path                                           | Response                                                                                                                                      |
+| ------ | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/bankroll?league=`                        | `200 {balances: BankrollView[]}` — every balance the caller owns, `main` first. Creates nothing.                                              |
+| GET    | `/api/ledger?bankrollId=&limit=&cursor=`       | `200 {entries: LedgerEntry[], nextCursor}`. `bankrollId` defaults to the main balance.                                                        |
+| GET    | `/api/leaderboard?league=all\|nfl\|ncaaf\|mlb` | `200 {league, rows: LeaderboardRow[]}`. `league` optional; `all` / absent is the default. **Enabled, non-deleted accounts only** — see below. |
+| GET    | `/api/leaderboard/all-time`                    | `200 {league:'all', rows}` — an ALIAS of the unfiltered board, kept for the shipped client.                                                   |
+| POST   | `/api/bankroll/buyout`                         | `204`. Pays `BUST_BUYOUT_CENTS` from the main balance to remove ONE bust badge; `409 NO_BUST_BADGE` when nothing to buy (§4.5). No body.      |
 
 `BankrollView = { id, name, kind ('main'|'custom'), balanceCents,
 pendingStakeCents, equityCents, depositedCents, netCents, bustCount,
-record:{w,l,p,v}, roi, settledCount }` — the three in the middle since §4.5.
+record:{w,l,p,v}, roi, profitCents, settledCount }` — the three in the middle
+since §4.5; `profitCents` since 2026-10-11 (stats by sport). `LeaderboardRow`
+carries the same `record`, `roi` and `profitCents`, plus `rank`.
 
 A LIST even though v1 always returns exactly one, because the schema models
 balances as a list for future side pots and a single-object response would have
@@ -2792,15 +2794,33 @@ roi                = (Σ payout - Σ stake) / Σ stake over bets with status ∈
                      push and void are excluded from BOTH numerator and denominator
                      (standard sportsbook convention; a push is a no-action bet)
                      undefined (null) when the denominator is 0
+profitCents        = that same Σ payout - Σ stake, as integer cents: the ROI numerator
+                     before the division. A SUM of stored cent columns, never a product,
+                     so no float is involved. NOT netCents — net is equity less what the
+                     house put in, so it also carries open stakes, admin adjustments and
+                     badge buyouts; profit is only what settled bets won or lost
 ```
 
-**`?league=` NARROWS `record`, `roi` AND `settledCount` — NOTHING ELSE.**
+**`?league=` NARROWS `record`, `roi`, `profitCents` AND `settledCount` — NOTHING ELSE.**
 `balanceCents`, `pendingStakeCents` and `equityCents` are always the whole
 account, on both endpoints. Money is account-level now, so "my NFL balance" is
 not a quantity that exists anywhere in the ledger; publishing one would mean
 ranking on a number no reconciliation could check, and filtering the exposure but
 not the balance would break `equity = balance + pending`. The tabs answer "who is
-best at college football", which is a question about W-L and ROI.
+best at college football", which is a question about W-L, settled profit and ROI.
+`profitCents` is the per-sport MONEY answer ("how much have I won on MLB"): it
+is a statistic over bets, not a balance, which is why it can be narrowed when
+the balance cannot.
+
+**Stats by sport in the UI (2026-10-11).** The same All / NFL / NCAAF / MLB
+switch (`<ScopeTabs>`, `lib/scope.ts`) sits on My Bets, on a player's page and
+on the leaderboard. On My Bets and a player's page it drives BOTH the list
+(`GET /api/bets?league=` / `GET /api/users/:id/bets?league=`) and the stats
+strip (`GET /api/bankroll?league=` / the leaderboard row under the same
+`?league=`), so the record, profit and ROI shown are over the same sport's
+bets as the list beneath them (the stats are settled bets; the list is whichever
+tab is open). The account page's balance card stays the whole account
+and points at My Bets for the per-sport view.
 
 `league` matches `bets.league` EXACTLY, so a cross-league (`'mixed'`) bet counts
 under `all` and under neither single league. A mixed bet is not an NFL bet, and
@@ -3015,9 +3035,10 @@ My Bets (`listBets`), over a different owner. The route lives in
 
 `PlayerView = { id, username, displayName }` — deliberately NOT `UserSummary`:
 another player's admin flag and signup date are nobody's business on a bets
-page. The stats (rank, equity, balance, exposure, record, ROI) are NOT repeated
-here; the page reads them from the leaderboard's `all` row (§11.5), so there is
-one source for every number and it is the one the board ranks on.
+page. The stats (rank, equity, balance, exposure, record, profit, ROI) are NOT
+repeated here; the page reads them from the leaderboard row under the SAME
+sport switch as the list (`?league=`, §11.5), so there is one source for every
+number and it is the one the board ranks on.
 
 **WHO IS VISIBLE is the leaderboard's predicate**, `users.is_disabled = 0 AND
 users.deleted_at IS NULL`. An account off the board is `404 NOT_FOUND`,
@@ -3061,7 +3082,9 @@ This is the tree as SHIPPED. A few named boxes in the original sketch turned out
 not to want their own file — `<DayGroup>`, `<WeekendGroup>`, `<BankrollSummary>`
 are a `map` over a pure grouping helper in `lib/grouping.ts`, and the three
 tab strips (`<BetFilterTabs>`, `<ScopeTabs>`, `<SlipModeToggle>`) collapsed into
-ONE generic `<Segmented<T>>`. The slip's teaser tier picker is the one exception:
+ONE generic `<Segmented<T>>` — `<ScopeTabs>` came back on 2026-10-11 as a thin
+wrapper over it (like `<LeagueTabs>`), because the All / NFL / NCAAF / MLB row
+is now on three pages and must be the same row on each. The slip's teaser tier picker is the one exception:
 a native `<select>`, because thirteen tiers do not fit a segmented row, with
 each option showing the card price for the slip's current leg count.
 
@@ -3085,17 +3108,19 @@ main.tsx
     │           │   │           ├── <TeamRow team score rank>
     │           │   │           └── <MarketButton market side line price selected>   ×6
     │           │   ├── route "/bets"       <MyBetsPage>
+    │           │   │   ├── (stats card)    <ScopeTabs all|nfl|ncaaf|mlb> + <RecordStats> from /api/bankroll?league=
+    │           │   │   │                   record, profit, ROI, settled — over exactly the bets listed below
     │           │   │   ├── <Segmented<Filter> open|settled>
     │           │   │   ├── groupBetsByWeek()
     │           │   │   │   └── <BetCard bet>         cancel + edit live here
     │           │   │   │       └── <BetLegRow leg projected>
     │           │   │   └── <LoadMore paged>          usePages() cursor paging
     │           │   ├── route "/leaderboard" <LeaderboardPage>
-    │           │   │   ├── <Segmented<Scope> all|nfl|ncaaf>
-    │           │   │   └── <LeaderboardTable rows meUserId>   each name links to /players/:userId
+    │           │   │   ├── <ScopeTabs all|nfl|ncaaf|mlb>
+    │           │   │   └── <LeaderboardTable rows meUserId>   each name links to /players/:userId; W-L-P, Profit, ROI follow the tab
     │           │   ├── route "/players/:userId" <PlayerBetsPage>   another player's bets, read-only (§11.8)
-    │           │   │   ├── (stats header, inline)   from the leaderboard's `all` row: rank, equity, balance, exposure, W-L-P, ROI
-    │           │   │   ├── <Segmented<Filter> open|settled>
+    │           │   │   ├── (stats header, inline)   <ScopeTabs> + the leaderboard row under that scope: rank, equity, balance, exposure, <RecordStats>
+    │           │   │   ├── <Segmented<Filter> open|settled>       the scope narrows this list too
     │           │   │   ├── groupBetsByWeek()
     │           │   │   │   └── <BetCard bet readOnly>    never Edit/Cancel; the server says cancellable:false too
     │           │   │   └── <LoadMore paged>
@@ -3119,7 +3144,7 @@ main.tsx
 
 `<ErrorBanner>` / `<EmptyState>` and `<Spinner>` are shared by every page.
 Pure, DOM-free helpers live in `src/web/lib/` (`grouping`, `datetime`, `labels`,
-`lines`, `paging`, `stake-text`, `tabs`, `admin-tabs`) and in `src/web/state/` (`slip-reducer`,
+`lines`, `paging`, `stake-text`, `tabs`, `admin-tabs`, `scope`) and in `src/web/state/` (`slip-reducer`,
 `slip-preview`, `edit-bet`) precisely so the `web` test project can exercise them
 in a node environment — see §13.
 

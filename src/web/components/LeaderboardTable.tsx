@@ -1,6 +1,6 @@
 /**
  * Columns: rank, user (with bust badges), NET, equity, balance, open exposure,
- * W-L-P, ROI. The user's name links to their bet history (`/players/:userId`,
+ * W-L-P, profit, ROI. The last three follow the sport tab; the money never does. The user's name links to their bet history (`/players/:userId`,
  * §11.8) — the board says who is winning; the link is how you find out what
  * they took.
  *
@@ -13,7 +13,7 @@ import type { ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
 import { BustBadges } from './BustBadges.js';
-import { NET_HELP, ROI_HELP, formatRoi } from '../lib/labels.js';
+import { NET_HELP, PROFIT_HELP, ROI_HELP, formatRoi } from '../lib/labels.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
 import type { LeaderboardRow } from '../../shared/api-types.js';
 
@@ -47,6 +47,11 @@ export function LeaderboardTable(props: {
               W-L-P
             </th>
             <th scope="col" className="num">
+              <abbr className="help" title={PROFIT_HELP}>
+                Profit
+              </abbr>
+            </th>
+            <th scope="col" className="num">
               <abbr className="help" title={ROI_HELP}>
                 ROI
               </abbr>
@@ -70,6 +75,7 @@ export function LeaderboardTable(props: {
               <td className="num">
                 {String(row.record.won)}-{String(row.record.lost)}-{String(row.record.push)}
               </td>
+              <td className="num">{formatSignedCents(row.profitCents)}</td>
               <td className="num">{formatRoi(row.roi)}</td>
             </tr>
           ))}

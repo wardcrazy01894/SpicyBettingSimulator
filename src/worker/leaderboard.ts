@@ -30,9 +30,13 @@
  *   roi               (Σ payout − Σ stake) over bets with status ∈ {won, lost};
  *                     push and void are excluded from BOTH sides; null when the
  *                     denominator is 0
+ *   profitCents       that same Σ payout − Σ stake, as integer cents — the
+ *                     per-sport money figure, narrowed by `?league=` with the
+ *                     record (the money columns above never are)
  *   RANKED BY netCents DESC, then roi DESC, then username ASC
  *
- * THE FILTER IS `?league=all|nfl|ncaaf` AND NARROWS `record` AND `roi` ONLY
+ * THE FILTER IS `?league=all|nfl|ncaaf|mlb` AND NARROWS `record`, `roi` AND
+ * `profitCents` ONLY
  * (M5b). Money is account-level now — there is one pot, not one per league per
  * season — so "NFL balance" is not a quantity that exists anywhere in the
  * ledger, and publishing one would mean ranking on a number no reconciliation
@@ -73,7 +77,7 @@ import type { DepositSums } from './bankroll.js';
 import { queryAll } from './db.js';
 
 /** One `(user, status)` aggregate over the bets inside the requested scope. */
-interface StatRow {
+export interface StatRow {
   user_id: string;
   status: string;
   n: number;
@@ -91,7 +95,7 @@ interface BalanceRow {
 /** A mutable mirror of the readonly wire `BettingRecord`. */
 type MutableRecord = { -readonly [K in keyof BettingRecord]: BettingRecord[K] };
 
-interface Accumulator {
+export interface Accumulator {
   balanceCents: number;
   pendingStakeCents: number;
   depositedCents: number;
@@ -101,7 +105,7 @@ interface Accumulator {
   roiDenominator: number;
 }
 
-function emptyAccumulator(balanceCents: number): Accumulator {
+export function emptyAccumulator(balanceCents: number): Accumulator {
   return {
     balanceCents,
     pendingStakeCents: 0,
@@ -113,7 +117,13 @@ function emptyAccumulator(balanceCents: number): Accumulator {
   };
 }
 
-function applyStat(acc: Accumulator, row: StatRow): void {
+/**
+ * Exported for its test only: the board keeps its own accumulator (it also
+ * folds in the pending exposure rows), so `summariseSettled`'s test does not
+ * cover this sum, and a seeded push or void pays back its exact stake, which
+ * would hide a bug that counted them.
+ */
+export function applyStat(acc: Accumulator, row: StatRow): void {
   switch (row.status) {
     case 'pending':
       acc.pendingStakeCents += row.stake;
@@ -176,6 +186,7 @@ function rank(
       bustCount: acc.bustCount,
       record: acc.record,
       roi,
+      profitCents: acc.roiNumerator,
     };
   });
   rows.sort((a, b) => {
@@ -189,7 +200,7 @@ function rank(
 }
 
 export interface LeaderboardFilter {
-  /** `'all'` means "every bet"; a league narrows `record`/`roi` only. */
+  /** `'all'` means "every bet"; a league narrows `record`/`roi`/`profitCents` only. */
   readonly league: League | 'all';
 }
 

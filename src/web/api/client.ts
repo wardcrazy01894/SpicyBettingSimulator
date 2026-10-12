@@ -336,8 +336,8 @@ export function deleteBet(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Every account balance the caller owns. `league` narrows the RECORD and ROI
- * only; the money columns are always the whole balance. There is no season
+ * Every account balance the caller owns. `league` narrows the RECORD, ROI and
+ * PROFIT only; the money columns are always the whole balance. There is no season
  * filter anywhere in the product (PLAN.md §19 Q5).
  */
 export function getBalances(
@@ -357,7 +357,7 @@ export function getLedger(params: LedgerQuery = {}): Promise<LedgerResponse> {
   return apiGet<LedgerResponse>(`/api/ledger${query({ ...params })}`);
 }
 
-/** `league: 'all'` is the default board; a league narrows record/ROI only. */
+/** `league: 'all'` is the default board; a league narrows record/profit/ROI only. */
 export function getLeaderboard(league: League | 'all'): Promise<LeaderboardResponse> {
   return apiGet<LeaderboardResponse>(`/api/leaderboard${query({ league })}`);
 }

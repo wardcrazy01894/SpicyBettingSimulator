@@ -5,22 +5,25 @@
  * account owns — today that is exactly the `main` one, and the list shape is
  * what makes a future side pot a row rather than a rewrite. The league tabs it
  * used to carry are gone: they selected a BANKROLL, and there is nothing left
- * for them to select. The record/ROI filter lives on the leaderboard instead,
- * where comparing leagues is the point.
+ * for them to select. The per-sport record/profit/ROI switch lives on My Bets
+ * (beside the bets it describes) and on the leaderboard, where comparing
+ * sports is the point; this card is the whole account.
  */
 import { useState } from 'react';
 import type { ReactElement } from 'react';
+import { Link } from 'react-router-dom';
 
 import { EmptyState, ErrorBanner } from '../components/ErrorBanner.js';
 import { LedgerList } from '../components/LedgerList.js';
 import { LoadMore } from '../components/LoadMore.js';
 import { Spinner } from '../components/Spinner.js';
 import { BustBadges } from '../components/BustBadges.js';
+import { RecordStats } from '../components/RecordStats.js';
 import { getLedger, postBustBuyout } from '../api/client.js';
 import { LEDGER_PAGE_SIZE, useBalances, useLedger } from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
 import { usePages } from '../hooks/usePages.js';
-import { NET_HELP, NET_HINT, ROI_HELP, ROI_HINT, formatRoi } from '../lib/labels.js';
+import { NET_HELP, NET_HINT } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { BUST_BUYOUT_CENTS } from '../../shared/constants.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
@@ -156,29 +159,11 @@ function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
           <dt>Bought in</dt>
           <dd>{formatCents(b.depositedCents)}</dd>
         </div>
-        <div>
-          <dt>Record</dt>
-          <dd>
-            {String(b.record.won)}-{String(b.record.lost)}-{String(b.record.push)}
-            {b.record.void > 0 ? ` (${String(b.record.void)} void)` : ''}
-          </dd>
-        </div>
-        <div>
-          <dt>
-            <abbr className="help" title={ROI_HELP}>
-              ROI
-            </abbr>
-          </dt>
-          <dd>
-            {formatRoi(b.roi)}
-            <small className="stat-hint">{ROI_HINT}</small>
-          </dd>
-        </div>
-        <div>
-          <dt>Settled</dt>
-          <dd>{String(b.settledCount)}</dd>
-        </div>
+        <RecordStats stats={b} />
       </dl>
+      <p className="muted scope-note">
+        Record, profit and ROI by sport are on <Link to="/bets">My Bets</Link>.
+      </p>
       <BustBuyout balance={b} />
     </div>
   );

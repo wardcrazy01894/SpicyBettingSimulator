@@ -30,7 +30,8 @@ export function leaderboardRoutes(): Hono<AppContext> {
   });
 
   /**
-   * `?league=all|nfl|ncaaf` — OPTIONAL, and it narrows `record` and `roi` only.
+   * `?league=all|nfl|ncaaf|mlb` — OPTIONAL, and it narrows `record`, `roi` and
+   * `profitCents` only.
    * The money columns are always the whole account, so the default view needs no
    * parameters and never 400s for want of one (which the M5 version did, from a
    * `currentSeasonFor` that could legitimately be null).

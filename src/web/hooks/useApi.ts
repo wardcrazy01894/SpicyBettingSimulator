@@ -34,6 +34,8 @@ import type {
   LedgerResponse,
   PlayerBetsResponse,
 } from '../../shared/api-types.js';
+import { scopeLeague } from '../lib/scope.js';
+import type { Scope } from '../lib/scope.js';
 import type { League } from '../../shared/types.js';
 
 export function useHealth(): Resource<HealthResponse> {
@@ -49,8 +51,10 @@ export function useGames(
   return useResource(key, () => getGames({ league, season, week }));
 }
 
-export function useBets(status: 'open' | 'settled' | 'all'): Resource<BetsResponse> {
-  return useResource(`bets:${status}`, () => getBets({ status }));
+/** `scope` narrows the list to one sport (`?league=`); `'all'` is every bet. */
+export function useBets(status: 'open' | 'settled' | 'all', scope: Scope): Resource<BetsResponse> {
+  const league = scopeLeague(scope) ?? null;
+  return useResource(`bets:${status}:${scope}`, () => getBets({ status, league }));
 }
 
 /**
@@ -62,8 +66,12 @@ export function useBets(status: 'open' | 'settled' | 'all'): Resource<BetsRespon
 export function usePlayerBets(
   userId: string,
   status: 'open' | 'settled' | 'all',
+  scope: Scope,
 ): Resource<PlayerBetsResponse> {
-  return useResource(`bets:player:${userId}:${status}`, () => getPlayerBets(userId, { status }));
+  const league = scopeLeague(scope) ?? null;
+  return useResource(`bets:player:${userId}:${status}:${scope}`, () =>
+    getPlayerBets(userId, { status, league }),
+  );
 }
 
 /**
@@ -80,6 +88,20 @@ export function useBalances(enabled = true): Resource<BankrollsResponse> {
   return useResource(enabled ? 'bankroll:all' : null, () => getBalances());
 }
 
+/**
+ * The same balances with `record`/`roi`/`profitCents`/`settledCount` narrowed
+ * to one sport (`?league=`). `'all'` IS `useBalances()` — the same cache key,
+ * so My Bets' strip and the header badge never disagree — and a league gets
+ * its own entry under the `bankroll:` prefix, which the post-placement
+ * `invalidate('bankroll:')` already covers.
+ */
+export function useBalanceStats(scope: Scope): Resource<BankrollsResponse> {
+  const league = scopeLeague(scope);
+  return useResource(league === undefined ? 'bankroll:all' : `bankroll:league:${league}`, () =>
+    getBalances(league === undefined ? {} : { league }),
+  );
+}
+
 /** Page size asked for by both the ledger's first page and every "Load more". */
 export const LEDGER_PAGE_SIZE = 100;
 
@@ -89,7 +111,7 @@ export function useLedger(bankrollId: string | null): Resource<LedgerResponse> {
   return useResource(key, () => getLedger({ bankrollId, limit: LEDGER_PAGE_SIZE }));
 }
 
-export function useLeaderboard(scope: League | 'all'): Resource<LeaderboardResponse> {
+export function useLeaderboard(scope: Scope): Resource<LeaderboardResponse> {
   return useResource(`leaderboard:${scope}`, () => getLeaderboard(scope));
 }
 

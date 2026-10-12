@@ -188,6 +188,19 @@ export const NET_HELP =
 export const NET_HINT = 'equity minus what the house put in';
 
 /**
+ * Profit is the ROI numerator in dollars: what settled bets actually won or
+ * lost, narrowed by sport with the record. The reader most likely to be
+ * confused is the one comparing it with Net on the All tab, so the help says
+ * exactly what Net counts that this does not.
+ */
+export const PROFIT_HELP =
+  'Profit: winnings minus stakes on bets that won or lost, in the selected sport. Pushes, voids ' +
+  'and open bets are left out. Unlike net profit it ignores refills, adjustments and badge ' +
+  'buyouts, and it never includes money still riding.';
+
+export const PROFIT_HINT = 'won minus lost on settled bets';
+
+/**
  * Title text for a player's bust badges, so a screen reader and a hover both
  * say what the skull means. Pluralised by hand: three cases, no library.
  */

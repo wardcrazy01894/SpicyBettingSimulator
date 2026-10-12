@@ -65,7 +65,11 @@ you, but the loss stays on the board and a 💀 goes beside your name.
    legs keep grading as their games finish, just for the record. Your
    account page has the full ledger, every cent of it, and the leaderboard
    ranks everyone by **net profit**: equity (balance plus whatever is still
-   riding) minus what the house has put in.
+   riding) minus what the house has put in. My Bets, the leaderboard and
+   every player's page have an **All / NFL / NCAAF / MLB** switch, so "how am
+   I doing in just MLB" is one tap: the record, profit and ROI narrow to that
+   sport, and so does the bet list under them. A parlay that mixes sports
+   counts under All only; the money is the whole account either way.
    **Tap a name on the leaderboard** to see that player's bets: what's still
    open and how each leg is going, and everything that's settled, with what it
    won or lost. Everyone's history is open to everyone; it's a friend group,
