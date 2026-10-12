@@ -44,7 +44,7 @@
     "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/vitest-plugin": "^1.4.0",
     "@cloudflare/workers-types": "^5.20260925.1",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.4",
@@ -67,13 +67,5 @@
     "esbuild": true,
     "fsevents": true,
     "workerd": true
-  },
-  "overrides": {
-    "@cloudflare/vitest-pool-workers": {
-      "miniflare": {
-        "sharp": "0.35.5",
-        "undici": "7.29.1"
-      }
-    }
   }
 }

@@ -389,10 +389,10 @@ every native binary the toolchain fetches today, so a Cloudflare-group bump shou
 its own; a NEW name is the thing to look at.
 
 Reviewing a Cloudflare-group PR means checking two constraints, both in PLAN §15: `compatibility_date`
-in `wrangler.jsonc` must not be newer than the workerd bundled with `@cloudflare/vitest-pool-workers`
-(the pool refuses it with `ERR_RUNTIME_FAILURE` and `npm run test:worker` fails; a date later than
-today's fails differently, `ERR_FUTURE_COMPATIBILITY_DATE`), and the pool's `peerDependencies` pin
-the `vitest` major. If a pool bump widens that peer to a vitest major we currently ignore, the PR
+in `wrangler.jsonc` must not be newer than the workerd bundled with `@cloudflare/vitest-plugin`
+(the plugin refuses it with `ERR_RUNTIME_FAILURE` and `npm run test:worker` fails; a date later than
+today's fails differently, `ERR_FUTURE_COMPATIBILITY_DATE`), and the plugin's `peerDependencies` pin
+the `vitest` major. If a plugin bump widens that peer to a vitest major we currently ignore, the PR
 arrives red and the fix is to lift the `vitest` ceiling in BOTH `dependabot.yml` and PLAN §15 — not
 to rerun CI.
 
@@ -405,22 +405,23 @@ for fsevents) that will read identically on every bump, so the real check is the
 open the new version's `install.js` on npmjs.com or unpkg and skim what it does. One that does
 anything other than fetch its own binary is the review finding.
 
-`package.json` carries `overrides` entries scoped to
-`@cloudflare/vitest-pool-workers → miniflare → <pkg>`, one per dev-only
-vulnerability in a package that pool's miniflare pins exactly (PLAN §15): today
-`sharp: 0.35.5` and `undici: 7.29.1`. Each can only ever touch that one path.
-When a `@cloudflare/vitest-pool-workers` bump lands, ask npm what the pool's
-miniflare wants on its own — `npm view miniflare@<version pinned by the pool>
-dependencies.<pkg>` — and once that is at or past the patched version, delete
-that override in the same PR (`npm ls <pkg>` shows "overridden" while it is in
-effect, which is the proxy, not the answer). A stale override would silently
-pin a future requirement back to the old version, which is the reason to remove
-each one at the first opportunity. You will not have to remember:
-`tests/unit/docs.spec.ts` keeps a `POOL_OVERRIDES` table (package, patched
-version, advisory), reads what the pool's miniflare wants and FAILS CI on the
-pool-bump PR until the override is deleted (and fails the reverse, if an
-override goes while the pin is still vulnerable, or an override is added with
-no table row).
+`package.json` has no `overrides` block today, and `tests/unit/docs.spec.ts`
+fails if one appears without a `POOL_OVERRIDES` row (PLAN §15). The case it
+exists for: a dev-only vulnerability in a package that the vitest plugin's
+miniflare pins exactly and no plugin release has moved yet (the old
+`vitest-pool-workers` did this for `sharp` and `undici`). The fix then is an
+override SCOPED to `@cloudflare/vitest-plugin → miniflare → <pkg>` — it can only
+ever touch that one path — plus a table row. When the next
+`@cloudflare/vitest-plugin` bump lands, ask npm what its miniflare wants on its
+own — `npm view miniflare@<version pinned by the plugin> dependencies.<pkg>` —
+and once that is at or past the patched version, delete the override in the
+same PR (`npm ls <pkg>` shows "overridden" while it is in effect, which is the
+proxy, not the answer). A stale override would silently pin a future
+requirement back to the old version, which is the reason to remove each one at
+the first opportunity. You will not have to remember: the guard reads what the
+plugin's miniflare wants and FAILS CI on the plugin-bump PR until the override
+is deleted (and fails the reverse, if an override goes while the pin is still
+vulnerable).
 
 Security-only updates are enabled separately in the repo settings. They arrive as their own
 ungrouped PRs, outside `open-pull-requests-limit`, and the `ignore` rules apply to them too: a

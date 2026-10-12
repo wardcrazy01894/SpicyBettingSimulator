@@ -913,49 +913,39 @@ describe('claims the docs make about the repo', () => {
   });
 
   /**
-   * Each scoped `overrides` entry (PLAN §15, OPERATIONS "Dependencies") exists
-   * only because the vitest pool's miniflare pins a vulnerable package exactly.
-   * The day a pool bump ships a miniflare that wants the patched version on its
-   * own, the override must go in that same PR — and Dependabot will never say
-   * so, because it only proposes bumps. This does: it fails the Dependabot
-   * pool-bump PR itself until the override is deleted, and fails the reverse
+   * A scoped `overrides` entry (PLAN §15, OPERATIONS "Dependencies") exists
+   * only because the vitest plugin's miniflare pins a vulnerable package exactly.
+   * The day a plugin bump ships a miniflare that wants the patched version on
+   * its own, the override must go in that same PR — and Dependabot will never
+   * say so, because it only proposes bumps. This does: it fails the Dependabot
+   * plugin-bump PR itself until the override is deleted, and fails the reverse
    * (override deleted while miniflare still wants the vulnerable version).
    *
-   * One row per override. Adding an override without a row here is the
-   * failure mode the last test below catches.
+   * One row per override. The table is EMPTY today: `@cloudflare/vitest-plugin`
+   * (the renamed, maintained `@cloudflare/vitest-pool-workers`) carries the
+   * same miniflare as the top-level wrangler, so both overrides that the old
+   * pool needed (sharp, undici — PLAN §15 history) went with the rename. With
+   * no rows, the test below asserts package.json has NO `overrides` block at
+   * all; adding one without a row here is the failure mode it catches.
    */
   interface PoolOverride {
     readonly pkg: string;
     readonly patched: string;
     readonly advisory: string;
   }
-  const POOL_OVERRIDES: readonly PoolOverride[] = [
-    {
-      pkg: 'sharp',
-      patched: '0.35.5',
-      advisory: 'GHSA-wq5f-xc86-pv6w (high, librsvg RCE) and GHSA-rgj7-g3m4-5g8c (high, libheif)',
-    },
-    {
-      pkg: 'undici',
-      patched: '7.29.1',
-      advisory:
-        'GHSA-w293-vg96-wgc3 (high, TLS validation bypass in BalancedPool) and five more: ' +
-        'GHSA-8436-99hf-9mmv, GHSA-2jfj-6hjv-fm6j, GHSA-r53p-7pc4-xj5r, GHSA-2gqq-gqf2-x968, ' +
-        'GHSA-pmjh-fq2x-6v4x',
-    },
-  ];
+  const POOL_OVERRIDES: readonly PoolOverride[] = [];
 
   interface PoolMiniflare {
     version: string;
     dependencies?: Record<string, string>;
   }
 
-  /** The miniflare the vitest pool declares — nested when npm cannot hoist it. */
+  /** The miniflare the vitest plugin declares — nested when npm cannot hoist it. */
   function poolMiniflare(): PoolMiniflare {
-    // Read by path, not require.resolve: the pool's package.json is behind an
-    // `exports` map. Whichever copy is found must be the version the pool
+    // Read by path, not require.resolve: the plugin's package.json is behind an
+    // `exports` map. Whichever copy is found must be the version the plugin
     // declares, or this test is looking at the wrong miniflare.
-    const poolDir = join(ROOT, 'node_modules', '@cloudflare', 'vitest-pool-workers');
+    const poolDir = join(ROOT, 'node_modules', '@cloudflare', 'vitest-plugin');
     const pool = JSON.parse(readFileSync(join(poolDir, 'package.json'), 'utf8')) as {
       dependencies: Record<string, string>;
     };
@@ -966,7 +956,7 @@ describe('claims the docs make about the repo', () => {
         'utf8',
       ),
     ) as PoolMiniflare;
-    expect(miniflare.version, 'not the miniflare the pool declares').toBe(
+    expect(miniflare.version, 'not the miniflare the plugin declares').toBe(
       pool.dependencies['miniflare'],
     );
     return miniflare;
@@ -974,9 +964,9 @@ describe('claims the docs make about the repo', () => {
 
   function poolOverrides(): Record<string, string> {
     const pkg = JSON.parse(read('package.json')) as {
-      overrides?: { '@cloudflare/vitest-pool-workers'?: { miniflare?: Record<string, string> } };
+      overrides?: { '@cloudflare/vitest-plugin'?: { miniflare?: Record<string, string> } };
     };
-    return pkg.overrides?.['@cloudflare/vitest-pool-workers']?.miniflare ?? {};
+    return pkg.overrides?.['@cloudflare/vitest-plugin']?.miniflare ?? {};
   }
 
   const semver = (spec: string | undefined): string | undefined =>
@@ -988,7 +978,7 @@ describe('claims the docs make about the repo', () => {
   };
 
   it.each(POOL_OVERRIDES)(
-    "the $pkg override exists exactly while the pool's miniflare needs it",
+    "the $pkg override exists exactly while the plugin's miniflare needs it",
     ({ pkg, patched, advisory }) => {
       const miniflare = poolMiniflare();
       const wanted = semver(miniflare.dependencies?.[pkg]);
@@ -1003,7 +993,7 @@ describe('claims the docs make about the repo', () => {
       if (cmp(wanted ?? '0.0.0', patched) >= 0) {
         expect(
           override,
-          `The vitest pool's miniflare ${miniflare.version} now wants ${pkg} ${String(wanted)} on ` +
+          `The vitest plugin's miniflare ${miniflare.version} now wants ${pkg} ${String(wanted)} on ` +
             `its own, so the package.json overrides entry for ${pkg} is dead weight and could ` +
             `silently pin a future requirement — delete it and its POOL_OVERRIDES row in this ` +
             `PR (PLAN §15, OPERATIONS "Dependencies").`,
@@ -1011,7 +1001,7 @@ describe('claims the docs make about the repo', () => {
       } else {
         expect(
           override !== undefined && cmp(override, patched) >= 0,
-          `The vitest pool's miniflare ${miniflare.version} still wants ${pkg} ${String(wanted)} ` +
+          `The vitest plugin's miniflare ${miniflare.version} still wants ${pkg} ${String(wanted)} ` +
             `(< ${patched}, ${advisory}); package.json must keep the scoped override ` +
             `at >= ${patched} or the Dependabot alert reopens.`,
         ).toBe(true);
@@ -1019,11 +1009,11 @@ describe('claims the docs make about the repo', () => {
     },
   );
 
-  it('every pool override has a POOL_OVERRIDES row, so none can outlive its reason', () => {
+  it('every plugin override has a POOL_OVERRIDES row, so none can outlive its reason', () => {
     // The shape is asserted first, because the per-row test above reads ONE
-    // path — overrides['@cloudflare/vitest-pool-workers'].miniflare — and an
+    // path — overrides['@cloudflare/vitest-plugin'].miniflare — and an
     // override parked anywhere else (a global `undici`, a version-qualified
-    // `@cloudflare/vitest-pool-workers@0.22.0` key, a sibling of `miniflare`)
+    // `@cloudflare/vitest-plugin@1.4.0` key, a sibling of `miniflare`)
     // would take effect at install time while nothing here ever looked at it.
     // When the table is empty the overrides block must be gone too — that is
     // the state the per-row failure message walks the author towards, and
@@ -1032,25 +1022,25 @@ describe('claims the docs make about the repo', () => {
       overrides?: Record<string, unknown>;
     };
     const overrides = pkg.overrides ?? {};
-    const expectedKeys = POOL_OVERRIDES.length === 0 ? [] : ['@cloudflare/vitest-pool-workers'];
+    const expectedKeys = POOL_OVERRIDES.length === 0 ? [] : ['@cloudflare/vitest-plugin'];
     expect(
       Object.keys(overrides),
-      'package.json overrides may contain exactly the vitest pool entry, and only while ' +
+      'package.json overrides may contain exactly the vitest plugin entry, and only while ' +
         'POOL_OVERRIDES has rows; every other key is an override this guard cannot see. If an ' +
         'override is genuinely needed elsewhere, extend the guard to read that path and record ' +
         'the override in PLAN §15 and OPERATIONS "Dependencies" in the same PR.',
     ).toEqual(expectedKeys);
     if (expectedKeys.length === 0) return;
-    const pool = overrides['@cloudflare/vitest-pool-workers'];
+    const pool = overrides['@cloudflare/vitest-plugin'];
     expect(
       pool !== null && typeof pool === 'object' ? Object.keys(pool) : pool,
-      "the pool's overrides entry must contain exactly `miniflare`; a sibling key is an " +
+      "the plugin's overrides entry must contain exactly `miniflare`; a sibling key is an " +
         'override the POOL_OVERRIDES guard cannot see.',
     ).toEqual(['miniflare']);
     const miniflare = (pool as Record<string, unknown>)['miniflare'];
     expect(
       miniflare !== null && typeof miniflare === 'object',
-      "overrides …['@cloudflare/vitest-pool-workers'].miniflare must be an object of " +
+      "overrides …['@cloudflare/vitest-plugin'].miniflare must be an object of " +
         '{ package: version }, not a version string for miniflare itself.',
     ).toBe(true);
     const rows = new Set<string>(POOL_OVERRIDES.map((o) => o.pkg));
@@ -1058,7 +1048,7 @@ describe('claims the docs make about the repo', () => {
       expect(typeof spec, `overrides …miniflare.${name} must be a version string`).toBe('string');
       expect(
         rows.has(name),
-        `package.json overrides ${name} under the vitest pool's miniflare, but nothing in ` +
+        `package.json overrides ${name} under the vitest plugin's miniflare, but nothing in ` +
           `tests/unit/docs.spec.ts says when that override may be deleted. Add a ` +
           `POOL_OVERRIDES row with the patched version and the advisory.`,
       ).toBe(true);

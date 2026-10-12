@@ -9,7 +9,7 @@
  * 2. (M4) Installs the `https://espn.test/**` fetch stub from ./fixtures.ts, so
  *    no test touches the network and ingestion is deterministic.
  *
- * Isolation: vitest-pool-workers gives every test FILE a fresh copy of storage
+ * Isolation: @cloudflare/vitest-plugin gives every test FILE a fresh copy of storage
  * and, with the default `isolatedStorage`, rolls back each test's writes. The
  * migration therefore runs once per file (beforeAll) and every test starts from
  * the seeded schema.

@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 // Three projects:
 //   unit   -> pure logic in src/shared (node env, fast)
-//   worker -> Worker + real D1 via @cloudflare/vitest-pool-workers
+//   worker -> Worker + real D1 via @cloudflare/vitest-plugin
 //   web    -> pure UI helpers in src/web/lib and the slip reducer (node env)
 export default defineConfig({
   test: {

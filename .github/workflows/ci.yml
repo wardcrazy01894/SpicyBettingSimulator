@@ -39,7 +39,7 @@ jobs:
       - name: Format check
         run: npm run format:check
 
-      # Build BEFORE test: vitest-pool-workers loads wrangler.jsonc, whose
+      # Build BEFORE test: @cloudflare/vitest-plugin loads wrangler.jsonc, whose
       # assets.directory is ./dist/client. `npm run pretest` also creates it, so
       # tests pass standalone, but building first exercises the real artifact.
       - name: Build

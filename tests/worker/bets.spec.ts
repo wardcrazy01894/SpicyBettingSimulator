@@ -60,7 +60,7 @@ import {
  *     userId, req, now)` takes the clock as a parameter and is the same code
  *     path the route calls.
  *
- * ISOLATION. vitest-pool-workers 0.22 gives each test FILE fresh storage but does
+ * ISOLATION. @cloudflare/vitest-plugin gives each test FILE fresh storage but does
  * NOT roll back between tests, and `ledger` has a BEFORE DELETE trigger, so no
  * `beforeEach` could truncate it even if it wanted to. Every test therefore
  * allocates its OWN user and its OWN game ids (`g()` / `gc()` below) and every
