@@ -312,6 +312,9 @@ the one failure mode the whole checklist has.
       vars `REFRESH_TARGETS_PER_RUN` and `SETTLE_CHUNK` against PLAN §9.1;
     - every cron expression in `wrangler.jsonc` appears in PLAN §9.1 **and** in
       `docs/OPERATIONS.md`;
+    - `wrangler.jsonc`'s `compatibility_date` is the date PLAN §15 says is
+      current, and is not newer than the workerd `@cloudflare/vitest-plugin`
+      bundles per `package-lock.json`;
     - every route literal in `src/worker/routes/*.ts` — every file in that
       directory, listed at test time, never a hard-coded list — at its mounted
       prefix, appears in PLAN §11;
