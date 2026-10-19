@@ -3881,7 +3881,7 @@ PR, and `wrangler` + `@cloudflare/*` as one PR so the two toolchain constraints
 are reviewed side by side: `compatibility_date` in `wrangler.jsonc` is pinned to
 the newest date the workerd bundled with `@cloudflare/vitest-plugin` supports
 (the plugin pins its own wrangler exactly, so the top-level `wrangler`'s workerd
-is allowed to differ; today both are `1.20261006.1` and the date is 2026-10-06),
+is allowed to differ; today both are `1.20261012.1` and the date is 2026-10-12),
 and the plugin's peerDependencies bound the `vitest` major. Moving the date is
 a PRODUCTION RUNTIME change, not a dependency bump, so it gets its own PR and
 its own reading of workerd's `src/workerd/io/compatibility-date.capnp` at the
@@ -3894,7 +3894,10 @@ and one implied flag — `python_workers_314`, implied by `python_workers` after
 listeners are reported, not propagated — the Worker registers no event
 listener and uses `AbortSignal.timeout()` only as a fetch timeout) and
 `durable_object_io_tasks_prevent_eviction` (2026-10-01; no Durable Objects
-here). The worker test project loads `wrangler.jsonc`, so a date the bundled
+here). 2026-10-06 → 2026-10-12 (checked 2026-10-19, after #71 moved the
+plugin to 1.4.4 / workerd 1.20261012.1) crossed NO enable date and NO implied
+flag: the newest dates in that capnp are 2026-09-15 and 2026-10-01, both
+already behind the old date. The worker test project loads `wrangler.jsonc`, so a date the bundled
 workerd refuses fails `npm test` before it can deploy. The three ceilings above are `ignore`
 entries there — `vitest` and `@vitest/*` (`@vitest/coverage-v8` peers on an
 EXACT vitest version, so the two must bump together), `typescript` at
