@@ -3897,8 +3897,9 @@ listener and uses `AbortSignal.timeout()` only as a fetch timeout) and
 here). 2026-10-06 → 2026-10-12 (checked 2026-10-19, after #71 moved the
 plugin to 1.4.4 / workerd 1.20261012.1) crossed NO enable date and NO implied
 flag: the newest dates in that capnp are 2026-09-15 and 2026-10-01, both
-already behind the old date. The worker test project loads `wrangler.jsonc`, so a date the bundled
-workerd refuses fails `npm test` before it can deploy. The three ceilings above are `ignore`
+already behind the old date. The worker test project loads `wrangler.jsonc`,
+so a date the bundled workerd refuses fails `npm test` before it can deploy.
+The three ceilings above are `ignore`
 entries there — `vitest` and `@vitest/*` (`@vitest/coverage-v8` peers on an
 EXACT vitest version, so the two must bump together), `typescript` at
 `>=6.1.0` (the real edge of typescript-eslint's range; 6.0.x is not ignored),
