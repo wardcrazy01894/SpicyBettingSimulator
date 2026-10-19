@@ -932,7 +932,10 @@ describe('claims the docs make about the repo', () => {
         if (candidate in lock.packages) return candidate;
         if (dir === '')
           throw new Error(`package-lock.json cannot resolve ${name} from ${from || '<root>'}`);
-        dir = dir.replace(/\/?node_modules\/(@[^/]+\/)?[^/]+$/, '');
+        const parent = dir.replace(/\/?node_modules\/(@[^/]+\/)?[^/]+$/, '');
+        if (parent === dir)
+          throw new Error(`package-lock.json key ${dir} is not under a node_modules`);
+        dir = parent;
       }
     };
     const plugin = resolve('', '@cloudflare/vitest-plugin');
