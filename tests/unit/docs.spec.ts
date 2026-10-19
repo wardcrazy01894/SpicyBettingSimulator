@@ -895,6 +895,64 @@ describe('claims the docs make about the repo', () => {
   });
 
   /**
+   * PLAN §15 pins `compatibility_date` to the newest date the workerd bundled
+   * with `@cloudflare/vitest-plugin` supports (workerd `1.YYYYMMDD.N` accepts
+   * dates up to YYYY-MM-DD and refuses anything later), and says in prose
+   * which date that is today. Both halves are mechanical: the sentence must
+   * quote the date wrangler.jsonc deploys, and that date must not be past the
+   * bundled workerd's. The bundled version comes from package-lock.json, the
+   * actual pin, resolved the way npm does (nearest `node_modules` walking up),
+   * because the plugin's `exports` hides its package.json from `require`.
+   */
+  it('wrangler.jsonc compatibility_date is the one PLAN §15 states, and the bundled workerd accepts it', () => {
+    const configured = /"compatibility_date":\s*"(\d{4}-\d{2}-\d{2})"/.exec(WRANGLER)?.[1];
+    expect(configured, 'wrangler.jsonc has no `compatibility_date`').toBeDefined();
+
+    const stated = /the date is (\d{4}-\d{2}-\d{2})/.exec(section(PLAN, '15'))?.[1];
+    expect(
+      stated,
+      'PLAN §15 no longer says "today both are `<workerd>` and the date is YYYY-MM-DD". ' +
+        'That sentence is the record of the current pin; keep it.',
+    ).toBeDefined();
+    expect(
+      stated,
+      `PLAN §15 says the compatibility_date is ${String(stated)}, but wrangler.jsonc deploys ` +
+        `${String(configured)}. Moving the date is a production-runtime change with its own PR ` +
+        `and its own capnp reading (PLAN §15); update the sentence in that PR.`,
+    ).toBe(configured);
+
+    const lock = JSON.parse(read('package-lock.json')) as {
+      packages: Record<string, { version?: string; dependencies?: Record<string, string> }>;
+    };
+    /** npm's resolution: `<from>/node_modules/<name>`, then each parent's. */
+    const resolve = (from: string, name: string): string => {
+      let dir = from;
+      for (;;) {
+        const candidate = `${dir}${dir ? '/' : ''}node_modules/${name}`;
+        if (candidate in lock.packages) return candidate;
+        if (dir === '')
+          throw new Error(`package-lock.json cannot resolve ${name} from ${from || '<root>'}`);
+        const parent = dir.replace(/\/?node_modules\/(@[^/]+\/)?[^/]+$/, '');
+        if (parent === dir)
+          throw new Error(`package-lock.json key ${dir} is not under a node_modules`);
+        dir = parent;
+      }
+    };
+    const plugin = resolve('', '@cloudflare/vitest-plugin');
+    const miniflare = resolve(plugin, 'miniflare');
+    const workerd = lock.packages[resolve(miniflare, 'workerd')]?.version ?? '';
+    const bundled = /^1\.(\d{4})(\d{2})(\d{2})\.\d+$/.exec(workerd);
+    expect(bundled, `unexpected workerd version string ${JSON.stringify(workerd)}`).not.toBeNull();
+    const ceiling = `${bundled?.[1] ?? ''}-${bundled?.[2] ?? ''}-${bundled?.[3] ?? ''}`;
+    expect(
+      String(configured) <= ceiling,
+      `wrangler.jsonc compatibility_date ${String(configured)} is newer than the workerd ` +
+        `@cloudflare/vitest-plugin bundles (${workerd}, ceiling ${ceiling}); the worker test ` +
+        `project refuses to start with ERR_RUNTIME_FAILURE. Bump the plugin first (PLAN §15).`,
+    ).toBe(true);
+  });
+
+  /**
    * The runbook's "Applied migrations" table is the operator's record of what
    * the live database has. A migration file nobody added to it is exactly the
    * one somebody will be surprised by at 2am.
