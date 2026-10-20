@@ -127,8 +127,8 @@ export async function listPlayerBusts(env: Env, userId: string): Promise<PlayerB
       refilledAt: row.refilled_at,
       amountCents: row.amount_cents,
       boughtOutAt: row.bought_out_at,
-      // The ledger row is negative (money out); the wire says what was paid.
-      buyoutCents: row.buyout_cents === null ? null : -row.buyout_cents,
+      // The ledger row is negative (money out); the wire says the price paid.
+      priceCents: row.buyout_cents === null ? null : -row.buyout_cents,
     })),
   };
 }

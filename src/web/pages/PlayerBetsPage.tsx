@@ -69,7 +69,8 @@ function PlayerStats(props: {
   readonly row: LeaderboardRow;
   readonly stats: LeaderboardRow | undefined;
   readonly statsFailed: boolean;
-  readonly busts: readonly BustView[] | undefined;
+  /** `undefined` while the history loads; `null` when that request failed. */
+  readonly busts: readonly BustView[] | null | undefined;
 }): ReactElement {
   const { row, stats, statsFailed, busts } = props;
   return (
@@ -112,12 +113,12 @@ function PlayerStats(props: {
       </div>
       <div>
         <dt>Busts</dt>
-        <dd>
+        <dd aria-busy={busts === undefined}>
           {busts === undefined
-            ? row.bustCount === 0
+            ? '…'
+            : busts === null
               ? '—'
-              : bustSummary(row.bustCount, 0)
-            : bustSummary(busts.length, busts.filter((b) => b.boughtOutAt !== null).length)}
+              : bustSummary(busts.length, busts.filter((b) => b.boughtOutAt !== null).length)}
           {row.bustCount > 0 && <BustBadges count={row.bustCount} />}
         </dd>
       </div>
@@ -142,15 +143,17 @@ function BustHistory(props: { readonly busts: readonly BustView[] }): ReactEleme
               💀 Bust #{String(i + 1)} — refilled {formatCents(bust.amountCents)}
             </span>
           </div>
-          <span className="muted">{formatDateTime(bust.refilledAt)}</span>
-          {bust.boughtOutAt === null ? (
-            <span className="num tone-loss">badge still on</span>
-          ) : (
-            <span className="num tone-win">
-              bought off {formatDateTime(bust.boughtOutAt)}
-              {bust.buyoutCents === null ? '' : ` for ${formatCents(bust.buyoutCents)}`}
-            </span>
-          )}
+          {/* Dates and the price live in the muted line: the `.num` column is
+              auto-width and bold, sized for an amount, not a sentence. */}
+          <span className="muted">
+            {formatDateTime(bust.refilledAt)}
+            {bust.boughtOutAt !== null &&
+              ` · bought off ${formatDateTime(bust.boughtOutAt)}` +
+                (bust.priceCents === null ? '' : ` for ${formatCents(bust.priceCents)}`)}
+          </span>
+          <span className={bust.boughtOutAt === null ? 'num tone-loss' : 'num tone-win'}>
+            {bust.boughtOutAt === null ? 'badge on' : 'bought off'}
+          </span>
         </li>
       ))}
     </ul>
@@ -200,7 +203,8 @@ export function PlayerBetsPage(): ReactElement {
       if (notFound) return;
       bets.refetch();
       board.refetch();
-      busts.refetch();
+      // Not `busts`: a history changes only on a refill or a buyout, and both
+      // invalidate `leaderboard:` (its key prefix), so it refreshes then.
       if (scope !== 'all') scoped.refetch();
     },
     filter === 'open' ? OPEN_POLL_MS : 5 * OPEN_POLL_MS,
@@ -269,11 +273,14 @@ export function PlayerBetsPage(): ReactElement {
             row={row}
             stats={stats}
             statsFailed={scoped.error !== undefined}
-            busts={busts.data?.busts}
+            busts={busts.data?.busts ?? (busts.error === undefined ? undefined : null)}
           />
         )}
         <ScopeNote scope={scope} />
         {busts.data !== undefined && <BustHistory busts={busts.data.busts} />}
+        {busts.data === undefined && busts.error !== undefined && (
+          <p className="muted">Couldn't load the bust history.</p>
+        )}
 
         {session.user?.isAdmin === true && !isMe && (
           <details className="admin-refill-details">

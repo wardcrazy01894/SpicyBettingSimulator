@@ -4,9 +4,9 @@
  * instead of rendering a raw enum value to a user.
  */
 
-import { MIN_TEASER_LEGS } from '../../shared/constants.js';
+import { INITIAL_BANKROLL_CENTS, MIN_TEASER_LEGS } from '../../shared/constants.js';
 import { formatAmerican } from '../../shared/odds.js';
-import { distinctGameIds, formatLineTenths } from '../../shared/validate.js';
+import { distinctGameIds, formatCents, formatLineTenths } from '../../shared/validate.js';
 import type {
   BetLeague,
   BetStatus,
@@ -191,7 +191,7 @@ export const NET_HINT = 'equity minus what the house put in';
 /** Hover copy for "Bought in": a NET figure, because a buyout pays a refill back (PLAN.md §4.5). */
 export const BOUGHT_IN_HELP =
   'Bought in: the opening bankroll plus any bust refills, less what you have paid back by ' +
-  'removing a badge. Net of repayments, so it can sit below the $1,000 everyone starts with.';
+  `removing a badge. Net of repayments, so it can sit below the ${formatCents(INITIAL_BANKROLL_CENTS)} everyone starts with.`;
 
 /**
  * Profit is the ROI numerator in dollars: what settled bets actually won or

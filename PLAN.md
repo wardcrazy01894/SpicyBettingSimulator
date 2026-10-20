@@ -646,17 +646,17 @@ Consequences worth spelling out:
 
 ### 4.3 Money flows
 
-| Event                 | Ledger rows written                                                                                                    |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **Signup**            | `deposit_initial` `+100000`, `ref_id='init'` — once per account, for its life                                          |
-| Bet placed            | `bet_stake` `-stake`, `ref_id=betId`                                                                                   |
-| Bet won               | `bet_payout` `+payout` (= stake + profit), `ref_id=betId`                                                              |
-| Bet pushed / voided   | `bet_payout` `+stake`, `ref_id=betId`                                                                                  |
-| Bet lost              | **none** — the stake row already debited it                                                                            |
-| Bet cancelled by user | `bet_refund` `+stake`, `ref_id=betId`                                                                                  |
-| Admin adjustment      | `admin_adjust` `±n`, `ref_id=<uuid>` — a CORRECTION; counts as profit/loss                                             |
-| Bust refill (admin)   | `deposit_refill` `+n`, `ref_id=<uuid>` — one bust badge; joins "bought in" (§4.5)                                      |
-| Bust badge buyout     | `bust_buyout` `-BUST_BUYOUT_CENTS`, `ref_id=<id of the refill retired>` — the refill REPAID; leaves "bought in" (§4.5) |
+| Event                 | Ledger rows written                                                                                                                                  |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Signup**            | `deposit_initial` `+100000`, `ref_id='init'` — once per account, for its life                                                                        |
+| Bet placed            | `bet_stake` `-stake`, `ref_id=betId`                                                                                                                 |
+| Bet won               | `bet_payout` `+payout` (= stake + profit), `ref_id=betId`                                                                                            |
+| Bet pushed / voided   | `bet_payout` `+stake`, `ref_id=betId`                                                                                                                |
+| Bet lost              | **none** — the stake row already debited it                                                                                                          |
+| Bet cancelled by user | `bet_refund` `+stake`, `ref_id=betId`                                                                                                                |
+| Admin adjustment      | `admin_adjust` `±n`, `ref_id=<uuid>` — a CORRECTION; counts as profit/loss                                                                           |
+| Bust refill (admin)   | `deposit_refill` `+n`, `ref_id=<uuid>` — one bust badge; joins "bought in" (§4.5)                                                                    |
+| Bust badge buyout     | `bust_buyout` `-BUST_BUYOUT_CENTS`, `ref_id=<id of the refill retired>` — the refill REPAID, SUBTRACTED from "bought in" so net does not move (§4.5) |
 
 A loss writing no row is deliberate: it keeps the ledger a pure cash-movement log,
 and `SUM(amount_cents) = balance_cents` stays trivially checkable
@@ -773,7 +773,6 @@ deposit_refill + Σ bust_buyout` on the MAIN balance — what the house has
    refill bought off for $1,000 leaves it $999 below the opening bankroll.
    That is correct — the player handed the house $999 more than it gave —
    and net is still exactly the bets' result. Every account opens at the same
-
    amount, so without a refill the order is exactly what ranking by equity
    gave (§19 Q2's reasoning survives intact: a stake in flight still neither
    helps nor hurts); with one, the refilled player keeps carrying the money
@@ -3048,10 +3047,11 @@ Worker (as the gate).
 
 ### 11.8 Players — another user's bets
 
-| Method | Path                   | Response                                                                                                                                                                                                                                         |
-| ------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| GET    | `/api/users/:id/bets`  | `200 {player: PlayerView, bets: BetView[], nextCursor}`. `?status=open\|settled\|all&league=&limit=&cursor=` — **`GET /api/bets`'s query string, unchanged.**                                                                                    |
-| GET    | `/api/users/:id/busts` | `200 {player: PlayerView, busts: BustView[]}` — every bust ever, oldest first: `{refillId, refilledAt, amountCents, boughtOutAt, buyoutCents}`, the last two `null` while the badge is still on (§4.5 rule 4). Same visibility rule as the bets. |
+| Method                            | Path                   | Response                                                                                                                                                                                                                                                                          |
+| --------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET                               | `/api/users/:id/bets`  | `200 {player: PlayerView, bets: BetView[], nextCursor}`. `?status=open\|settled\|all&league=&limit=&cursor=` — **`GET /api/bets`'s query string, unchanged.**                                                                                                                     |
+| GET                               | `/api/users/:id/busts` | `200 {player: PlayerView, busts: BustView[]}` — every bust ever, oldest first: `{refillId, refilledAt, amountCents, boughtOutAt, priceCents}`, the last two `null` while the badge is still on; `priceCents` is the positive price paid, not the signed ledger row (§4.5 rule 4). |
+| Same visibility rule as the bets. |
 
 The product is a few friends finding out who knows football, and "what did
 Tyler take this week, and how did it go" is half of that conversation (added

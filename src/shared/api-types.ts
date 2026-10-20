@@ -583,15 +583,16 @@ export interface PlayerBetsResponse {
  * badge has been bought off, the `bust_buyout` row that retired it (PLAN.md
  * §4.5). `refilledAt` is when the admin re-funded the account — the moment
  * the 💀 appeared — and `boughtOutAt` when it went; `null` while it is still
- * on the name. Amounts are what moved: the refill is positive, the buyout
- * is reported as the positive price paid.
+ * on the name. `amountCents` is the refill, positive as in the ledger;
+ * `priceCents` is the positive PRICE the buyout paid — named so nobody
+ * reconciles it against the ledger's negative `bust_buyout` row by sign.
  */
 export interface BustView {
   readonly refillId: string;
   readonly refilledAt: EpochMs;
   readonly amountCents: Cents;
   readonly boughtOutAt: EpochMs | null;
-  readonly buyoutCents: Cents | null;
+  readonly priceCents: Cents | null;
 }
 
 /**

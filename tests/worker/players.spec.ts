@@ -383,15 +383,15 @@ describe('GET /api/users/:id/busts', () => {
     expect(body.busts).toHaveLength(2);
 
     const [first, second] = body.busts;
-    expect(first?.buyoutCents).toBe(100_000);
+    expect(first?.priceCents).toBe(100_000);
     expect(first).toMatchObject({
       amountCents: INITIAL_BANKROLL_CENTS,
-      buyoutCents: BUST_BUYOUT_CENTS,
+      priceCents: BUST_BUYOUT_CENTS,
     });
     expect(typeof first?.refilledAt).toBe('number');
     expect(typeof first?.boughtOutAt).toBe('number');
     expect(first?.boughtOutAt ?? 0).toBeGreaterThanOrEqual(first?.refilledAt ?? Infinity);
-    expect(second).toMatchObject({ amountCents: 25_000, boughtOutAt: null, buyoutCents: null });
+    expect(second).toMatchObject({ amountCents: 25_000, boughtOutAt: null, priceCents: null });
     expect(second?.refilledAt ?? 0).toBeGreaterThanOrEqual(first?.refilledAt ?? Infinity);
 
     // The same two facts the leaderboard carries: one badge on the name now.

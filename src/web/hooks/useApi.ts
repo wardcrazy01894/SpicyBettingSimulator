@@ -4,6 +4,10 @@
  * The cache KEY PREFIXES are the contract for `invalidate()` after a mutation:
  *   bets:…  bankroll:…  leaderboard:…  games:…  ledger:…  admin:…
  * A bet placement invalidates the first three; nothing else may share a prefix.
+ * `leaderboard:busts:<userId>` is a DELIBERATE sub-key of `leaderboard:`: a
+ * bust history changes only when a refill or a buyout changes the board, and
+ * both already invalidate `leaderboard:`, so it rides along rather than
+ * needing a fourth prefix every mutation has to remember.
  */
 
 import {
