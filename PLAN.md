@@ -646,17 +646,17 @@ Consequences worth spelling out:
 
 ### 4.3 Money flows
 
-| Event                 | Ledger rows written                                                               |
-| --------------------- | --------------------------------------------------------------------------------- |
-| **Signup**            | `deposit_initial` `+100000`, `ref_id='init'` — once per account, for its life     |
-| Bet placed            | `bet_stake` `-stake`, `ref_id=betId`                                              |
-| Bet won               | `bet_payout` `+payout` (= stake + profit), `ref_id=betId`                         |
-| Bet pushed / voided   | `bet_payout` `+stake`, `ref_id=betId`                                             |
-| Bet lost              | **none** — the stake row already debited it                                       |
-| Bet cancelled by user | `bet_refund` `+stake`, `ref_id=betId`                                             |
-| Admin adjustment      | `admin_adjust` `±n`, `ref_id=<uuid>` — a CORRECTION; counts as profit/loss        |
-| Bust refill (admin)   | `deposit_refill` `+n`, `ref_id=<uuid>` — one bust badge; joins "bought in" (§4.5) |
-| Bust badge buyout     | `bust_buyout` `-BUST_BUYOUT_CENTS`, `ref_id=<id of the refill retired>` (§4.5)    |
+| Event                 | Ledger rows written                                                                                                                                  |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Signup**            | `deposit_initial` `+100000`, `ref_id='init'` — once per account, for its life                                                                        |
+| Bet placed            | `bet_stake` `-stake`, `ref_id=betId`                                                                                                                 |
+| Bet won               | `bet_payout` `+payout` (= stake + profit), `ref_id=betId`                                                                                            |
+| Bet pushed / voided   | `bet_payout` `+stake`, `ref_id=betId`                                                                                                                |
+| Bet lost              | **none** — the stake row already debited it                                                                                                          |
+| Bet cancelled by user | `bet_refund` `+stake`, `ref_id=betId`                                                                                                                |
+| Admin adjustment      | `admin_adjust` `±n`, `ref_id=<uuid>` — a CORRECTION; counts as profit/loss                                                                           |
+| Bust refill (admin)   | `deposit_refill` `+n`, `ref_id=<uuid>` — one bust badge; joins "bought in" (§4.5)                                                                    |
+| Bust badge buyout     | `bust_buyout` `-BUST_BUYOUT_CENTS`, `ref_id=<id of the refill retired>` — the refill REPAID, SUBTRACTED from "bought in" so net does not move (§4.5) |
 
 A loss writing no row is deliberate: it keeps the ledger a pure cash-movement log,
 and `SUM(amount_cents) = balance_cents` stays trivially checkable
@@ -766,7 +766,13 @@ it, and the design is three rules on top of the ledger:
    hidden there unless the viewer is an admin looking at somebody else.
 2. **The leaderboard ranks by NET PROFIT**, `netCents = equityCents −
 depositedCents`, where `depositedCents = Σ deposit_initial + Σ
-deposit_refill` on the MAIN balance. Every account opens at the same
+deposit_refill + Σ bust_buyout` on the MAIN balance — what the house has
+   put in, net of what the player has paid back (a buyout row is negative;
+   rule 3). Because a refill may be any amount and a buyout is always the
+   fixed price, "bought in" is a NET figure, not a tally of deposits: a $1
+   refill bought off for $1,000 leaves it $999 below the opening bankroll.
+   That is correct — the player handed the house $999 more than it gave —
+   and net is still exactly the bets' result. Every account opens at the same
    amount, so without a refill the order is exactly what ranking by equity
    gave (§19 Q2's reasoning survives intact: a stake in flight still neither
    helps nor hurts); with one, the refilled player keeps carrying the money
@@ -774,6 +780,7 @@ deposit_refill` on the MAIN balance. Every account opens at the same
    cent. `BankrollView` and `LeaderboardRow` both carry `depositedCents`,
    `netCents` and `bustCount` (§11.5), and `AdminUserView` carries
    `balanceCents` and `bustCount` so the Users tab shows who is busted.
+
 3. **Each refill is one bust badge (💀) beside the name, and a player can
    BUY one off for `BUST_BUYOUT_CENTS` ($1,000)**: `POST /api/bankroll/buyout`
    writes one `bust_buyout` row, `-BUST_BUYOUT_CENTS`, whose `ref_id` is the
@@ -782,14 +789,31 @@ kind, ref_id)` makes "sold once" a schema fact and `bustCount = refills −
 buyouts` is never negative. The guard — a badge exists and `balance_cents`
    is STRICTLY above the price, open stakes ignored because they are not cash
    — is a `WHERE` inside the INSERT; `409 NO_BUST_BADGE` when it declines.
-   The money is SPENT: equity and net drop by the price and "bought in" does
-   not move, which is the deterrent. "Strictly above" is the whole rule: a
+   **The buyout is the refill PAID BACK, not money lost (decided 2026-10-20,
+   superseding "the money is spent").** It lowers "bought in"
+   (`depositedCents`) by the same amount it lowers the balance, so `netCents`
+   does not move: before and after the buyout, net is what the player's bets
+   have made or lost. The first real buyout is why: a player lost $1,000, was
+   refilled $1,000, bet up to $1,400 (net −$600) and paid $1,000 for the
+   badge — and under the old rule the board said −$1,600 for bets that had
+   netted −$600, and would have said −$600 for a player who had actually won
+   $400 back (to $2,400 then $1,400). The cost of the badge is the cash and
+   the smaller bankroll to bet with, not a worse rank. "Strictly above" is
+   the whole rule: a
    balance of $1,000.50 may buy a badge and be left with 50¢, which is
    busted again and refillable (with a fresh badge). That is the player's
    call — the confirm shows the balance after — not something the server
    second-guesses. The account page shows the button only
    when both conditions hold and makes the player confirm the exact deduction
    inline before posting (§12).
+4. **The history behind the badges is public**: `GET /api/users/:id/busts`
+   (§11.8) lists every `deposit_refill` on the player's main balance, oldest
+   first, each with when it was written, its amount, and — joined on the
+   buyout's `ref_id` — when (and for how much) its badge was bought off, or
+   `null` while it is still on the name. `bustCount` is the number of entries
+   still `null`. `/players/:userId` shows the count as "1 bust, 1 bought
+   off" beside the skulls and the dated list under the stats, so a bought-off
+   bust stays visible as history rather than vanishing with its badge.
 
 `migrations/0011_ledger_refill_buyout.sql` is the leaf rebuild of `ledger`
 (0008's pattern) that widens the kind CHECK — §16.2.
@@ -2797,8 +2821,9 @@ roi                = (Σ payout - Σ stake) / Σ stake over bets with status ∈
 profitCents        = that same Σ payout - Σ stake, as integer cents: the ROI numerator
                      before the division. A SUM of stored cent columns, never a product,
                      so no float is involved. NOT netCents — net is equity less what the
-                     house put in, so it also carries open stakes, admin adjustments and
-                     badge buyouts; profit is only what settled bets won or lost
+                     house put in (net of buyouts, which repay it), so it also carries
+                     open stakes and admin adjustments; profit is only what settled
+                     bets won or lost
 ```
 
 **`?league=` NARROWS `record`, `roi`, `profitCents` AND `settledCount` — NOTHING ELSE.**
@@ -2843,7 +2868,9 @@ less what the house put in — tie-broken by `roi` then `username`. Decided
 2026-09-14 (§19 Q2). Net keeps everything equity was chosen for: with every
 account opened at the same amount the two order identically until somebody is
 refilled, and then net is the one that still tells the truth. A `bust_buyout`
-lowers net too — it is money spent. `bustCount` rides in the row for the 💀.
+does NOT move net (since 2026-10-20, §4.5): it is the refill repaid, so it
+lowers equity and `depositedCents` together. `bustCount` rides in the row for
+the 💀.
 The reasoning that made equity beat balance, and that still holds: `balanceCents`
 excludes stakes that are still in flight, so ranking on it puts a player holding
 $2,000 with $1,500 riding on tonight's game BELOW one sitting on $600, which is
@@ -3020,9 +3047,11 @@ Worker (as the gate).
 
 ### 11.8 Players — another user's bets
 
-| Method | Path                  | Response                                                                                                                                                      |
-| ------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/users/:id/bets` | `200 {player: PlayerView, bets: BetView[], nextCursor}`. `?status=open\|settled\|all&league=&limit=&cursor=` — **`GET /api/bets`'s query string, unchanged.** |
+| Method                            | Path                   | Response                                                                                                                                                                                                                                                                          |
+| --------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET                               | `/api/users/:id/bets`  | `200 {player: PlayerView, bets: BetView[], nextCursor}`. `?status=open\|settled\|all&league=&limit=&cursor=` — **`GET /api/bets`'s query string, unchanged.**                                                                                                                     |
+| GET                               | `/api/users/:id/busts` | `200 {player: PlayerView, busts: BustView[]}` — every bust ever, oldest first: `{refillId, refilledAt, amountCents, boughtOutAt, priceCents}`, the last two `null` while the badge is still on; `priceCents` is the positive price paid, not the signed ledger row (§4.5 rule 4). |
+| Same visibility rule as the bets. |
 
 The product is a few friends finding out who knows football, and "what did
 Tyler take this week, and how did it go" is half of that conversation (added

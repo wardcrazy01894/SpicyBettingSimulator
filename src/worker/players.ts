@@ -30,11 +30,16 @@
  * INSERT), so knowing somebody else's id buys nothing.
  */
 
-import type { PlayerBetsResponse, PlayerView } from '../shared/api-types.js';
+import type {
+  BustView,
+  PlayerBetsResponse,
+  PlayerBustsResponse,
+  PlayerView,
+} from '../shared/api-types.js';
 import type { EpochMs } from '../shared/types.js';
 import { AppError } from '../shared/errors.js';
 import { listBets } from './bets.js';
-import { queryOne } from './db.js';
+import { queryAll, queryOne } from './db.js';
 import type { Env } from './env.js';
 
 interface PlayerRow {
@@ -79,5 +84,51 @@ export async function listPlayerBets(
     player,
     bets: page.bets.map((bet) => ({ ...bet, cancellable: false })),
     nextCursor: page.nextCursor,
+  };
+}
+
+interface BustRow {
+  refill_id: string;
+  refilled_at: number;
+  amount_cents: number;
+  bought_out_at: number | null;
+  buyout_cents: number | null;
+}
+
+/**
+ * `GET /api/users/:id/busts` — the history behind the 💀 (PLAN.md §4.5):
+ * every `deposit_refill` on the player's MAIN balance, oldest first, each
+ * joined to the `bust_buyout` that retired it, if one has. The join is on
+ * `b.ref_id = r.id`, which is exactly how `buyBustBadge` links the two, so
+ * the leaderboard's `bustCount` (refills − buyouts) is the number of entries
+ * here still waiting for a buyout. Same visibility rule as the bets.
+ *
+ * @throws AppError NOT_FOUND when the account is unknown, disabled or deleted.
+ */
+export async function listPlayerBusts(env: Env, userId: string): Promise<PlayerBustsResponse> {
+  const player = await findPlayer(env, userId);
+  if (player === null) throw new AppError('NOT_FOUND', 'No such player.');
+  const rows = await queryAll<BustRow>(
+    env.DB.prepare(
+      `SELECT r.id AS refill_id, r.created_at AS refilled_at, r.amount_cents AS amount_cents,
+              b.created_at AS bought_out_at, b.amount_cents AS buyout_cents
+         FROM ledger r
+         JOIN bankrolls bk ON bk.id = r.bankroll_id AND bk.kind = 'main'
+         LEFT JOIN ledger b ON b.bankroll_id = r.bankroll_id
+                           AND b.kind = 'bust_buyout' AND b.ref_id = r.id
+        WHERE bk.user_id = ?1 AND r.kind = 'deposit_refill'
+        ORDER BY r.created_at ASC, r.id ASC`,
+    ).bind(player.id),
+  );
+  return {
+    player,
+    busts: rows.map((row): BustView => ({
+      refillId: row.refill_id,
+      refilledAt: row.refilled_at,
+      amountCents: row.amount_cents,
+      boughtOutAt: row.bought_out_at,
+      // The ledger row is negative (money out); the wire says the price paid.
+      priceCents: row.buyout_cents === null ? null : -row.buyout_cents,
+    })),
   };
 }

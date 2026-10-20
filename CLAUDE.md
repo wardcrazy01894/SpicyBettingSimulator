@@ -219,7 +219,13 @@ the one failure mode the whole checklist has.
    ranks by `netCents = equity − deposited`**, not equity. A `bust_buyout`
    (`POST /api/bankroll/buyout`, `-BUST_BUYOUT_CENTS`) retires ONE refill by
    `ref_id`, so the UNIQUE makes each badge sellable once; its guard is
-   `balance_cents > BUST_BUYOUT_CENTS`, strictly, inside the INSERT.
+   `balance_cents > BUST_BUYOUT_CENTS`, strictly, inside the INSERT. **A
+   buyout is the refill REPAID, never a loss**: `deposited` sums
+   `deposit_initial + deposit_refill + bust_buyout`, so a buyout lowers
+   equity and deposited together and `netCents` does not move (since
+   2026-10-20). The history — every refill, and when its badge went — is
+   `GET /api/users/:id/busts`, shown on `/players/:userId`.
+
 9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
    2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will
    never replay it. **Every schema change is a new numbered

@@ -23,7 +23,7 @@ import { getLedger, postBustBuyout } from '../api/client.js';
 import { LEDGER_PAGE_SIZE, useBalances, useLedger } from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
 import { usePages } from '../hooks/usePages.js';
-import { NET_HELP, NET_HINT } from '../lib/labels.js';
+import { BOUGHT_IN_HELP, NET_HELP, NET_HINT } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { BUST_BUYOUT_CENTS } from '../../shared/constants.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
@@ -75,8 +75,9 @@ function BustBuyout(props: { readonly balance: BankrollView }): ReactElement | n
         <>
           <p className="muted">
             This deducts <strong>{price}</strong> from your balance ({formatCents(b.balanceCents)} →{' '}
-            {after}) and removes one 💀 from your name on the leaderboard. It is not refundable, and
-            it counts against your net profit like any other money spent.
+            {after}) and removes one 💀 from your name on the leaderboard. It is not refundable. The
+            money goes back to the house as the refill repaid, so your net profit and your rank do
+            not change — only your balance does.
           </p>
           <div className="row-actions">
             <button
@@ -156,9 +157,14 @@ function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
           </dd>
         </div>
         <div>
-          <dt>Bought in</dt>
+          <dt>
+            <abbr className="help" title={BOUGHT_IN_HELP}>
+              Bought in
+            </abbr>
+          </dt>
           <dd>{formatCents(b.depositedCents)}</dd>
         </div>
+
         <RecordStats stats={b} />
       </dl>
       <p className="muted scope-note">

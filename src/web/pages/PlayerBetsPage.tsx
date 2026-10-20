@@ -34,18 +34,20 @@ import { RecordStats, ScopeNote } from '../components/RecordStats.js';
 import { ScopeTabs } from '../components/ScopeTabs.js';
 import { Segmented } from '../components/Segmented.js';
 import { Spinner } from '../components/Spinner.js';
-import { useLeaderboard, usePlayerBets } from '../hooks/useApi.js';
+import { useLeaderboard, usePlayerBets, usePlayerBusts } from '../hooks/useApi.js';
 import { usePoll } from '../hooks/useNow.js';
 import { usePages } from '../hooks/usePages.js';
+import { formatDateTime } from '../lib/datetime.js';
 import { groupBetsByWeek } from '../lib/grouping.js';
 import { betsEmptyTitle, scopeLeague } from '../lib/scope.js';
 import type { Scope } from '../lib/scope.js';
 import { AdminRefillForm } from '../components/AdminRefillForm.js';
 import { BustBadges } from '../components/BustBadges.js';
-import { NET_HELP, NET_HINT } from '../lib/labels.js';
+import { BOUGHT_IN_HELP, NET_HELP, NET_HINT, bustSummary } from '../lib/labels.js';
+
 import { useSession } from '../state/session.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
-import type { BetView, LeaderboardRow } from '../../shared/api-types.js';
+import type { BetView, BustView, LeaderboardRow } from '../../shared/api-types.js';
 
 type Filter = 'open' | 'settled';
 
@@ -67,8 +69,10 @@ function PlayerStats(props: {
   readonly row: LeaderboardRow;
   readonly stats: LeaderboardRow | undefined;
   readonly statsFailed: boolean;
+  /** `undefined` while the history loads; `null` when that request failed. */
+  readonly busts: readonly BustView[] | null | undefined;
 }): ReactElement {
-  const { row, stats, statsFailed } = props;
+  const { row, stats, statsFailed, busts } = props;
   return (
     <dl className="stat-grid" aria-busy={stats === undefined && !statsFailed}>
       <div>
@@ -100,10 +104,59 @@ function PlayerStats(props: {
         <RecordStats stats={stats} />
       )}
       <div>
+        <dt>
+          <abbr className="help" title={BOUGHT_IN_HELP}>
+            Bought in
+          </abbr>
+        </dt>
+        <dd>{formatCents(row.depositedCents)}</dd>
+      </div>
+      <div>
         <dt>Busts</dt>
-        <dd>{row.bustCount === 0 ? '—' : <BustBadges count={row.bustCount} />}</dd>
+        <dd aria-busy={busts === undefined}>
+          {busts === undefined
+            ? '…'
+            : busts === null
+              ? '—'
+              : bustSummary(busts.length, busts.filter((b) => b.boughtOutAt !== null).length)}
+          {row.bustCount > 0 && <BustBadges count={row.bustCount} />}
+        </dd>
       </div>
     </dl>
+  );
+}
+
+/**
+ * The history behind the skulls (PLAN.md §4.5): one line per bust — when the
+ * house refilled the account and for how much, and when the badge was bought
+ * off, or that it is still on the name. Renders nothing for a player who has
+ * never busted; the stat cell above already says "—".
+ */
+function BustHistory(props: { readonly busts: readonly BustView[] }): ReactElement | null {
+  if (props.busts.length === 0) return null;
+  return (
+    <ul className="ledger bust-history" aria-label="Bust history">
+      {props.busts.map((bust, i) => (
+        <li className="ledger-row" key={bust.refillId}>
+          <div className="ledger-main">
+            <span className="ledger-kind">
+              💀 Bust #{String(i + 1)} — refilled {formatCents(bust.amountCents)}
+            </span>
+          </div>
+          {/* Dates and the price live in the muted line: the `.num` column is
+              auto-width and bold, sized for an amount, not a sentence. */}
+          <span className="muted">
+            {formatDateTime(bust.refilledAt)}
+            {bust.boughtOutAt !== null &&
+              ` · bought off ${formatDateTime(bust.boughtOutAt)}` +
+                (bust.priceCents === null ? '' : ` for ${formatCents(bust.priceCents)}`)}
+          </span>
+          <span className={bust.boughtOutAt === null ? 'num tone-loss' : 'num tone-win'}>
+            {bust.boughtOutAt === null ? 'badge on' : 'bought off'}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -138,6 +191,7 @@ export function PlayerBetsPage(): ReactElement {
   // board (the same request when scope is 'all') is the source for the record.
   const board = useLeaderboard('all');
   const scoped = useLeaderboard(scope);
+  const busts = usePlayerBusts(userId);
   const notFound =
     bets.data === undefined && bets.error instanceof ApiError && bets.error.code === 'NOT_FOUND';
   // A player who is not on the board stays not on the board; re-asking every
@@ -149,6 +203,8 @@ export function PlayerBetsPage(): ReactElement {
       if (notFound) return;
       bets.refetch();
       board.refetch();
+      // Not `busts`: a history changes only on a refill or a buyout, and both
+      // invalidate `leaderboard:` (its key prefix), so it refreshes then.
       if (scope !== 'all') scoped.refetch();
     },
     filter === 'open' ? OPEN_POLL_MS : 5 * OPEN_POLL_MS,
@@ -213,9 +269,19 @@ export function PlayerBetsPage(): ReactElement {
           <ScopeTabs scope={scope} onChange={setScope} />
         </div>
         {row !== undefined && (
-          <PlayerStats row={row} stats={stats} statsFailed={scoped.error !== undefined} />
+          <PlayerStats
+            row={row}
+            stats={stats}
+            statsFailed={scoped.error !== undefined}
+            busts={busts.data?.busts ?? (busts.error === undefined ? undefined : null)}
+          />
         )}
         <ScopeNote scope={scope} />
+        {busts.data !== undefined && <BustHistory busts={busts.data.busts} />}
+        {busts.data === undefined && busts.error !== undefined && (
+          <p className="muted">Couldn't load the bust history.</p>
+        )}
+
         {session.user?.isAdmin === true && !isMe && (
           <details className="admin-refill-details">
             <summary className="muted">Admin: refill this account</summary>

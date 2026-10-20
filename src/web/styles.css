@@ -685,9 +685,11 @@ abbr.help {
   letter-spacing: 0;
 }
 .bust-buyout,
-.admin-refill-details {
+.admin-refill-details,
+.bust-history {
   margin-top: 12px;
 }
+
 .admin-refill-details > summary {
   cursor: pointer;
 }

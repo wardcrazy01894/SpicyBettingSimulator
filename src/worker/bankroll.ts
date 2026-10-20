@@ -256,10 +256,13 @@ export function statsFilterClauses(filter: StatsFilter, values: unknown[]): stri
  * Per-balance "what the house put in" and the live bust-badge count, PLAN.md
  * §4.5. One aggregate over the three deposit-shaped ledger kinds:
  *
- *   deposited  Σ amount of `deposit_initial` + `deposit_refill`. NOT
- *              `admin_adjust` (a correction, which is profit or loss) and NOT
- *              `bust_buyout` (money the player spent — it lowers equity and
- *              is exactly the point).
+ *   deposited  Σ amount of `deposit_initial` + `deposit_refill` +
+ *              `bust_buyout` — the house's money in, NET of what the player
+ *              paid back (a buyout row is negative, so it subtracts). NOT
+ *              `admin_adjust`: a correction, which is profit or loss. Because
+ *              a buyout lowers this and the balance by the same amount, net
+ *              (equity − deposited) does not move when a badge is bought
+ *              off; only the player's bets move it (decided 2026-10-20).
  *   refills    COUNT of `deposit_refill` rows — every bust, ever.
  *   buyouts    COUNT of `bust_buyout` rows; each retires ONE refill (its
  *              `ref_id` is that refill's id, and `UNIQUE (bankroll_id, kind,
@@ -276,7 +279,7 @@ export interface DepositSums {
 }
 
 export const DEPOSIT_SUMS_COLUMNS = `
-  COALESCE(SUM(CASE WHEN le.kind IN ('deposit_initial', 'deposit_refill')
+  COALESCE(SUM(CASE WHEN le.kind IN ('deposit_initial', 'deposit_refill', 'bust_buyout')
                     THEN le.amount_cents ELSE 0 END), 0) AS deposited,
   COALESCE(SUM(le.kind = 'deposit_refill'), 0) AS refills,
   COALESCE(SUM(le.kind = 'bust_buyout'), 0) AS buyouts`;
@@ -541,9 +544,11 @@ export async function adminRefill(
  * The row is a `bust_buyout` whose `ref_id` is the id of the OLDEST refill not
  * yet bought off, so `UNIQUE (bankroll_id, kind, ref_id)` makes "each badge is
  * sold once" a schema fact and the badge count is simply refills − buyouts.
- * The amount is negative: the money is spent, equity and `netCents` drop by the
- * price, and "bought in" is untouched — paying to look un-busted costs exactly
- * what it says.
+ * The amount is negative and the row counts as a DEPOSIT in reverse: it is the
+ * refill paid back to the house, so equity and "bought in" (`depositedCents`)
+ * both drop by the price and `netCents` stays exactly where it was. The cost
+ * of looking un-busted is the cash, not a worse rank (decided 2026-10-20; the
+ * first real buyout showed a player whose bets had netted −$600 at −$1,600).
  *
  * `balance_cents > price`, STRICTLY, inside the INSERT's WHERE: a balance of
  * exactly the price would be busted again the moment it paid, and the open

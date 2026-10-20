@@ -78,8 +78,11 @@ you, but the loss stays on the board and a 💀 goes beside your name.
    the refill joins what you've bought in, so your net profit still shows the
    $1,000 you lost, and a 💀 sits beside your name on the leaderboard. Get
    back above $1,000 and your account page offers to remove a badge for
-   exactly $1,000, after telling you what it will deduct. The money is spent,
-   not refunded.
+   exactly $1,000, after telling you what it will deduct. That pays the
+   refill back to the house, so your net profit doesn't move — only your
+   balance does — and the bust stays on your player page as history: "1
+   bust, 1 bought off", with the dates.
+
 8. **Something look wrong?** "Report a bug" is in the header on every page
    once you're signed in. It files an issue in
    [this repo](https://github.com/wardcrazy01894/SpicyBettingSimulator/issues)

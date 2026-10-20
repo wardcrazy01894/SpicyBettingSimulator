@@ -4,9 +4,9 @@
  * instead of rendering a raw enum value to a user.
  */
 
-import { MIN_TEASER_LEGS } from '../../shared/constants.js';
+import { INITIAL_BANKROLL_CENTS, MIN_TEASER_LEGS } from '../../shared/constants.js';
 import { formatAmerican } from '../../shared/odds.js';
-import { distinctGameIds, formatLineTenths } from '../../shared/validate.js';
+import { distinctGameIds, formatCents, formatLineTenths } from '../../shared/validate.js';
 import type {
   BetLeague,
   BetStatus,
@@ -181,11 +181,17 @@ export const LEDGER_KIND_LABEL: Readonly<Record<LedgerKind, string>> = {
 
 /** Hover copy for the leaderboard's ranked column (PLAN.md §11.5). */
 export const NET_HELP =
-  'Net profit: equity minus everything the house has put in — the opening bankroll plus any bust ' +
-  'refills. The leaderboard ranks on this, so a refill never erases the money lost before it. ' +
-  'Paying to remove a bust badge counts as spent.';
+  'Net profit: equity minus what the house has put in — the opening bankroll plus any bust ' +
+  'refills, less any refill you have paid back by removing a badge. The leaderboard ranks on ' +
+  'this, so a refill never erases the money lost before it, and removing a badge neither helps ' +
+  'nor hurts it: that money goes back to the house, not to your bets.';
 
 export const NET_HINT = 'equity minus what the house put in';
+
+/** Hover copy for "Bought in": a NET figure, because a buyout pays a refill back (PLAN.md §4.5). */
+export const BOUGHT_IN_HELP =
+  'Bought in: the opening bankroll plus any bust refills, less what you have paid back by ' +
+  `removing a badge. Net of repayments, so it can sit below the ${formatCents(INITIAL_BANKROLL_CENTS)} everyone starts with.`;
 
 /**
  * Profit is the ROI numerator in dollars: what settled bets actually won or
@@ -195,8 +201,8 @@ export const NET_HINT = 'equity minus what the house put in';
  */
 export const PROFIT_HELP =
   'Profit: winnings minus stakes on bets that won or lost, in the selected sport. Pushes, voids ' +
-  'and open bets are left out. Unlike net profit it ignores refills, adjustments and badge ' +
-  'buyouts, and it never includes money still riding.';
+  'and open bets are left out. Unlike net profit it ignores adjustments, and it never includes ' +
+  'money still riding.';
 
 export const PROFIT_HINT = 'won minus lost on settled bets';
 
@@ -204,6 +210,17 @@ export const PROFIT_HINT = 'won minus lost on settled bets';
  * Title text for a player's bust badges, so a screen reader and a hover both
  * say what the skull means. Pluralised by hand: three cases, no library.
  */
+/**
+ * "1 bust, 1 bought off" — the two facts behind a player's badges: every
+ * refill ever, and how many of them have been paid back. `—` for a player who
+ * never busted, so the stat cell reads like its neighbours.
+ */
+export function bustSummary(total: number, boughtOff: number): string {
+  if (total <= 0) return '—';
+  const busts = `${String(total)} ${total === 1 ? 'bust' : 'busts'}`;
+  return boughtOff <= 0 ? busts : `${busts}, ${String(boughtOff)} bought off`;
+}
+
 export function bustBadgeTitle(count: number): string {
   if (count <= 0) return '';
   const times = count === 1 ? 'once' : count === 2 ? 'twice' : `${String(count)} times`;

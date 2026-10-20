@@ -1212,7 +1212,7 @@ describe('bust refills, buyouts and net ranking', () => {
     expect(await ledgerKinds(target.id)).toEqual([]);
   });
 
-  it('a buyout pays the price, retires ONE badge, and lowers net by what was spent', async () => {
+  it('a buyout pays the price, retires ONE badge, and repays the house, so net does not move', async () => {
     const boss = await admin();
     const target = await register('comeback');
     await bust(boss, target);
@@ -1251,19 +1251,106 @@ describe('bust refills, buyouts and net ranking', () => {
       .first<{ oldest: number }>();
     expect(link?.oldest).toBe(1);
 
-    // One badge left; bought in unchanged (+$1 adjust is a correction, not a
-    // deposit); net fell by the price paid.
+    // One badge left. The buyout REPAID the house: bought in fell by the
+    // price (300,000 − 100,000), equity fell by the same price, so net is
+    // exactly where it was before the buyout (+$1 adjust is a correction, so
+    // it is the one cent of profit on top of two whole bankrolls lost).
     expect(await rowFor(target.name)).toMatchObject({
       bustCount: 1,
-      depositedCents: 300_000,
+      depositedCents: 200_000,
       equityCents: 1,
-      netCents: -299_999,
+      netCents: -199_999,
     });
 
     // Nothing left to afford the second one.
     const again = await send('/api/bankroll/buyout', {}, target.cookie);
     expect(again.status).toBe(409);
     expect(await errorCode(again)).toBe('NO_BUST_BADGE');
+    expect(await bankrollDrift(env.DB)).toEqual([]);
+  });
+
+  it("Tyler's story: bust, refill, win it back, buy the badge off — net is betting results only", async () => {
+    // 2026-10-20: the first real buyout. The player lost $1,000, was refilled
+    // $1,000, bet his way to $1,400 and paid $1,000 for the badge — and the
+    // board then said −$1,600 for a player whose BETS had netted −$600. A
+    // buyout is the refill paid back, not a wager lost: it moves equity and
+    // "bought in" by the same amount and leaves net alone.
+    const boss = await admin();
+    const tyler = await register('tyler');
+    await bust(boss, tyler);
+    expect(await rowFor(tyler.name)).toMatchObject({ netCents: -100_000, bustCount: 0 });
+
+    expect((await send(`/api/admin/users/${tyler.id}/refill`, {}, boss.cookie)).status).toBe(204);
+    expect(await rowFor(tyler.name)).toMatchObject({
+      balanceCents: 100_000,
+      depositedCents: 200_000,
+      netCents: -100_000,
+      bustCount: 1,
+    });
+
+    // "Won bets": +$400 of results, booked as an adjustment (profit, not a deposit).
+    await send(`/api/admin/users/${tyler.id}/adjust`, { amountCents: 40_000 }, boss.cookie);
+    const before = await rowFor(tyler.name);
+    expect(before).toMatchObject({ balanceCents: 140_000, netCents: -60_000, bustCount: 1 });
+
+    const ok = await send('/api/bankroll/buyout', {}, tyler.cookie);
+    expect(ok.status, await ok.clone().text()).toBe(204);
+    const after = await rowFor(tyler.name);
+    expect(after).toMatchObject({
+      balanceCents: 40_000,
+      depositedCents: 100_000,
+      netCents: -60_000,
+      bustCount: 0,
+    });
+    // (Not the rank: every `rowFor` registers one more viewer at net 0, so
+    // the shared pool shifts ranks under us; net equality is the claim.)
+    expect(after?.netCents).toBe(before?.netCents);
+
+    // And had he reached $2,400 first, $1,400 after the buyout would be +$400:
+    // the $400 his bets actually made.
+    await send(`/api/admin/users/${tyler.id}/adjust`, { amountCents: 100_000 }, boss.cookie);
+    expect(await rowFor(tyler.name)).toMatchObject({ balanceCents: 140_000, netCents: 40_000 });
+
+    // The account page agrees with the board on every figure.
+    const mine = await mainBalance(await get('/api/bankroll', tyler.cookie));
+    expect(mine).toMatchObject({
+      balanceCents: 140_000,
+      depositedCents: 100_000,
+      netCents: 40_000,
+      bustCount: 0,
+    });
+    expect(await bankrollDrift(env.DB)).toEqual([]);
+  });
+
+  it('a custom $1 refill bought off for the fixed price: net still does not move, bought in goes net', async () => {
+    const boss = await admin();
+    const target = await register('penny');
+    await bust(boss, target);
+    expect(
+      (await send(`/api/admin/users/${target.id}/refill`, { amountCents: 100 }, boss.cookie))
+        .status,
+    ).toBe(204);
+    expect(await rowFor(target.name)).toMatchObject({
+      depositedCents: 100_100,
+      netCents: -100_000,
+      bustCount: 1,
+    });
+    // Win it back and then some, as an adjustment (profit).
+    await send(`/api/admin/users/${target.id}/adjust`, { amountCents: 150_000 }, boss.cookie);
+    const before = await rowFor(target.name);
+    expect(before).toMatchObject({ balanceCents: 150_100, netCents: 50_000 });
+
+    const ok = await send('/api/bankroll/buyout', {}, target.cookie);
+    expect(ok.status, await ok.clone().text()).toBe(204);
+    // Bought in is NET of the repayment: $1,001 − $1,000 = $1 — $999 below the
+    // opening bankroll, because the player gave back $999 more than the house
+    // put in on the refill. Net is still the bets' result (PLAN.md §4.5).
+    expect(await rowFor(target.name)).toMatchObject({
+      balanceCents: 50_100,
+      depositedCents: 100,
+      netCents: 50_000,
+      bustCount: 0,
+    });
     expect(await bankrollDrift(env.DB)).toEqual([]);
   });
 

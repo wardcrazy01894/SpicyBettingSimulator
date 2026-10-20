@@ -8,13 +8,16 @@
  *   pendingStakeCents Σ stake of pending bets STAKED AGAINST THAT SAME MAIN
  *                     BALANCE ("exposure"). Also unfiltered by `?league=`
  *   equityCents       balanceCents + pendingStakeCents
- *   depositedCents    Σ deposit_initial + Σ deposit_refill on the MAIN balance:
- *                     what the house put in. admin_adjust is a correction, not
- *                     a deposit; a bust_buyout is money spent (PLAN.md §4.5)
+ *   depositedCents    Σ deposit_initial + Σ deposit_refill + Σ bust_buyout on
+ *                     the MAIN balance: what the house put in, net of what was
+ *                     paid back. admin_adjust is a correction, not a deposit;
+ *                     a bust_buyout is the refill repaid (PLAN.md §4.5)
  *   netCents          equityCents − depositedCents — THE RANKED COLUMN since
  *                     2026-10-05. Every account opened at the same amount, so
  *                     without a refill it orders exactly as equity did; with
- *                     one, the refilled player keeps carrying the loss
+ *                     one, the refilled player keeps carrying the loss; a
+ *                     buyout moves equity and deposited together, so net
+ *                     reflects bets alone
  *   bustCount         refills − buyouts: the badges beside the name
  *
  * BOTH HALVES OF EQUITY ARE SCOPED TO THE **MAIN** BALANCE, and they have to be.
@@ -160,7 +163,7 @@ export function applyStat(acc: Accumulator, row: StatRow): void {
  * and `netCents` keeps that: it is equity less what the house put in. What
  * equity could not do is survive a refill: a busted player re-funded to $1,000
  * would have ranked level with someone who never lost a cent. Net carries the
- * loss forward, and a buyout (money spent) lowers it too.
+ * loss forward; a buyout repays the refill and leaves net alone (2026-10-20).
  *
  * A null ROI ("no settled action") sorts below every real ROI at the same
  * net; with two nulls the username decides, so the order is total and

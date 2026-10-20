@@ -4,6 +4,10 @@
  * The cache KEY PREFIXES are the contract for `invalidate()` after a mutation:
  *   bets:…  bankroll:…  leaderboard:…  games:…  ledger:…  admin:…
  * A bet placement invalidates the first three; nothing else may share a prefix.
+ * `leaderboard:busts:<userId>` is a DELIBERATE sub-key of `leaderboard:`: a
+ * bust history changes only when a refill or a buyout changes the board, and
+ * both already invalidate `leaderboard:`, so it rides along rather than
+ * needing a fourth prefix every mutation has to remember.
  */
 
 import {
@@ -18,6 +22,7 @@ import {
   getLeaderboard,
   getLedger,
   getPlayerBets,
+  getPlayerBusts,
 } from '../api/client.js';
 import { useResource } from './useResource.js';
 import type { Resource } from './useResource.js';
@@ -33,6 +38,7 @@ import type {
   LeaderboardResponse,
   LedgerResponse,
   PlayerBetsResponse,
+  PlayerBustsResponse,
 } from '../../shared/api-types.js';
 import { scopeLeague } from '../lib/scope.js';
 import type { Scope } from '../lib/scope.js';
@@ -72,6 +78,11 @@ export function usePlayerBets(
   return useResource(`bets:player:${userId}:${status}:${scope}`, () =>
     getPlayerBets(userId, { status, league }),
   );
+}
+
+/** A player's bust history, keyed beside the leaderboard so a buyout invalidates both. */
+export function usePlayerBusts(userId: string): Resource<PlayerBustsResponse> {
+  return useResource(`leaderboard:busts:${userId}`, () => getPlayerBusts(userId));
 }
 
 /**
