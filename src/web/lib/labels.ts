@@ -188,6 +188,11 @@ export const NET_HELP =
 
 export const NET_HINT = 'equity minus what the house put in';
 
+/** Hover copy for "Bought in": a NET figure, because a buyout pays a refill back (PLAN.md §4.5). */
+export const BOUGHT_IN_HELP =
+  'Bought in: the opening bankroll plus any bust refills, less what you have paid back by ' +
+  'removing a badge. Net of repayments, so it can sit below the $1,000 everyone starts with.';
+
 /**
  * Profit is the ROI numerator in dollars: what settled bets actually won or
  * lost, narrowed by sport with the record. The reader most likely to be

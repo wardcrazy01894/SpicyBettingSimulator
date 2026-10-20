@@ -549,7 +549,6 @@ export async function adminRefill(
  * both drop by the price and `netCents` stays exactly where it was. The cost
  * of looking un-busted is the cash, not a worse rank (decided 2026-10-20; the
  * first real buyout showed a player whose bets had netted −$600 at −$1,600).
-
  *
  * `balance_cents > price`, STRICTLY, inside the INSERT's WHERE: a balance of
  * exactly the price would be busted again the moment it paid, and the open

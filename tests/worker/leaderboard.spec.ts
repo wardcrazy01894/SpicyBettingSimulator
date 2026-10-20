@@ -1322,6 +1322,38 @@ describe('bust refills, buyouts and net ranking', () => {
     expect(await bankrollDrift(env.DB)).toEqual([]);
   });
 
+  it('a custom $1 refill bought off for the fixed price: net still does not move, bought in goes net', async () => {
+    const boss = await admin();
+    const target = await register('penny');
+    await bust(boss, target);
+    expect(
+      (await send(`/api/admin/users/${target.id}/refill`, { amountCents: 100 }, boss.cookie))
+        .status,
+    ).toBe(204);
+    expect(await rowFor(target.name)).toMatchObject({
+      depositedCents: 100_100,
+      netCents: -100_000,
+      bustCount: 1,
+    });
+    // Win it back and then some, as an adjustment (profit).
+    await send(`/api/admin/users/${target.id}/adjust`, { amountCents: 150_000 }, boss.cookie);
+    const before = await rowFor(target.name);
+    expect(before).toMatchObject({ balanceCents: 150_100, netCents: 50_000 });
+
+    const ok = await send('/api/bankroll/buyout', {}, target.cookie);
+    expect(ok.status, await ok.clone().text()).toBe(204);
+    // Bought in is NET of the repayment: $1,001 − $1,000 = $1 — $999 below the
+    // opening bankroll, because the player gave back $999 more than the house
+    // put in on the refill. Net is still the bets' result (PLAN.md §4.5).
+    expect(await rowFor(target.name)).toMatchObject({
+      balanceCents: 50_100,
+      depositedCents: 100,
+      netCents: 50_000,
+      bustCount: 0,
+    });
+    expect(await bankrollDrift(env.DB)).toEqual([]);
+  });
+
   it('a buyout with no badge is 409 even with money, and anonymous is 401', async () => {
     const rich = await register('rich');
     const res = await send('/api/bankroll/buyout', {}, rich.cookie);

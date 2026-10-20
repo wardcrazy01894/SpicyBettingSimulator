@@ -164,7 +164,6 @@ export function applyStat(acc: Accumulator, row: StatRow): void {
  * equity could not do is survive a refill: a busted player re-funded to $1,000
  * would have ranked level with someone who never lost a cent. Net carries the
  * loss forward; a buyout repays the refill and leaves net alone (2026-10-20).
-
  *
  * A null ROI ("no settled action") sorts below every real ROI at the same
  * net; with two nulls the username decides, so the order is total and

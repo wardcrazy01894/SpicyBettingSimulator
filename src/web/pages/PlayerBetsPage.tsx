@@ -43,7 +43,8 @@ import { betsEmptyTitle, scopeLeague } from '../lib/scope.js';
 import type { Scope } from '../lib/scope.js';
 import { AdminRefillForm } from '../components/AdminRefillForm.js';
 import { BustBadges } from '../components/BustBadges.js';
-import { NET_HELP, NET_HINT, bustSummary } from '../lib/labels.js';
+import { BOUGHT_IN_HELP, NET_HELP, NET_HINT, bustSummary } from '../lib/labels.js';
+
 import { useSession } from '../state/session.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
 import type { BetView, BustView, LeaderboardRow } from '../../shared/api-types.js';
@@ -102,7 +103,11 @@ function PlayerStats(props: {
         <RecordStats stats={stats} />
       )}
       <div>
-        <dt>Bought in</dt>
+        <dt>
+          <abbr className="help" title={BOUGHT_IN_HELP}>
+            Bought in
+          </abbr>
+        </dt>
         <dd>{formatCents(row.depositedCents)}</dd>
       </div>
       <div>

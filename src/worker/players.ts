@@ -40,7 +40,6 @@ import type { EpochMs } from '../shared/types.js';
 import { AppError } from '../shared/errors.js';
 import { listBets } from './bets.js';
 import { queryAll, queryOne } from './db.js';
-
 import type { Env } from './env.js';
 
 interface PlayerRow {

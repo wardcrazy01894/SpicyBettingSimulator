@@ -768,7 +768,12 @@ it, and the design is three rules on top of the ledger:
 depositedCents`, where `depositedCents = Σ deposit_initial + Σ
 deposit_refill + Σ bust_buyout` on the MAIN balance — what the house has
    put in, net of what the player has paid back (a buyout row is negative;
-   rule 3). Every account opens at the same
+   rule 3). Because a refill may be any amount and a buyout is always the
+   fixed price, "bought in" is a NET figure, not a tally of deposits: a $1
+   refill bought off for $1,000 leaves it $999 below the opening bankroll.
+   That is correct — the player handed the house $999 more than it gave —
+   and net is still exactly the bets' result. Every account opens at the same
+
    amount, so without a refill the order is exactly what ranking by equity
    gave (§19 Q2's reasoning survives intact: a stake in flight still neither
    helps nor hurts); with one, the refilled player keeps carrying the money
@@ -776,6 +781,7 @@ deposit_refill + Σ bust_buyout` on the MAIN balance — what the house has
    cent. `BankrollView` and `LeaderboardRow` both carry `depositedCents`,
    `netCents` and `bustCount` (§11.5), and `AdminUserView` carries
    `balanceCents` and `bustCount` so the Users tab shows who is busted.
+
 3. **Each refill is one bust badge (💀) beside the name, and a player can
    BUY one off for `BUST_BUYOUT_CENTS` ($1,000)**: `POST /api/bankroll/buyout`
    writes one `bust_buyout` row, `-BUST_BUYOUT_CENTS`, whose `ref_id` is the

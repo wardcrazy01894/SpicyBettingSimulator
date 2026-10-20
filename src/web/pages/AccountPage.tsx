@@ -23,7 +23,7 @@ import { getLedger, postBustBuyout } from '../api/client.js';
 import { LEDGER_PAGE_SIZE, useBalances, useLedger } from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
 import { usePages } from '../hooks/usePages.js';
-import { NET_HELP, NET_HINT } from '../lib/labels.js';
+import { BOUGHT_IN_HELP, NET_HELP, NET_HINT } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { BUST_BUYOUT_CENTS } from '../../shared/constants.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
@@ -157,9 +157,14 @@ function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
           </dd>
         </div>
         <div>
-          <dt>Bought in</dt>
+          <dt>
+            <abbr className="help" title={BOUGHT_IN_HELP}>
+              Bought in
+            </abbr>
+          </dt>
           <dd>{formatCents(b.depositedCents)}</dd>
         </div>
+
         <RecordStats stats={b} />
       </dl>
       <p className="muted scope-note">

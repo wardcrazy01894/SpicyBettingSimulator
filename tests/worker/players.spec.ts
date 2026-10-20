@@ -383,6 +383,7 @@ describe('GET /api/users/:id/busts', () => {
     expect(body.busts).toHaveLength(2);
 
     const [first, second] = body.busts;
+    expect(first?.buyoutCents).toBe(100_000);
     expect(first).toMatchObject({
       amountCents: INITIAL_BANKROLL_CENTS,
       buyoutCents: BUST_BUYOUT_CENTS,
@@ -401,5 +402,28 @@ describe('GET /api/users/:id/busts', () => {
       await get(`/api/users/${tyler.id}/busts`, tyler.cookie)
     ).json<PlayerBustsResponse>();
     expect(own).toEqual(body);
+  });
+
+  it('reads the MAIN balance only: a refill on a side pot is not a bust', async () => {
+    const alex = await register('alex');
+    const tyler = await register('tyler');
+    // v1 never writes a `custom` balance, but the schema allows one and the
+    // leaderboard's money is main-only; the history has to agree with it.
+    const potId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO bankrolls (id, user_id, name, kind, balance_cents, created_at, updated_at)
+         VALUES (?1, ?2, 'Side pot', 'custom', 0, ?3, ?3)`,
+      ).bind(potId, tyler.id, NOW),
+      env.DB.prepare(
+        `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
+         VALUES (?1, ?2, 'deposit_refill', ?3, NULL, 5000, ?4, 'side pot refill')`,
+      ).bind(crypto.randomUUID(), potId, crypto.randomUUID(), NOW),
+    ]);
+    const res = await get(`/api/users/${tyler.id}/busts`, alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect((await res.json<PlayerBustsResponse>()).busts).toEqual([]);
+    const board = await (await get('/api/leaderboard', alex.cookie)).json<LeaderboardResponse>();
+    expect(board.rows.find((r) => r.userId === tyler.id)?.bustCount).toBe(0);
   });
 });
