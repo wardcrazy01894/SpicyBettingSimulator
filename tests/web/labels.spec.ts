@@ -9,6 +9,7 @@ import {
   MARKET_HEAD_LABEL,
   betShapeLabel,
   bustBadgeTitle,
+  bustSummary,
   gameClockLabel,
   hasSameGameLegs,
   teaserPointsLabel,
@@ -171,6 +172,13 @@ describe('bust badges (PLAN.md §4.5)', () => {
   it('the two 0011 ledger kinds have labels a player can read', () => {
     expect(LEDGER_KIND_LABEL.deposit_refill).toBe('Bust refill');
     expect(LEDGER_KIND_LABEL.bust_buyout).toBe('Bust badge removed');
+  });
+
+  it('bustSummary counts every bust ever and how many were bought off', () => {
+    expect(bustSummary(0, 0)).toBe('—');
+    expect(bustSummary(1, 0)).toBe('1 bust');
+    expect(bustSummary(1, 1)).toBe('1 bust, 1 bought off');
+    expect(bustSummary(3, 2)).toBe('3 busts, 2 bought off');
   });
 
   it('bustBadgeTitle pluralises by hand and is empty at zero', () => {

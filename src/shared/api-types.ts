@@ -403,23 +403,28 @@ export interface BankrollView {
   /** balanceCents + pendingStakeCents. Holds under every filter. */
   readonly equityCents: Cents;
   /**
-   * Σ `deposit_initial` + Σ `deposit_refill` on this balance: every cent the
-   * house has put in (PLAN.md §4.5). `admin_adjust` is NOT a deposit — it is
-   * a correction and counts as profit or loss — and a `bust_buyout` is money
-   * the player SPENT, so it lowers equity and leaves this untouched.
+   * What the house has put in, NET of what was paid back (PLAN.md §4.5):
+   * Σ `deposit_initial` + Σ `deposit_refill` + Σ `bust_buyout` on this
+   * balance, the last being negative rows. `admin_adjust` is NOT a deposit —
+   * it is a correction and counts as profit or loss. A `bust_buyout` REPAYS
+   * the refill it retires (decided 2026-10-20), so it lowers this and equity
+   * by the same amount and `netCents` does not move.
    */
   readonly depositedCents: Cents;
   /**
-   * `equityCents − depositedCents`: profit or loss against everything the
-   * house put in. **THE RANKED COLUMN** on the leaderboard (decided
+   * `equityCents − depositedCents`: what the player's BETS have made or lost
+   * (plus adjustments). **THE RANKED COLUMN** on the leaderboard (decided
    * 2026-10-05, superseding equity, PLAN.md §11.5): with every account
-   * opened at the same amount it orders identically to equity, and a refilled
-   * account keeps carrying the money it lost before the refill.
+   * opened at the same amount it orders identically to equity, a refilled
+   * account keeps carrying the money it lost before the refill, and buying a
+   * badge off neither helps nor hurts it.
    */
   readonly netCents: Cents;
   /**
    * Bust badges currently on the name: refills minus buyouts. Never negative
-   * (a buyout retires one specific refill row).
+   * (a buyout retires one specific refill row). The history behind the
+   * number — every bust ever and when each badge went — is
+   * `GET /api/users/:id/busts` (`PlayerBustsResponse`).
    */
   readonly bustCount: number;
   readonly record: BettingRecord;
@@ -431,7 +436,7 @@ export interface BankrollView {
    * answer. A push or void refunds the stake and contributes nothing.
    * Narrowed by `?league=` exactly as `record` and `roi` are (added
    * 2026-10-11, stats by sport). NOT `netCents`: that is equity less what the
-   * house put in, so it also carries open stakes, adjustments and buyouts.
+   * house put in, so it also carries open stakes and adjustments.
    */
   readonly profitCents: Cents;
   readonly settledCount: number;
@@ -504,18 +509,20 @@ export interface LeaderboardRow {
    */
   readonly equityCents: Cents;
   /**
-   * Σ `deposit_initial` + Σ `deposit_refill` on this balance: every cent the
-   * house has put in (PLAN.md §4.5). `admin_adjust` is NOT a deposit — it is
-   * a correction and counts as profit or loss — and a `bust_buyout` is money
-   * the player SPENT, so it lowers equity and leaves this untouched.
+   * What the house has put in, NET of what was paid back: Σ `deposit_initial`
+   * + Σ `deposit_refill` + Σ `bust_buyout` (negative rows) on the MAIN
+   * balance (PLAN.md §4.5). `admin_adjust` is NOT a deposit — it is a
+   * correction and counts as profit or loss. A `bust_buyout` repays the
+   * refill it retires (decided 2026-10-20): it lowers this and equity by the
+   * same amount, so `netCents` does not move.
    */
   readonly depositedCents: Cents;
   /**
-   * `equityCents − depositedCents`: profit or loss against everything the
-   * house put in. **THE RANKED COLUMN** on the leaderboard (decided
-   * 2026-10-05, superseding equity, PLAN.md §11.5): with every account
-   * opened at the same amount it orders identically to equity, and a refilled
-   * account keeps carrying the money it lost before the refill.
+   * `equityCents − depositedCents`: what the player's bets have made or lost.
+   * **THE RANKED COLUMN** on the leaderboard (decided 2026-10-05, superseding
+   * equity, PLAN.md §11.5): with every account opened at the same amount it
+   * orders identically to equity, a refilled account keeps carrying the money
+   * it lost before the refill, and a badge buyout leaves it where it was.
    */
   readonly netCents: Cents;
   /**
@@ -569,6 +576,33 @@ export interface PlayerBetsResponse {
   readonly player: PlayerView;
   readonly bets: readonly BetView[];
   readonly nextCursor: string | null;
+}
+
+/**
+ * One bust: a `deposit_refill` row on the player's main balance and, if the
+ * badge has been bought off, the `bust_buyout` row that retired it (PLAN.md
+ * §4.5). `refilledAt` is when the admin re-funded the account — the moment
+ * the 💀 appeared — and `boughtOutAt` when it went; `null` while it is still
+ * on the name. Amounts are what moved: the refill is positive, the buyout
+ * is reported as the positive price paid.
+ */
+export interface BustView {
+  readonly refillId: string;
+  readonly refilledAt: EpochMs;
+  readonly amountCents: Cents;
+  readonly boughtOutAt: EpochMs | null;
+  readonly buyoutCents: Cents | null;
+}
+
+/**
+ * `GET /api/users/:id/busts` — every bust a player has ever had, oldest
+ * first, under the same visibility rule as their bets (on the board, or
+ * `404 NOT_FOUND`). `bustCount` on the leaderboard is the number of entries
+ * here whose `boughtOutAt` is `null`.
+ */
+export interface PlayerBustsResponse {
+  readonly player: PlayerView;
+  readonly busts: readonly BustView[];
 }
 
 // ---------------------------------------------------------------------------

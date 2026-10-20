@@ -75,8 +75,9 @@ function BustBuyout(props: { readonly balance: BankrollView }): ReactElement | n
         <>
           <p className="muted">
             This deducts <strong>{price}</strong> from your balance ({formatCents(b.balanceCents)} →{' '}
-            {after}) and removes one 💀 from your name on the leaderboard. It is not refundable, and
-            it counts against your net profit like any other money spent.
+            {after}) and removes one 💀 from your name on the leaderboard. It is not refundable. The
+            money goes back to the house as the refill repaid, so your net profit and your rank do
+            not change — only your balance does.
           </p>
           <div className="row-actions">
             <button

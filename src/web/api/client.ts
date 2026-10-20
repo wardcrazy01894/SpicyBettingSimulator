@@ -43,6 +43,7 @@ import type {
   LoginRequest,
   PlaceBetRequest,
   PlayerBetsResponse,
+  PlayerBustsResponse,
   ReconcileResponse,
   SignupRequest,
   UserResponse,
@@ -374,6 +375,14 @@ export function getPlayerBets(userId: string, params: BetsQuery = {}): Promise<P
   return apiGet<PlayerBetsResponse>(
     `/api/users/${encodeURIComponent(userId)}/bets${query({ ...params })}`,
   );
+}
+
+/**
+ * A player's bust history: every refill and when (if) its badge was bought
+ * off (PLAN.md §4.5). Same visibility rule as `getPlayerBets`.
+ */
+export function getPlayerBusts(userId: string): Promise<PlayerBustsResponse> {
+  return apiGet<PlayerBustsResponse>(`/api/users/${encodeURIComponent(userId)}/busts`);
 }
 
 // ---------------------------------------------------------------------------

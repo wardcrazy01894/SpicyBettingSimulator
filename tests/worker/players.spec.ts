@@ -2,11 +2,15 @@ import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import type {
   BetResponse,
+  LeaderboardResponse,
   PlaceBetRequest,
   PlayerBetsResponse,
+  PlayerBustsResponse,
   UserResponse,
 } from '../../src/shared/api-types.js';
+import { BUST_BUYOUT_CENTS, INITIAL_BANKROLL_CENTS } from '../../src/shared/constants.js';
 import type { ApiErrorBody } from '../../src/shared/errors.js';
+
 import { buildApp } from '../../src/worker/index.js';
 import { seedGameWithLine, seedSettledBet } from './seed.js';
 
@@ -307,5 +311,95 @@ describe('GET /api/users/:id/bets', () => {
       expect(res.status, query).toBe(400);
       expect(await errorCode(res)).toBe('VALIDATION');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/users/:id/busts — the bust history (PLAN.md §4.5, §11.8)
+// ---------------------------------------------------------------------------
+
+describe('GET /api/users/:id/busts', () => {
+  async function admin(): Promise<{ cookie: string; id: string }> {
+    const user = await register('boss');
+    await env.DB.prepare('UPDATE users SET is_admin = 1 WHERE id = ?1').bind(user.id).run();
+    return user;
+  }
+
+  async function adjust(boss: { cookie: string }, id: string, amountCents: number): Promise<void> {
+    const res = await post(`/api/admin/users/${id}/adjust`, { amountCents }, boss.cookie);
+    expect(res.status, await res.clone().text()).toBe(204);
+  }
+
+  it('requires a session, and an account off the board is 404', async () => {
+    const tyler = await register('tyler');
+    const anon = await get(`/api/users/${tyler.id}/busts`);
+    expect(anon.status).toBe(401);
+
+    const alex = await register('alex');
+    await env.DB.prepare('UPDATE users SET is_disabled = 1 WHERE id = ?1').bind(tyler.id).run();
+    const hidden = await get(`/api/users/${tyler.id}/busts`, alex.cookie);
+    expect(hidden.status).toBe(404);
+    expect(await errorCode(hidden)).toBe('NOT_FOUND');
+    expect((await get('/api/users/nobody/busts', alex.cookie)).status).toBe(404);
+  });
+
+  it('is empty for a player who never busted', async () => {
+    const alex = await register('alex');
+    const tyler = await register('tyler');
+    const res = await get(`/api/users/${tyler.id}/busts`, alex.cookie);
+    expect(res.status).toBe(200);
+    expect(await res.json<PlayerBustsResponse>()).toEqual({
+      player: { id: tyler.id, username: tyler.name, displayName: tyler.name },
+      busts: [],
+    });
+  });
+
+  it('lists every refill, oldest first, with when (and whether) its badge was bought off', async () => {
+    const boss = await admin();
+    const alex = await register('alex');
+    const tyler = await register('tyler');
+
+    // Bust #1: refilled at the default, then bought off.
+    await adjust(boss, tyler.id, -INITIAL_BANKROLL_CENTS);
+    const r1 = await post(`/api/admin/users/${tyler.id}/refill`, {}, boss.cookie);
+    expect(r1.status, await r1.clone().text()).toBe(204);
+    await adjust(boss, tyler.id, 40_000);
+    const b1 = await post('/api/bankroll/buyout', {}, tyler.cookie);
+    expect(b1.status, await b1.clone().text()).toBe(204);
+
+    // Bust #2: a custom refill, still on the name.
+    await adjust(boss, tyler.id, -40_000);
+    const r2 = await post(
+      `/api/admin/users/${tyler.id}/refill`,
+      { amountCents: 25_000 },
+      boss.cookie,
+    );
+    expect(r2.status, await r2.clone().text()).toBe(204);
+
+    const res = await get(`/api/users/${tyler.id}/busts`, alex.cookie);
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await res.json<PlayerBustsResponse>();
+    expect(body.player.id).toBe(tyler.id);
+    expect(body.busts).toHaveLength(2);
+
+    const [first, second] = body.busts;
+    expect(first).toMatchObject({
+      amountCents: INITIAL_BANKROLL_CENTS,
+      buyoutCents: BUST_BUYOUT_CENTS,
+    });
+    expect(typeof first?.refilledAt).toBe('number');
+    expect(typeof first?.boughtOutAt).toBe('number');
+    expect(first?.boughtOutAt ?? 0).toBeGreaterThanOrEqual(first?.refilledAt ?? Infinity);
+    expect(second).toMatchObject({ amountCents: 25_000, boughtOutAt: null, buyoutCents: null });
+    expect(second?.refilledAt ?? 0).toBeGreaterThanOrEqual(first?.refilledAt ?? Infinity);
+
+    // The same two facts the leaderboard carries: one badge on the name now.
+    const board = await (await get('/api/leaderboard', alex.cookie)).json<LeaderboardResponse>();
+    expect(board.rows.find((r) => r.userId === tyler.id)?.bustCount).toBe(1);
+    // Your own history reads the same as anyone else's.
+    const own = await (
+      await get(`/api/users/${tyler.id}/busts`, tyler.cookie)
+    ).json<PlayerBustsResponse>();
+    expect(own).toEqual(body);
   });
 });

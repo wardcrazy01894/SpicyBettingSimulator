@@ -1,10 +1,10 @@
 /** /api/users — what one signed-in player may see of another. PLAN.md §11.8. */
 
 import { Hono } from 'hono';
-import type { PlayerBetsResponse } from '../../shared/api-types.js';
+import type { PlayerBetsResponse, PlayerBustsResponse } from '../../shared/api-types.js';
 import { requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
-import { listPlayerBets } from '../players.js';
+import { listPlayerBets, listPlayerBusts } from '../players.js';
 import { readBetListFilter } from './bets.js';
 
 export function usersRoutes(): Hono<AppContext> {
@@ -25,6 +25,15 @@ export function usersRoutes(): Hono<AppContext> {
       filter,
       c.var.now,
     );
+    return c.json(body);
+  });
+
+  /**
+   * Another player's bust history — every refill and when (if) its badge was
+   * bought off (PLAN.md §4.5). Same visibility rule as the bets.
+   */
+  app.get('/:id/busts', async (c) => {
+    const body: PlayerBustsResponse = await listPlayerBusts(c.env, c.req.param('id'));
     return c.json(body);
   });
 

@@ -34,18 +34,19 @@ import { RecordStats, ScopeNote } from '../components/RecordStats.js';
 import { ScopeTabs } from '../components/ScopeTabs.js';
 import { Segmented } from '../components/Segmented.js';
 import { Spinner } from '../components/Spinner.js';
-import { useLeaderboard, usePlayerBets } from '../hooks/useApi.js';
+import { useLeaderboard, usePlayerBets, usePlayerBusts } from '../hooks/useApi.js';
 import { usePoll } from '../hooks/useNow.js';
 import { usePages } from '../hooks/usePages.js';
+import { formatDateTime } from '../lib/datetime.js';
 import { groupBetsByWeek } from '../lib/grouping.js';
 import { betsEmptyTitle, scopeLeague } from '../lib/scope.js';
 import type { Scope } from '../lib/scope.js';
 import { AdminRefillForm } from '../components/AdminRefillForm.js';
 import { BustBadges } from '../components/BustBadges.js';
-import { NET_HELP, NET_HINT } from '../lib/labels.js';
+import { NET_HELP, NET_HINT, bustSummary } from '../lib/labels.js';
 import { useSession } from '../state/session.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
-import type { BetView, LeaderboardRow } from '../../shared/api-types.js';
+import type { BetView, BustView, LeaderboardRow } from '../../shared/api-types.js';
 
 type Filter = 'open' | 'settled';
 
@@ -67,8 +68,9 @@ function PlayerStats(props: {
   readonly row: LeaderboardRow;
   readonly stats: LeaderboardRow | undefined;
   readonly statsFailed: boolean;
+  readonly busts: readonly BustView[] | undefined;
 }): ReactElement {
-  const { row, stats, statsFailed } = props;
+  const { row, stats, statsFailed, busts } = props;
   return (
     <dl className="stat-grid" aria-busy={stats === undefined && !statsFailed}>
       <div>
@@ -100,10 +102,53 @@ function PlayerStats(props: {
         <RecordStats stats={stats} />
       )}
       <div>
+        <dt>Bought in</dt>
+        <dd>{formatCents(row.depositedCents)}</dd>
+      </div>
+      <div>
         <dt>Busts</dt>
-        <dd>{row.bustCount === 0 ? '—' : <BustBadges count={row.bustCount} />}</dd>
+        <dd>
+          {busts === undefined
+            ? row.bustCount === 0
+              ? '—'
+              : bustSummary(row.bustCount, 0)
+            : bustSummary(busts.length, busts.filter((b) => b.boughtOutAt !== null).length)}
+          {row.bustCount > 0 && <BustBadges count={row.bustCount} />}
+        </dd>
       </div>
     </dl>
+  );
+}
+
+/**
+ * The history behind the skulls (PLAN.md §4.5): one line per bust — when the
+ * house refilled the account and for how much, and when the badge was bought
+ * off, or that it is still on the name. Renders nothing for a player who has
+ * never busted; the stat cell above already says "—".
+ */
+function BustHistory(props: { readonly busts: readonly BustView[] }): ReactElement | null {
+  if (props.busts.length === 0) return null;
+  return (
+    <ul className="ledger bust-history" aria-label="Bust history">
+      {props.busts.map((bust, i) => (
+        <li className="ledger-row" key={bust.refillId}>
+          <div className="ledger-main">
+            <span className="ledger-kind">
+              💀 Bust #{String(i + 1)} — refilled {formatCents(bust.amountCents)}
+            </span>
+          </div>
+          <span className="muted">{formatDateTime(bust.refilledAt)}</span>
+          {bust.boughtOutAt === null ? (
+            <span className="num tone-loss">badge still on</span>
+          ) : (
+            <span className="num tone-win">
+              bought off {formatDateTime(bust.boughtOutAt)}
+              {bust.buyoutCents === null ? '' : ` for ${formatCents(bust.buyoutCents)}`}
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -138,6 +183,7 @@ export function PlayerBetsPage(): ReactElement {
   // board (the same request when scope is 'all') is the source for the record.
   const board = useLeaderboard('all');
   const scoped = useLeaderboard(scope);
+  const busts = usePlayerBusts(userId);
   const notFound =
     bets.data === undefined && bets.error instanceof ApiError && bets.error.code === 'NOT_FOUND';
   // A player who is not on the board stays not on the board; re-asking every
@@ -149,6 +195,7 @@ export function PlayerBetsPage(): ReactElement {
       if (notFound) return;
       bets.refetch();
       board.refetch();
+      busts.refetch();
       if (scope !== 'all') scoped.refetch();
     },
     filter === 'open' ? OPEN_POLL_MS : 5 * OPEN_POLL_MS,
@@ -213,9 +260,16 @@ export function PlayerBetsPage(): ReactElement {
           <ScopeTabs scope={scope} onChange={setScope} />
         </div>
         {row !== undefined && (
-          <PlayerStats row={row} stats={stats} statsFailed={scoped.error !== undefined} />
+          <PlayerStats
+            row={row}
+            stats={stats}
+            statsFailed={scoped.error !== undefined}
+            busts={busts.data?.busts}
+          />
         )}
         <ScopeNote scope={scope} />
+        {busts.data !== undefined && <BustHistory busts={busts.data.busts} />}
+
         {session.user?.isAdmin === true && !isMe && (
           <details className="admin-refill-details">
             <summary className="muted">Admin: refill this account</summary>
