@@ -50,7 +50,7 @@ function RefillBanner(): ReactElement | null {
   const main = balances.data?.balances.find((b) => b.kind === 'main');
   // The account page carries the same offer on the balance card; twice on one
   // screen reads as a glitch, not emphasis.
-  if (location.pathname === '/account') return null;
+  if (location.pathname.replace(/\/+$/, '') === '/account') return null;
   return <RefillPrompt balance={main} variant="banner" />;
 }
 

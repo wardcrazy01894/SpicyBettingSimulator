@@ -180,38 +180,38 @@ section explains the _why_.
   reasons about them, and `tests/unit/docs.spec.ts` fails if the two ever disagree.
   Change the constant and this table in the same PR.
 
-| Constant                              | Value           | Meaning                                                                                                                                                                               |
-| ------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                         |
-| `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                     |
-| `REFILL_DEFAULT_CENTS`                | `100_000`       | what the admin's Refill button proposes for a BUSTED account; any positive amount up to `MAX_PAYOUT_CENTS` may be typed (§4.5)                                                        |
-| `BUST_BUYOUT_CENTS`                   | `100_000`       | the price of removing ONE bust badge, paid from the player's own balance, which must be STRICTLY above it (§4.5)                                                                      |
-| `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                  |
-| `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                |
-| `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5) |
-| `SESSION_TTL_MS`                      | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                  |
-| `MAX_SETTLE_ATTEMPTS`                 | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                                                                                                                       |
-| `VOID_AFTER_MS`                       | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                               |
-| `MAX_PARLAY_LEGS`                     | `25`            | DraftKings' parlay limit; also `CHECK(leg_count BETWEEN 1 AND 25)` on `bets` (10 until migration 0010, §16.2)                                                                         |
-| `MIN_TEASER_LEGS`                     | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                         |
-| `MAX_TEASER_LEGS`                     | `10`            | the teaser card's width (§5.8), below `MAX_PARLAY_LEGS`; also `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` on `bets` (0010)                                                      |
-| `NFL_WEEK_ROLLOVER_ET_HOUR`           | `20`            | Sunday 20:00 ET: the NFL board rolls over to next week's Monday (§22)                                                                                                                 |
-| `NCAAF_WEEK_ROLLOVER_ET_HOUR`         | `0`             | Sunday 00:00 ET: the CFB board rolls over to next week's Monday (§22)                                                                                                                 |
-| `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` | `300`           | 30.0 pt: past this a missing moneyline is normal, not a gap — the UI hint and the sweep rule (§21.2)                                                                                  |
-| `SECONDARY_RETRY_MS`                  | `14_400_000`    | 4 h before the secondary re-attempts a game it could not fill (§21.5)                                                                                                                 |
-| `SECONDARY_RESWEEP_MARGIN_MS`         | `2_700_000`     | re-confirm a secondary fill this long before its staleness window closes (§21.5)                                                                                                      |
-| `SECONDARY_MIN_SWEEP_INTERVAL_MS`     | `7_200_000`     | floor between two sweeps of the SAME league; the blast-radius limiter (§21.5)                                                                                                         |
-| `SECONDARY_MATCH_WINDOW_MS`           | `5_400_000`     | kickoff tolerance of the mascot fallback matcher (§21.7)                                                                                                                              |
-| `ODDS_API_MONTHLY_CREDITS`            | `500`           | the free tier's monthly allowance; also the literal 0007 seeds (§21.3)                                                                                                                |
-| `ODDS_API_COST_PER_SWEEP`             | `3`             | credits one league sweep costs: markets (3) × regions (1), MEASURED (§21.5)                                                                                                           |
-| `ODDS_API_CREDIT_RESERVE`             | `25`            | sweeping stops below this — a cushion for debit drift, not for the probe, which is FREE (§21.5)                                                                                       |
-| `ODDS_API_BUDGET_PROBE_MS`            | `86_400_000`    | while the reserve blocks, one FREE `GET /v4/sports` a day to notice the monthly reset (§21.5)                                                                                         |
-| `ODDS_API_COOLDOWN_MS`                | `3_600_000`     | first cooldown after a 429 or a transport failure (§21.9)                                                                                                                             |
-| `ODDS_API_COOLDOWN_MAX_MS`            | `28_800_000`    | ceiling on the doubling of that cooldown across consecutive failures (§21.9)                                                                                                          |
-| `ODDS_API_TIMEOUT_MS`                 | `8_000`         | request timeout, same as ESPN's; a slow provider must not eat the CPU budget (§21.6)                                                                                                  |
-| `MLB_OFFICIAL_INNINGS`                | `5`             | a FINAL MLB game shorter than this was never official: EVERY market void, totals included (§23.6) — read from M12b                                                                    |
-| `MLB_REGULATION_INNINGS`              | `9`             | a FINAL MLB game this long (extras included) grades every market; shorter, only the moneyline and a decided total have action (§23.6) — read from M12b                                |
-| `MLB_POSTPONED_CONFIRM_MS`            | `10_800_000`    | 3 h after its ET day ends, a fetch still saying "postponed" is the evidence that voids an MLB game (§23.7) — read from M12b                                                           |
+| Constant                              | Value           | Meaning                                                                                                                                                                                              |
+| ------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                                        |
+| `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                                    |
+| `REFILL_DEFAULT_CENTS`                | `100_000`       | what the admin's Refill button proposes for a BUSTED account (any positive amount up to `MAX_PAYOUT_CENTS` may be typed) and the ONLY amount the player's own "Run out of money?" button pays (§4.5) |
+| `BUST_BUYOUT_CENTS`                   | `100_000`       | the price of removing ONE bust badge, paid from the player's own balance, which must be STRICTLY above it (§4.5)                                                                                     |
+| `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                                 |
+| `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                               |
+| `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5)                |
+| `SESSION_TTL_MS`                      | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                                 |
+| `MAX_SETTLE_ATTEMPTS`                 | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                                                                                                                                      |
+| `VOID_AFTER_MS`                       | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                                              |
+| `MAX_PARLAY_LEGS`                     | `25`            | DraftKings' parlay limit; also `CHECK(leg_count BETWEEN 1 AND 25)` on `bets` (10 until migration 0010, §16.2)                                                                                        |
+| `MIN_TEASER_LEGS`                     | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                                        |
+| `MAX_TEASER_LEGS`                     | `10`            | the teaser card's width (§5.8), below `MAX_PARLAY_LEGS`; also `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` on `bets` (0010)                                                                     |
+| `NFL_WEEK_ROLLOVER_ET_HOUR`           | `20`            | Sunday 20:00 ET: the NFL board rolls over to next week's Monday (§22)                                                                                                                                |
+| `NCAAF_WEEK_ROLLOVER_ET_HOUR`         | `0`             | Sunday 00:00 ET: the CFB board rolls over to next week's Monday (§22)                                                                                                                                |
+| `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` | `300`           | 30.0 pt: past this a missing moneyline is normal, not a gap — the UI hint and the sweep rule (§21.2)                                                                                                 |
+| `SECONDARY_RETRY_MS`                  | `14_400_000`    | 4 h before the secondary re-attempts a game it could not fill (§21.5)                                                                                                                                |
+| `SECONDARY_RESWEEP_MARGIN_MS`         | `2_700_000`     | re-confirm a secondary fill this long before its staleness window closes (§21.5)                                                                                                                     |
+| `SECONDARY_MIN_SWEEP_INTERVAL_MS`     | `7_200_000`     | floor between two sweeps of the SAME league; the blast-radius limiter (§21.5)                                                                                                                        |
+| `SECONDARY_MATCH_WINDOW_MS`           | `5_400_000`     | kickoff tolerance of the mascot fallback matcher (§21.7)                                                                                                                                             |
+| `ODDS_API_MONTHLY_CREDITS`            | `500`           | the free tier's monthly allowance; also the literal 0007 seeds (§21.3)                                                                                                                               |
+| `ODDS_API_COST_PER_SWEEP`             | `3`             | credits one league sweep costs: markets (3) × regions (1), MEASURED (§21.5)                                                                                                                          |
+| `ODDS_API_CREDIT_RESERVE`             | `25`            | sweeping stops below this — a cushion for debit drift, not for the probe, which is FREE (§21.5)                                                                                                      |
+| `ODDS_API_BUDGET_PROBE_MS`            | `86_400_000`    | while the reserve blocks, one FREE `GET /v4/sports` a day to notice the monthly reset (§21.5)                                                                                                        |
+| `ODDS_API_COOLDOWN_MS`                | `3_600_000`     | first cooldown after a 429 or a transport failure (§21.9)                                                                                                                                            |
+| `ODDS_API_COOLDOWN_MAX_MS`            | `28_800_000`    | ceiling on the doubling of that cooldown across consecutive failures (§21.9)                                                                                                                         |
+| `ODDS_API_TIMEOUT_MS`                 | `8_000`         | request timeout, same as ESPN's; a slow provider must not eat the CPU budget (§21.6)                                                                                                                 |
+| `MLB_OFFICIAL_INNINGS`                | `5`             | a FINAL MLB game shorter than this was never official: EVERY market void, totals included (§23.6) — read from M12b                                                                                   |
+| `MLB_REGULATION_INNINGS`              | `9`             | a FINAL MLB game this long (extras included) grades every market; shorter, only the moneyline and a decided total have action (§23.6) — read from M12b                                               |
+| `MLB_POSTPONED_CONFIRM_MS`            | `10_800_000`    | 3 h after its ET day ends, a fetch still saying "postponed" is the evidence that voids an MLB game (§23.7) — read from M12b                                                                          |
 
 `TEASER_POINTS_TENTHS = [30, 40, 50, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140]`
 — the 3-to-14-point tiers (plus 6.5), in TENTHS, matching every other line
@@ -337,7 +337,8 @@ deposit_refill, bust_buyout}` — the last two since migration 0011 (§4.5).
 `'init'` for the opening deposit, a fresh SERVER-generated uuid for admin
 adjustments and refills (each call is a distinct event — "+5000 twice" means it
 twice, and a refill retried after a lost response is a second refill, which the
-busted guard stops for any amount of $1 or more), and for a `bust_buyout` the id
+busted guard stops for any amount of $1 or more — on the player's own
+`POST /api/bankroll/refill` as much as on the admin's), and for a `bust_buyout` the id
 of the `deposit_refill` row it retires (so a refill can be bought off at most
 once, by the UNIQUE).
 Five triggers (§4.2): TWO `BEFORE INSERT` value guards that `INSERT OR IGNORE`
@@ -646,17 +647,17 @@ Consequences worth spelling out:
 
 ### 4.3 Money flows
 
-| Event                 | Ledger rows written                                                                                                                                  |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Signup**            | `deposit_initial` `+100000`, `ref_id='init'` — once per account, for its life                                                                        |
-| Bet placed            | `bet_stake` `-stake`, `ref_id=betId`                                                                                                                 |
-| Bet won               | `bet_payout` `+payout` (= stake + profit), `ref_id=betId`                                                                                            |
-| Bet pushed / voided   | `bet_payout` `+stake`, `ref_id=betId`                                                                                                                |
-| Bet lost              | **none** — the stake row already debited it                                                                                                          |
-| Bet cancelled by user | `bet_refund` `+stake`, `ref_id=betId`                                                                                                                |
-| Admin adjustment      | `admin_adjust` `±n`, `ref_id=<uuid>` — a CORRECTION; counts as profit/loss                                                                           |
-| Bust refill (admin)   | `deposit_refill` `+n`, `ref_id=<uuid>` — one bust badge; joins "bought in" (§4.5)                                                                    |
-| Bust badge buyout     | `bust_buyout` `-BUST_BUYOUT_CENTS`, `ref_id=<id of the refill retired>` — the refill REPAID, SUBTRACTED from "bought in" so net does not move (§4.5) |
+| Event                 | Ledger rows written                                                                                                                                                                |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Signup**            | `deposit_initial` `+100000`, `ref_id='init'` — once per account, for its life                                                                                                      |
+| Bet placed            | `bet_stake` `-stake`, `ref_id=betId`                                                                                                                                               |
+| Bet won               | `bet_payout` `+payout` (= stake + profit), `ref_id=betId`                                                                                                                          |
+| Bet pushed / voided   | `bet_payout` `+stake`, `ref_id=betId`                                                                                                                                              |
+| Bet lost              | **none** — the stake row already debited it                                                                                                                                        |
+| Bet cancelled by user | `bet_refund` `+stake`, `ref_id=betId`                                                                                                                                              |
+| Admin adjustment      | `admin_adjust` `±n`, `ref_id=<uuid>` — a CORRECTION; counts as profit/loss                                                                                                         |
+| Bust refill           | `deposit_refill` `+n`, `ref_id=<uuid>` — one bust badge; joins "bought in"; by the admin (any `n`) or the player themself (`REFILL_DEFAULT_CENTS`, memo `SELF_REFILL_MEMO`) (§4.5) |
+| Bust badge buyout     | `bust_buyout` `-BUST_BUYOUT_CENTS`, `ref_id=<id of the refill retired>` — the refill REPAID, SUBTRACTED from "bought in" so net does not move (§4.5)                               |
 
 A loss writing no row is deliberate: it keeps the ledger a pure cash-movement log,
 and `SUM(amount_cents) = balance_cents` stays trivially checkable

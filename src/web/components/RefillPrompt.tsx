@@ -44,17 +44,22 @@ export function RefillPrompt(props: {
   if (!eligible) {
     // The refetch that follows a refill makes the account un-busted, and a
     // plain `return null` would take the receipt with it — the one
-    // confirmation the player gets. So the receipt outlives the offer.
-    if (!done) return null;
+    // confirmation the player gets. So the receipt outlives the offer, and so
+    // does an error: a settlement that un-busts the player under the button
+    // turns the click into a 409, and the offer vanishing with no word would
+    // read as a broken button.
+    if (!done && error === null) return null;
     return (
       <div className={`refill-prompt refill-${variant}`} role="status">
-        <p className="refill-text">{REFILL_RECEIPT}</p>
+        {done && <p className="refill-text">{REFILL_RECEIPT}</p>}
+        {error !== null && <ErrorBanner error={error} />}
         {variant === 'banner' && (
           <button
             type="button"
             className="btn btn-quiet"
             onClick={() => {
               setDone(false);
+              setError(null);
             }}
           >
             OK
@@ -68,6 +73,7 @@ export function RefillPrompt(props: {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
+    setDone(false);
     setError(null);
     void postBankrollRefill()
       .then(() => {
