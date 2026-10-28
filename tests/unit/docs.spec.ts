@@ -257,6 +257,8 @@ describe('ERROR_CODES vs PLAN.md §11', () => {
     'BUG_REPORT_DIAGNOSTICS_MAX',
     'CLIENT_ERROR_BEACON_MAX',
     'SLOW_REQUEST_MS',
+    // §11.5 the player's own refill: the fixed ledger memo, not a code.
+    'SELF_REFILL_MEMO',
   ]);
   /** Suffixes that make a token a quantity, never a wire code. */
   const QUANTITY = /_(CENTS|MS|TENTHS|LEGS|BYTES|ITERATIONS|ATTEMPTS|GAMES|GROUP)$/;

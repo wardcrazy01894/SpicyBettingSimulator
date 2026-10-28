@@ -43,6 +43,8 @@ import {
   BUST_BUYOUT_CENTS,
   INITIAL_BANKROLL_CENTS,
   MIN_STAKE_CENTS,
+  REFILL_DEFAULT_CENTS,
+  SELF_REFILL_MEMO,
 } from '../shared/constants.js';
 import { AppError } from '../shared/errors.js';
 import { LEAGUES } from '../shared/types.js';
@@ -482,36 +484,46 @@ export async function adminAdjust(
 }
 
 /**
- * `POST /api/admin/users/:id/refill` — re-fund a BUSTED account (PLAN.md §4.5).
+ * The ONE refill writer, behind both refill routes (PLAN.md §4.5):
+ *
+ *   `POST /api/admin/users/:id/refill`  the admin, any amount, any memo;
+ *   `POST /api/bankroll/refill`         the player themself, always
+ *                                       `REFILL_DEFAULT_CENTS`, memo
+ *                                       `SELF_REFILL_MEMO` (2026-10-28).
  *
  * One `deposit_refill` row, fresh uuid `ref_id`, positive amount. The row IS the
  * bust badge: the leaderboard counts these, and the amount joins "bought in" so
  * `netCents` keeps carrying what was lost before the refill. That is why this is
  * a separate kind and a separate route from `adminAdjust`: a top-up of a live
- * account is a correction and must NOT grow a badge.
+ * account is a correction and must NOT grow a badge. The two routes share this
+ * statement so a player's refill is, on the board and in the ledger, exactly
+ * what an admin's would have been — the memo is the only tell.
  *
  * BUSTED means the balance cannot cover `MIN_STAKE_CENTS` AND no pending bet may
- * yet pay. Exactly zero is the common case, but a balance of 40¢ is just as
- * stuck — the slip refuses anything under $1 — and a $0 balance with a live
- * parlay is NOT busted until it settles. Both halves are `WHERE` clauses inside
- * the INSERT (CLAUDE.md rule 5), beside the deleted-account guard `/adjust`
- * uses, so a bet landing or a settlement paying between a read and the write
- * cannot turn a bonus into a badge.
+ * yet pay (`isBusted` in `src/shared/validate.ts` is the same rule for the UI).
+ * Exactly zero is the common case, but a balance of 40¢ is just as stuck — the
+ * slip refuses anything under $1 — and a $0 balance with a live parlay is NOT
+ * busted until it settles. Both halves are `WHERE` clauses inside the INSERT
+ * (CLAUDE.md rule 5), beside the deleted-account guard `/adjust` uses, so a bet
+ * landing or a settlement paying between a read and the write cannot turn a
+ * bonus into a badge — and so two clicks in flight at once write ONE row: the
+ * second INSERT re-reads a balance the first one's trigger has already raised.
  *
  * @throws AppError BANKROLL_NOT_FOUND when the user has no balance;
  *                  NOT_FOUND when the account is deleted;
  *                  NOT_BUSTED when it can still bet.
  */
-export async function adminRefill(
+async function writeRefill(
   env: Env,
   userId: string,
   amountCents: Cents,
   memo: string | null,
   now: EpochMs,
+  copy: { readonly noBalance: string; readonly notBusted: string },
 ): Promise<void> {
   const bankrollId = await mainBalanceId(env, userId);
   if (bankrollId === null) {
-    throw new AppError('BANKROLL_NOT_FOUND', 'That user has no balance.');
+    throw new AppError('BANKROLL_NOT_FOUND', copy.noBalance);
   }
   const results = await runBatch(env.DB, [
     env.DB.prepare(
@@ -531,10 +543,37 @@ export async function adminRefill(
     env.DB.prepare(`SELECT 1 AS one FROM users WHERE id = ?1 AND deleted_at IS NULL`).bind(userId),
   );
   if (live === null) throw new AppError('NOT_FOUND', 'No such user.');
-  throw new AppError(
-    'NOT_BUSTED',
-    'That account is not busted: it can still cover a minimum stake, or has an open bet that may yet pay. Use Adjust for a plain top-up.',
-  );
+  throw new AppError('NOT_BUSTED', copy.notBusted);
+}
+
+/** `POST /api/admin/users/:id/refill` — see `writeRefill`. */
+export async function adminRefill(
+  env: Env,
+  userId: string,
+  amountCents: Cents,
+  memo: string | null,
+  now: EpochMs,
+): Promise<void> {
+  await writeRefill(env, userId, amountCents, memo, now, {
+    noBalance: 'That user has no balance.',
+    notBusted:
+      'That account is not busted: it can still cover a minimum stake, or has an open bet that may yet pay. Use Adjust for a plain top-up.',
+  });
+}
+
+/**
+ * `POST /api/bankroll/refill` — the caller re-funds their OWN busted main
+ * balance at the default amount; see `writeRefill`. No amount and no memo are
+ * taken from the request: the player gets exactly what the admin's button
+ * proposes, and the memo is the fixed `SELF_REFILL_MEMO` so the ledger says who
+ * asked.
+ */
+export async function selfRefill(env: Env, userId: string, now: EpochMs): Promise<void> {
+  await writeRefill(env, userId, REFILL_DEFAULT_CENTS, SELF_REFILL_MEMO, now, {
+    noBalance: 'You have no balance.',
+    notBusted:
+      'You are not busted: you can still cover a minimum stake, or have an open bet that may yet pay.',
+  });
 }
 
 /**

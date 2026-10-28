@@ -4,6 +4,7 @@ import {
   formatCents,
   formatSignedCents,
   formatLineTenths,
+  isBusted,
   isCoherentMarketSide,
   legsConflict,
   listWithOr,
@@ -801,5 +802,28 @@ describe('validateDisplayNameUpdate', () => {
   it('rejects a non-object body', () => {
     expect(validateDisplayNameUpdate('Big Al').ok).toBe(false);
     expect(validateDisplayNameUpdate(null).ok).toBe(false);
+  });
+});
+
+describe('isBusted', () => {
+  // The ONE definition of "out of money" (PLAN.md §4.5): the balance cannot
+  // cover a minimum stake AND nothing is open that may yet pay. Equity, not
+  // balance — a $0 balance with a live parlay is not busted until it settles.
+  it('is busted at exactly zero with nothing open', () => {
+    expect(isBusted({ balanceCents: 0, pendingStakeCents: 0 })).toBe(true);
+  });
+
+  it('is busted under the minimum stake — 40¢ cannot be bet either', () => {
+    expect(isBusted({ balanceCents: MIN_STAKE_CENTS - 1, pendingStakeCents: 0 })).toBe(true);
+  });
+
+  it('is NOT busted at the minimum stake or above', () => {
+    expect(isBusted({ balanceCents: MIN_STAKE_CENTS, pendingStakeCents: 0 })).toBe(false);
+    expect(isBusted({ balanceCents: 100_000, pendingStakeCents: 0 })).toBe(false);
+  });
+
+  it('is NOT busted while a stake is in flight, whatever the balance', () => {
+    expect(isBusted({ balanceCents: 0, pendingStakeCents: MIN_STAKE_CENTS })).toBe(false);
+    expect(isBusted({ balanceCents: 0, pendingStakeCents: 5_000 })).toBe(false);
   });
 });

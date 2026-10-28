@@ -594,3 +594,22 @@ export function validateBugReport(body: unknown): ValidationResult<BugReportInpu
 
   return good({ title, description, page, diagnostics });
 }
+
+/**
+ * BUSTED — the one definition, shared by the refill routes' WHERE clause (in
+ * SQL, `src/worker/bankroll.ts`), the admin's Users tab and the player's own
+ * "Run out of money?" prompt (PLAN.md §4.5): the balance cannot cover a minimum
+ * stake AND nothing is open that may yet pay. Equity, not balance — a $0
+ * balance with a live parlay is not busted until it settles — and under
+ * `MIN_STAKE_CENTS`, not exactly zero, because 40¢ cannot be bet either.
+ *
+ * Since any pending stake is at least `MIN_STAKE_CENTS`, this is exactly
+ * `equityCents < MIN_STAKE_CENTS`. The browser's copy only decides whether to
+ * SHOW the offer; the server re-checks inside the INSERT.
+ */
+export function isBusted(view: {
+  readonly balanceCents: number;
+  readonly pendingStakeCents: number;
+}): boolean {
+  return view.balanceCents < MIN_STAKE_CENTS && view.pendingStakeCents === 0;
+}

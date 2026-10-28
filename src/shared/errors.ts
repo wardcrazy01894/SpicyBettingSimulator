@@ -57,10 +57,13 @@ export const ERROR_CODES = [
    */
   'ACCOUNT_HAS_PENDING_BETS',
   /**
-   * `POST /api/admin/users/:id/refill` on an account that is not BUSTED: its
+   * `POST /api/admin/users/:id/refill` or the player's own
+   * `POST /api/bankroll/refill` on an account that is not BUSTED: its
    * balance can still cover `MIN_STAKE_CENTS`, or it has a pending bet that
    * may yet pay. A refill is a bust badge, so it is refused rather than
    * silently becoming a bonus — `/adjust` is the route for a plain top-up.
+   * It is also what a second click on the player's button gets: the guard is
+   * inside the INSERT, so the first refill makes the second one this.
    */
   'NOT_BUSTED',
   /**

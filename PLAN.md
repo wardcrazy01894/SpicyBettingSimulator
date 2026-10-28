@@ -745,25 +745,42 @@ The first player to lose the whole $1,000 filed a GitHub issue about it. The
 answer is a REFILL that leaves the loss visible rather than a reset that hides
 it, and the design is three rules on top of the ledger:
 
-1. **A refill is its own ledger kind, `deposit_refill`, written only by
-   `POST /api/admin/users/:id/refill {amountCents?, memo?}`** (one row, `+n`,
-   fresh uuid `ref_id`, `n` defaulting to `REFILL_DEFAULT_CENTS` = $1,000 and
-   otherwise any positive integer within `MAX_PAYOUT_CENTS`). It is NOT an
+1. **A refill is its own ledger kind, `deposit_refill`, written by exactly
+   two routes through ONE statement (`writeRefill`, `src/worker/bankroll.ts`):
+   the admin's `POST /api/admin/users/:id/refill {amountCents?, memo?}` and,
+   since 2026-10-28, the player's own `POST /api/bankroll/refill`** (one row,
+   `+n`, fresh uuid `ref_id`; for the admin `n` defaults to
+   `REFILL_DEFAULT_CENTS` = $1,000 and is otherwise any positive integer
+   within `MAX_PAYOUT_CENTS`; for the player it is ALWAYS the default, the
+   request has no body, and the memo is the fixed `SELF_REFILL_MEMO`,
+   "requested by the player" — on the board and in the ledger the two are
+   the same row, the memo being the only tell). It is NOT an
    `admin_adjust`, because the two mean different things on the board: a
    refill is money the house put in and **joins "bought in"**; an adjustment
-   is a correction and **counts as profit or loss**. The route refuses an
+   is a correction and **counts as profit or loss**. Both routes refuse an
    account that is not BUSTED with `409 NOT_BUSTED` — busted means
    `balance_cents < MIN_STAKE_CENTS` (it cannot cover a $1 stake; exactly
    zero is the common case, 40¢ is just as stuck) AND no `pending` bet that
-   may yet pay. Both halves are `WHERE` clauses inside the INSERT, beside the
-   deleted-account guard `/adjust` has (rule 5): a settlement landing between
-   a read and the write cannot turn a bonus into a badge. `/adjust` remains
-   the route for a plain top-up, badge-free. The admin reaches the route from
-   two places in the SPA, both the same `AdminRefillForm`: the Users tab of
-   `/admin` (an account dropdown showing each balance and badge count, then
-   the amount box) and the player's own page `/players/:userId`, which is
-   where an admin coming from the leaderboard actually lands; the form is
-   hidden there unless the viewer is an admin looking at somebody else.
+   may yet pay: equity at zero, not balance — a $0 balance under a live
+   parlay is not busted until it settles. `isBusted` in
+   `src/shared/validate.ts` is that rule for the UI. Both halves are `WHERE`
+   clauses inside the INSERT, beside the deleted-account guard `/adjust` has
+   (rule 5): a settlement landing between a read and the write cannot turn a
+   bonus into a badge, and two clicks in flight at once write ONE row — the
+   second INSERT re-reads a balance the first one's trigger already raised,
+   so it is the `409`, never a second badge. `/adjust` remains the route for
+   a plain top-up, badge-free. The admin reaches the route from two places
+   in the SPA, both the same `AdminRefillForm`: the Users tab of `/admin`
+   (an account dropdown showing each balance and badge count, then the
+   amount box) and the player's own page `/players/:userId`, which is where
+   an admin coming from the leaderboard actually lands; the form is hidden
+   there unless the viewer is an admin looking at somebody else. The player
+   reaches theirs through `RefillPrompt`, "Run out of money?": a banner
+   under the nav on EVERY page and the same block on their `/account`
+   balance card, shown only while `isBusted`, one button, no confirm step —
+   the copy names the cost (a 💀, the loss staying on the board) and the
+   button disables on the first click. The second bust report (#76,
+   2026-10-25: "no 💀 button to get the devil's money") is why it exists.
 2. **The leaderboard ranks by NET PROFIT**, `netCents = equityCents −
 depositedCents`, where `depositedCents = Σ deposit_initial + Σ
 deposit_refill + Σ bust_buyout` on the MAIN balance — what the house has
@@ -2550,39 +2567,39 @@ stops a proxy from ever mis-parsing us. A body that is absent or unparseable is
 its canonical status. The list is the wire contract: a code is never repurposed
 and never removed, only added.
 
-| Code                       | Status | Raised by                                                                                                                                                                                                                                               |
-| -------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VALIDATION`               | 400    | any malformed field, and a wrong `Content-Type`                                                                                                                                                                                                         |
-| `MALFORMED_JSON`           | 400    | a body that is absent or not valid JSON                                                                                                                                                                                                                 |
-| `TEASER_INVALID`           | 400    | a teaser with no tier, or a tier on a non-teaser (§5.8)                                                                                                                                                                                                 |
-| `UNAUTHENTICATED`          | 401    | no session on a private route                                                                                                                                                                                                                           |
-| `INVALID_CREDENTIALS`      | 401    | login; identical for an unknown user (§10.2)                                                                                                                                                                                                            |
-| `BAD_INVITE_CODE`          | 401    | signup when `INVITE_CODE` is set and wrong                                                                                                                                                                                                              |
-| `ACCOUNT_DISABLED`         | 403    | login by a disabled account; also placement/edit when the account is disabled or soft-deleted BETWEEN authentication and the batch (§14.2's account-state guard)                                                                                        |
-| `CSRF_BLOCKED`             | 403    | missing `X-SBS-Client`, or a cross-origin `Origin` (§10.5) — on every state-changing method, `DELETE` included                                                                                                                                          |
-| `NOT_FOUND`                | 404    | any unclaimed `/api/*` path, an unknown `:job`, and an admin user route naming an unknown OR soft-deleted account (§10.5)                                                                                                                               |
-| `GAME_NOT_FOUND`           | 404    | a leg or board lookup naming a game that does not exist                                                                                                                                                                                                 |
-| `BET_NOT_FOUND`            | 404    | a bet that is not yours OR does not exist — never 403 (§11.4)                                                                                                                                                                                           |
-| `BANKROLL_NOT_FOUND`       | 404    | a balance that is not yours OR does not exist (§4.4)                                                                                                                                                                                                    |
-| `USERNAME_TAKEN`           | 409    | signup; also a soft delete whose 12- AND 16-hex tombstone names are both taken (§10.5) — a coded, actionable refusal instead of an `INTERNAL`                                                                                                           |
-| `ACCOUNT_HAS_PENDING_BETS` | 409    | `DELETE /api/admin/users/:id` while the target holds an open bet (§10.5). A NEW code, not a reused one: `BET_NOT_PENDING` is about one bet's status and says the opposite thing, and `VALIDATION` is a 400                                              |
-| `NOT_BUSTED`               | 409    | `POST /api/admin/users/:id/refill` on an account that can still cover `MIN_STAKE_CENTS` or holds a pending bet (§4.5). A refill is a bust badge, so it is refused rather than silently becoming a bonus — `/adjust` is the plain top-up                 |
-| `NO_BUST_BADGE`            | 409    | `POST /api/bankroll/buyout` with no badge to remove, or a balance not strictly above `BUST_BUYOUT_CENTS` (§4.5)                                                                                                                                         |
-| `GAME_NOT_BETTABLE`        | 409    | `status <> 'scheduled'`                                                                                                                                                                                                                                 |
-| `BETTING_CLOSED`           | 409    | past `lockAt`                                                                                                                                                                                                                                           |
-| `MARKET_UNAVAILABLE`       | 409    | no line for that market, or `seenAt` stale                                                                                                                                                                                                              |
-| `LINE_CHANGED`             | 409    | `expected` disagrees and `acceptLineChange` is not set                                                                                                                                                                                                  |
-| `INSUFFICIENT_FUNDS`       | 409    | the `ledger_bi_sufficient_funds` trigger, mapped (§4.2) — never a pre-read                                                                                                                                                                              |
-| `MIXED_LEAGUE_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span leagues                                                                                                                                                                                              |
-| `MIXED_SEASON_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span seasons                                                                                                                                                                                              |
-| `DUPLICATE_GAME_IN_PARLAY` | 409    | 0008's DB backstops under §5.2c — `UNIQUE(bet_id, game_id, market)` or the one-side-pick trigger — after validation let a bet through. Validation itself refuses the same thing as `400 VALIDATION` on `legs[i].market`, so this is a should-not-happen |
-| `PAYOUT_LIMIT_EXCEEDED`    | 409    | potential payout over `MAX_PAYOUT_CENTS` (§5.2b)                                                                                                                                                                                                        |
-| `BET_LOCKED`               | 409    | cancel/edit after a leg's game locked (§14.2)                                                                                                                                                                                                           |
-| `BET_NOT_PENDING`          | 409    | cancel/edit/retry on a bet that is not `pending`                                                                                                                                                                                                        |
-| `JOB_LOCKED`               | 409    | an admin trigger while the lease is held (§9.3)                                                                                                                                                                                                         |
-| `RATE_LIMITED`             | 429    | login/signup throttle, with `Retry-After` (§10.5)                                                                                                                                                                                                       |
-| `UPSTREAM_UNAVAILABLE`     | 503    | **RESERVED — never thrown today.** An ESPN failure is a job-level event: it backs the target off and is recorded in `job_runs`, so no user request is waiting on it. The code is kept for the day a request path reads upstream directly.               |
-| `INTERNAL`                 | 500    | anything unrecognised, deliberately generic — the original message may carry SQL or a stack                                                                                                                                                             |
+| Code                       | Status | Raised by                                                                                                                                                                                                                                                              |
+| -------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VALIDATION`               | 400    | any malformed field, and a wrong `Content-Type`                                                                                                                                                                                                                        |
+| `MALFORMED_JSON`           | 400    | a body that is absent or not valid JSON                                                                                                                                                                                                                                |
+| `TEASER_INVALID`           | 400    | a teaser with no tier, or a tier on a non-teaser (§5.8)                                                                                                                                                                                                                |
+| `UNAUTHENTICATED`          | 401    | no session on a private route                                                                                                                                                                                                                                          |
+| `INVALID_CREDENTIALS`      | 401    | login; identical for an unknown user (§10.2)                                                                                                                                                                                                                           |
+| `BAD_INVITE_CODE`          | 401    | signup when `INVITE_CODE` is set and wrong                                                                                                                                                                                                                             |
+| `ACCOUNT_DISABLED`         | 403    | login by a disabled account; also placement/edit when the account is disabled or soft-deleted BETWEEN authentication and the batch (§14.2's account-state guard)                                                                                                       |
+| `CSRF_BLOCKED`             | 403    | missing `X-SBS-Client`, or a cross-origin `Origin` (§10.5) — on every state-changing method, `DELETE` included                                                                                                                                                         |
+| `NOT_FOUND`                | 404    | any unclaimed `/api/*` path, an unknown `:job`, and an admin user route naming an unknown OR soft-deleted account (§10.5)                                                                                                                                              |
+| `GAME_NOT_FOUND`           | 404    | a leg or board lookup naming a game that does not exist                                                                                                                                                                                                                |
+| `BET_NOT_FOUND`            | 404    | a bet that is not yours OR does not exist — never 403 (§11.4)                                                                                                                                                                                                          |
+| `BANKROLL_NOT_FOUND`       | 404    | a balance that is not yours OR does not exist (§4.4)                                                                                                                                                                                                                   |
+| `USERNAME_TAKEN`           | 409    | signup; also a soft delete whose 12- AND 16-hex tombstone names are both taken (§10.5) — a coded, actionable refusal instead of an `INTERNAL`                                                                                                                          |
+| `ACCOUNT_HAS_PENDING_BETS` | 409    | `DELETE /api/admin/users/:id` while the target holds an open bet (§10.5). A NEW code, not a reused one: `BET_NOT_PENDING` is about one bet's status and says the opposite thing, and `VALIDATION` is a 400                                                             |
+| `NOT_BUSTED`               | 409    | `POST /api/admin/users/:id/refill` or `POST /api/bankroll/refill` on an account that can still cover `MIN_STAKE_CENTS` or holds a pending bet (§4.5). A refill is a bust badge, so it is refused rather than silently becoming a bonus — `/adjust` is the plain top-up |
+| `NO_BUST_BADGE`            | 409    | `POST /api/bankroll/buyout` with no badge to remove, or a balance not strictly above `BUST_BUYOUT_CENTS` (§4.5)                                                                                                                                                        |
+| `GAME_NOT_BETTABLE`        | 409    | `status <> 'scheduled'`                                                                                                                                                                                                                                                |
+| `BETTING_CLOSED`           | 409    | past `lockAt`                                                                                                                                                                                                                                                          |
+| `MARKET_UNAVAILABLE`       | 409    | no line for that market, or `seenAt` stale                                                                                                                                                                                                                             |
+| `LINE_CHANGED`             | 409    | `expected` disagrees and `acceptLineChange` is not set                                                                                                                                                                                                                 |
+| `INSUFFICIENT_FUNDS`       | 409    | the `ledger_bi_sufficient_funds` trigger, mapped (§4.2) — never a pre-read                                                                                                                                                                                             |
+| `MIXED_LEAGUE_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span leagues                                                                                                                                                                                                             |
+| `MIXED_SEASON_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span seasons                                                                                                                                                                                                             |
+| `DUPLICATE_GAME_IN_PARLAY` | 409    | 0008's DB backstops under §5.2c — `UNIQUE(bet_id, game_id, market)` or the one-side-pick trigger — after validation let a bet through. Validation itself refuses the same thing as `400 VALIDATION` on `legs[i].market`, so this is a should-not-happen                |
+| `PAYOUT_LIMIT_EXCEEDED`    | 409    | potential payout over `MAX_PAYOUT_CENTS` (§5.2b)                                                                                                                                                                                                                       |
+| `BET_LOCKED`               | 409    | cancel/edit after a leg's game locked (§14.2)                                                                                                                                                                                                                          |
+| `BET_NOT_PENDING`          | 409    | cancel/edit/retry on a bet that is not `pending`                                                                                                                                                                                                                       |
+| `JOB_LOCKED`               | 409    | an admin trigger while the lease is held (§9.3)                                                                                                                                                                                                                        |
+| `RATE_LIMITED`             | 429    | login/signup throttle, with `Retry-After` (§10.5)                                                                                                                                                                                                                      |
+| `UPSTREAM_UNAVAILABLE`     | 503    | **RESERVED — never thrown today.** An ESPN failure is a job-level event: it backs the target off and is recorded in `job_runs`, so no user request is waiting on it. The code is kept for the day a request path reads upstream directly.                              |
+| `INTERNAL`                 | 500    | anything unrecognised, deliberately generic — the original message may carry SQL or a stack                                                                                                                                                                            |
 
 ### 11.1 Public
 
@@ -2778,13 +2795,14 @@ what the slip promised); `payoutCents` is what was actually paid.
 
 ### 11.5 Balances, ledger, leaderboard
 
-| Method | Path                                           | Response                                                                                                                                      |
-| ------ | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/bankroll?league=`                        | `200 {balances: BankrollView[]}` — every balance the caller owns, `main` first. Creates nothing.                                              |
-| GET    | `/api/ledger?bankrollId=&limit=&cursor=`       | `200 {entries: LedgerEntry[], nextCursor}`. `bankrollId` defaults to the main balance.                                                        |
-| GET    | `/api/leaderboard?league=all\|nfl\|ncaaf\|mlb` | `200 {league, rows: LeaderboardRow[]}`. `league` optional; `all` / absent is the default. **Enabled, non-deleted accounts only** — see below. |
-| GET    | `/api/leaderboard/all-time`                    | `200 {league:'all', rows}` — an ALIAS of the unfiltered board, kept for the shipped client.                                                   |
-| POST   | `/api/bankroll/buyout`                         | `204`. Pays `BUST_BUYOUT_CENTS` from the main balance to remove ONE bust badge; `409 NO_BUST_BADGE` when nothing to buy (§4.5). No body.      |
+| Method | Path                                           | Response                                                                                                                                                                                          |
+| ------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/bankroll?league=`                        | `200 {balances: BankrollView[]}` — every balance the caller owns, `main` first. Creates nothing.                                                                                                  |
+| GET    | `/api/ledger?bankrollId=&limit=&cursor=`       | `200 {entries: LedgerEntry[], nextCursor}`. `bankrollId` defaults to the main balance.                                                                                                            |
+| GET    | `/api/leaderboard?league=all\|nfl\|ncaaf\|mlb` | `200 {league, rows: LeaderboardRow[]}`. `league` optional; `all` / absent is the default. **Enabled, non-deleted accounts only** — see below.                                                     |
+| GET    | `/api/leaderboard/all-time`                    | `200 {league:'all', rows}` — an ALIAS of the unfiltered board, kept for the shipped client.                                                                                                       |
+| POST   | `/api/bankroll/buyout`                         | `204`. Pays `BUST_BUYOUT_CENTS` from the main balance to remove ONE bust badge; `409 NO_BUST_BADGE` when nothing to buy (§4.5). No body.                                                          |
+| POST   | `/api/bankroll/refill`                         | `204`. Re-funds the caller's OWN busted main balance with `REFILL_DEFAULT_CENTS`: one `deposit_refill` row = one bust badge, memo `SELF_REFILL_MEMO`; `409 NOT_BUSTED` otherwise (§4.5). No body. |
 
 `BankrollView = { id, name, kind ('main'|'custom'), balanceCents,
 pendingStakeCents, equityCents, depositedCents, netCents, bustCount,
@@ -3123,8 +3141,10 @@ main.tsx
     ├── <SessionProvider>                   { user, status, login, signup, logout }
     │   └── <ConfigProvider>                /api/config, cached for the session
     │       └── <BetSlipProvider>           ONE cross-league slip, localStorage `sbs.slip.v3`
-    │           ├── <AppShell>              header + <BankrollBadge> + <NavTabs> + <Outlet>
-    │           │   │                       + <BetSlipBar> + <BetSlip>; redirects anon to /login
+    │           ├── <AppShell>              header + <BankrollBadge> + <NavTabs> + <RefillBanner> + <Outlet>
+    │           │   │                       + <BetSlipBar> + <BetSlip>; redirects anon to /login.
+    │           │   │                       <RefillBanner> is <RefillPrompt variant=banner>, "Run out of
+    │           │   │                       money?" on every page while isBusted — POST /api/bankroll/refill
     │           │   ├── route "/"           <GamesPage>
     │           │   │   ├── <LeagueTabs>    moves the BOARD only — never the slip
     │           │   │   ├── <WeekPicker>    football only — hidden for MLB (BOARD_HAS_WEEKS, §23.12)
@@ -3154,6 +3174,7 @@ main.tsx
     │           │   │   │   └── <BetCard bet readOnly>    never Edit/Cancel; the server says cancellable:false too
     │           │   │   └── <LoadMore paged>
     │           │   ├── route "/account"    <AccountPage>
+    │           │   │   ├── <RefillPrompt variant=card>   the same offer on the balance card (§4.5)
     │           │   │   ├── <DisplayNameForm>      POST /api/auth/display-name, session.setDisplayName()
     │           │   │   ├── (balances, inline)
     │           │   │   ├── <LedgerList entries>

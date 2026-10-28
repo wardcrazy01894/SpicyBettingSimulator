@@ -25,6 +25,14 @@ export const INITIAL_BANKROLL_CENTS = 100_000;
 export const REFILL_DEFAULT_CENTS = INITIAL_BANKROLL_CENTS;
 
 /**
+ * The memo on a refill the PLAYER asked for themself (`POST /api/bankroll/refill`,
+ * PLAN.md §4.5). Same ledger kind as an admin refill — same badge, same
+ * "bought in" — and this is the one thing that tells the two apart in the
+ * ledger. An admin refill carries whatever memo the admin typed, or none.
+ */
+export const SELF_REFILL_MEMO = 'requested by the player';
+
+/**
  * The price of removing ONE bust badge, paid by the player from their own
  * balance (`POST /api/bankroll/buyout`, PLAN.md §4.5). The balance must be
  * STRICTLY above this after the account's open stakes are ignored — paying

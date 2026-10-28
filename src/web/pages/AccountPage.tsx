@@ -19,6 +19,7 @@ import { LoadMore } from '../components/LoadMore.js';
 import { Spinner } from '../components/Spinner.js';
 import { BustBadges } from '../components/BustBadges.js';
 import { RecordStats } from '../components/RecordStats.js';
+import { RefillPrompt } from '../components/RefillPrompt.js';
 import { getLedger, postBustBuyout } from '../api/client.js';
 import { LEDGER_PAGE_SIZE, useBalances, useLedger } from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
@@ -170,6 +171,7 @@ function BalanceCard(props: { readonly balance: BankrollView }): ReactElement {
       <p className="muted scope-note">
         Record, profit and ROI by sport are on <Link to="/bets">My Bets</Link>.
       </p>
+      <RefillPrompt balance={b} variant="card" />
       <BustBuyout balance={b} />
     </div>
   );

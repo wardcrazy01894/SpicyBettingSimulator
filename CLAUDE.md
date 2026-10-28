@@ -210,12 +210,16 @@ the one failure mode the whole checklist has.
    with the existing `400 TEASER_INVALID`, before any statement is built. (iv) The secondary never sweeps MLB:
    `secondary.ts` loops `SECONDARY_LEAGUES`, never `LEAGUES`.
    8h. **Bust refills and badges (PLAN.md §4.5, migration 0011).** A refill
-   is its own ledger kind, `deposit_refill`, written ONLY by
-   `POST /api/admin/users/:id/refill`, and only for a BUSTED account
-   (`balance_cents < MIN_STAKE_CENTS` with no pending bet — both are WHERE
-   clauses inside the INSERT, `409 NOT_BUSTED` otherwise). Never book a refill
-   as `admin_adjust`: an adjustment is a correction and counts as profit or
-   loss; a refill joins "bought in" and is one bust badge. **The leaderboard
+   is its own ledger kind, `deposit_refill`, written ONLY by `writeRefill`
+   behind two routes — the admin's `POST /api/admin/users/:id/refill` (any
+   amount) and the player's own `POST /api/bankroll/refill` (always
+   `REFILL_DEFAULT_CENTS`, memo `SELF_REFILL_MEMO`, since 2026-10-28) — and
+   only for a BUSTED account (`balance_cents < MIN_STAKE_CENTS` with no
+   pending bet, i.e. equity at zero; `isBusted` in `src/shared/validate.ts`
+   is the UI's copy of the rule — both are WHERE clauses inside the INSERT,
+   `409 NOT_BUSTED` otherwise, which is also what a double click gets). Never
+   book a refill as `admin_adjust`: an adjustment is a correction and counts
+   as profit or loss; a refill joins "bought in" and is one bust badge. **The leaderboard
    ranks by `netCents = equity − deposited`**, not equity. A `bust_buyout`
    (`POST /api/bankroll/buyout`, `-BUST_BUYOUT_CENTS`) retires ONE refill by
    `ref_id`, so the UNIQUE makes each badge sellable once; its guard is
