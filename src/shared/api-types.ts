@@ -486,6 +486,15 @@ export interface AdminRefillRequest {
   readonly memo?: string;
 }
 
+/*
+ * `POST /api/bankroll/refill` — the caller re-funds their OWN busted main
+ * balance (PLAN.md §4.5, 2026-10-28). It has NO request body and no response
+ * body (`204`): the amount is always `REFILL_DEFAULT_CENTS` and the memo is
+ * `SELF_REFILL_MEMO`, so there is nothing for a type to carry. Same ledger
+ * kind as the admin's refill — same badge, same "bought in" — and the same
+ * `409 NOT_BUSTED` when the account can still bet.
+ */
+
 export interface LeaderboardRow {
   readonly userId: string;
   readonly username: string;

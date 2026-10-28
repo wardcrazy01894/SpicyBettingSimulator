@@ -51,7 +51,7 @@ export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   ACCOUNT_HAS_PENDING_BETS:
     'That account still has open bets — cancel or settle them first, then delete it.',
   NOT_BUSTED:
-    'That account is not busted — it can still cover a $1 stake, or has an open bet that may yet pay.',
+    'Not busted — the balance can still cover a $1 stake, or an open bet may yet pay. A refill only goes to an account that is out.',
   NO_BUST_BADGE: 'Nothing to buy: no bust badge to remove, or the balance is not above the price.',
   JOB_LOCKED: 'That job is already running. Give it a minute.',
 

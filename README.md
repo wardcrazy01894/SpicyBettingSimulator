@@ -9,8 +9,9 @@ it.
 You sign up, get a fake **$1,000**, and bet it on this week's NFL and college
 games at the prices the books are posting. Games go final, bets grade
 themselves, the money moves, and a leaderboard settles the argument. There is
-no top-up button, so bet like it's real: lose the lot and an admin can refill
-you, but the loss stays on the board and a 💀 goes beside your name.
+no top-up button, so bet like it's real: lose the lot and a "Run out of
+money?" prompt will refill you $1,000, but the loss stays on the board and a
+💀 goes beside your name.
 
 ---
 
@@ -74,7 +75,9 @@ you, but the loss stays on the board and a 💀 goes beside your name.
    open and how each leg is going, and everything that's settled, with what it
    won or lost. Everyone's history is open to everyone; it's a friend group,
    not a bank.
-7. **Bust out, buy back in.** Lose the lot and an admin can refill you — but
+7. **Bust out, buy back in.** Lose the lot — $0 with nothing open — and a
+   "Run out of money?" prompt appears on every page with one button: a $1,000
+   refill (an admin can do it for you too). But
    the refill joins what you've bought in, so your net profit still shows the
    $1,000 you lost, and a 💀 sits beside your name on the leaderboard. Get
    back above $1,000 and your account page offers to remove a badge for

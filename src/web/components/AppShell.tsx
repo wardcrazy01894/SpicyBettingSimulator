@@ -6,6 +6,7 @@ import { BetSlip } from './BetSlip.js';
 import { BetSlipBar } from './BetSlipBar.js';
 import { BugReportSheet } from './BugReportSheet.js';
 import { NavTabs } from './NavTabs.js';
+import { RefillPrompt } from './RefillPrompt.js';
 import { Spinner } from './Spinner.js';
 import { useBalances, useHealth } from '../hooks/useApi.js';
 import { BugReportProvider, useBugReport } from '../state/bug-report.js';
@@ -34,6 +35,23 @@ function BankrollBadge(): ReactElement {
       <span className="bankroll-equity">equity {formatCents(main.equityCents)}</span>
     </span>
   );
+}
+
+/**
+ * "Run out of money?" on EVERY page while the main balance is busted (PLAN.md
+ * §4.5): the same prompt the account card carries, placed under the nav so a
+ * player who just lost the lot on the board sees the way back without hunting
+ * for it. It renders nothing otherwise, and nothing on /account, where the
+ * balance card already carries it.
+ */
+function RefillBanner(): ReactElement | null {
+  const balances = useBalances();
+  const location = useLocation();
+  const main = balances.data?.balances.find((b) => b.kind === 'main');
+  // The account page carries the same offer on the balance card; twice on one
+  // screen reads as a glitch, not emphasis.
+  if (location.pathname.replace(/\/+$/, '') === '/account') return null;
+  return <RefillPrompt balance={main} variant="banner" />;
 }
 
 /**
@@ -90,6 +108,7 @@ function Shell(): ReactElement {
         </div>
       </header>
       <NavTabs />
+      <RefillBanner />
       <main className="app-main">
         <Outlet />
       </main>

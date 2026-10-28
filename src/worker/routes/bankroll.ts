@@ -3,7 +3,7 @@
 import { Hono } from 'hono';
 import type { BankrollsResponse, LedgerResponse } from '../../shared/api-types.js';
 import { AppError } from '../../shared/errors.js';
-import { buyBustBadge, listBalances, listLedger } from '../bankroll.js';
+import { buyBustBadge, listBalances, listLedger, selfRefill } from '../bankroll.js';
 import type { StatsFilter } from '../bankroll.js';
 import { requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
@@ -16,6 +16,7 @@ export function bankrollRoutes(): Hono<AppContext> {
   const app = new Hono<AppContext>();
   app.use('/bankroll', requireAuth());
   app.use('/bankroll/buyout', requireAuth());
+  app.use('/bankroll/refill', requireAuth());
   app.use('/ledger', requireAuth());
 
   /**
@@ -48,6 +49,21 @@ export function bankrollRoutes(): Hono<AppContext> {
     const user = c.var.user;
     if (user === null) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
     await buyBustBadge(c.env, user.id, c.var.now);
+    return c.body(null, 204);
+  });
+
+  /**
+   * The caller's own bust refill (PLAN.md §4.5, 2026-10-28): `REFILL_DEFAULT_CENTS`
+   * into the main balance as one `deposit_refill` row — the same row, badge and
+   * "bought in" an admin refill writes, memo `SELF_REFILL_MEMO`. No body: the
+   * amount is fixed. The guard — busted, i.e. under `MIN_STAKE_CENTS` with no
+   * pending bet — is a WHERE clause inside the ledger INSERT, which is what makes
+   * a double click or a second tab a `409 NOT_BUSTED` rather than a second badge.
+   */
+  app.post('/bankroll/refill', async (c) => {
+    const user = c.var.user;
+    if (user === null) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
+    await selfRefill(c.env, user.id, c.var.now);
     return c.body(null, 204);
   });
 

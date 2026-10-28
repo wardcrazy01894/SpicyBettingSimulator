@@ -8,7 +8,11 @@ import type {
   UserResponse,
 } from '../../src/shared/api-types.js';
 import type { ApiErrorBody } from '../../src/shared/errors.js';
-import { INITIAL_BANKROLL_CENTS } from '../../src/shared/constants.js';
+import {
+  INITIAL_BANKROLL_CENTS,
+  REFILL_DEFAULT_CENTS,
+  SELF_REFILL_MEMO,
+} from '../../src/shared/constants.js';
 import { buildApp } from '../../src/worker/index.js';
 import { summariseSettled } from '../../src/worker/bankroll.js';
 import { applyStat, emptyAccumulator } from '../../src/worker/leaderboard.js';
@@ -1210,6 +1214,137 @@ describe('bust refills, buyouts and net ranking', () => {
     expect(deleted.status).toBe(404);
     expect(await errorCode(deleted)).toBe('NOT_FOUND');
     expect(await ledgerKinds(target.id)).toEqual([]);
+  });
+
+  // --- self-serve refill (PLAN.md §4.5, 2026-10-28) ---------------------------
+
+  /** The player's own refill rows: kind, amount and the memo that marks who asked. */
+  async function refillRows(
+    userId: string,
+  ): Promise<{ kind: string; amount: number; memo: string | null }[]> {
+    const rows = await env.DB.prepare(
+      `SELECT le.kind AS kind, le.amount_cents AS amount, le.memo AS memo
+         FROM ledger le JOIN bankrolls bk ON bk.id = le.bankroll_id
+        WHERE bk.user_id = ?1 AND le.kind = 'deposit_refill'
+        ORDER BY le.created_at ASC, le.id ASC`,
+    )
+      .bind(userId)
+      .all<{ kind: string; amount: number; memo: string | null }>();
+    return rows.results;
+  }
+
+  it('a busted player refills themself: the default amount, the same kind and badge, a memo saying who asked', async () => {
+    const boss = await admin();
+    const target = await register('selfbust');
+    await bust(boss, target);
+    expect(await balanceOfUser(target.id)).toBe(0);
+
+    const res = await send('/api/bankroll/refill', {}, target.cookie);
+    expect(res.status, await res.clone().text()).toBe(204);
+
+    expect(await balanceOfUser(target.id)).toBe(REFILL_DEFAULT_CENTS);
+    // Indistinguishable from an admin refill on the board — same kind, so the
+    // same badge and the same "bought in" — except for the memo.
+    expect(await refillRows(target.id)).toEqual([
+      { kind: 'deposit_refill', amount: REFILL_DEFAULT_CENTS, memo: SELF_REFILL_MEMO },
+    ]);
+    expect(await rowFor(target.name)).toMatchObject({
+      equityCents: REFILL_DEFAULT_CENTS,
+      depositedCents: INITIAL_BANKROLL_CENTS + REFILL_DEFAULT_CENTS,
+      netCents: -INITIAL_BANKROLL_CENTS,
+      bustCount: 1,
+    });
+    // And it is the newest line of their own ledger, labelled as a refill.
+    const ledger = await get('/api/ledger', target.cookie);
+    expect(ledger.status).toBe(200);
+    const newest = (await ledger.json<LedgerResponse>()).entries[0];
+    expect(newest).toMatchObject({
+      kind: 'deposit_refill',
+      amountCents: REFILL_DEFAULT_CENTS,
+      memo: SELF_REFILL_MEMO,
+    });
+    expect(await bankrollDrift(env.DB)).toEqual([]);
+  });
+
+  it('is 409 NOT_BUSTED while the player can still bet or has a bet that may pay; 401 anonymous', async () => {
+    const boss = await admin();
+    const target = await register('selfsolvent');
+    // Full balance.
+    const full = await send('/api/bankroll/refill', {}, target.cookie);
+    expect(full.status).toBe(409);
+    expect(await errorCode(full)).toBe('NOT_BUSTED');
+
+    // Exactly the minimum stake left: still able to bet.
+    await send(
+      `/api/admin/users/${target.id}/adjust`,
+      { amountCents: -(INITIAL_BANKROLL_CENTS - 100) },
+      boss.cookie,
+    );
+    expect(await balanceOfUser(target.id)).toBe(100);
+    expect((await send('/api/bankroll/refill', {}, target.cookie)).status).toBe(409);
+
+    // The last $1 on a bet: balance ZERO, equity $1 — "at 0 in equity, not
+    // balance" is the rule, so not busted until it settles.
+    const s = scope();
+    await seedSettledBet(env.DB, {
+      id: s.gid('self-open'),
+      userId: target.id,
+      season: s.season,
+      status: 'pending',
+      stakeCents: 100,
+    });
+    expect(await balanceOfUser(target.id)).toBe(0);
+    const pending = await send('/api/bankroll/refill', {}, target.cookie);
+    expect(pending.status).toBe(409);
+    expect(await errorCode(pending)).toBe('NOT_BUSTED');
+    expect(await refillRows(target.id)).toEqual([]);
+
+    // Lost, with 40¢ of change: under the minimum stake with nothing open IS
+    // busted — the same rule the admin route applies.
+    await env.DB.prepare(
+      `UPDATE bets SET status = 'lost', payout_cents = 0, settled_at = 1 WHERE id = ?1`,
+    )
+      .bind(s.gid('self-open'))
+      .run();
+    await send(`/api/admin/users/${target.id}/adjust`, { amountCents: 40 }, boss.cookie);
+    const stuck = await send('/api/bankroll/refill', {}, target.cookie);
+    expect(stuck.status, await stuck.clone().text()).toBe(204);
+    expect(await balanceOfUser(target.id)).toBe(40 + REFILL_DEFAULT_CENTS);
+
+    const anon = await send('/api/bankroll/refill', {});
+    expect(anon.status).toBe(401);
+    expect(await bankrollDrift(env.DB)).toEqual([]);
+  });
+
+  it('cannot be hit twice: a concurrent pair and a repeat both write exactly one refill per bust', async () => {
+    const boss = await admin();
+    const target = await register('selfdouble');
+    await bust(boss, target);
+
+    // Two clicks in flight at once: the guard is inside the INSERT, so the
+    // second finds a funded balance and writes nothing.
+    const pair = await Promise.all([
+      send('/api/bankroll/refill', {}, target.cookie),
+      send('/api/bankroll/refill', {}, target.cookie),
+    ]);
+    expect(pair.map((r) => r.status).sort()).toEqual([204, 409]);
+    expect(await balanceOfUser(target.id)).toBe(REFILL_DEFAULT_CENTS);
+    expect(await refillRows(target.id)).toHaveLength(1);
+
+    // A later repeat is refused the same way.
+    const again = await send('/api/bankroll/refill', {}, target.cookie);
+    expect(again.status).toBe(409);
+    expect(await errorCode(again)).toBe('NOT_BUSTED');
+
+    // Bust again and it works again — a second badge, net still the losses.
+    await bust(boss, target);
+    expect((await send('/api/bankroll/refill', {}, target.cookie)).status).toBe(204);
+    expect(await refillRows(target.id)).toHaveLength(2);
+    expect(await rowFor(target.name)).toMatchObject({
+      bustCount: 2,
+      netCents: -2 * INITIAL_BANKROLL_CENTS,
+    });
+    expect(await bankrollDrift(env.DB)).toEqual([]);
   });
 
   it('a buyout pays the price, retires ONE badge, and repays the house, so net does not move', async () => {

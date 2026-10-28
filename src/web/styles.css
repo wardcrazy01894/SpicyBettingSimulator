@@ -694,6 +694,71 @@ abbr.help {
   cursor: pointer;
 }
 
+/* --------------------------------------------------------- refill prompt */
+
+/*
+ * "Run out of money?" (PLAN.md §4.5). One column on a phone; on anything
+ * wider the copy and the button sit side by side. The accent border is what
+ * makes it the one thing on the page that is not a card of numbers.
+ */
+.refill-prompt {
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--border));
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.refill-banner {
+  margin: var(--gap) var(--gap) 0;
+}
+
+.refill-card {
+  margin-top: 12px;
+}
+
+.refill-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.refill-title {
+  margin: 0;
+  font-weight: 650;
+  font-size: 16px;
+}
+
+.refill-text {
+  margin: 0;
+}
+
+.refill-prompt > .btn {
+  align-self: flex-start;
+}
+
+@media (min-width: 600px) {
+  .refill-prompt {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .refill-body {
+    flex: 1 1 240px;
+  }
+
+  .refill-prompt > .btn {
+    align-self: center;
+  }
+
+  .refill-prompt > .banner {
+    flex-basis: 100%;
+  }
+}
+
 /* ------------------------------------------------------------- slip sheet */
 
 .slip-bar {
@@ -1330,6 +1395,12 @@ select:focus-visible,
   .nav-tabs,
   .page {
     max-width: 860px;
+    margin-inline: auto;
+  }
+
+  /* The refill banner carries its own side margins, so it is narrower by them. */
+  .refill-banner {
+    max-width: calc(860px - 2 * var(--gap));
     margin-inline: auto;
   }
 

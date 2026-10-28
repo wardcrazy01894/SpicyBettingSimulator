@@ -221,6 +221,11 @@ export function postBustBuyout(): Promise<void> {
   return apiVoid('POST', '/api/bankroll/buyout', {});
 }
 
+/** The caller's own bust refill at the default amount (PLAN.md §4.5). No body. */
+export function postBankrollRefill(): Promise<void> {
+  return apiVoid('POST', '/api/bankroll/refill', {});
+}
+
 export async function getHealth(): Promise<HealthResponse> {
   const health = await apiGet<HealthResponse>('/api/health');
   // The one place the client learns which build it is talking to.
