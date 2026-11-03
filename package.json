@@ -44,8 +44,8 @@
     "react-router-dom": "^7.18.5"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.9",
-    "@cloudflare/workers-types": "^5.20261016.1",
+    "@cloudflare/vitest-plugin": "^1.4.11",
+    "@cloudflare/workers-types": "^5.20261030.1",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
