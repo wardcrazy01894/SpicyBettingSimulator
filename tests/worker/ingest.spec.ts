@@ -27,6 +27,7 @@ import {
   ingestTarget,
   lineGapsOf,
   lineRowsWorthWriting,
+  nextDiscoveryTick,
   planTargets,
   runRefresh,
   upsertSlate,
@@ -635,6 +636,127 @@ describe('planTargets', () => {
     expect(await targetDbRow('mlb:date:20260914')).not.toBeNull();
   });
 
+  /*
+   * WHEN a new date is due (PLAN.md §24.7, F2, owner decision 2026-11-07).
+   * These replace the pre-F2 rule "every new target is due immediately"
+   * (`next_run_at = now`): that made a Sunday rollover burst the OLDEST due
+   * rows, which then drained on consecutive GENERAL ticks and starved every
+   * live slate for ~24-30 minutes.
+   */
+  const PERIOD = REFRESH_DISCOVERY_EVERY_NTH_TICK * REFRESH_TICK_MS;
+  const stampsCreatedAt = async (at: number): Promise<number[]> => {
+    const rows = await env.DB.prepare(
+      'SELECT next_run_at FROM ingest_targets WHERE created_at = ?1 ORDER BY next_run_at',
+    )
+      .bind(at)
+      .all<{ next_run_at: number }>();
+    return rows.results.map((r) => r.next_run_at);
+  };
+  /** One stamp per discovery tick, each 1 ms ahead of it, from the tick `first`. */
+  const staggered = (first: number, count: number): number[] =>
+    Array.from({ length: count }, (_, k) => first - 1 + k * PERIOD);
+
+  it('QUIET EXCEPTION: nothing live and nothing due, so new dates are due at once', async () => {
+    // A fresh database (and `npm run dev`'s first board load): waiting for the
+    // next discovery tick would be pure latency.
+    expect(await planTargets(env, T0)).toBe(17);
+    expect(new Set(await stampsCreatedAt(T0))).toEqual(new Set([T0]));
+  });
+
+  it('while a game is live, new dates are stamped one per discovery tick, from the NEXT one', async () => {
+    await planTargets(env, T0);
+    await insertGame('nfl:live', 'nfl', T0 + HOUR, 'in_progress');
+    // Fetched and on a far tier, so nothing is due and nothing anchors a chain.
+    await markAllFetched();
+    await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?1')
+      .bind(T0 + 30 * DAY)
+      .run();
+    // Monday noon ET is itself a discovery tick: the first stamp is the NEXT one.
+    const monday = T0 + DAY;
+    expect(isDiscoveryTick(monday)).toBe(true);
+    expect(await planTargets(env, monday)).toBe(10);
+    const stamps = await stampsCreatedAt(monday);
+    expect(stamps).toEqual(staggered(monday + PERIOD, 10));
+    // Each falls 1 ms before a discovery tick: due AT it, not at the general
+    // tick before it (which is a whole tick earlier).
+    for (const stamp of stamps) expect(isDiscoveryTick(stamp + 1)).toBe(true);
+  });
+
+  it('nothing live but a target already due: the stagger still applies', async () => {
+    await planTargets(env, T0); // quiet: all 17 due at T0, none fetched
+    const monday = T0 + DAY + 2 * REFRESH_TICK_MS; // a GENERAL tick
+    expect(isDiscoveryTick(monday)).toBe(false);
+    expect(nextDiscoveryTick(monday)).toBe(T0 + DAY + PERIOD);
+    expect(await planTargets(env, monday)).toBe(10);
+    expect(await stampsCreatedAt(monday)).toEqual(staggered(T0 + DAY + PERIOD, 10));
+  });
+
+  it('a second burst queues BEHIND an earlier one still waiting, never beside it', async () => {
+    await planTargets(env, T0);
+    await insertGame('nfl:live', 'nfl', T0 + HOUR, 'in_progress');
+    const monday = T0 + DAY;
+    await planTargets(env, monday);
+    // Move Monday's still-unattempted burst a day on, so at Tuesday noon its
+    // stamps are still AHEAD — the case where two bursts overlap.
+    const tuesday = monday + DAY;
+    await env.DB.prepare(
+      'UPDATE ingest_targets SET next_run_at = next_run_at + ?1 WHERE created_at = ?2',
+    )
+      .bind(DAY, monday)
+      .run();
+    const waiting = await stampsCreatedAt(monday);
+    const last = waiting[waiting.length - 1] ?? 0;
+    expect(last).toBeGreaterThan(tuesday);
+    const created = await planTargets(env, tuesday);
+    expect(created).toBeGreaterThan(0);
+    expect(await stampsCreatedAt(tuesday)).toEqual(staggered(last + 1 + PERIOD, created));
+  });
+
+  it('an ATTEMPTED target never anchors the chain (a failed first fetch on backoff)', async () => {
+    await planTargets(env, T0);
+    await insertGame('nfl:live', 'nfl', T0 + HOUR, 'in_progress');
+    await env.DB.prepare(
+      "UPDATE ingest_targets SET next_run_at = ?1, consecutive_failures = 1 WHERE id = 'nfl:date:20260914'",
+    )
+      .bind(T0 + 30 * DAY)
+      .run();
+    const monday = T0 + DAY;
+    await planTargets(env, monday);
+    expect((await stampsCreatedAt(monday))[0]).toBe(nextDiscoveryTick(monday) - 1);
+  });
+
+  it('a KILLED never-fetched target never anchors the chain (incomplete_attempts > 0, provisional stamp far ahead)', async () => {
+    // The most likely victim of a CPU kill is a big never-fetched slate: the
+    // stamp leaves last_ok_at NULL and consecutive_failures 0, with a
+    // provisional next_run_at that can sit up to REFRESH_DISCOVERY_TICKS ahead.
+    // Without the incomplete_attempts filter it would anchor the next burst
+    // that far out.
+    await planTargets(env, T0);
+    await insertGame('nfl:live', 'nfl', T0 + HOUR, 'in_progress');
+    await env.DB.prepare(
+      "UPDATE ingest_targets SET next_run_at = ?1, incomplete_attempts = 1, attempt_started_at = ?2 WHERE id = 'nfl:date:20260914'",
+    )
+      // The provisional stamp must be AFTER the planning time (monday), or the
+      // anchor's `next_run_at > now` clause drops the row before the
+      // incomplete_attempts filter is ever reached and the test proves nothing.
+      .bind(T0 + DAY + 6 * HOUR, T0 + DAY - HOUR)
+      .run();
+    const monday = T0 + DAY;
+    await planTargets(env, monday);
+    expect((await stampsCreatedAt(monday))[0]).toBe(nextDiscoveryTick(monday) - 1);
+  });
+
+  it('runRefresh plans against the cron tick, not the wall clock', async () => {
+    await planTargets(env, T0);
+    await insertGame('nfl:live', 'nfl', T0 + HOUR, 'in_progress');
+    // A cron tick nominally at Monday 12:12 ET that started 3 minutes late.
+    const scheduled = T0 + DAY + 12 * MIN;
+    const now = T0 + DAY + 15 * MIN + 2_000;
+    await runRefresh(env, now, 0, { forceSecondaryGameId: null, scheduledTime: scheduled });
+    // From the tick: 12:15. From `now` it would have been 12:30.
+    expect((await stampsCreatedAt(now))[0]).toBe(T0 + DAY + PERIOD - 1);
+  });
+
   it('retires targets whose window ended > 2 days ago with no non-final games', async () => {
     await planTargets(env, T0);
     const stale = await loadTarget('nfl:date:20260913');
@@ -767,13 +889,16 @@ describe('request budget', () => {
     // plan as well as the 10 new ones), so each weighs big and runs ALONE: one
     // a tick (§24.7). 00:00 ET is ALSO MLB's daily rollover (PLAN.md §23.5)
     // and, since M13c, both basketball windows roll a date too, so the burst
-    // holds ten new targets behind twelve — 22 ticks, 66 minutes on an
-    // otherwise empty test queue.
+    // holds ten new targets behind twelve. Since F2 the ten are stamped one per
+    // DISCOVERY tick from 00:30 (the twelve already due make the queue busy),
+    // so the last is not even due until 02:45 — some ticks find nothing due
+    // (the live-load case is the burst test in the claim-order block). The
+    // loop runs to that last stamp plus a margin: 55 ticks.
     let claimedSoFar = 0;
-    for (let run = 1; run <= 22; run += 1) {
+    for (let run = 1; run <= 55; run += 1) {
       const now = sunEarly + run * REFRESH_TICK_MS;
       const stats = await runRefresh(env, now, perRun);
-      expect(stats.targetsProcessed).toBe(1);
+      expect(stats.targetsProcessed).toBeLessThanOrEqual(1);
       const done = await env.DB.prepare(
         `SELECT COUNT(*) AS n FROM ingest_targets WHERE id IN (${newIds.map(() => '?').join(',')}) AND last_run_at IS NOT NULL`,
       )
@@ -2019,6 +2144,107 @@ describe('claim order, the weight budget and the discovery tick (PLAN.md §8.4, 
     expect(planned?.n).toBe(24);
     expect(seen.size).toBe(planned?.n);
   }, 120_000);
+
+  /*
+   * THE ROLLOVER BURST (PLAN.md §24.7, F2). Before F2 the planner stamped a
+   * new date `next_run_at = now`: the burst became the OLDEST due rows, each
+   * weighing big (never fetched) and running alone, so they drained on
+   * consecutive GENERAL ticks and no live slate was refreshed for ~24-30
+   * minutes — at the NFL rollover, SNF's last pre-kickoff line moves. Now each
+   * new date is stamped 1 ms ahead of its own discovery tick, one per tick.
+   */
+  it.each([
+    [
+      'the NFL rollover, Sunday 20:00 ET, SNF ~20 min out',
+      Date.parse('2026-09-14T00:00:00Z'),
+      ['nfl:date:20260913', 'mlb:date:20260913'],
+    ],
+    [
+      'the CFB rollover plus the midnight days, Sunday 00:00 ET',
+      Date.parse('2026-09-13T04:00:00Z'),
+      ['ncaaf:date:20260912', 'mlb:date:20260912'],
+    ],
+  ] as const)(
+    'ROLLOVER BURST (%s): live slates keep every general tick; the new dates drain one per discovery tick',
+    async (_label, rollover, liveIds) => {
+      const N = REFRESH_DISCOVERY_EVERY_NTH_TICK;
+      const PERIOD = N * REFRESH_TICK_MS;
+      // Steady state one tick before the rollover: every target fetched and on
+      // its tier (+6 h), two LIVE slates of 18 and 20 games — 38, inside the
+      // 40-game budget, so both share every general tick.
+      await planTargets(env, rollover - REFRESH_TICK_MS);
+      await markAllFetched(rollover - DAY);
+      await env.DB.prepare('UPDATE ingest_targets SET games_seen = 1, next_run_at = ?1')
+        .bind(rollover + 6 * HOUR)
+        .run();
+      for (const [i, id] of liveIds.entries()) {
+        await env.DB.prepare(
+          'UPDATE ingest_targets SET games_seen = ?1, next_run_at = ?2 WHERE id = ?3',
+        )
+          .bind(18 + 2 * i, rollover, id)
+          .run();
+        const t = await loadTarget(id);
+        await insertGame(`${id}:g`, t.league, t.windowStartAt + HOUR, 'in_progress');
+      }
+      // A quiet tier row due EXACTLY at the second discovery tick: the burst
+      // date stamped 1 ms earlier must still win that tick's discovery pick.
+      const tie = await env.DB.prepare(
+        'SELECT id FROM ingest_targets WHERE id NOT IN (?1, ?2) ORDER BY id LIMIT 1',
+      )
+        .bind(liveIds[0], liveIds[1])
+        .first<{ id: string }>();
+      await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?1 WHERE id = ?2')
+        .bind(rollover + 2 * PERIOD, tie?.id ?? '')
+        .run();
+
+      // The rollover tick plans the burst (the count is read from the planner).
+      expect(isDiscoveryTick(rollover)).toBe(true);
+      const created = await planTargets(env, rollover, undefined, rollover);
+      const burstRows = await env.DB.prepare('SELECT id FROM ingest_targets WHERE created_at = ?1')
+        .bind(rollover)
+        .all<{ id: string }>();
+      const burst = new Set(burstRows.results.map((r) => r.id));
+      expect(burst.size).toBe(created);
+      expect(created).toBeGreaterThanOrEqual(7);
+
+      const drainedOn = new Map<string, number>(); // burst id -> discovery-tick ordinal
+      let discoveryOrdinal = 0;
+      let generalTicks = 0;
+      for (let i = 0; i <= (created + 2) * N; i += 1) {
+        const now = rollover + i * REFRESH_TICK_MS;
+        if (i > 0) expect(await planTargets(env, now, undefined, now)).toBe(0);
+        const discovery = isDiscoveryTick(now);
+        if (discovery && i > 0) discoveryOrdinal += 1;
+        const picked = ids(await claimDueTargets(env, now, 5, discovery));
+        if (!discovery) {
+          generalTicks += 1;
+          for (const live of liveIds) expect(picked, `general tick ${String(i)}`).toContain(live);
+        }
+        for (const id of picked) {
+          if (burst.has(id)) {
+            expect(discovery, `${id} claimed on tick ${String(i)}`).toBe(true);
+            drainedOn.set(id, discoveryOrdinal);
+          }
+          const isLive = (liveIds as readonly string[]).includes(id);
+          await env.DB.prepare(
+            `UPDATE ingest_targets SET next_run_at = ?1, last_ok_at = ?2,
+               games_seen = CASE WHEN ?3 = 1 THEN games_seen ELSE 1 END WHERE id = ?4`,
+          )
+            .bind(now + (isLive ? LIVE_MS : 6 * HOUR), now, isLive ? 1 : 0, id)
+            .run();
+        }
+      }
+      // MEASURED: date k drains on discovery tick k after the rollover —
+      // every one within `created` discovery ticks (≤ 15·k min), and the live
+      // slates ran on every one of the general ticks in between.
+      expect(generalTicks).toBe((created + 2) * (N - 1));
+      expect(drainedOn.size).toBe(created);
+      expect([...drainedOn.values()].sort((x, y) => x - y)).toEqual(
+        Array.from({ length: created }, (_, k) => k + 1),
+      );
+    },
+    120_000,
+  );
 
   it('two big live slates alternate on the general ticks (each every second tick)', async () => {
     await planTargets(env, SUN_NIGHT);
