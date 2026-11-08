@@ -452,7 +452,26 @@ describe('bets CHECK constraints (M5b)', () => {
 
   it("accepts league 'mixed' for a cross-league bet", async () => {
     await insertBet('mixed', { league: 'mixed', betType: 'parlay', legCount: 2 });
-    await expect(insertBet('nba', { league: 'nba' })).rejects.toThrow(/CHECK constraint failed/);
+    await expect(insertBet('nhl', { league: 'nhl' })).rejects.toThrow(/CHECK constraint failed/);
+  });
+
+  it("0013 admits 'ncaab' and 'nba' on bets (M13c, PLAN.md §24.9)", async () => {
+    await insertBet('ncaab', { league: 'ncaab' });
+    await insertBet('nba', { league: 'nba' });
+    // ...and in all four league CHECKs, read off the live DDL.
+    const rows = await env.DB.prepare(
+      `SELECT name, sql FROM sqlite_master
+        WHERE type = 'table' AND name IN ('games', 'bets', 'bet_legs', 'ingest_targets')
+        ORDER BY name`,
+    ).all<{ name: string; sql: string }>();
+    expect(rows.results).toHaveLength(4);
+    for (const { name, sql } of rows.results) {
+      const want =
+        name === 'bets'
+          ? "CHECK (league IN ('nfl', 'ncaaf', 'mlb', 'ncaab', 'nba', 'mixed'))"
+          : "CHECK (league IN ('nfl', 'ncaaf', 'mlb', 'ncaab', 'nba'))";
+      expect(sql, name).toContain(want);
+    }
   });
 
   it('a teaser needs a tier, and nothing else may carry one', async () => {

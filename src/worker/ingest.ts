@@ -56,6 +56,7 @@
 
 import { postponedVoidConfirmAt } from '../shared/action.js';
 import {
+  CBB_CONFERENCES,
   ESPN_MAX_WARNINGS_RECORDED,
   GAME_SEEN_TOUCH_MS,
   HEALTH_STALE_TICKS,
@@ -110,6 +111,13 @@ export interface IngestTargetRow {
    * `INGEST_MAX_INCOMPLETE_ATTEMPTS` it is PARKED.
    */
   readonly incompleteAttempts: number;
+  /**
+   * `ingest_targets.conference_id`: the ESPN `groups` id of a per-conference
+   * SEGMENT of an `ncaab` date (PLAN.md §24.8). NULL for every target the
+   * planner emits while `NCAAB_TARGET_SHAPE` is `'full'` — i.e. all of them.
+   * Optional so a hand-built test row need not name it; absent = NULL.
+   */
+  readonly conferenceId?: string | null;
 }
 
 export interface IngestStats extends LineGapStats {
@@ -127,6 +135,13 @@ export interface IngestStats extends LineGapStats {
   /** Upsert UNITS (one per game, one per line) the compare-and-skip guard left alone. */
   readonly rowsSkipped: number;
   readonly warnings: readonly string[];
+  /**
+   * Markets the book had taken OFF the board ("OFF"), summed over the run's
+   * targets (PLAN.md §24.10, M13c). Counted, never warned: a pull is a book
+   * decision, not schema drift, and on a big college slate it would bury real
+   * drift under the warning cap. The market still counts in `lineGaps`.
+   */
+  readonly offTheBoard: number;
   /**
    * One entry per failed target. `espn` is the fetch's outcome (§24.6's
    * vocabulary) and `consecutiveFailures` the streak AFTER this failure, which
@@ -234,6 +249,8 @@ export interface IngestTargetResult extends LineGapStats {
    * they must travel back with the counts rather than being swallowed here.
    */
   readonly warnings: readonly string[];
+  /** Pulled ("OFF") markets in this target's slate; 0 when nothing parsed (§24.10). */
+  readonly offTheBoard: number;
   // The LineGapStats fields measure the PARSED slate, like `warnings`: zeros
   // when the fetch or parse failed (no slate), but a slate whose upsert threw
   // is still measured, and reported alongside its `error`.
@@ -297,6 +314,43 @@ export function targetId(league: League, key: string): string {
 }
 
 /**
+ * THE PER-CONFERENCE SWITCH for college basketball (PLAN.md §24.8), shipped
+ * DORMANT. `'full'`: one `ncaab:date:<day>` target per ET date, fetched with
+ * `groups=50` (all of Division I). `'conference'`: one SEGMENT per
+ * `CBB_CONFERENCES` entry per date, `ncaab:conf:<id>:date:<day>` with
+ * `conference_id = <id>`, fetched with `groups=<id>` — each ~1/32 of the
+ * work, so segments pack five to a run under the weight budget.
+ *
+ * Flip it (a reviewed one-line PR, no migration) ONLY when the D-I target for
+ * a date is PARKED (§24.4) or an `ncaab` refresh comes back `exceededCpu` in
+ * `wrangler tail` (§24.8's exit criterion, rung 2 of §17 R1). Every piece the
+ * conference shape needs is already here and tested by passing the shape
+ * explicitly: the planner's segments and its deletion of leftover full
+ * targets, the `groups=<id>` query (`SlateTarget.conferenceId`), the
+ * conference-scoped `NO_LIVE_GAME` / retire SQL (M13a), segment-aware
+ * `bumpTargetForGame`, and the discovery tier for a future date's segment.
+ */
+export type NcaabTargetShape = 'full' | 'conference';
+export const NCAAB_TARGET_SHAPE: NcaabTargetShape = 'full';
+
+/** A conference segment's id (§24.8). Its `key` is still the bare ET date. */
+export function segmentTargetId(conferenceId: string, key: string): string {
+  return `ncaab:conf:${conferenceId}:date:${key}`;
+}
+
+/** The target ids and conference ids the planner emits for one league and ET date. */
+export function plannedTargetsFor(
+  league: League,
+  key: string,
+  shape: NcaabTargetShape,
+): readonly { readonly id: string; readonly conferenceId: string | null }[] {
+  if (league !== 'ncaab' || shape === 'full') {
+    return [{ id: targetId(league, key), conferenceId: null }];
+  }
+  return CBB_CONFERENCES.map((c) => ({ id: segmentTargetId(c.id, key), conferenceId: c.id }));
+}
+
+/**
  * PLAN.md §9.3: an admin's "refresh this game". The unit of an ESPN request is a
  * DATE slate, so the game's own target is made the most due thing in the queue
  * — `next_run_at = 0`, which `claimDueTargets` orders first among equal
@@ -324,14 +378,36 @@ export async function bumpTargetForGame(
   env: Env,
   gameId: string,
   now: EpochMs,
+  shape: NcaabTargetShape = NCAAB_TARGET_SHAPE,
 ): Promise<{ readonly targetId: string } | 'retired' | null> {
-  const game = await env.DB.prepare('SELECT league, kickoff_at FROM games WHERE id = ?1')
+  const game = await env.DB.prepare(
+    `SELECT league, kickoff_at, home_conference_id, away_conference_id
+       FROM games WHERE id = ?1`,
+  )
     .bind(gameId)
-    .first<{ league: League; kickoff_at: number }>();
+    .first<{
+      league: League;
+      kickoff_at: number;
+      home_conference_id: string | null;
+      away_conference_id: string | null;
+    }>();
   if (game === null) return null;
   const key = etDateKey(game.kickoff_at);
   const bounds = etDayBounds(game.kickoff_at);
-  const id = targetId(game.league, key);
+  // Under the (dormant) conference switch the game's slate is the segment(s)
+  // of its teams' conferences — or EVERY segment of its date when ESPN gave
+  // neither team a conference id (the game-day shape, §24.2). Full shape, and
+  // every other league: the one date target, exactly as before.
+  const known = new Set(CBB_CONFERENCES.map((c) => c.id));
+  const own = [game.home_conference_id, game.away_conference_id].filter(
+    (c): c is string => c !== null && known.has(c),
+  );
+  const planned = plannedTargetsFor(game.league, key, shape);
+  const bumped =
+    planned.length > 1 && own.length > 0
+      ? planned.filter((t) => t.conferenceId !== null && own.includes(t.conferenceId))
+      : planned;
+  const id = bumped[0]?.id ?? targetId(game.league, key);
   if (bounds.endAt < now - TARGET_RETIRE_AFTER_MS) {
     const live = await env.DB.prepare(
       `SELECT 1 AS x FROM games
@@ -343,19 +419,23 @@ export async function bumpTargetForGame(
       .first<{ x: number }>();
     if (live === null) return 'retired';
   }
-  await env.DB.prepare(
+  const bump = env.DB.prepare(
     `INSERT INTO ingest_targets
        (id, league, kind, key, window_start_at, window_end_at, priority,
-        next_run_at, consecutive_failures, games_seen, created_at, updated_at)
-     VALUES (?1, ?2, 'date', ?3, ?4, ?5, 100, 0, 0, 0, ?6, ?6)
+        next_run_at, consecutive_failures, games_seen, created_at, updated_at, conference_id)
+     VALUES (?1, ?2, 'date', ?3, ?4, ?5, 100, 0, 0, 0, ?6, ?6, ?7)
      ON CONFLICT(id) DO UPDATE SET next_run_at = 0, updated_at = excluded.updated_at,
        -- The admin UN-PARK (PLAN.md §24.4): the one sanctioned reset outside
        -- the two reschedule paths (CLAUDE.md rule 8i). The run this bump then
        -- triggers stamps attempt 1.
        incomplete_attempts = 0, attempt_started_at = NULL`,
-  )
-    .bind(id, game.league, key, bounds.startAt, bounds.endAt, now)
-    .run();
+  );
+  await runChunked(
+    env.DB,
+    bumped.map((t) =>
+      bump.bind(t.id, game.league, key, bounds.startAt, bounds.endAt, now, t.conferenceId),
+    ),
+  );
   return { targetId: id };
 }
 
@@ -399,39 +479,64 @@ export const RETIRE_PREDICATE = `window_end_at < ?1
                   OR ingest_targets.conference_id IN (g.home_conference_id, g.away_conference_id))
              AND g.status NOT IN ('final', 'canceled'))`;
 
-export async function planTargets(env: Env, now: EpochMs): Promise<number> {
+export async function planTargets(
+  env: Env,
+  now: EpochMs,
+  shape: NcaabTargetShape = NCAAB_TARGET_SHAPE,
+): Promise<number> {
   const statements: D1PreparedStatement[] = [];
+  const insert = env.DB.prepare(
+    `INSERT INTO ingest_targets
+       (id, league, kind, key, window_start_at, window_end_at, priority,
+        next_run_at, consecutive_failures, games_seen, created_at, updated_at, conference_id)
+     VALUES (?, ?, 'date', ?, ?, ?, 100, ?, 0, 0, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
+  );
+  let ncaabFullIds: string[] = [];
   for (const league of LEAGUES) {
     const end = Math.min(boardWindowEnd(league, now), now + INGEST_WINDOW_MS);
     for (const day of etDaysInWindow(now, end)) {
-      statements.push(
-        env.DB.prepare(
-          `INSERT INTO ingest_targets
-             (id, league, kind, key, window_start_at, window_end_at, priority,
-              next_run_at, consecutive_failures, games_seen, created_at, updated_at)
-           VALUES (?, ?, 'date', ?, ?, ?, 100, ?, 0, 0, ?, ?)
-           ON CONFLICT(id) DO NOTHING`,
-        ).bind(
-          targetId(league, day.key),
-          league,
-          day.key,
-          day.startAt,
-          day.endAt,
-          // Due immediately: a brand new date has no lines at all, and the
-          // its own tier (§24.7) is what actually paces it afterwards.
-          // NOTE this makes a burst of new dates the OLDEST due rows: see
-          // the ROLLOVER BURST note on planTargets.
-          now,
-          now,
-          now,
-        ),
-      );
+      for (const t of plannedTargetsFor(league, day.key, shape)) {
+        statements.push(
+          insert.bind(
+            t.id,
+            league,
+            day.key,
+            day.startAt,
+            day.endAt,
+            // Due immediately: a brand new date has no lines at all, and its
+            // own tier (§24.7) paces it afterwards. NOTE this makes a burst of
+            // new dates the OLDEST due rows: see the ROLLOVER BURST note on
+            // planTargets.
+            now,
+            now,
+            now,
+            t.conferenceId,
+          ),
+        );
+      }
+      if (league === 'ncaab' && shape === 'conference') {
+        ncaabFullIds = [...ncaabFullIds, targetId(league, day.key)];
+      }
     }
   }
 
   const inserts = await runChunked(env.DB, statements);
   let created = 0;
   for (let i = 0; i < inserts.length; i += 1) created += changesAt(inserts, i);
+
+  // The conference switch's one cleanup (§24.8): the segments cover an
+  // in-window date, so its leftover FULL target goes. Never runs while the
+  // shape is 'full' (the list is empty).
+  if (ncaabFullIds.length > 0) {
+    await env.DB.prepare(
+      `DELETE FROM ingest_targets WHERE conference_id IS NULL AND id IN (${ncaabFullIds
+        .map(() => '?')
+        .join(', ')})`,
+    )
+      .bind(...ncaabFullIds)
+      .run();
+  }
 
   // Retire: window ended > 2 days ago AND nothing in it can still move. The
   // NOT EXISTS is the guard — a postponed game keeps its date alive so the
@@ -458,6 +563,7 @@ interface TargetDbRow {
   readonly next_run_at: number;
   readonly consecutive_failures: number;
   readonly incomplete_attempts: number;
+  readonly conference_id: string | null;
 }
 
 /** A claim candidate: the target plus what it WEIGHS (§24.7). */
@@ -478,11 +584,13 @@ function toTargetRow(row: TargetDbRow): IngestTargetRow {
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
     incompleteAttempts: row.incomplete_attempts,
+    conferenceId: row.conference_id,
   };
 }
 
 const TARGET_COLUMNS = `id, league, kind, key, window_start_at, window_end_at,
-                        priority, next_run_at, consecutive_failures, incomplete_attempts`;
+                        priority, next_run_at, consecutive_failures, incomplete_attempts,
+                        conference_id`;
 
 /**
  * The `NOT EXISTS` that makes a target "not live" — no in-progress game in it.
@@ -692,7 +800,10 @@ export function toSlateTarget(row: IngestTargetRow): SlateTarget {
     // a season/seasonType/week decomposition out of an opaque key.
     throw new Error(`toSlateTarget: unsupported target kind '${row.kind}' for ${row.id}`);
   }
-  return { kind: 'date', dateKey: row.key };
+  // A conference segment (§24.8, dormant) carries its `groups` id to the URL.
+  return row.conferenceId === null || row.conferenceId === undefined
+    ? { kind: 'date', dateKey: row.key }
+    : { kind: 'date', dateKey: row.key, conferenceId: row.conferenceId };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1190,7 +1301,13 @@ export function computeNextRunAt(
   if (live) return base + REFRESH_LIVE_MS;
 
   const soon = unfinished.some((g) => within(g, SOON_HORIZON_MS));
-  const tierNext = base + (soon ? REFRESH_SOON_MS : REFRESH_DISCOVERY_MS);
+  // THE SWITCH'S ONE CADENCE RULE (§24.8): a conference SEGMENT for a date
+  // after today runs on the discovery tier, not the 60-minute one — 64
+  // segments of game-day-only lines would otherwise cost 1,536 refreshes a
+  // day for nothing. Never applies to a full target (conference_id NULL).
+  const futureSegment =
+    (target.conferenceId ?? null) !== null && target.windowStartAt >= etDayBounds(now).endAt;
+  const tierNext = base + (soon && !futureSegment ? REFRESH_SOON_MS : REFRESH_DISCOVERY_MS);
 
   // THE CONFIRM CAP (PLAN.md §23.7). An MLB target still holding an unfinished
   // game must be fetched at `postponedVoidConfirmAt` (03:00 ET after its date),
@@ -1378,6 +1495,7 @@ export async function ingestTarget(
       error: errorText(err),
       espn: 'skipped',
       warnings: [],
+      offTheBoard: 0,
       ...lineGapsOf(EMPTY_SLATE, now),
     };
   }
@@ -1444,6 +1562,7 @@ export async function ingestTarget(
     error,
     espn: espnOutcome(fetchError),
     warnings: (slate?.warnings ?? []).map(warningText),
+    offTheBoard: slate?.pulled ?? 0,
     ...lineGapsOf(slate ?? EMPTY_SLATE, now),
   };
 }
@@ -1484,6 +1603,7 @@ export async function runRefresh(
   let linesUpserted = 0;
   let rowsSkipped = 0;
   let rowsWritten = 0;
+  let offTheBoard = 0;
   const warnings: string[] = [];
   const failures: IngestFailure[] = [];
   const espnStatus: Record<string, number> = {};
@@ -1505,6 +1625,7 @@ export async function runRefresh(
     rowsSkipped += result.rowsSkipped;
     rowsWritten += result.rowsWritten;
     warnings.push(...result.warnings);
+    offTheBoard += result.offTheBoard;
     for (const key of Object.keys(gaps) as (keyof typeof gaps)[]) gaps[key] += result[key];
     lineGapDetails.push(...result.lineGapDetails);
     coverage.push({
@@ -1549,6 +1670,7 @@ export async function runRefresh(
     rowsSkipped,
     // The cap governs what is RECORDED, never what is parsed (PLAN.md §8.3).
     warnings: warnings.slice(0, ESPN_MAX_WARNINGS_RECORDED),
+    offTheBoard,
     failures,
     espnStatus,
     parked,

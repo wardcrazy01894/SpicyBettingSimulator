@@ -61,13 +61,14 @@ async function placeOverHttp(cookie: string, body: unknown): Promise<string> {
 
 /**
  * Re-run 0010 COMPOSED FORWARD with 0011, which rebuilds `ledger` once more
- * (the refill/buyout kinds). 0010 alone would put the five-kind CHECK back and
+ * (the refill/buyout kinds), and 0013, which rebuilds all six tables again to
+ * admit basketball. 0010 alone would put the five-kind CHECK back and
  * every later comparison in this shared database would be against 0010's DDL
  * rather than the live schema — the same reason migration-0009.spec.ts runs
  * 0010 on top of 0009.
  */
 async function rerun0010(): Promise<void> {
-  const queries = ['0010_', '0011_'].flatMap((prefix) => {
+  const queries = ['0010_', '0011_', '0013_'].flatMap((prefix) => {
     const m = env.TEST_MIGRATIONS.find((x) => x.name.startsWith(prefix));
     if (m === undefined) throw new Error(`${prefix} not in TEST_MIGRATIONS`);
     return m.queries;

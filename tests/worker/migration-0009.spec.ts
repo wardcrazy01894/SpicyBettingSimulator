@@ -120,11 +120,14 @@ function migration(prefix: string): readonly string[] {
  * not re-run — 0009 never touches that table.
  */
 async function rerun(...prefixes: string[]): Promise<void> {
-  const queries = prefixes.flatMap((p) => migration(p));
+  // The guard columns go back right after the LAST pre-0012 file, i.e.
+  // before 0013, whose copy-back names them (M13c).
   const guard = prefixes.includes('0009_')
     ? migration('0012_').filter((q) => q.includes('ALTER TABLE ingest_targets'))
     : [];
-  await env.DB.batch([...queries, ...guard].map((q) => env.DB.prepare(q)));
+  const queries = prefixes.flatMap((p) => (p === '0013_' ? [...guard, ...migration(p)] : migration(p)));
+  if (!prefixes.includes('0013_')) queries.push(...guard);
+  await env.DB.batch(queries.map((q) => env.DB.prepare(q)));
 }
 
 /**
@@ -136,7 +139,7 @@ async function rerun(...prefixes: string[]): Promise<void> {
  * than the live schema.
  */
 async function rerun0009(): Promise<void> {
-  await rerun('0009_', '0010_', '0011_');
+  await rerun('0009_', '0010_', '0011_', '0013_');
 }
 
 async function all(sql: string): Promise<Record<string, unknown>[]> {
@@ -419,12 +422,12 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
       // so composing forward now ends with it.
       await seedHistory({ sameGame: false });
       const before = await state();
-      await rerun('0005_', '0008_', '0009_', '0010_', '0011_');
+      await rerun('0005_', '0008_', '0009_', '0010_', '0011_', '0013_');
       expect(await state()).toEqual(before);
       // 0008 + 0009 also holds with a same-game parlay on the books.
       await seedHistory();
       const withSameGame = await state();
-      await rerun('0008_', '0009_', '0010_', '0011_');
+      await rerun('0008_', '0009_', '0010_', '0011_', '0013_');
       expect(await state()).toEqual(withSameGame);
       expect(await balanceDrift()).toBe(0);
     });
@@ -710,7 +713,8 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
       expect(n?.n).toBe(4);
     });
 
-    it("league = 'nba' fails CHECK on all four; 'mixed' is still bets-only", async () => {
+    // 'nba' is a league since 0013 (M13c); the refusal moved to 'nhl'.
+    it("league = 'nhl' fails CHECK on all four; 'mixed' is still bets-only", async () => {
       const { userId } = await seedHistory();
       await rerun0009();
       const { id: bankrollId } = await mainBankroll(userId);
@@ -720,10 +724,10 @@ describe('migration 0009 (league CHECK rebuild) — M12a', () => {
       await ins.bet('mlb-bet2', 'mlb').run();
 
       const CHECK = /CHECK constraint failed/;
-      await expect(ins.game('nba:1', 'nba').run()).rejects.toThrow(CHECK);
-      await expect(ins.bet('nba-bet', 'nba').run()).rejects.toThrow(CHECK);
-      await expect(ins.leg('nba-leg', 'mlb-bet2', 'mlb:402', 'nba').run()).rejects.toThrow(CHECK);
-      await expect(ins.target('nba:date:1', 'nba').run()).rejects.toThrow(CHECK);
+      await expect(ins.game('nhl:1', 'nhl').run()).rejects.toThrow(CHECK);
+      await expect(ins.bet('nhl-bet', 'nhl').run()).rejects.toThrow(CHECK);
+      await expect(ins.leg('nhl-leg', 'mlb-bet2', 'mlb:402', 'nhl').run()).rejects.toThrow(CHECK);
+      await expect(ins.target('nhl:date:1', 'nhl').run()).rejects.toThrow(CHECK);
 
       await ins.bet('mixed-bet', 'mixed').run();
       await expect(ins.game('mixed:1', 'mixed').run()).rejects.toThrow(CHECK);

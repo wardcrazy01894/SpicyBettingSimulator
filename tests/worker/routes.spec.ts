@@ -104,14 +104,20 @@ describe('routing', () => {
     const res = await get('/api/config');
     expect(res.status).toBe(200);
     const body = await res.json<ConfigResponse>();
-    expect(body.leagues).toEqual(['nfl', 'ncaaf', 'mlb']);
+    expect(body.leagues).toEqual(['nfl', 'ncaaf', 'mlb', 'ncaab', 'nba']);
     expect(body.minStakeCents).toBe(MIN_STAKE_CENTS);
     expect(body.maxPayoutCents).toBe(MAX_PAYOUT_CENTS);
     expect(body.maxParlayLegs).toBe(25);
     expect(body.initialBankrollCents).toBe(100_000);
     expect(body.cutoffBufferMs).toBe(60_000);
     // No games ingested yet -> no current season for any league.
-    expect(body.currentSeason).toEqual({ nfl: null, ncaaf: null, mlb: null });
+    expect(body.currentSeason).toEqual({
+      nfl: null,
+      ncaaf: null,
+      mlb: null,
+      ncaab: null,
+      nba: null,
+    });
     // M5b: the teaser card is echoed in full so the slip prices a teaser from
     // server truth rather than from its own bundled copy of constants.ts.
     expect(body.teaserPoints).toEqual([...TEASER_POINTS_TENTHS]);

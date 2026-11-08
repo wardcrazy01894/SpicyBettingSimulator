@@ -16,7 +16,7 @@
 
 import { MLB_POSTPONED_CONFIRM_MS, VOID_AFTER_MS } from '../shared/constants.js';
 import { etDateKey } from '../shared/time.js';
-import type { EpochMs } from '../shared/types.js';
+import type { EpochMs, League } from '../shared/types.js';
 import { changesAt, rowsWrittenAt } from './db.js';
 import type { Env } from './env.js';
 
@@ -108,7 +108,17 @@ const AUTO_VOID_LIMIT = 90;
 const STUCK_REPORT_LIMIT = 50;
 
 /**
- * PLAN.md §23.7: the MLB next-day void. A postponed MLB game is voided once a
+ * The leagues with a next-day postponed void: exactly those for which
+ * `postponedVoidConfirmAt` is non-null — MLB (§23.7) and, since M13c, both
+ * basketball leagues (§24.11). SQL cannot call that function, so this list is
+ * its restatement, and `tests/worker/basketball.spec.ts` asserts the two agree
+ * league by league. Football keeps §7.5's 7-day rule only.
+ */
+export const NEXT_DAY_VOID_LEAGUES = ['mlb', 'ncaab', 'nba'] as const satisfies readonly League[];
+
+/**
+ * PLAN.md §23.7: the MLB next-day void, reused by league for basketball
+ * (§24.11). A postponed MLB / NCAAB / NBA game is voided once a
  * SUCCESSFUL fetch of its own ET date (the target whose window holds its
  * CURRENT `kickoff_at`) was made at or after `window_end_at + ?5`, bound to
  * `MLB_POSTPONED_CONFIRM_MS` — 03:00 ET the next morning, i.e.
@@ -126,7 +136,7 @@ const STUCK_REPORT_LIMIT = 50;
  * appears here and the 23 h / 25 h days are already right.
  */
 const MLB_POSTPONED_CONFIRMED = `
-  (league = 'mlb' AND status = 'postponed'
+  (league IN (${NEXT_DAY_VOID_LEAGUES.map((l) => `'${l}'`).join(', ')}) AND status = 'postponed'
    AND EXISTS (SELECT 1 FROM ingest_targets t
                 WHERE t.league = games.league
                   AND games.kickoff_at >= t.window_start_at
@@ -145,8 +155,9 @@ const MLB_POSTPONED_CONFIRMED = `
  *      than VOID_AFTER_MS past `original_kickoff_at`, AND not seen for two days.
  *      The staleness conjunct is what stops us voiding a game that is merely
  *      mis-stated by a live feed.
- *   3. MLB only — postponed, and confirmed so by a post-day fetch of its own
- *      date (`MLB_POSTPONED_CONFIRMED` above, PLAN.md §23.7).
+ *   3. MLB, NCAAB and the NBA — postponed, and confirmed so by a post-day
+ *      fetch of its own date (`MLB_POSTPONED_CONFIRMED` above, PLAN.md §23.7,
+ *      §24.11).
  *
  * `original_kickoff_at` (written once, never updated) rather than `kickoff_at`
  * is the reference for 1 and 2 on purpose: a postponed game's `kickoff_at` may
@@ -206,8 +217,11 @@ export async function autoVoidStuckGames(env: Env, now: EpochMs): Promise<AutoVo
   const res = await env.DB.prepare(
     `UPDATE games
         SET status        = 'canceled',
+            -- 'auto-void: MLB postponed, …' is byte-identical to before M13c;
+            -- basketball's reads 'auto-void: NCAAB postponed, …' / 'NBA …'.
             status_detail = CASE WHEN ${MLB_POSTPONED_CONFIRMED}
-                                 THEN 'auto-void: MLB postponed, not played on its date'
+                                 THEN 'auto-void: ' || UPPER(league)
+                                      || ' postponed, not played on its date'
                                  WHEN status = 'postponed'
                                  THEN 'auto-void: postponed >7d'
                                  ELSE 'auto-void: not seen >2d' END,
