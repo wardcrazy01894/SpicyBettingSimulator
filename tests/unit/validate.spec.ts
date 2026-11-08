@@ -246,7 +246,7 @@ describe('validatePlaceBet', () => {
     }
   });
   it('rejects an unknown league or betType', () => {
-    expect(fail(validatePlaceBet(straight({ league: 'nba' }))).field).toBe('league');
+    expect(fail(validatePlaceBet(straight({ league: 'nhl' }))).field).toBe('league');
     expect(fail(validatePlaceBet(straight({ betType: 'round-robin' }))).field).toBe('betType');
   });
   it("accepts league 'mixed' on the wire (M5b: the server re-derives it anyway)", () => {
@@ -255,10 +255,14 @@ describe('validatePlaceBet', () => {
   it("accepts league 'mlb' on the wire (M12a: a third League)", () => {
     expect(ok(validatePlaceBet(straight({ league: 'mlb' }))).league).toBe('mlb');
   });
+  it("accepts leagues 'ncaab' and 'nba' on the wire (M13c: basketball)", () => {
+    expect(ok(validatePlaceBet(straight({ league: 'ncaab' }))).league).toBe('ncaab');
+    expect(ok(validatePlaceBet(straight({ league: 'nba' }))).league).toBe('nba');
+  });
   it('the unknown-league message lists every LEAGUES member, derived, never a literal', () => {
-    const message = fail(validatePlaceBet(straight({ league: 'nba' }))).message;
+    const message = fail(validatePlaceBet(straight({ league: 'nhl' }))).message;
     expect(message).toBe(`league must be ${listWithOr([...LEAGUES, 'mixed'])}`);
-    expect(message).toBe('league must be nfl, ncaaf, mlb or mixed');
+    expect(message).toBe('league must be nfl, ncaaf, mlb, ncaab, nba or mixed');
   });
   it('listWithOr joins with commas and a final "or"', () => {
     expect(listWithOr([])).toBe('');

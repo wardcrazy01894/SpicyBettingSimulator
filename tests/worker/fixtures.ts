@@ -40,7 +40,7 @@ export interface EventSpecOdds {
 
 export interface EventSpec {
   readonly eventId: string;
-  readonly league: 'nfl' | 'ncaaf' | 'mlb';
+  readonly league: 'nfl' | 'ncaaf' | 'mlb' | 'ncaab' | 'nba';
   readonly kickoffAt: number;
   readonly status: 'pre' | 'in' | 'post' | 'postponed' | 'canceled';
   readonly homeAbbr: string;
@@ -310,8 +310,10 @@ function buildEvent(spec: EventSpec): Record<string, unknown> {
     name: `${spec.awayAbbr} Full Name at ${spec.homeAbbr} Full Name`,
     shortName: `${spec.awayAbbr} @ ${spec.homeAbbr}`,
     season: { year: spec.season ?? 2026, type: spec.seasonType ?? 2, slug: 'regular-season' },
-    // MLB events carry no `week` at all (PLAN.md §23.2) unless a test asks.
-    ...(spec.league === 'mlb' && spec.week === undefined
+    // MLB and basketball events carry no `week` at all (PLAN.md §23.2,
+    // §24.2) unless a test asks.
+    ...((spec.league === 'mlb' || spec.league === 'ncaab' || spec.league === 'nba') &&
+    spec.week === undefined
       ? {}
       : { week: { number: spec.week ?? 1 } }),
     competitions: [competition],
@@ -344,13 +346,24 @@ export type EspnResponder = () => Response | Promise<Response>;
  * football URLs. `baseball` is separate, so the MLB target the planner now
  * creates for every date never ingests a football test's events as
  * `mlb:<id>` games (and a football responder never fails an MLB fetch).
+ * Basketball (M13c) is split by LEAGUE path, `ncaab` and `nba`, for the same
+ * reason: the planner creates both every day, and neither may ingest a
+ * football test's events.
  */
-export type EspnSport = 'football' | 'baseball';
+export type EspnSport = 'football' | 'baseball' | 'ncaab' | 'nba';
+
+/** The stub namespace a spec's league is served from. */
+function sportOf(league: EventSpec['league']): EspnSport {
+  if (league === 'mlb') return 'baseball';
+  if (league === 'ncaab' || league === 'nba') return league;
+  return 'football';
+}
 
 export interface EspnStub {
   /**
    * Replace the slate served for one `dates=` key. Events are routed by their
-   * `league`: `'mlb'` specs to the baseball URL, the rest to the football URLs.
+   * `league`: `'mlb'` specs to the baseball URL, `'ncaab'` / `'nba'` to their
+   * basketball URLs, the rest to the football URLs.
    */
   set(dateKey: string, events: readonly EventSpec[]): void;
   /** Serve an arbitrary response (or throw) for one `dates=` key (football by default). */
@@ -393,8 +406,12 @@ export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> 
       });
 
   const setSlate = (dateKey: string, events: readonly EventSpec[]): void => {
-    responders.set(`football|${dateKey}`, jsonResponder(events.filter((e) => e.league !== 'mlb')));
-    responders.set(`baseball|${dateKey}`, jsonResponder(events.filter((e) => e.league === 'mlb')));
+    for (const sport of ['football', 'baseball', 'ncaab', 'nba'] as const) {
+      responders.set(
+        `${sport}|${dateKey}`,
+        jsonResponder(events.filter((e) => sportOf(e.league) === sport)),
+      );
+    }
   };
 
   for (const [key, events] of Object.entries(slates)) setSlate(key, events);
@@ -414,9 +431,14 @@ export function stubEspn(slates: Readonly<Record<string, readonly EventSpec[]>> 
     requestHeaders.push(sent);
     const parsedUrl = new URL(url);
     const dateKey = parsedUrl.searchParams.get('dates') ?? '';
-    const sport: EspnSport = parsedUrl.pathname.includes('/sports/baseball/')
+    const path = parsedUrl.pathname;
+    const sport: EspnSport = path.includes('/sports/baseball/')
       ? 'baseball'
-      : 'football';
+      : path.includes('/basketball/mens-college-basketball/')
+        ? 'ncaab'
+        : path.includes('/basketball/nba/')
+          ? 'nba'
+          : 'football';
     const responder = responders.get(`${sport}|${dateKey}`);
     if (responder === undefined) return jsonResponder([])();
     return responder();

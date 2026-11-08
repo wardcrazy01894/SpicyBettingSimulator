@@ -24,6 +24,8 @@ export const LEAGUE_LABEL: Readonly<Record<League, string>> = {
   nfl: 'NFL',
   ncaaf: 'NCAAF',
   mlb: 'MLB',
+  ncaab: 'NCAAB',
+  nba: 'NBA',
 };
 
 /**
@@ -36,6 +38,8 @@ export const BET_LEAGUE_LABEL: Readonly<Record<BetLeague, string>> = {
   nfl: 'NFL',
   ncaaf: 'NCAAF',
   mlb: 'MLB',
+  ncaab: 'NCAAB',
+  nba: 'NBA',
   // Not 'NFL + NCAAF' since M12a: that would be false for MLB + NFL. The slip's
   // `leagueSummary` names the actual leagues from the legs (PLAN.md §23.12).
   mixed: 'Mixed',
@@ -51,6 +55,9 @@ export const LEAGUE_BADGE: Readonly<Record<League, string>> = {
   nfl: 'NFL',
   ncaaf: 'CFB',
   mlb: 'MLB',
+  // The owner's choice (2026-11-07, PLAN.md §24.18): NCAAB, not a "CBB" badge.
+  ncaab: 'NCAAB',
+  nba: 'NBA',
 };
 
 export const MARKET_LABEL: Readonly<Record<Market, string>> = {
@@ -69,6 +76,8 @@ export const MARKET_HEAD_LABEL: Readonly<Record<League, Readonly<Record<Market, 
   nfl: { spread: 'Spread', total: 'Total', moneyline: 'Money' },
   ncaaf: { spread: 'Spread', total: 'Total', moneyline: 'Money' },
   mlb: { spread: 'Run line', total: 'Total', moneyline: 'Money' },
+  ncaab: { spread: 'Spread', total: 'Total', moneyline: 'Money' },
+  nba: { spread: 'Spread', total: 'Total', moneyline: 'Money' },
 };
 
 export const SIDE_LABEL: Readonly<Record<Side, string>> = {
@@ -270,13 +279,27 @@ export function pickLabel(
  * clock; baseball has innings and no clock at all — ESPN still sends
  * `displayClock: "0:00"` for an MLB game, which is how the board came to say
  * "Q7 · 0:00" in the seventh inning. A total `Record` so a fourth league has to
- * choose (PLAN.md §23.12).
+ * choose (PLAN.md §23.12). The NBA plays quarters like football; college
+ * basketball plays two HALVES, and ESPN's `period` counts them (2 at a
+ * regulation final, 3 for one overtime, 4 for two — PLAN.md §24.2).
  */
-const CLOCK_STYLE: Readonly<Record<League, 'quarters' | 'innings'>> = {
+const CLOCK_STYLE: Readonly<Record<League, 'quarters' | 'innings' | 'halves'>> = {
   nfl: 'quarters',
   ncaaf: 'quarters',
   mlb: 'innings',
+  ncaab: 'halves',
+  nba: 'quarters',
 };
+
+/**
+ * A college-basketball period as the board names it: 1 → "1st", 2 → "2nd",
+ * 3 → "OT", 4 → "2OT", n → "(n-2)OT" (PLAN.md §24.14).
+ */
+function halfLabel(period: number): string {
+  if (period <= 1) return '1st';
+  if (period === 2) return '2nd';
+  return period === 3 ? 'OT' : `${String(period - 2)}OT`;
+}
 
 /**
  * The status line on a game card or bet leg.
@@ -287,6 +310,10 @@ const CLOCK_STYLE: Readonly<Record<League, 'quarters' | 'innings'>> = {
  * MLB: ESPN's own `statusDetail` ("Top 7th", "Bottom 1st", "Final/12",
  * "Postponed", "Scheduled"), falling back to "Inning N" for a live game with no
  * detail. Never a quarter, never a clock.
+ *
+ * College basketball (`'halves'`): "1st · 12:34", "2nd · 4:12", "OT · 1:05",
+ * "2OT · 0:44" while the clock is running; halftime, the end of a period
+ * (clock "0:00") and finals read ESPN's `statusDetail` ("Halftime", "Final/OT").
  */
 export function gameClockLabel(
   league: League,
@@ -299,6 +326,18 @@ export function gameClockLabel(
     if (statusDetail !== null) return statusDetail;
     if (status === 'in_progress' && period !== null) return `Inning ${String(period)}`;
     return GAME_STATUS_LABEL[status];
+  }
+  if (CLOCK_STYLE[league] === 'halves') {
+    if (
+      status === 'in_progress' &&
+      period !== null &&
+      period > 0 &&
+      displayClock !== null &&
+      displayClock !== '0:00'
+    ) {
+      return `${halfLabel(period)} · ${displayClock}`;
+    }
+    return statusDetail ?? GAME_STATUS_LABEL[status];
   }
   if (status === 'in_progress' && period !== null && displayClock !== null) {
     return `Q${String(period)} · ${displayClock}`;

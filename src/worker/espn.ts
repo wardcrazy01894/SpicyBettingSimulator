@@ -7,6 +7,10 @@
  *   NCAAF {base}/apis/site/v2/sports/football/college-football/scoreboard
  *           ?groups=80&limit=300&dates=YYYYMMDD
  *   MLB   {base}/apis/site/v2/sports/baseball/mlb/scoreboard?dates=YYYYMMDD&limit=100
+ *   NCAAB {base}/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard
+ *           ?groups=50&limit=500&dates=YYYYMMDD   (groups=<id> for a conference
+ *           segment, the dormant §24.8 switch)
+ *   NBA   {base}/apis/site/v2/sports/basketball/nba/scoreboard?dates=YYYYMMDD&limit=100
  *
  * Date targets, not week targets, because:
  *   1. `<season>-<week>` collides between regular season and postseason, so a
@@ -26,6 +30,7 @@
 
 import { ESPN_TIMEOUT_MS } from '../shared/constants.js';
 import { parseScoreboard } from '../shared/espn.js';
+import type { ParseWarning } from '../shared/espn.js';
 import type { League } from '../shared/types.js';
 import { ProviderError } from './providers.js';
 import type { OddsProvider, ProviderSlate, ScoreProvider, SlateTarget } from './providers.js';
@@ -40,24 +45,44 @@ import { readConfig } from './env.js';
  * browser has no business knowing a scoreboard path.
  */
 interface EspnScoreboardRoute {
-  /** Path segment: 'football' | 'baseball'. */
+  /** Path segment: 'football' | 'baseball' | 'basketball'. */
   readonly sport: string;
-  /** Path segment: 'nfl' | 'college-football' | 'mlb'. */
+  /** Path segment: 'nfl' | 'college-football' | 'mlb' | 'mens-college-basketball' | 'nba'. */
   readonly league: string;
-  readonly query: (dateKey: string) => string;
+  /**
+   * The query string. `conferenceId` is the target's (PLAN.md §24.8): only the
+   * `ncaab` route reads it, so the dormant per-conference switch is a VALUE,
+   * not a branch. Every other route ignores it.
+   */
+  readonly query: (dateKey: string, conferenceId: string | null) => string;
+  /** The `limit=` this route sends, for the truncation warning. */
+  readonly limit: number;
 }
 
 const ESPN_SCOREBOARD: Readonly<Record<League, EspnScoreboardRoute>> = {
-  nfl: { sport: 'football', league: 'nfl', query: (d) => `dates=${d}&limit=100` },
+  nfl: { sport: 'football', league: 'nfl', query: (d) => `dates=${d}&limit=100`, limit: 100 },
   ncaaf: {
     sport: 'football',
     league: 'college-football',
     query: (d) => `groups=80&limit=300&dates=${d}`,
+    limit: 300,
   },
   // A slate is at most ~16 events (15 games plus a makeup), so limit=100 is
   // ample. No `seasontype`, for §8.1's reason — the 2025 Wild Card is reachable
   // by date alone (PLAN.md §23.2).
-  mlb: { sport: 'baseball', league: 'mlb', query: (d) => `dates=${d}&limit=100` },
+  mlb: { sport: 'baseball', league: 'mlb', query: (d) => `dates=${d}&limit=100`, limit: 100 },
+  // Every Division I game: `groups=50` is all of D-I. `limit=500` is 3.2x the
+  // biggest slate measured (155, a February Saturday). A conference segment
+  // (§24.8, dormant) sends `groups=<id>` instead — ONE id per request, since a
+  // comma list is HTTP 400 (§24.2).
+  ncaab: {
+    sport: 'basketball',
+    league: 'mens-college-basketball',
+    query: (d, conferenceId) => `groups=${conferenceId ?? '50'}&limit=500&dates=${d}`,
+    limit: 500,
+  },
+  // At most 15 games (all 30 teams), so limit=100 is ample (§24.2).
+  nba: { sport: 'basketball', league: 'nba', query: (d) => `dates=${d}&limit=100`, limit: 100 },
 };
 
 /**
@@ -87,7 +112,23 @@ export function buildScoreboardUrl(baseUrl: string, league: League, target: Slat
   const base = baseUrl.replace(/\/+$/, '');
   const route = ESPN_SCOREBOARD[league];
   const path = `${base}/apis/site/v2/sports/${route.sport}/${route.league}/scoreboard`;
-  return `${path}?${route.query(target.dateKey)}`;
+  return `${path}?${route.query(target.dateKey, target.conferenceId ?? null)}`;
+}
+
+/**
+ * The warning a payload holding EXACTLY the route's `limit` events gets
+ * (PLAN.md §24.10): ESPN truncates silently and has no offset, so a full page
+ * is the only sign that games were cut. Every league gets it; it costs nothing
+ * until it is true. Null otherwise.
+ */
+export function truncationWarning(league: League, eventCount: number): ParseWarning | null {
+  const { limit } = ESPN_SCOREBOARD[league];
+  if (eventCount !== limit) return null;
+  return {
+    eventId: null,
+    label: null,
+    reason: `slate may be truncated at limit=${String(limit)}`,
+  };
 }
 
 /**
@@ -156,10 +197,13 @@ export async function fetchScoreboard(
   // Parse FULLY into memory before anyone writes a row. The parser is total: it
   // skips malformed events with a warning rather than throwing (PLAN.md §8.3).
   const parsed = parseScoreboard(payload, league, now);
+  const events = (payload as { events?: unknown } | null)?.events;
+  const truncated = truncationWarning(league, Array.isArray(events) ? events.length : 0);
   return {
     games: parsed.games,
     lines: parsed.lines,
-    warnings: parsed.warnings,
+    warnings: truncated === null ? parsed.warnings : [truncated, ...parsed.warnings],
+    pulled: parsed.pulled,
     fetchedAt: now,
     season: parsed.season,
     week: parsed.week,

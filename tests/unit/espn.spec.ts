@@ -493,11 +493,13 @@ describe('parseLineToTenths', () => {
   });
 
   it('rejects |tenths| > MAX_ABS_LINE_TENTHS', () => {
-    expect(MAX_ABS_LINE_TENTHS).toBe(1000);
-    expect(parseLineToTenths('100')).toBe(1000);
-    expect(parseLineToTenths('-100')).toBe(-1000);
-    expect(parseLineToTenths('100.1')).toBeNull();
-    expect(parseLineToTenths('-100.1')).toBeNull();
+    // ±400 points since M13c: a basketball total is 140–240 (PLAN.md §8.3).
+    expect(MAX_ABS_LINE_TENTHS).toBe(4000);
+    expect(parseLineToTenths('o238.5')).toBe(2385);
+    expect(parseLineToTenths('400')).toBe(4000);
+    expect(parseLineToTenths('-400')).toBe(-4000);
+    expect(parseLineToTenths('400.1')).toBeNull();
+    expect(parseLineToTenths('-400.1')).toBeNull();
     expect(parseLineToTenths('o999')).toBeNull();
   });
 
@@ -989,7 +991,10 @@ describe('defensive behaviour', () => {
     expect(warnings[0]?.reason).toMatch(/total: unusable line u−44\.5/);
   });
 
-  it('a market DraftKings has pulled ("OFF") is reported as off the board, not as a parse failure', () => {
+  // M13c (PLAN.md §24.10): a pull is COUNTED (`ParsedScoreboard.pulled`, the
+  // run's `stats.offTheBoard`), never warned — it is a book decision, not
+  // schema drift. Football fixtures included. `pulls` is parseEvent's sink.
+  it('a market DraftKings has pulled ("OFF") is counted as off the board, not warned', () => {
     // Verbatim shape ESPN served for CFB event 401856811 on 2026-09-16: the
     // spread was up, the total and moneyline were the literal string "OFF".
     const warnings: ParseWarning[] = [];
@@ -1008,7 +1013,8 @@ describe('defensive behaviour', () => {
         away: { close: { odds: 'OFF' }, open: { odds: 'OFF' } },
       },
     });
-    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    const pulls = { count: 0 };
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings, pulls);
     expect(result?.lines?.spread).toEqual({
       homeTenths: -75,
       homePrice: -105,
@@ -1017,9 +1023,8 @@ describe('defensive behaviour', () => {
     });
     expect(result?.lines?.total).toBeNull();
     expect(result?.lines?.moneyline).toBeNull();
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]?.reason).toBe('DraftKings: total: off the board; moneyline: off the board');
-    expect(warnings[0]?.reason).not.toMatch(/unusable/);
+    expect(warnings).toEqual([]);
+    expect(pulls.count).toBe(2);
   });
 
   it('an OFF spread is dropped without falling back to the top-level `spread` number', () => {
@@ -1033,10 +1038,12 @@ describe('defensive behaviour', () => {
       },
       moneyline: { home: { close: { odds: '-198' } }, away: { close: { odds: '+164' } } },
     });
-    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    const pulls = { count: 0 };
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings, pulls);
     expect(result?.lines?.spread).toBeNull();
     expect(result?.lines?.moneyline).toEqual({ homePrice: -198, awayPrice: 164 });
-    expect(warnings[0]?.reason).toBe('DraftKings: spread: off the board');
+    expect(warnings).toEqual([]);
+    expect(pulls.count).toBe(1);
   });
 
   it('OFF is recognised case- and whitespace-insensitively, and on the price alone', () => {
@@ -1048,22 +1055,40 @@ describe('defensive behaviour', () => {
         under: { close: { line: 'u50.5', odds: '-110' } },
       },
     });
-    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    const pulls = { count: 0 };
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings, pulls);
     // A pull with nothing else on the board is still a WRITE (all-null row).
     expect(result?.lines).toMatchObject({ spread: null, total: null, moneyline: null });
-    expect(warnings[0]?.reason).toBe('DraftKings: total: off the board');
+    expect(warnings).toEqual([]);
+    expect(pulls.count).toBe(1);
   });
 
   it('a market warning carries the matchup label so the admin view can name the game', () => {
     const warnings: ParseWarning[] = [];
     const event = baseEvent({
       provider: { id: '100', name: 'DraftKings', priority: 1 },
-      moneyline: { home: { close: { odds: 'OFF' } }, away: { close: { odds: 'OFF' } } },
+      moneyline: { home: { close: { odds: 'abc' } }, away: { close: { odds: '+120' } } },
     });
     parseEvent(event, 'nfl', FETCHED_AT, warnings);
     expect(warnings).toEqual([
-      { eventId: '1', label: 'AWY @ HOM', reason: 'DraftKings: moneyline: off the board' },
+      { eventId: '1', label: 'AWY @ HOM', reason: 'DraftKings: moneyline: unusable price abc' },
     ]);
+  });
+
+  it('a pull beside a MALFORMED market warns for the malformed one only', () => {
+    const warnings: ParseWarning[] = [];
+    const event = baseEvent({
+      provider: { id: '100', name: 'DraftKings', priority: 1 },
+      total: {
+        over: { close: { line: 'OFF', odds: 'OFF' } },
+        under: { close: { line: 'OFF', odds: 'OFF' } },
+      },
+      moneyline: { home: { close: { odds: 'abc' } }, away: { close: { odds: '+120' } } },
+    });
+    const pulls = { count: 0 };
+    parseEvent(event, 'nfl', FETCHED_AT, warnings, pulls);
+    expect(warnings.map((w) => w.reason)).toEqual(['DraftKings: moneyline: unusable price abc']);
+    expect(pulls.count).toBe(1);
   });
 
   it('when EVERY market is pulled the row is written with all markets null — a withdrawal is a write', () => {
@@ -1078,7 +1103,8 @@ describe('defensive behaviour', () => {
       total: { over: { close: { ...off } }, under: { close: { ...off } } },
       moneyline: { home: { close: { odds: 'OFF' } }, away: { close: { odds: 'OFF' } } },
     });
-    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings);
+    const pulls = { count: 0 };
+    const result = parseEvent(event, 'nfl', FETCHED_AT, warnings, pulls);
     expect(result?.lines).toEqual({
       gameId: 'nfl:1',
       provider: 'DraftKings',
@@ -1087,9 +1113,8 @@ describe('defensive behaviour', () => {
       total: null,
       moneyline: null,
     });
-    expect(warnings[0]?.reason).toBe(
-      'DraftKings: spread: off the board; total: off the board; moneyline: off the board',
-    );
+    expect(warnings).toEqual([]);
+    expect(pulls.count).toBe(3);
   });
 
   it('an odds entry whose markets are merely ABSENT still yields no row (nothing to withdraw)', () => {
@@ -1103,15 +1128,17 @@ describe('defensive behaviour', () => {
     expect(warnings).toEqual([]);
   });
 
-  it('a one-sided OFF market is still "off the board", not "dropped unusable"', () => {
+  it('a one-sided OFF market is still "off the board" (counted), not "dropped unusable"', () => {
     const warnings: ParseWarning[] = [];
     const event = baseEvent({
       provider: { id: '100', name: 'DraftKings', priority: 1 },
       pointSpread: { home: { close: { line: 'OFF', odds: 'OFF' } } },
       moneyline: { home: { close: { line: 'OFF' } } },
     });
-    parseEvent(event, 'nfl', FETCHED_AT, warnings);
-    expect(warnings[0]?.reason).toBe('DraftKings: spread: off the board; moneyline: off the board');
+    const pulls = { count: 0 };
+    parseEvent(event, 'nfl', FETCHED_AT, warnings, pulls);
+    expect(warnings).toEqual([]);
+    expect(pulls.count).toBe(2);
   });
 
   it('the PRIMARY is keyed on ESPN provider id 100, whatever ESPN calls it this week', () => {

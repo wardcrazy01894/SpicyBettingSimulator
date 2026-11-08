@@ -383,8 +383,15 @@ export const ESPN_TIMEOUT_MS = 8_000;
 export const ESPN_MAX_WARNINGS_RECORDED = 20;
 export const ESPN_DRAFTKINGS_PROVIDER_ID = '100';
 
-/** Sanity bounds for parsed market data; anything outside is dropped + warned. */
-export const MAX_ABS_LINE_TENTHS = 1_000;
+/**
+ * Sanity bounds for parsed market data; anything outside is dropped + warned.
+ * ±400.0 points since M13c (was ±100.0): a basketball TOTAL is 140–240 points
+ * (measured 2026-11-07: college o140.5–o176.5, NBA o220.5–o238.5), and the
+ * old football-sized bound dropped every one of them as "unusable line"
+ * (PLAN.md §8.3, §24.10). 400 keeps a 1.6x margin over the highest NBA total
+ * on record and still refuses an absurd `o999`.
+ */
+export const MAX_ABS_LINE_TENTHS = 4_000;
 export const MIN_ABS_AMERICAN_PRICE = 100;
 export const MAX_ABS_AMERICAN_PRICE = 100_000;
 

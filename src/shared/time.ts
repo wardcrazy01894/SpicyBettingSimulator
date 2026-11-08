@@ -25,6 +25,8 @@ import {
   BET_CUTOFF_BUFFER_MS,
   LINE_STALE_MS,
   LINE_STALE_MULTIPLIER,
+  NBA_BOARD_ET_DAYS,
+  NCAAB_BOARD_ET_DAYS,
   REFRESH_DISCOVERY_TICKS,
   REFRESH_LIVE_TICKS,
   REFRESH_SOON_TICKS,
@@ -158,7 +160,9 @@ export function etDateKeyRange(from: EpochMs, to: EpochMs): readonly string[] {
 /**
  * The LAST INSTANT (inclusive) of the board and ingest window for `league` at
  * `now`. For `'mlb'` it is the end of TODAY's ET date (PLAN.md §23.5 — a daily
- * sport has no week, and ESPN carries MLB lines on game day only). For the two
+ * sport has no week, and ESPN carries MLB lines on game day only). For `'ncaab'`
+ * it is the end of the second ET date after today and for `'nba'` the end of
+ * tomorrow (PLAN.md §24.10, through `etDaysEnd`). For the two
  * football leagues it is the end of the Monday ET date that closes the current
  * football week, by the rule below.
  *
@@ -207,7 +211,14 @@ export function boardWindowEnd(league: League, now: EpochMs): EpochMs {
       // Today only (PLAN.md §23.5): the inclusive last millisecond of the
       // current ET calendar date. `etDayBounds`, never `now + MS_PER_DAY` —
       // the ET day is 25 h on 2026-11-01 and 23 h in March.
-      return etDayBounds(now).endAt - 1;
+      return etDaysEnd(now, 1);
+    // Basketball (M13c, PLAN.md §24.10): one arm, a constant apart. College
+    // shows today + 2 ET dates (a game seen before its day keeps its
+    // conference id), the NBA today + 1 (its lines are posted a day ahead).
+    case 'ncaab':
+      return etDaysEnd(now, NCAAB_BOARD_ET_DAYS);
+    case 'nba':
+      return etDaysEnd(now, NBA_BOARD_ET_DAYS);
     case 'nfl':
     case 'ncaaf':
       return footballWeekEnd(league, now);
@@ -217,6 +228,21 @@ export function boardWindowEnd(league: League, now: EpochMs): EpochMs {
       return unreachable;
     }
   }
+}
+
+/**
+ * The inclusive LAST millisecond of the `days`-th ET calendar date counting
+ * today as the first: `etDaysEnd(now, 1)` is the end of today (MLB's window,
+ * byte-identical to `etDayBounds(now).endAt - 1`), `3` the end of the day
+ * after tomorrow (NCAAB). Walks day boundary to day boundary with
+ * `etDayBounds` from today's — never `+ MS_PER_DAY` (CLAUDE.md rule 3) — so
+ * the 25 h 2026-11-01 and the 23 h 2027-03-14 come out right. `days < 1` is
+ * treated as 1 (today is always in the window). PLAN.md §24.10.
+ */
+export function etDaysEnd(now: EpochMs, days: number): EpochMs {
+  let end = etDayBounds(now).endAt;
+  for (let i = 1; i < days; i += 1) end = etDayBounds(end).endAt;
+  return end - 1;
 }
 
 /** §22's rule for the two weekly leagues, unchanged since M9-0. */

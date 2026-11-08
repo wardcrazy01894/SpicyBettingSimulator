@@ -1778,7 +1778,8 @@ Rules:
 - Cross-check: if `pointSpread.home.close.line` is missing but the top-level
   `spread` number is present, use `spread` (home perspective). `details` (`"CIN -3.5"`)
   is **never** parsed — it is a display string and abbreviation-dependent.
-- Sanity bounds: `|line_tenths| <= 1000` (±100 pts), `100 <= |american| <= 100000`.
+- Sanity bounds: `|line_tenths| <= 4000` (±400 pts; ±100 until M13c, which dropped
+  every basketball total, 140–240 points, as "unusable line"), `100 <= |american| <= 100000`.
   Out-of-range → drop the market + warning.
 - **`"OFF"` means the book has pulled the market.** DraftKings serves the literal string
   `OFF` in every field of a suspended market (line and price, `close` and `open`; captured
