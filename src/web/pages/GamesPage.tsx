@@ -115,8 +115,9 @@ export function GamesPage(): ReactElement {
             }}
           />
         )}
-        {/* Hidden while there is nothing to choose: All and no day with games. */}
-        {dayOptions !== null && dayOptions.length > 1 && day !== null && (
+        {/* Hidden unless there are at least two DAYS to choose between: "All ·
+            Today" alone is no choice (they differ only by yesterday's lookback). */}
+        {dayOptions !== null && dayOptions.length > 2 && day !== null && (
           <Segmented
             label="Day"
             value={day.key}

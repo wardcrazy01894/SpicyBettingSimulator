@@ -122,6 +122,39 @@ describe('dayFilterOptions — labels follow `now` across ET midnight and DST', 
     expect(filterGamesByDay(slate, '20261102').map((g) => g.id)).toEqual(['monLate']);
   });
 
+  it('across the 23 h spring-forward day (2027-03-14) a late Sunday tip stays on Sunday', () => {
+    // Sat noon EST. ET midnight is 05:00Z before the change and 04:00Z after it,
+    // so a "+ 24 h" day walk would land an hour into Monday.
+    const satNoonEst = at('2027-03-13T17:00:00Z');
+    const slate = [
+      game('sat', 'ncaab', '2027-03-13T23:00:00Z'),
+      // Sun 23:30 EDT — Monday by UTC date.
+      game('sunLate', 'ncaab', '2027-03-15T03:30:00Z'),
+      // Mon 23:30 EDT.
+      game('monLate', 'ncaab', '2027-03-16T03:30:00Z'),
+    ];
+    expect(labels('ncaab', slate, satNoonEst)).toEqual([
+      ['all', 'All'],
+      ['20270313', 'Today'],
+      ['20270314', 'Tomorrow'],
+      ['20270315', 'Monday'],
+    ]);
+    expect(filterGamesByDay(slate, '20270314').map((g) => g.id)).toEqual(['sunLate']);
+    expect(filterGamesByDay(slate, '20270315').map((g) => g.id)).toEqual(['monLate']);
+  });
+
+  it('the spring-forward day runs 23 h: 05:00Z (EST midnight) to 04:00Z the next day (EDT)', () => {
+    expect(
+      labels('nba', [game('x', 'nba', '2027-03-15T03:59:00Z')], at('2027-03-14T05:00:00Z')),
+    ).toEqual([
+      ['all', 'All'],
+      ['20270314', 'Today'],
+    ]);
+    expect(
+      labels('nba', [game('x', 'nba', '2027-03-15T03:59:00Z')], at('2027-03-15T04:00:00Z')),
+    ).toEqual([['all', 'All']]);
+  });
+
   it('the fall-back day runs 25 h: 04:00Z (EDT midnight) to 05:00Z the next day (EST)', () => {
     expect(
       labels('nba', [game('x', 'nba', '2026-11-02T04:59:00Z')], at('2026-11-01T04:00:00Z')),
