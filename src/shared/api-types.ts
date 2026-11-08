@@ -677,6 +677,27 @@ export interface AdminSetDisabledRequest {
   readonly disabled: boolean;
 }
 
+/**
+ * `POST /api/admin/games/:id/void` — body optional (PLAN.md §11.6, F1).
+ * Added additively after the M2d freeze, like `AdminRefillRequest`.
+ */
+export interface AdminVoidGameRequest {
+  /** At most `VOID_REASON_MAX` characters; blank means "abandoned game". */
+  readonly reason?: string;
+}
+
+/**
+ * 200 from `POST /api/admin/games/:id/void`: the game row as the void left it
+ * (`status` is always `'canceled'`) and how many PENDING bets have a leg on it
+ * — the bets the next settle run voids or reprices. No money moves here.
+ */
+export interface AdminVoidGameResponse {
+  readonly id: string;
+  readonly status: GameStatus;
+  readonly statusDetail: string | null;
+  readonly affectedBets: number;
+}
+
 export interface ReconcileResponse {
   readonly checked: number;
   readonly drift: readonly {
