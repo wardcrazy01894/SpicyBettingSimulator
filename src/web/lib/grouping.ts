@@ -103,12 +103,36 @@ export function groupBoardGames(league: League, games: readonly GameCard[]): rea
  * board emptied by that DEFAULT says so and points at All games; the NBA's
  * says tomorrow's games arrive a day ahead (its window is today + tomorrow).
  * `filter` is what emptied the board; football and MLB ignore it.
+ *
+ * `day` (F4, PLAN.md §24.14) is the basketball day filter's phrase —
+ * "today", "tomorrow", "on Monday" (`DayFilterOption.phrase`) — or `null`
+ * for All. When a day is picked the copy names it instead of "the next three
+ * days": "No Top 25 games on Monday."
  */
 export function boardEmptyCopy(
   league: League,
   filteredOut: boolean,
   filter: BoardFilter = 'all',
+  day: string | null = null,
 ): { readonly title: string; readonly hint: string } {
+  if (filteredOut && day !== null && (league === 'ncaab' || league === 'nba')) {
+    if (league === 'ncaab' && filter === 'top25') {
+      return {
+        title: `No Top 25 games ${day}.`,
+        hint: 'Pick another day, or switch Show to All games.',
+      };
+    }
+    if (league === 'ncaab' && filter !== 'all') {
+      return {
+        title: `No games match that filter ${day}.`,
+        hint: 'Pick another day or conference, or All games.',
+      };
+    }
+    return {
+      title: `No ${league === 'nba' ? 'NBA' : 'college basketball'} games ${day}.`,
+      hint: 'Pick another day, or All.',
+    };
+  }
   if (filteredOut && league === 'ncaab') {
     return filter === 'top25'
       ? {
