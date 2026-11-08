@@ -28,6 +28,7 @@ import { BOARD_FILTERS, defaultBoardFilter, filterGames } from '../lib/board-fil
 import type { BoardFilter } from '../lib/board-filter.js';
 import {
   ALL_DAYS,
+  MIN_DAY_OPTIONS,
   dayFilterOptions,
   filterGamesByDay,
   resolveDayFilter,
@@ -115,9 +116,9 @@ export function GamesPage(): ReactElement {
             }}
           />
         )}
-        {/* Hidden unless there are at least two DAYS to choose between: "All ·
-            Today" alone is no choice (they differ only by yesterday's lookback). */}
-        {dayOptions !== null && dayOptions.length > 2 && day !== null && (
+        {/* Hidden unless there are at least two DAYS to choose between (`MIN_DAY_OPTIONS`);
+            `resolveDayFilter` applies All below that, so hidden never means filtered. */}
+        {dayOptions !== null && dayOptions.length >= MIN_DAY_OPTIONS && day !== null && (
           <Segmented
             label="Day"
             value={day.key}

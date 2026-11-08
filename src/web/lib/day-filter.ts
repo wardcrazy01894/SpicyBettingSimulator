@@ -94,16 +94,29 @@ export function dayFilterOptions(
 }
 
 /**
- * The day actually applied: `picked` if it is still one of the options, else
- * All. A pick goes stale at ET midnight (yesterday's "Today" leaves the
- * window) or when its last game drops off the slate; falling back to All
- * keeps the board from silently showing nothing.
+ * The Day row is offered only when there are at least two DAYS to choose
+ * between: All plus one day is no choice (they differ only by yesterday's
+ * late games from the lookback). The page hides the row below this count, and
+ * `resolveDayFilter` applies All below it, so a hidden row can never leave a
+ * day filter silently applied.
+ */
+export const MIN_DAY_OPTIONS = 3;
+
+/**
+ * The day actually applied: `picked` if it is still one of the options AND
+ * the row is offered (`MIN_DAY_OPTIONS`), else All. A pick goes stale at ET
+ * midnight (yesterday's "Today" leaves the window) or when its last game drops
+ * off the slate; and when the board shrinks to one day, the row disappears and
+ * the pick must go with it — otherwise the user has a filter applied with no
+ * control to clear it. Falling back to All keeps the board from silently
+ * showing less than it has.
  */
 export function resolveDayFilter(
   picked: DayFilter | null,
   options: readonly DayFilterOption[] | null,
 ): DayFilterOption | null {
   if (options === null) return null;
+  if (options.length < MIN_DAY_OPTIONS) return options[0] ?? null;
   return options.find((o) => o.key === picked) ?? options[0] ?? null;
 }
 

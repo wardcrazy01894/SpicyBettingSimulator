@@ -13,6 +13,7 @@ import {
   DAY_FILTER_LEAGUES,
   dayFilterOptions,
   filterGamesByDay,
+  MIN_DAY_OPTIONS,
   resolveDayFilter,
 } from '../../src/web/lib/day-filter.js';
 import { boardEmptyCopy } from '../../src/web/lib/grouping.js';
@@ -123,13 +124,17 @@ describe('dayFilterOptions — labels follow `now` across ET midnight and DST', 
   });
 
   it('across the 23 h spring-forward day (2027-03-14) a late Sunday tip stays on Sunday', () => {
-    // Sat noon EST. ET midnight is 05:00Z before the change and 04:00Z after it,
-    // so a "+ 24 h" day walk would land an hour into Monday.
+    // Sat noon EST. ET midnight is 05:00Z before the change and 04:00Z after
+    // it. What this catches: keying a game by its UTC date (sunLate is Monday
+    // in UTC) and a hard-coded −5 h offset; monEarly separates correct keying
+    // from a naive 24 h Sunday bucket, which would swallow Mon 00:30 EDT.
     const satNoonEst = at('2027-03-13T17:00:00Z');
     const slate = [
       game('sat', 'ncaab', '2027-03-13T23:00:00Z'),
       // Sun 23:30 EDT — Monday by UTC date.
       game('sunLate', 'ncaab', '2027-03-15T03:30:00Z'),
+      // Mon 00:30 EDT — inside a naive [Sun 05:00Z, +24 h) bucket, but Monday.
+      game('monEarly', 'ncaab', '2027-03-15T04:30:00Z'),
       // Mon 23:30 EDT.
       game('monLate', 'ncaab', '2027-03-16T03:30:00Z'),
     ];
@@ -140,7 +145,7 @@ describe('dayFilterOptions — labels follow `now` across ET midnight and DST', 
       ['20270315', 'Monday'],
     ]);
     expect(filterGamesByDay(slate, '20270314').map((g) => g.id)).toEqual(['sunLate']);
-    expect(filterGamesByDay(slate, '20270315').map((g) => g.id)).toEqual(['monLate']);
+    expect(filterGamesByDay(slate, '20270315').map((g) => g.id)).toEqual(['monEarly', 'monLate']);
   });
 
   it('the spring-forward day runs 23 h: 05:00Z (EST midnight) to 04:00Z the next day (EDT)', () => {
@@ -182,6 +187,20 @@ describe('filterGamesByDay and resolveDayFilter', () => {
     // Yesterday's "Today" after ET midnight.
     expect(resolveDayFilter('20261106', options)?.key).toBe(ALL_DAYS);
     expect(resolveDayFilter('20261108', null)).toBeNull();
+  });
+
+  it('a valid pick that is ALONE with All (one day on the board) resolves to All: hidden row, no hidden filter', () => {
+    // Monday night the NBA user picked "Tomorrow"; at ET midnight that key is
+    // still valid but Wednesday's slate is not on the board yet, so the row
+    // (All · Today) hides — and the pick must not stay applied behind it.
+    const lone = dayFilterOptions(
+      'nba',
+      [game('x', 'nba', '2026-11-10T00:00:00Z')],
+      at('2026-11-09T06:00:00Z'),
+    );
+    expect(lone?.map((o) => o.label)).toEqual(['All', 'Today']);
+    expect(resolveDayFilter('20261109', lone)?.key).toBe(ALL_DAYS);
+    expect(lone !== null && lone.length < MIN_DAY_OPTIONS).toBe(true);
   });
 
   it('composes with the Top 25 filter: both apply, in either order', () => {
