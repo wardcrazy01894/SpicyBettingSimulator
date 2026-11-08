@@ -16,6 +16,7 @@ import type { Game, GameLines, League } from '../../src/shared/types.js';
 import {
   buildScoreboardUrl,
   EspnProvider,
+  ESPN_RETRY_STATUS,
   ESPN_USER_AGENT,
   fetchScoreboard,
 } from '../../src/worker/espn.js';
@@ -334,6 +335,82 @@ describe('ESPN request headers', () => {
       expect(ESPN_USER_AGENT).toMatch(
         /^SpicyBettingSimulator\/\d+\.\d+ \(\+https:\/\/github\.com\//,
       );
+    } finally {
+      espn.restore();
+    }
+  });
+});
+
+describe('ESPN 403: one immediate retry (PLAN.md §14.8)', () => {
+  // Measured 2026-11-08: ESPN's edge 403s the Worker's shared egress IP
+  // intermittently (2 of 13 fetches) while the same URL 200s moments later.
+  const TARGET = { kind: 'date', dateKey: '20260913' } as const;
+  const ok = (): Response =>
+    new Response(JSON.stringify(buildScoreboard([])), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  const status = (code: number) => (): Response => new Response('no', { status: code });
+  const fetchIt = (): Promise<ProviderSlate> =>
+    fetchScoreboard('https://espn.test', 'nfl', TARGET, 1_789_300_000_000);
+
+  it('retries exactly the status the edge answers intermittently', () => {
+    expect(ESPN_RETRY_STATUS).toBe(403);
+  });
+
+  it('a 403 is retried once, immediately, with the same request; a 200 there is a slate marked retried', async () => {
+    const espn = stubEspn();
+    try {
+      let calls = 0;
+      espn.setResponder('20260913', () => {
+        calls += 1;
+        return calls === 1 ? status(403)() : ok();
+      });
+      const slate = await fetchIt();
+      expect(slate.retried).toBe(true);
+      expect(slate.games).toEqual([]);
+      expect(espn.callCount).toBe(2);
+      expect(espn.urls[1]).toBe(espn.urls[0]);
+      // The load-bearing User-Agent goes on the retry too.
+      expect(espn.requestHeaders.map((h) => h['user-agent'])).toEqual([
+        ESPN_USER_AGENT,
+        ESPN_USER_AGENT,
+      ]);
+    } finally {
+      espn.restore();
+    }
+  });
+
+  it('a second 403 is the 403 it is: one retry, never two, and the error says it was retried', async () => {
+    const espn = stubEspn();
+    try {
+      espn.setResponder('20260913', status(403));
+      await expect(fetchIt()).rejects.toMatchObject({
+        status: 403,
+        kind: 'http',
+        retryable: false,
+      });
+      expect(espn.callCount).toBe(2);
+      await expect(fetchIt()).rejects.toThrow('(after one immediate retry)');
+      expect(espn.callCount).toBe(4);
+    } finally {
+      espn.restore();
+    }
+  });
+
+  it('a 200 is not retried, and neither is a 429, a 5xx or another 4xx: the schedule backs those off', async () => {
+    const espn = stubEspn();
+    try {
+      espn.setResponder('20260913', ok);
+      expect((await fetchIt()).retried).toBe(false);
+      expect(espn.callCount).toBe(1);
+      for (const code of [429, 503, 404]) {
+        const before = espn.callCount;
+        espn.setResponder('20260913', status(code));
+        await expect(fetchIt()).rejects.toMatchObject({ status: code, kind: 'http' });
+        expect(espn.callCount - before, String(code)).toBe(1);
+        await expect(fetchIt()).rejects.not.toThrow('retry');
+      }
     } finally {
       espn.restore();
     }
