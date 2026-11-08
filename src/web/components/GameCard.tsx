@@ -12,12 +12,14 @@
 import { useState } from 'react';
 import type { ReactElement } from 'react';
 
+import { AdminVoidGame } from './AdminVoidGame.js';
 import { ErrorBanner } from './ErrorBanner.js';
 import { MarketButton } from './MarketButton.js';
 import { TeamRow } from './TeamRow.js';
 import { formatCountdown, formatTime } from '../lib/datetime.js';
 import { MARKET_HEAD_LABEL, gameClockLabel, pickLabel } from '../lib/labels.js';
 import { MARKET_CELLS, moneylineNotOffered, quoteFor, unteasableReason } from '../lib/lines.js';
+import { cardOffersVoid } from '../lib/void-game.js';
 import { postAdminGameRefresh } from '../api/client.js';
 import { invalidate } from '../hooks/useResource.js';
 import { useBetSlip } from '../state/bet-slip.js';
@@ -108,6 +110,10 @@ export function GameCard(props: GameCardProps): ReactElement {
           <span className="chip chip-quiet">Locked</span>
         )}
         {isAdmin && <AdminRefreshButton gameId={game.id} />}
+        {/* F1: ONLY a final short of regulation waits for an admin (PLAN.md §24.11). */}
+        {cardOffersVoid(isAdmin, game.league, game.status, game.period) && (
+          <AdminVoidGame gameId={game.id} label={`${game.away.abbr} @ ${game.home.abbr}`} />
+        )}
       </header>
 
       <div className="game-teams">

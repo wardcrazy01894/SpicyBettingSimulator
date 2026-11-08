@@ -613,3 +613,38 @@ export function isBusted(view: {
 }): boolean {
   return view.balanceCents < MIN_STAKE_CENTS && view.pendingStakeCents === 0;
 }
+
+/** Longest reason an admin may give when voiding a game (`games.status_detail`). */
+export const VOID_REASON_MAX = 200;
+
+export interface VoidGameInput {
+  /** Trimmed; `null` when absent or blank. */
+  readonly reason: string | null;
+}
+
+/**
+ * `POST /api/admin/games/:id/void` (PLAN.md §11.6). The body is OPTIONAL —
+ * `undefined` (no body at all), `null` or `{}` all mean "no reason" — and the
+ * only field is `reason`, a string of at most `VOID_REASON_MAX` characters.
+ * Shared with the browser so the confirm form refuses the same input.
+ */
+export function validateVoidGame(body: unknown): ValidationResult<VoidGameInput> {
+  if (body === undefined || body === null) return good({ reason: null });
+  if (!isRecord(body)) return bad('body must be a JSON object');
+  const raw = body['reason'];
+  if (raw === undefined || raw === null) return good({ reason: null });
+  if (typeof raw !== 'string') return bad('reason must be a string', 'reason');
+  const reason = raw.trim();
+  if (reason.length > VOID_REASON_MAX) {
+    return bad(`reason must be at most ${String(VOID_REASON_MAX)} characters`, 'reason');
+  }
+  return good({ reason: reason === '' ? null : reason });
+}
+
+/**
+ * The `games.status_detail` an admin void writes. Prefixed so it can never be
+ * mistaken for maintenance's `auto-void: …` or for ESPN's own detail text.
+ */
+export function adminVoidDetail(reason: string | null): string {
+  return `admin void: ${reason ?? 'abandoned game'}`;
+}

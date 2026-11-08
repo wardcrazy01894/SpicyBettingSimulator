@@ -258,7 +258,10 @@ the one failure mode the whole checklist has.
    queue and freezes every league again (§24.3–§24.4). (i)
    **Every refresh cadence is a whole number of `REFRESH_TICK_MS` ticks from the
    tick's NOMINAL instant** (`scheduledTime`), never `now + N minutes`: the
-   alignment trap makes a live slate wait a whole extra tick (§24.7). The
+   alignment trap makes a live slate wait a whole extra tick (§24.7). A NEW
+   date is stamped by `planTargets` 1 ms before a discovery tick, ONE per
+   discovery tick from `nextDiscoveryTick(tick)` — never `now` while anything
+   is live or due — so a rollover burst never starves live slates (F2). The
    write-budget retreat is `REFRESH_LIVE_TICKS`, nothing else (§24.13). (ii)
    **A big slate runs alone**: the per-run weight budget
    (`REFRESH_WEIGHT_BUDGET`), the `REFRESH_TARGETS_PER_RUN` count cap and
@@ -271,7 +274,10 @@ the one failure mode the whole checklist has.
    always 200** for the SPA; the monitor's endpoint is `/api/health/ingest`
    (§24.5). (v) **Basketball shares ONE settlement arm** (a final has full action, OT
    included — EXCEPT a final short of regulation, NBA period < 4 or college
-   < 2, which is `undecidable` and waits in `stuck[]` for an admin, §24.11), has no teasers and no secondary sweeps (`TEASABLE_LEAGUES` /
+   < 2, which is `undecidable` and waits in `stuck[]` for an admin, who voids it
+   in-app with "Void game…" — `POST /api/admin/games/:id/void`, one guarded
+   UPDATE to `canceled` with `updated_at = now` so `RESET_DEFERRED_SQL`
+   re-selects the parked bets; it never touches money, §24.11), has no teasers and no secondary sweeps (`TEASABLE_LEAGUES` /
    `SECONDARY_LEAGUES` stay football-only), and reuses MLB's next-day postponed
    void (§24.11) — `NEXT_DAY_VOID_LEAGUES` in `maintenance.ts` is the SQL's
    restatement of `postponedVoidConfirmAt`, and a spec holds the two equal.
@@ -552,6 +558,12 @@ npm run db:reconcile -- --remote   # assert SUM(ledger) === balance for every ba
 Jobs can be kicked manually as an admin: `POST /api/admin/jobs/{refresh|settle|maintenance}`,
 and one game's slate with `POST /api/admin/games/:id/refresh` (the Refresh button admins see on
 each game card).
+A game an admin decides was abandoned is canceled with `POST /api/admin/games/:id/void` (the
+"Void game…" button beside Refresh on a SHORT basketball final's card — the `undecidable` case,
+never offered for MLB, whose NULL-period final wants its period corrected instead — and beside
+each game under a SETTLE run's `stuckGames` on the Jobs tab; the route also accepts a scheduled,
+live, postponed or ordinary final game, which the buttons do not invite); the next settle run
+voids its legs. A void cannot be undone — `canceled` is terminal in ingest.
 `GET /api/admin/jobs` shows the last 50 runs with stats, parser warnings and
 auto-void decisions — check it first when something looks wrong. A refresh run's
 `coverage[]` / `lineGaps` count, per target, the upcoming games whose DraftKings
