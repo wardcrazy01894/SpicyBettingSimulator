@@ -72,7 +72,11 @@ describe('dayFilterOptions — shape', () => {
   });
 
   it('a day with no games is not offered, and the phrases read inside a sentence', () => {
-    const options = dayFilterOptions('ncaab', [CBB[0] as GameCard, CBB[3] as GameCard], SAT_NOON);
+    const options = dayFilterOptions(
+      'ncaab',
+      CBB.filter((g) => g.id === 'sat' || g.id === 'mon'),
+      SAT_NOON,
+    );
     expect(options?.map((o) => o.phrase)).toEqual([null, 'today', 'on Monday']);
   });
 
