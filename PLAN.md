@@ -7203,8 +7203,8 @@ Rule gives it action throughout), so a playoff `final` always has `period >= 9`.
 and the regular season runs to 2026-09-27, so a rain-shortened game IS reachable
 in that window, and there is no tool that could settle one held pending (an
 admin's `retry-settlement` would regrade the same final, and `adjust` never
-closes a bet). `undecidable` therefore means exactly one thing: a `final` whose
-`period` is NULL — unparseable, never observed — which takes the §7.1
+closes a bet). `undecidable` therefore means exactly one thing FOR MLB: a `final` whose
+`period` is NULL (basketball has its own case, a final short of regulation, §24.11) — unparseable, never observed — which takes the §7.1
 `settle_attempts` path to `stuck[]`.
 
 **The seam — `gradeLeg` stays league-unaware.** `src/shared/action.ts` (stubbed in
@@ -7820,8 +7820,9 @@ including the three amendments of 2026-11-07; the reviewer has it too):
    `LEAGUE_BETTING_OPEN` gains both keys, landing `false` in M13c and flipped in
    M13d (§24.12).
 8. **Settlement**: ONE basketball branch in `action.ts` that both leagues share.
-   A final has full action on every market, overtime included; `gradeLeg` stays
-   league-unaware (§24.11).
+   A final has full action on every market, overtime included — except a final
+   short of regulation (an abandoned game), which is held `undecidable` for an
+   admin; `gradeLeg` stays league-unaware (§24.11).
 9. **UI (M13d)**: two new tabs; day grouping for both leagues; the CFB board
    filter generalised per league with `CBB_CONFERENCES`, for `ncaab` only, with
    default `top25`. The NBA has 30 teams and no filter (§24.14).
@@ -8967,15 +8968,22 @@ gains `ncaab` and `nba` entries taking dates from argv (MLB's pattern), and
 **The rule, both leagues.** A FINAL basketball game has action on every market,
 overtime included. That is DraftKings' basketball default and how every US book
 grades a spread, total or moneyline. ESPN's `period` (halves for college,
-quarters for the NBA, overtimes beyond) matters only to the clock label (§24.14)
-and is not consulted. `src/shared/action.ts`:
+quarters for the NBA, overtimes beyond) is consulted for ONE thing only: a final
+whose period is known and SHORT of regulation is an abandoned game and is held
+`undecidable` (below). `src/shared/action.ts`, as built:
 
 ```ts
 case 'nfl':
 case 'ncaaf':
-case 'ncaab':
-case 'nba':
   return FULL_ACTION;
+case 'ncaab':
+case 'nba': {
+  const regulation = BASKETBALL_REGULATION_PERIODS[league]; // ncaab 2, nba 4
+  if (game.status === 'final' && game.period !== null && game.period < regulation) {
+    return { kind: 'undecidable', reason: '… (abandoned game): an admin decides' };
+  }
+  return FULL_ACTION;
+}
 ```
 
 A final with a NULL `period` is graded, since nothing about the verdict depends

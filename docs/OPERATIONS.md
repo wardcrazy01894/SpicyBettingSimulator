@@ -393,7 +393,28 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   league — `nfl`, `ncaaf`, `mlb`, `ncaab`, `nba` — set one `false` and deploy, and that board shows
   `bettable: false` while `POST /api/bets` answers `409 GAME_NOT_BETTABLE` for its legs (open bets
   still settle). No teasers and no secondary sweeps, ever. A final
-  has action on every market, overtime included; a postponed game is voided the next morning on the
+  has action on every market, overtime included — EXCEPT a final short of regulation (NBA
+  `period` < 4, college < 2: an abandoned game), which is held `undecidable`: the bet stays
+  `pending`, reaches `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`, and the `settle-stuck` alert
+  emails you (PLAN §24.11). **Procedure for a stuck short final** — there is no in-app void yet
+  (an admin "void game" action is the follow-up; `retry-settlement` would regrade the same final):
+  decide from the box score, then either VOID it, so the next settle refunds every leg on it:
+
+  ```bash
+  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET status = 'canceled', status_detail = 'admin: abandoned game, voided' WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
+  ```
+
+  or, if ESPN under-reported the period and the game WAS complete, correct it so it grades
+  (`period = 4` for the NBA):
+
+  ```bash
+  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET period = 2 WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
+  ```
+
+  Either write changes the game row, which resets the bet's `settle_attempts` (`RESET_DEFERRED_SQL`),
+  so the next settle tick finishes it; confirm with `npm run db:reconcile -- --remote`. (If
+  `wrangler d1 execute --remote` answers 7403, `npx wrangler login` first — the token is stale.)
+  A postponed game is voided the next morning on the
   MLB evidence rule (`auto-void: NCAAB postponed, …` / `auto-void: NBA postponed, …`). A college
   game first seen on its own ET day has no conference ids (ESPN drops `conferenceId` on game day) —
   expected, not a bug.
