@@ -110,8 +110,8 @@ export function GameCard(props: GameCardProps): ReactElement {
           <span className="chip chip-quiet">Locked</span>
         )}
         {isAdmin && <AdminRefreshButton gameId={game.id} />}
-        {/* F1: a final short of regulation waits for an admin (PLAN.md §24.11). */}
-        {cardOffersVoid(isAdmin, game.status) && (
+        {/* F1: ONLY a final short of regulation waits for an admin (PLAN.md §24.11). */}
+        {cardOffersVoid(isAdmin, game.league, game.status, game.period) && (
           <AdminVoidGame gameId={game.id} label={`${game.away.abbr} @ ${game.home.abbr}`} />
         )}
       </header>

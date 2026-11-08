@@ -90,7 +90,8 @@ function StatsCell(props: { readonly run: JobRunView }): ReactElement {
     <ul className="stats-list">
       {entries.map(([key, value]) => (
         <li key={key}>
-          <span className="stats-key">{key}</span> <StatsValue name={key} value={value} />
+          <span className="stats-key">{key}</span>{' '}
+          <StatsValue job={props.run.job} name={key} value={value} />
         </li>
       ))}
     </ul>
@@ -102,12 +103,17 @@ function StatsCell(props: { readonly run: JobRunView }): ReactElement {
  * an empty one as a dash; anything else is shown as its JSON, which is what the
  * job wrote.
  */
-function StatsValue(props: { readonly name: string; readonly value: unknown }): ReactElement {
-  const { name, value } = props;
+function StatsValue(props: {
+  readonly job: string;
+  readonly name: string;
+  readonly value: unknown;
+}): ReactElement {
+  const { job, name, value } = props;
   if (typeof value === 'string') return <span className="stats-value">{value}</span>;
-  // `stuckGames` (settle: the undecidable games behind `stuck[]`; maintenance:
-  // games stuck live) — each with the in-app void, F1 / PLAN.md §24.11.
-  const voidable = voidableGameIds(name, value);
+  // A SETTLE run's `stuckGames` (the undecidable games behind `stuck[]`) — each
+  // with the in-app void, F1 / PLAN.md §24.11. Maintenance's `stuckGames` are
+  // games stuck live and get no button (a void cannot be undone).
+  const voidable = voidableGameIds(job, name, value);
   if (voidable !== null) {
     return (
       <ul className="stats-lines">

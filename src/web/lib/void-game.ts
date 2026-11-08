@@ -2,30 +2,46 @@
  * The admin "Void game…" control's pure logic (F1, PLAN.md §11.6 / §24.11).
  * DOM-free, so tests/web reaches it without jsdom.
  */
+import { gameAction } from '../../shared/action.js';
 import type { AdminVoidGameResponse } from '../../shared/api-types.js';
-import type { GameStatus } from '../../shared/types.js';
+import type { GameStatus, League } from '../../shared/types.js';
 
 /**
  * The game ids a Jobs-page stats entry offers a Void button for, or `null` to
- * render the entry the ordinary way. ONE key, `stuckGames`, in either job:
- * settle's names the undecidable games behind `stuck[]`, maintenance's the
- * games stuck `in_progress` it refuses to auto-void (§7.5). Both are exactly
- * the games a human was asked to decide.
+ * render the entry the ordinary way. ONLY a SETTLE run's `stuckGames` — the
+ * undecidable games behind `stuck[]`, the games a human was asked to decide.
+ * Maintenance has a `stuckGames` key too, but those are games stuck
+ * `in_progress` (§7.5): usually ESPN lag that posts a real final later, and a
+ * void cannot be undone (`canceled` is terminal in ingest), so no button there.
  */
-export function voidableGameIds(name: string, value: unknown): readonly string[] | null {
-  if (name !== 'stuckGames' || !Array.isArray(value) || value.length === 0) return null;
+export function voidableGameIds(
+  job: string,
+  name: string,
+  value: unknown,
+): readonly string[] | null {
+  if (job !== 'settle' || name !== 'stuckGames') return null;
+  if (!Array.isArray(value) || value.length === 0) return null;
   if (!value.every((v): v is string => typeof v === 'string')) return null;
   return value;
 }
 
 /**
- * The game card shows the control to an admin on a FINAL game only — the
- * short-final case. The server would also void a scheduled, live or postponed
- * game; the card simply does not invite it, and the Jobs page covers a game
- * stuck live.
+ * The game card shows the control to an admin ONLY on the short-final case —
+ * a final `gameAction` calls `undecidable` (PLAN.md §24.11) — never on an
+ * ordinary final, whose bets have graded or are still riding in a parlay. The
+ * server would also void a scheduled, live, postponed or ordinary final game;
+ * the card does not invite it, and the API stays available for an admin who
+ * means it.
  */
-export function cardOffersVoid(isAdmin: boolean, status: GameStatus): boolean {
-  return isAdmin && status === 'final';
+export function cardOffersVoid(
+  isAdmin: boolean,
+  league: League,
+  status: GameStatus,
+  period: number | null,
+): boolean {
+  return (
+    isAdmin && status === 'final' && gameAction(league, { status, period }).kind === 'undecidable'
+  );
 }
 
 /** The confirmation line after a successful void. */

@@ -330,8 +330,7 @@ SELECT DISTINCT g.id, g.league, g.status, g.period
  WHERE l.bet_id IN (SELECT b.id FROM bets b
                      WHERE b.status = 'pending' AND b.settle_attempts >= ?1)
    AND g.status <> 'canceled'
- ORDER BY g.id
- LIMIT ?2`;
+ ORDER BY g.id`;
 
 /** Bets past the attempt budget. They stay `pending`; money is never forfeited. */
 export const SELECT_STUCK_SQL = `
@@ -493,14 +492,18 @@ export async function selectStuckGameIds(
   maxAttempts: number,
   limit = STUCK_REPORT_LIMIT,
 ): Promise<readonly string[]> {
+  // No SQL LIMIT: the `undecidable` filter runs in code, and a limit applied
+  // before it would let decidable finals under the same parked parlays crowd
+  // the undecidable games out. The cap is applied AFTER filtering.
   const res = await env.DB.prepare(SELECT_STUCK_GAMES_SQL)
-    .bind(maxAttempts, limit)
+    .bind(maxAttempts)
     .all<{ id: string; league: League; status: GameStatus; period: number | null }>();
   return res.results
     .filter(
       (g) => gameAction(g.league, { status: g.status, period: g.period }).kind === 'undecidable',
     )
-    .map((g) => g.id);
+    .map((g) => g.id)
+    .slice(0, limit);
 }
 
 /**

@@ -143,10 +143,15 @@ previous sha leaves the column in place and unused.
 - **Refresh one game**: admins see a Refresh button on every game card. It pulls that game's
   whole date slate from ESPN now (`POST /api/admin/games/:id/refresh`) and shows up in the Jobs
   tab as an admin-triggered refresh run.
-- **Void one game**: on a FINAL game's card (and beside each `stuckGames` id on the Jobs tab)
-  admins also see **Void game…**. It cancels the game (`POST /api/admin/games/:id/void`, optional
+- **Void one game**: on a SHORT final's card (a basketball final below regulation — the
+  `undecidable` case) and beside each game under a SETTLE run's `stuckGames` on the Jobs tab,
+  admins see **Void game…**. It cancels the game (`POST /api/admin/games/:id/void`, optional
   reason) so the next settle run voids every leg on it — the remedy for a stuck short basketball
-  final (procedure under Basketball below). It moves no money itself.
+  final (procedure under Basketball below). It moves no money itself. The route also accepts a
+  scheduled, live, postponed or ordinary final game (voiding a scheduled game refunds its open
+  bets on the next settle run, the same path as an ESPN cancellation); the buttons do not invite
+  that, and a void cannot be undone — `canceled` is terminal in ingest, so ESPN's later result is
+  ignored.
 - Admin page: `/admin` in the SPA, four tabs — **Jobs** (run refresh / settle / maintenance by
   hand, last 50 runs), **Ledger** (reconcile), **Users** (disable, password reset, delete),
   **Bug reports**. The tab is in the URL (`/admin?tab=users`), so links to a section work.
