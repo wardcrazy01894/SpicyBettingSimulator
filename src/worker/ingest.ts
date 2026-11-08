@@ -1214,6 +1214,8 @@ function errorText(err: unknown): string {
  * `'timeout'`, `'network'`, `'bad-json'`. Anything that is not a
  * `ProviderError` failed before or around the request and counts as network.
  * Parser warnings are never a status: a 200 that partly failed to parse is 200.
+ * A target whose guard stamp failed was never fetched and reports `'skipped'`
+ * (written by `ingestTarget`, never by this function).
  */
 export function espnOutcome(err: unknown): string {
   if (err === null) return '200';
@@ -1297,17 +1299,26 @@ export async function ingestTarget(
   let fetchError: unknown = null;
 
   // The stamp's own write is part of the run's §8.6 total. If it throws (D1
-  // down) the target is not fetched at all: nothing has been blamed, and the
-  // run reports the failure like any other.
+  // down) the target is not fetched at all and NOTHING else is written for it:
+  // no reschedule (which would erase earlier strikes and count a D1 blip as an
+  // ESPN failure), no ESPN outcome (`'skipped'`, which no alert streak counts).
   let rowsWritten = 0;
   try {
     rowsWritten += await stampAttempt(env, target, now);
   } catch (err) {
-    fetchError = err;
-    error = errorText(err);
+    return {
+      gamesUpserted: 0,
+      linesUpserted: 0,
+      rowsWritten,
+      rowsSkipped: 0,
+      error: errorText(err),
+      espn: 'skipped',
+      warnings: [],
+      ...lineGapsOf(EMPTY_SLATE, now),
+    };
   }
 
-  if (error === null) {
+  {
     try {
       // Fetch AND parse before anything touches the database: an outage or a
       // schema change must leave existing rows exactly as they were (§14.8).
@@ -1454,7 +1465,14 @@ export async function runRefresh(
   const secondary = await runSecondary(env, now, { force: options.forceSecondaryGameId });
   for (const sweep of secondary.sweeps) rowsWritten += sweep.rowsWritten;
 
-  const parked = await listParkedTargets(env);
+  // A read that fails here must not turn a finished run into `error` (and drop
+  // its rowsWritten from dayRowsWritten): report no parked targets and log.
+  let parked: readonly ParkedTarget[] = [];
+  try {
+    parked = await listParkedTargets(env);
+  } catch (err) {
+    console.error('[refresh] listParkedTargets failed; reporting none this run', err);
+  }
 
   return {
     targetsProcessed: targets.length,

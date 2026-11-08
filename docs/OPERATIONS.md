@@ -445,6 +445,13 @@ tab, which is worth a look when the weekly PRs are reviewed.
 Two complementary alarms. The code is live from the M13a deploy; the monitor and the mention are
 operator steps, done once, the day M13a merges.
 
+**Expect one-time alerts on the first runs after the M13a deploy, and do not read them as a
+regression.** The first refresh reaps every historical `running` row (runs killed before M13a
+existed) into ONE `job-error` issue; an existing `stats.stuck[]` or an exhausted secondary budget
+opens its issue on the first settle or refresh. Read them, confirm the @mention email arrived and
+that the `ops-alert` label is on the issue, and close them — that is the recipient check happening
+by itself.
+
 - **External monitor** (it catches everything dead at once: a cron outage, a broken deploy, D1
   unreachable). Create a free UptimeRobot-class HTTP monitor on
   **`https://spicybetting.wardcrazy01894.workers.dev/api/health/ingest`**, interval 5 minutes,
