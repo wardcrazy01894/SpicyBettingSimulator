@@ -8709,7 +8709,9 @@ still claims what it bumped (§9.3).
   that collides with the burst, none once the burst has drained**, accepted
   and tested as a bound (two of ~22 fetches 403'd on the first night, so a
   10-date burst expects about one such tick; two failures in a row on one
-  date, about one burst in ten). The F2 chain anchor excludes failed rows, so
+  date, at most about one burst in ten; a date that fails on EVERY call inside
+  a 10-date burst — about 50 ticks — collides on steps 1, 5, 10 and 20, so the
+  worst case is four live ticks per burst). The F2 chain anchor excludes failed rows, so
   the chain does not step around the retry; the fix, if this ever matters, is
   to re-stamp a failed never-fetched date at the END of the chain in the
   reschedule itself. A target that has fetched before retries on the very
