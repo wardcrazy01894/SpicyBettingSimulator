@@ -256,7 +256,10 @@ the one failure mode the whole checklist has.
    queue and freezes every league again (§24.3–§24.4). (i)
    **Every refresh cadence is a whole number of `REFRESH_TICK_MS` ticks from the
    tick's NOMINAL instant** (`scheduledTime`), never `now + N minutes`: the
-   alignment trap makes a live slate wait a whole extra tick (§24.7). The
+   alignment trap makes a live slate wait a whole extra tick (§24.7). A NEW
+   date is stamped by `planTargets` 1 ms before a discovery tick, ONE per
+   discovery tick from `nextDiscoveryTick(tick)` — never `now` while anything
+   is live or due — so a rollover burst never starves live slates (F2). The
    write-budget retreat is `REFRESH_LIVE_TICKS`, nothing else (§24.13). (ii)
    **A big slate runs alone**: the per-run weight budget
    (`REFRESH_WEIGHT_BUDGET`), the `REFRESH_TARGETS_PER_RUN` count cap and

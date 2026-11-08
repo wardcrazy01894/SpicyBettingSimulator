@@ -530,7 +530,7 @@ export async function planTargets(
     ? `MAX(?8,COALESCE((SELECT MAX(next_run_at) FROM ingest_targets
                             WHERE last_ok_at IS NULL AND consecutive_failures = 0
                               AND incomplete_attempts = 0 AND next_run_at > ?6), 0) + ?9)`
-      : '?6';
+    : '?6';
   const insert = env.DB.prepare(
     `INSERT INTO ingest_targets
        (id, league, kind, key, window_start_at, window_end_at, priority,

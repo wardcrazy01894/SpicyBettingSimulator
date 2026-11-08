@@ -2157,7 +2157,9 @@ describe('claim order, the weight budget and the discovery tick (PLAN.md §8.4, 
         .bind(rollover + 6 * HOUR)
         .run();
       for (const [i, id] of liveIds.entries()) {
-        await env.DB.prepare('UPDATE ingest_targets SET games_seen = ?1, next_run_at = ?2 WHERE id = ?3')
+        await env.DB.prepare(
+          'UPDATE ingest_targets SET games_seen = ?1, next_run_at = ?2 WHERE id = ?3',
+        )
           .bind(18 + 2 * i, rollover, id)
           .run();
         const t = await loadTarget(id);

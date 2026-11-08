@@ -244,10 +244,12 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   their summed game counts stay ≤ 40 (`REFRESH_WEIGHT_BUDGET`): a CFB Saturday or a slate never
   fetched before always runs ALONE; an NFL date and an MLB day share. Every fifth tick (:00 :15 :30
   :45) serves a non-live slate first, so next week's lines are discovered behind any live load.
-  With two or three big live slates at once they take turns, each every 2nd or 3rd tick. The one
-  exception is the Sunday rollover burst: the seven or eight NEW dates are the oldest due rows and
-  drain on consecutive ticks AHEAD of the live slates, so for ~24 minutes after 00:00 ET and after
-  20:00 ET on a Sunday no live slate is refreshed (PLAN §24.7).
+  With two or three big live slates at once they take turns, each every 2nd or 3rd tick. A NEW date
+  (the Sunday rollover burst, a midnight's new days) is due at its own discovery tick, one per tick
+  from the next one, so the new week's dates appear over ≤ 2.5 h after 00:00 ET (≤ 1¾ h after the
+  NFL's 20:00 ET) strictly behind live load, and live slates are never starved (PLAN §24.7, F2).
+  With nothing live and nothing due — a fresh database, `npm run dev`'s first board load — new
+  dates are due at once instead.
 - Per-run work is capped by two `wrangler.jsonc` vars: `REFRESH_TARGETS_PER_RUN` (5: a COUNT cap
   under the weight budget above) and `SETTLE_CHUNK` (20 bets per settle). Do not raise
   `SETTLE_CHUNK` before PLAN Spike S2 is measured — see below.
