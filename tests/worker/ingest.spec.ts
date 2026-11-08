@@ -637,7 +637,7 @@ describe('planTargets', () => {
   });
 
   /*
-   * WHEN a new date is due (PLAN.md §24.7, F2, owner decision 2026-11-08).
+   * WHEN a new date is due (PLAN.md §24.7, F2, owner decision 2026-11-07).
    * These replace the pre-F2 rule "every new target is due immediately"
    * (`next_run_at = now`): that made a Sunday rollover burst the OLDEST due
    * rows, which then drained on consecutive GENERAL ticks and starved every
@@ -719,6 +719,24 @@ describe('planTargets', () => {
       "UPDATE ingest_targets SET next_run_at = ?1, consecutive_failures = 1 WHERE id = 'nfl:date:20260914'",
     )
       .bind(T0 + 30 * DAY)
+      .run();
+    const monday = T0 + DAY;
+    await planTargets(env, monday);
+    expect((await stampsCreatedAt(monday))[0]).toBe(nextDiscoveryTick(monday) - 1);
+  });
+
+  it('a KILLED never-fetched target never anchors the chain (incomplete_attempts > 0, provisional stamp far ahead)', async () => {
+    // The most likely victim of a CPU kill is a big never-fetched slate: the
+    // stamp leaves last_ok_at NULL and consecutive_failures 0, with a
+    // provisional next_run_at that can sit up to REFRESH_DISCOVERY_TICKS ahead.
+    // Without the incomplete_attempts filter it would anchor the next burst
+    // that far out.
+    await planTargets(env, T0);
+    await insertGame('nfl:live', 'nfl', T0 + HOUR, 'in_progress');
+    await env.DB.prepare(
+      "UPDATE ingest_targets SET next_run_at = ?1, incomplete_attempts = 1, attempt_started_at = ?2 WHERE id = 'nfl:date:20260914'",
+    )
+      .bind(T0 + 6 * HOUR, T0)
       .run();
     const monday = T0 + DAY;
     await planTargets(env, monday);

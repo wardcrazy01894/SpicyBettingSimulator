@@ -459,7 +459,7 @@ export async function bumpTargetForGame(
  * and a target already created keeps refreshing until the retirement rule takes
  * it, so a game that leaves the BOARD keeps being ingested (§22.3).
  *
- * WHEN A NEW DATE IS DUE (PLAN.md §24.7, F2, owner decision 2026-11-08). A new
+ * WHEN A NEW DATE IS DUE (PLAN.md §24.7, F2, owner decision 2026-11-07). A new
  * target is stamped 1 ms before a DISCOVERY tick, ONE PER DISCOVERY TICK: the
  * first at `nextDiscoveryTick(tick)` (the next one strictly after this tick,
  * never this one), each further new date — in this run or still waiting from
@@ -798,7 +798,7 @@ export function packCount(
  * plus two or three past MLB dates on the +24 h tier; ≈ 70 discovery
  * refreshes a day against 96 discovery-first ticks. ROLLOVER BURST: the
  * Sunday rollover adds seven to ten never-fetched dates at once. Each weighs
- * big and runs alone, so since F2 (owner decision 2026-11-08) `planTargets`
+ * big and runs alone, so since F2 (owner decision 2026-11-07) `planTargets`
  * stamps them one per DISCOVERY tick, starting at the next one: each is that
  * tick's discovery pick and none is ever the oldest due row on a general
  * tick, so a burst of k dates fills within k discovery ticks (≤ 15·k min) and

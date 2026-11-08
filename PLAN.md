@@ -6473,7 +6473,7 @@ The two effects to expect, stated for the runbook:
    rather than being rediscovered at 1am. At the rollover the window gains SEVEN
    ET dates for that league at once, and each is a brand-new `ingest_targets`
    row. Since M13b (§24.7) a never-fetched target weighs "big" and runs ALONE,
-   and since F2 (owner decision 2026-11-08, §24.7) `planTargets` stamps the new
+   and since F2 (owner decision 2026-11-07, §24.7) `planTargets` stamps the new
    rows ONE PER DISCOVERY TICK (:00 :15 :30 :45), starting at the next one, so
    **the new week's dates appear over ≤ 2.5 h behind live load; live slates are
    never starved** — each date is the discovery pick of its own tick, and the
@@ -8631,7 +8631,7 @@ still claims what it bumped (§9.3).
   non-live target if one is due, and live slates cannot take that tick. So a due
   non-live target with k others ahead of it waits at most `15·(k + 1)` minutes.
 - _A rollover burst fills on discovery ticks; live slates never wait_ (F2,
-  owner decision 2026-11-08 — this closes the OPEN note M13b left here). A new
+  owner decision 2026-11-07 — this closes the OPEN note M13b left here). A new
   date is never-fetched, so it weighs big and runs alone. `planTargets` stamps
   each one **1 ms before a discovery tick, one per discovery tick**: the first
   at `nextDiscoveryTick(tick)` (the next one strictly after the planning tick,
@@ -8644,7 +8644,8 @@ still claims what it bumped (§9.3).
   minutes** (the Sunday 00:00 ET burst of ten, ≤ 2.5 h; the NFL's seven at
   20:00 ET, ≤ 1¾ h), and the live slates keep every general tick — including
   Sunday Night Football's last pre-kickoff line moves, ~20 minutes after the
-  NFL rollover. Both parts are load-bearing, and the burst test in
+  NFL rollover (a single tick's slip is possible there; see the residual
+  below). Both parts are load-bearing, and the burst test in
   `tests/worker/ingest.spec.ts` fails without either: sharing ONE stamp leaves
   all but the first as the oldest due rows on the next general tick; stamping
   exactly ON the tick ties with tier rows a discovery-tick run stamped there,
@@ -8654,10 +8655,16 @@ still claims what it bumped (§9.3).
   is no live load to protect and the wait is pure latency (a fresh database,
   `npm run dev`'s first board load, 4 AM), so the run stamps `now`. One read
   decides it before the INSERTs — a planner input, not a guard on a write, and
-  every INSERT of the run must share the answer. Residual: a discovery tick
-  whose pick goes to an OLDER overdue non-live target (a discovery backlog)
-  leaves that tick's new date for a general tick; steady-state discovery
-  demand is ≈ 70 of 96 ticks, so a backlog is transient. Before F2 the planner
+  every INSERT of the run must share the answer. Residual, two causes: a
+  discovery tick whose pick goes to an OLDER due non-live target leaves that
+  tick's new date for a general tick, where it runs alone (one tick's slip, no
+  money moves). (a) A discovery backlog — steady-state demand is ≈ 70 of 96
+  ticks, so transient. (b) `NO_LIVE_GAME` counts only `in_progress` games, so a
+  PRE-KICKOFF slate on the live tier (within 3 h of tip or kickoff — SNF's own
+  date between 20:00 and 20:20 ET is one) counts as non-live for the discovery
+  pick; if it missed the previous tick because big slates were taking turns, it
+  is older than the T − 1 ms stamp and wins. The burst test uses `in_progress`
+  slates only, so it cannot see (b); it is bounded to one tick per slip. Before F2 the planner
   stamped `next_run_at = now`, and the burst drained on consecutive general
   ticks ahead of every live slate for ~24–30 minutes (~60 before M13b); bet
   locks are kickoff-based, so no money ever moved.
@@ -8743,6 +8750,14 @@ by the cron. Still not worth moving the bump inside the lease.
 segments (`groups=<id>`, §24.2), each ~1/32 of the work. The owner chose the
 3-minute tick partly so this would be cheap to turn on. It stays OFF until the
 evidence says otherwise.
+
+**The switch must revisit F2 before it is flipped.** §24.7's planner chains
+every NEW target one discovery period behind the last waiting one; with 32
+segments per date that is ~8 h to stamp one day's segments and ~8 h more every
+midnight. Before `NCAAB_TARGET_SHAPE` becomes `'conference'`, exempt segment
+targets (non-NULL `conference_id`) from the chain — stamp a date's segments as
+one group at the next discovery tick, or let them pack under the weight budget
+on general ticks — and re-run the burst fairness test with segments in it.
 
 **The switch is ONE planner decision.** M13c ships every piece the sharded shape
 needs, dormant. Turning it on is a one-line change of
