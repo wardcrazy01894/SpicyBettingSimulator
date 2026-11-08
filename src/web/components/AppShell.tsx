@@ -100,14 +100,19 @@ function Shell(): ReactElement {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <span className="app-title">Spicy</span>
-        <div className="app-header-right">
-          <BugReportButton />
-          <BankrollBadge />
-        </div>
-      </header>
-      <NavTabs />
+      {/* One sticky block: the header AND the nav tabs. With only the header
+          sticky, the tabs scrolled up behind it and the page lost its
+          navigation on a short phone viewport (issue #95). */}
+      <div className="app-top">
+        <header className="app-header">
+          <span className="app-title">Spicy</span>
+          <div className="app-header-right">
+            <BugReportButton />
+            <BankrollBadge />
+          </div>
+        </header>
+        <NavTabs />
+      </div>
       <RefillBanner />
       <main className="app-main">
         <Outlet />
