@@ -32,6 +32,8 @@ money?" prompt will refill you $1,000, but the loss stays on the board and a
   run line is void, and a total counts only if it was already decided; before
   5 innings everything is void. A rainout is voided the next morning and your
   stake comes back. MLB legs can't go in a teaser (PLAN.md §23).
+- **Coming next: college basketball and the NBA** — every Division I game and every NBA game,
+  planned in PLAN.md §24 after a round of reliability work on the refresh schedule.
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 25 legs (as at
   DraftKings), and the legs can mix Saturday and Sunday. Teasers stop at 10

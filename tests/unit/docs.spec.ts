@@ -29,9 +29,21 @@ import { describe, expect, it } from 'vitest';
 
 import { ERROR_CODES } from '../../src/shared/errors.js';
 import {
+  ALERT_COMMENT_INTERVAL_MS,
+  ALERT_COMMENT_MAX_INTERVAL_MS,
+  ALERT_D1_ROWS_NEAR_CAP,
+  ALERT_GITHUB_TIMEOUT_MS,
+  ALERT_MAX_GITHUB_CALLS_PER_RUN,
+  ALERT_REOPEN_WINDOW_MS,
+  ALERT_RESOLVE_AFTER_MS,
   BET_CUTOFF_BUFFER_MS,
   BUST_BUYOUT_CENTS,
+  CBB_CONFERENCES,
+  HEALTH_STALE_TICKS,
+  INGEST_MAX_INCOMPLETE_ATTEMPTS,
+  INGEST_PARKED_RETRY_MS,
   INITIAL_BANKROLL_CENTS,
+  JOB_REAP_AFTER_MS,
   LINE_STALE_MS,
   MAX_PARLAY_LEGS,
   MAX_TEASER_LEGS,
@@ -44,6 +56,8 @@ import {
   MLB_POSTPONED_CONFIRM_MS,
   MLB_REGULATION_INNINGS,
   MONEYLINE_NOT_OFFERED_SPREAD_TENTHS,
+  NBA_BOARD_ET_DAYS,
+  NCAAB_BOARD_ET_DAYS,
   NCAAF_WEEK_ROLLOVER_ET_HOUR,
   NFL_WEEK_ROLLOVER_ET_HOUR,
   ODDS_API_BUDGET_PROBE_MS,
@@ -53,6 +67,13 @@ import {
   ODDS_API_COST_PER_SWEEP,
   ODDS_API_CREDIT_RESERVE,
   ODDS_API_TIMEOUT_MS,
+  REFRESH_BACKOFF_BASE_TICKS,
+  REFRESH_DISCOVERY_EVERY_NTH_TICK,
+  REFRESH_DISCOVERY_TICKS,
+  REFRESH_LIVE_TICKS,
+  REFRESH_SOON_TICKS,
+  REFRESH_TICK_MS,
+  REFRESH_WEIGHT_BUDGET,
   SECONDARY_MATCH_WINDOW_MS,
   SECONDARY_MIN_SWEEP_INTERVAL_MS,
   SECONDARY_RESWEEP_MARGIN_MS,
@@ -343,6 +364,35 @@ describe('constants.ts vs PLAN.md §3.1', () => {
     MLB_OFFICIAL_INNINGS,
     MLB_REGULATION_INNINGS,
     MLB_POSTPONED_CONFIRM_MS,
+    // Scheduler hardening + college basketball (PLAN §24). The park threshold
+    // and the health window decide when a CPU-killed slate stops freezing the
+    // app and when the uptime monitor pages a human; the tick and its multiples
+    // are the whole of §24.7's slot arithmetic AND §24.13's write budget (the
+    // live multiple is the retreat lever); the three-day window is what keeps
+    // conference ids on the CBB board (§24.2).
+    INGEST_MAX_INCOMPLETE_ATTEMPTS,
+    INGEST_PARKED_RETRY_MS,
+    JOB_REAP_AFTER_MS,
+    HEALTH_STALE_TICKS,
+    REFRESH_TICK_MS,
+    REFRESH_LIVE_TICKS,
+    REFRESH_SOON_TICKS,
+    REFRESH_DISCOVERY_TICKS,
+    REFRESH_BACKOFF_BASE_TICKS,
+    REFRESH_DISCOVERY_EVERY_NTH_TICK,
+    REFRESH_WEIGHT_BUDGET,
+    NCAAB_BOARD_ET_DAYS,
+    NBA_BOARD_ET_DAYS,
+    // In-app alerts (PLAN §24.6b). These ARE the no-spam promise: how often a
+    // firing alert may email, when it closes, when a recurrence reopens rather
+    // than re-opens, and how many GitHub calls a job run may make.
+    ALERT_COMMENT_INTERVAL_MS,
+    ALERT_COMMENT_MAX_INTERVAL_MS,
+    ALERT_RESOLVE_AFTER_MS,
+    ALERT_REOPEN_WINDOW_MS,
+    ALERT_D1_ROWS_NEAR_CAP,
+    ALERT_MAX_GITHUB_CALLS_PER_RUN,
+    ALERT_GITHUB_TIMEOUT_MS,
   };
 
   for (const [name, value] of Object.entries(expected)) {
@@ -399,6 +449,45 @@ describe('constants.ts vs PLAN.md §3.1', () => {
       ).toBe(true);
     });
   }
+});
+
+/**
+ * PLAN §24's conference table is the record of ESPN's BASKETBALL group ids,
+ * measured once (2026-11-07). The ids differ from football's for the same
+ * conference, so a table copied from CFB_CONFERENCES would compile, render and
+ * file every SEC game under "Other". Both directions: every constant entry has
+ * a `| \`id\` | name |` row in §24, and §24's table has no row the constant lacks.
+ */
+describe('CBB_CONFERENCES vs PLAN.md §24', () => {
+  const table = section(PLAN, '24.2');
+  const rows = new Map<string, string>(
+    [...table.matchAll(/^\|\s*`(\d+)`\s*\|\s*([^|]+?)\s*\|/gm)].map((m) => [
+      m[1] ?? '',
+      m[2] ?? '',
+    ]),
+  );
+
+  it('lists every conference the constant exports, with the same name', () => {
+    const wrong = CBB_CONFERENCES.filter((c) => rows.get(c.id) !== c.name).map(
+      (c) => `${c.id} ${c.name} (PLAN says ${String(rows.get(c.id))})`,
+    );
+    expect(
+      wrong,
+      `PLAN.md §24.2's conference table disagrees with src/shared/constants.ts ` +
+        `CBB_CONFERENCES for: ${wrong.join('; ')}. Add or fix the row as ` +
+        `| \`<id>\` | <name> |.`,
+    ).toEqual([]);
+  });
+
+  it('lists no conference the constant lacks', () => {
+    const ids = new Set(CBB_CONFERENCES.map((c) => c.id));
+    const extra = [...rows.keys()].filter((id) => !ids.has(id));
+    expect(
+      extra,
+      `PLAN.md §24.2 lists conference id(s) ${extra.join(', ')} that CBB_CONFERENCES ` +
+        `does not. The board filter only offers what the constant holds.`,
+    ).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,11 @@ M12) for Alex and a few friends. Real lines, real odds, real payouts, **no real
 money**. MLB is in `LEAGUES` since M12a and its betting is OPEN since M12b
 (both 2026-09-24): the board shows today's ET date only, and
 `LEAGUE_BETTING_OPEN` in `src/worker/bets.ts` is the per-league kill switch
-(PLAN.md §23).
+(PLAN.md §23). **M13 is PLANNED, not built** (PLAN.md §24, 2026-11-07): first
+scheduler hardening and in-app alerts (M13a), then a 3-minute refresh tick
+(M13b), then men's college basketball and the NBA as `'ncaab'` / `'nba'` (M13c,
+M13d). Neither is in `LEAGUES` yet; rule 8i is what the code must keep once they
+are.
 
 **Read `PLAN.md` before changing anything.** It is the architecture of record:
 data model, odds math, settlement algorithm, ingestion design, milestones and the
@@ -24,9 +28,11 @@ Two consequences hang off being deployed:
   from here is a new numbered `migrations/000N_*.sql`. Editing `0001` now means
   the file and the live database say different things and nothing ever
   reconciles them.
-- **Spikes S1 and S2 are simply UNMEASURED** (PLAN.md §18), not blocked. Both
-  wanted a deployed Worker and now have one: run a refresh and read `cpuTime`
-  off the `wrangler tail` log line. The only genuinely date-blocked item left is
+- **Spike S1 is MEASURED; S2 is UNMEASURED, not blocked** (PLAN.md §18). S1,
+  2026-11-07: refresh runs took 30–34 ms of CPU and finished `ok` against a
+  documented 10 ms, so the real cliff is unknown, which is why M13a guards
+  against a kill instead of trying to stay under a line (PLAN.md §24.3). S2 still
+  wants one `wrangler tail` read. The only genuinely date-blocked item left is
   S4(c), the January postseason check.
 
 ---
@@ -229,6 +235,35 @@ the one failure mode the whole checklist has.
    equity and deposited together and `netCents` does not move (since
    2026-10-20). The history — every refill, and when its badge went — is
    `GET /api/users/:id/busts`, shown on `/players/:userId`.
+   8i. **Scheduler hardening and basketball (M13, PLAN.md §24; PLANNED, so
+   nothing below is in the code yet).** What the code must keep once each
+   milestone lands. (0) **A CPU kill is not an exception.** Each target's
+   `ingest_targets.incomplete_attempts` is stamped immediately before THAT
+   target's own fetch, never for the whole claim at once, so a kill blames only
+   the target in flight. BOTH reschedule paths reset it. The ONE other sanctioned
+   reset is the admin un-park in `bumpTargetForGame` (§9.3). A target with
+   `incomplete_attempts > 0` runs alone, so a light target cannot be parked for
+   a heavy neighbour's CPU. Never move the stamp after the fetch, and never add
+   another reset, or a slate that kills its invocation pins the head of the
+   queue and freezes every league again (§24.3–§24.4). (i)
+   **Every refresh cadence is a whole number of `REFRESH_TICK_MS` ticks from the
+   tick's NOMINAL instant** (`scheduledTime`), never `now + N minutes`: the
+   alignment trap makes a live slate wait a whole extra tick (§24.7). The
+   write-budget retreat is `REFRESH_LIVE_TICKS`, nothing else (§24.13). (ii)
+   **A big slate runs alone**: the per-run weight budget
+   (`REFRESH_WEIGHT_BUDGET`) is the only rule for sharing an invocation, and a
+   never-succeeded target (`last_ok_at IS NULL`) counts as big. (iii) **Alerts never fail a job, and
+   never post without a claim**: each GitHub call is permitted only by
+   `meta.changes` on a guarded `alerts` UPDATE (rule 5), and `refresh-stale` is
+   evaluated by settle and maintenance too, because a killed refresh cannot
+   alert about itself (§24.6b). (iv) **`/api/health` stays DB-free and
+   always 200** for the SPA; the monitor's endpoint is `/api/health/ingest`
+   (§24.5). (v) **Basketball shares ONE settlement arm** (a final has full action,
+   OT included), has no teasers and no secondary sweeps (`TEASABLE_LEAGUES` /
+   `SECONDARY_LEAGUES` stay football-only), and reuses MLB's next-day postponed
+   void (§24.11). The per-conference split of `ncaab` is a dormant SWITCH
+   (`NCAAB_TARGET_SHAPE`), flipped only on a parked D-I target or an
+   `exceededCpu` (§24.8).
 
 9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
    2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will
@@ -264,6 +299,13 @@ the one failure mode the whole checklist has.
      `0011_ledger_refill_buyout.sql` rebuilds `ledger` ALONE (a leaf, 0008's
      pattern) to admit kinds `deposit_refill` and `bust_buyout` — bust
      refills and badge buyouts, rule 8h and PLAN.md §4.5.
+     **PLANNED, not written** (the M13 plan PR shipped no migration, PLAN.md
+     §24): `0012_ingest_guard.sql` (M13a: four `ADD COLUMN`s on
+     `ingest_targets` plus the `alerts` table, no rebuild, §24.4/§24.6b) and
+     `0013_basketball_leagues.sql` (M13c: 0009's six-table children-first
+     rebuild admitting `'ncaab'` and `'nba'`, each table recreated from its LAST
+     definer (0010 for `bets`/`bet_legs`, 0011 for `ledger`), and GATED on a
+     measured write estimate under 60,000 rows, §24.9).
      `0007_secondary_odds.sql` shipped with M9b and is frozen like the rest;
      PLAN.md §21.3 carries the same text as its specification. The plan PR that
      added §21 and §22 deliberately shipped NO migration: the Deploy
@@ -365,7 +407,7 @@ the one failure mode the whole checklist has.
 
 | Constraint                          | Value                                                                                            | Why you care                                                                                                                                                                                                                                                     |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Worker CPU per invocation (free)    | **10 ms**                                                                                        | No server-side heavy PBKDF2 (hence the split KDF, PLAN.md §10). No parsing a full CFB week in one go (hence per-ET-date ingest, §8.1).                                                                                                                           |
+| Worker CPU per invocation (free)    | **10 ms** documented; **30–34 ms MEASURED** on refresh runs that finished `ok` (S1, 2026-11-07)  | Enforcement has leeway of UNKNOWN size, so do not design to a number: a kill must be survivable (M13a's guard, PLAN.md §24.4) and visible (`/api/health/ingest`, alerts). Still why there is no server-side heavy PBKDF2 (the split KDF, PLAN.md §10).           |
 | `crypto.subtle` PBKDF2 iterations   | Cloudflare documents a 100,000 cap; local workerd 1.20260911 did NOT enforce it (measured in M3) | Design does not depend on it: the 10 ms CPU budget is why the heavy KDF runs in the browser. Server KDF is 1,000. Worker tests still use precomputed `dk` vectors.                                                                                               |
 | D1 statements per invocation        | 50 (docs) / 1000 (2026 changelog)                                                                | `MAX_BATCH_STATEMENTS = 40` is the size of ONE `batch()`, not a per-invocation total. Chunk settlement at 20 bets. **Ingest is the deliberate exception**: ~172 statements (2 per game + 1 per line) across ~5 batches. See Spike S2.                            |
 | D1 bound params per statement       | 100                                                                                              | A 25-leg parlay inserts legs as 25 separate statements, not one.                                                                                                                                                                                                 |
@@ -408,7 +450,9 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               for same-game parlays (PLAN.md §5.2c), 0009 rebuilds six tables
               to admit league 'mlb' (PLAN.md §23.3), 0010 rebuilds bets for
               25-leg parlays (teasers stay at 10; PLAN.md §16.2), 0011 rebuilds
-              ledger alone for the deposit_refill / bust_buyout kinds (PLAN.md §4.5)
+              ledger alone for the deposit_refill / bust_buyout kinds (PLAN.md §4.5);
+              0012 (guard columns + alerts) and 0013 (basketball) are PLANNED,
+              not written (PLAN.md §24)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ @cloudflare/vitest-plugin tests with a real D1; fixtures.ts SYNTHESISES

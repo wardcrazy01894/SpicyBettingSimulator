@@ -88,19 +88,21 @@ that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's
 
 Applied migrations, newest last:
 
-| File                               | What                                                                                                                                                                                                                                                      | Applied remotely                                                                                                              |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `0001_init.sql`                    | the whole schema                                                                                                                                                                                                                                          | 2026-09-14                                                                                                                    |
-| `0002_users_deleted_at.sql`        | `users.deleted_at INTEGER NULL` — account soft delete                                                                                                                                                                                                     | on merge to `main`, by the Deploy workflow                                                                                    |
-| `0003_bug_reports.sql`             | `bug_reports` table + 2 indexes — in-app bug reports                                                                                                                                                                                                      | on merge to `main`, by the Deploy workflow                                                                                    |
-| `0004_games_conference.sql`        | `games.home/away_conference_id TEXT NULL` — CFB board filter                                                                                                                                                                                              | on merge to `main`, by the Deploy workflow                                                                                    |
-| `0005_bets_teaser_tiers.sql`       | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied) to widen the teaser CHECK to 3–14 pt                                                                                                                                                                | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                |
-| `0006_bug_reports_diagnostics.sql` | `bug_reports.diagnostics TEXT NULL` — the browser log a report attaches                                                                                                                                                                                   | on merge to `main`, by the Deploy workflow                                                                                    |
-| `0007_secondary_odds.sql`          | `game_lines.{spread,total,ml}_book TEXT NULL`, `games.secondary_tried_at INTEGER NULL`, and the single-row `secondary_budget` table seeded at 500 credits (PLAN §21.3)                                                                                    | on merge to `main`, by the Deploy workflow                                                                                    |
-| `0008_bet_legs_same_game.sql`      | REBUILDS `bet_legs` (rows copied; `bets` and `ledger` untouched) so `UNIQUE (bet_id, game_id)` becomes `UNIQUE (bet_id, game_id, market)`, plus the `bet_legs_bi_one_side_per_game` trigger — same-game parlays (PLAN §5.2c)                              | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                |
-| `0009_mlb_league.sql`              | **Ships in the M12a PR** (with the code that writes `'mlb'`). REBUILDS `games`, `game_lines`, `bets`, `bet_legs`, `ledger` and `ingest_targets` (rows copied, ledger triggers recreated after the copy) to add `'mlb'` to four league CHECKs (PLAN §23.3) | on merge of M12a, by the Deploy workflow — count the rows first (below) and run `npm run db:reconcile -- --remote` afterwards |
-| `0010_parlay_25_legs.sql`          | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied, triggers recreated after the copy) so `bets.leg_count` allows 1–25 (parlays up to 25 legs) and a new CHECK holds a teaser to 10 legs (PLAN §16.2)                                                   | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                |
-| `0011_ledger_refill_buyout.sql`    | REBUILDS `ledger` alone (rows copied, the five triggers recreated after the copy) so `ledger.kind` admits `deposit_refill` and `bust_buyout` — bust refills and badge buyouts (PLAN §4.5)                                                                 | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                |
+| File                               | What                                                                                                                                                                                                                                                      | Applied remotely                                                                                                                                                                       |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0001_init.sql`                    | the whole schema                                                                                                                                                                                                                                          | 2026-09-14                                                                                                                                                                             |
+| `0002_users_deleted_at.sql`        | `users.deleted_at INTEGER NULL` — account soft delete                                                                                                                                                                                                     | on merge to `main`, by the Deploy workflow                                                                                                                                             |
+| `0003_bug_reports.sql`             | `bug_reports` table + 2 indexes — in-app bug reports                                                                                                                                                                                                      | on merge to `main`, by the Deploy workflow                                                                                                                                             |
+| `0004_games_conference.sql`        | `games.home/away_conference_id TEXT NULL` — CFB board filter                                                                                                                                                                                              | on merge to `main`, by the Deploy workflow                                                                                                                                             |
+| `0005_bets_teaser_tiers.sql`       | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied) to widen the teaser CHECK to 3–14 pt                                                                                                                                                                | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
+| `0006_bug_reports_diagnostics.sql` | `bug_reports.diagnostics TEXT NULL` — the browser log a report attaches                                                                                                                                                                                   | on merge to `main`, by the Deploy workflow                                                                                                                                             |
+| `0007_secondary_odds.sql`          | `game_lines.{spread,total,ml}_book TEXT NULL`, `games.secondary_tried_at INTEGER NULL`, and the single-row `secondary_budget` table seeded at 500 credits (PLAN §21.3)                                                                                    | on merge to `main`, by the Deploy workflow                                                                                                                                             |
+| `0008_bet_legs_same_game.sql`      | REBUILDS `bet_legs` (rows copied; `bets` and `ledger` untouched) so `UNIQUE (bet_id, game_id)` becomes `UNIQUE (bet_id, game_id, market)`, plus the `bet_legs_bi_one_side_per_game` trigger — same-game parlays (PLAN §5.2c)                              | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
+| `0009_mlb_league.sql`              | **Ships in the M12a PR** (with the code that writes `'mlb'`). REBUILDS `games`, `game_lines`, `bets`, `bet_legs`, `ledger` and `ingest_targets` (rows copied, ledger triggers recreated after the copy) to add `'mlb'` to four league CHECKs (PLAN §23.3) | on merge of M12a, by the Deploy workflow — count the rows first (below) and run `npm run db:reconcile -- --remote` afterwards                                                          |
+| `0010_parlay_25_legs.sql`          | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied, triggers recreated after the copy) so `bets.leg_count` allows 1–25 (parlays up to 25 legs) and a new CHECK holds a teaser to 10 legs (PLAN §16.2)                                                   | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
+| `0011_ledger_refill_buyout.sql`    | REBUILDS `ledger` alone (rows copied, the five triggers recreated after the copy) so `ledger.kind` admits `deposit_refill` and `bust_buyout` — bust refills and badge buyouts (PLAN §4.5)                                                                 | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
+| `0012_ingest_guard.sql`            | **PLANNED, not written: ships in the M13a PR.** Four `ADD COLUMN`s on `ingest_targets` (`attempt_started_at`, `incomplete_attempts`, `last_ok_at`, `conference_id`) and the `alerts` table, with no rebuild (PLAN §24.4, §24.6b)                          | on merge of M13a, by the Deploy workflow                                                                                                                                               |
+| `0013_basketball_leagues.sql`      | **PLANNED, not written: ships in the M13c PR.** REBUILDS the six tables 0009 did, so four league CHECKs admit `'ncaab'` and `'nba'` (PLAN §24.9)                                                                                                          | on merge of M13c, by the Deploy workflow, on a Tuesday or Wednesday only after the write estimate is under 60,000 rows (PLAN §24.9). Run `npm run db:reconcile -- --remote` afterwards |
 
 (0003, 0004, 0005 and 0006 were written on parallel branches and numbered by reservation; wrangler
 applies whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)
@@ -234,8 +236,16 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   :50), `30 8 * * *` maintenance (08:30 UTC). Manual:
   `POST /api/admin/jobs/{refresh|settle|maintenance}` as admin.
 - Per-run work is capped by two `wrangler.jsonc` vars: `REFRESH_TARGETS_PER_RUN` (2 ET-date
-  targets per refresh) and `SETTLE_CHUNK` (20 bets per settle). Do not raise either before PLAN
-  Spikes S1/S2 are measured — see below.
+  targets per refresh) and `SETTLE_CHUNK` (20 bets per settle). Do not raise `SETTLE_CHUNK` before
+  PLAN Spike S2 is measured — see below.
+- **What changes in M13b (PLANNED, PLAN §24.7; the crons above are what runs until then):**
+  refresh becomes every 3 minutes and settle one minute after each refresh tick (~960 cron
+  invocations a day), live slates are refreshed on every tick in every league, and
+  `REFRESH_TARGETS_PER_RUN` becomes a count cap of 5 under a 40-game per-run weight budget, so a
+  CFB or college-basketball slate always runs alone. The M13b PR updates this list with
+  `wrangler.jsonc`. The write budget grows about 8× on the worst day (≈ 5,100 today → ≈ 41–45k of the 100,000 hard
+  cap, PLAN §24.13): **if `dayRowsWritten` passes 60,000, set `REFRESH_LIVE_TICKS` to 2** (it
+  halves the live stream) and deploy.
 - **ESPN's edge filters on User-Agent, and the rule is opaque.** Measured 2026-09-14: no UA, an empty
   UA, `Mozilla/5.0 (compatible; …)`, a real Chrome UA, and the BARE product token
   `SpicyBettingSimulator/0.1` all get **403**; the token WITH the GitHub comment
@@ -428,10 +438,52 @@ ungrouped PRs, outside `open-pull-requests-limit`, and the `ignore` rules apply 
 vulnerability fixed only in an ignored major produces no PR and stays visible only in the Security
 tab, which is worth a look when the weekly PRs are reviewed.
 
+## Uptime monitor and alerts (from M13a — PLANNED, PLAN §24.5 / §24.6b)
+
+Two complementary alarms. Neither exists until M13a merges, and this section is the setup to do on
+that day.
+
+- **External monitor** (it catches everything dead at once: a cron outage, a broken deploy, D1
+  unreachable). Create a free UptimeRobot-class HTTP monitor on the ingest health route M13a adds
+  (PLAN §24.5 names it; the M13a PR writes the full URL here once the route is live, since this
+  runbook may only cite routes the Worker serves), interval 5 minutes, alerting
+  on any non-200 by email to the owner. The body's `reasons[]` say why: `refresh-stale` (no
+  successful refresh within 5 refresh periods), `targets-parked`, `espn-all-failing`. The first
+  check after the M13a deploy must be 200. `/api/health` itself stays 200 and DB-free; do not point
+  the monitor there.
+- **In-app alerts** (detail, and a dead refresh seen by the next settle run): GitHub issues labelled
+  `ops-alert`, titled `[alert] <kind>: <key>`, opened with `GITHUB_TOKEN` (OFF without it). One issue
+  per incident; comments back off 1 h → 24 h; closed after 6 quiet hours; reopened (not
+  duplicated) if it recurs within 24 h. **The @mention is what sends the email.** `GITHUB_TOKEN`
+  belongs to `wardcrazy01894`, the repo's own account, and GitHub never notifies an account of its
+  own activity, so without a mention nobody is emailed. Set the `wrangler.jsonc` var
+  `ALERT_MENTION_LOGIN` (not a secret) to the GitHub login that should get the email. The issue
+  body and every throttled comment then start with `@<login>`, and that account needs GitHub
+  notification setting "Participating, @mentions and custom → Email" on. Watching the repo (Watch →
+  Custom → Issues) also works, but only for an account other than the token's. Empty = no mention.
+  Then force one alert and confirm the email arrives.
+
+## Parked target (from M13a — PLANNED, PLAN §24.4)
+
+A refresh target whose invocation was killed (CPU) three times in a row is **parked**: the scheduler
+skips it, `GET /api/admin/jobs` shows it in the newest refresh run's `stats.parked` (and as a banner
+on the Jobs page), the ingest health route answers 503 `targets-parked`, and a `target-parked` alert
+opens. Every other league keeps refreshing.
+
+1. `npx wrangler tail --format json` and look for `exceededCpu` on refresh invocations. That
+   confirms a CPU kill rather than a crash.
+2. It retries on its own once every 6 hours. A transient spike heals with no action.
+3. To retry now, press **Refresh** on any game card of that slate (it un-parks the target and runs
+   it). If the slate is genuinely too big, that admin request dies too (Cloudflare's 1102 page).
+4. If it keeps parking: for a college-basketball date, the pre-sized fix is the per-conference
+   switch (`NCAAB_TARGET_SHAPE = 'conference'`, PLAN §24.8), a one-line PR. Otherwise take PLAN §17
+   R1's ladder.
+5. Bets on a parked slate stay pending; nothing pays wrongly. §7.5's 7-day void is the backstop.
+
 ## Open measurements (PLAN Spikes S1 / S2)
 
-Neither is blocked any more — they wanted a deployed Worker and now have one. Until somebody runs
-them, `REFRESH_TARGETS_PER_RUN` stays at 2 and `SETTLE_CHUNK` at 20.
+S1 is measured (below). S2 is not blocked: it wants a deployed Worker, which exists. Until somebody
+reads it, `SETTLE_CHUNK` stays at 20.
 
 ```bash
 npx wrangler tail --format json    # one JSON line per invocation; it carries `cpuTime` (ms)
@@ -440,9 +492,10 @@ curl -s -X POST -b "$COOKIE" -H 'X-SBS-Client: 1' \
   https://spicybetting.wardcrazy01894.workers.dev/api/admin/jobs/refresh
 ```
 
-- **S1 (CPU)**: read `cpuTime` off that invocation's tailed line; the free-tier limit is 10 ms. Take
-  several Saturday runs for a p95, not one sample. `GET /api/admin/jobs` gives the matching
-  `stats.rowsWritten` so CPU and rows are read together.
+- **S1 (CPU): MEASURED 2026-11-07.** Refresh runs used 30 ms and 34 ms (wall 2.8–3.1 s), settle
+  8 ms, API GETs 1–10 ms, all `outcome: ok`, against a documented 10 ms. The real limit has unknown
+  leeway, so watch for `exceededCpu` in the tail rather than for a number. **S7** (PLAN §24.18)
+  repeats this for each college-basketball slate as the slates grow, from M13c.
 - **S2 (D1 statement accounting)**: the same tail shows whether a `batch()` of 60 statements errors,
   and `outcome` distinguishes "exceeded limits" from an application failure.
 - **S4(c)**: the January postseason check above.

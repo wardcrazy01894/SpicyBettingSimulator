@@ -647,3 +647,212 @@ export const MLB_REGULATION_INNINGS = 9;
  * so the evidence exists before the 08:30 UTC maintenance run. PLAN.md §23.7.
  */
 export const MLB_POSTPONED_CONFIRM_MS = 3 * 60 * 60 * 1000;
+
+/* ------------------------------------------------------------------ *
+ * Basketball (college + NBA) and scheduler hardening (PLAN.md §24, M13)
+ *
+ * PLAN-PR VALUES: nothing reads any of these until the milestone named on
+ * each, and `'ncaab'` is NOT yet a member of `LEAGUES` (adding it would break
+ * every `Record<League, …>` table in the repo until M13c fills them — the M12
+ * precedent; the same holds for `'nba'`). They land now, with their docs-drift assertions, so §24's
+ * arithmetic is pinned to the code from the first commit.
+ * ------------------------------------------------------------------ */
+
+/**
+ * The POISON-TARGET guard (PLAN.md §24.4, M13a). A refresh invocation killed
+ * for CPU is not an exception: `ingestTarget`'s try/catch never runs and
+ * neither reschedule path writes. So the claim stamps the target BEFORE the
+ * fetch (`incomplete_attempts + 1`), and BOTH reschedule paths — success and
+ * the caught failure — reset it to 0. Only a run that never reached either
+ * path leaves it raised. At this many consecutive incomplete attempts the
+ * target is PARKED: the claim skips it, `job_runs.stats` and the admin Jobs
+ * page name it, and `/api/health/ingest` answers 503.
+ */
+export const INGEST_MAX_INCOMPLETE_ATTEMPTS = 3;
+
+/**
+ * How long a PARKED target sits out before it gets ONE probation attempt
+ * (PLAN.md §24.4, M13a). The counter is not reset by the wait, so a probation
+ * run that is killed again re-parks the target at once; one that completes
+ * resets it through the normal reschedule. A deterministically poisonous slate
+ * therefore costs at most four killed invocations a day, and a transient one
+ * heals without a human. An admin's per-game Refresh un-parks immediately.
+ */
+export const INGEST_PARKED_RETRY_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * THE REFRESH TICK from M13b: the refresh cron becomes `*\/3 * * * *` (480
+ * runs a day) and the settle cron `1-59/3` (PLAN.md §24.7). The deployed
+ * crons stay `*\/15` / `5-59/15` until M13b changes wrangler.jsonc, PLAN §9.1
+ * and docs/OPERATIONS.md together. Every refresh cadence below is a MULTIPLE
+ * of this, and is measured from the tick's NOMINAL instant (`scheduledTime`),
+ * never from `now`: a slate stamped `now + 15 min` at :00:05 is not due at
+ * the :15 tick and waits for :18 — slower than today. That is the alignment
+ * trap, and tick multiples from the nominal instant are the whole fix.
+ * `JOB_LEASE_TTL_MS.refresh` / `.settle` must stay strictly under it (§9.2).
+ */
+export const REFRESH_TICK_MS = 3 * 60 * 1000;
+
+/**
+ * A slate with a game in progress, or kicking off within 3 h, is due again
+ * this many ticks later: ONE — every tick, every league (§24.7). THE retreat
+ * lever if `dayRowsWritten` runs hot: the live stream is ~one row per live
+ * game per refresh, so 2 halves it and 5 is today's 15 minutes.
+ */
+export const REFRESH_LIVE_TICKS = 1;
+
+/** Within 48 h of a kickoff: 20 ticks = 60 min, today's tier unchanged (§24.7). */
+export const REFRESH_SOON_TICKS = 20;
+
+/** Line discovery: 120 ticks = 6 h, today's tier unchanged (§24.7). */
+export const REFRESH_DISCOVERY_TICKS = 120;
+
+/**
+ * Failure backoff base, and the poison guard's provisional reschedule: 5 ticks
+ * = 15 min, doubling, capped at the discovery tier — today's backoff, kept at
+ * 15 min rather than one tick so a failing ESPN is not retried 20 times an
+ * hour (§24.4, §24.7).
+ */
+export const REFRESH_BACKOFF_BASE_TICKS = 5;
+
+/**
+ * With ONE target per run there is no slot to reserve for line discovery, so
+ * the reservation moves from SPACE to TIME (PLAN.md §24.7): a tick with
+ * `floor(scheduledTime / REFRESH_TICK_MS) % N === 0` — :00 :15 :30 :45 —
+ * claims the most-overdue NON-live target first, falling through to the
+ * general queue when none is due. 96 discovery-first ticks a day: exactly the
+ * supply today's reserved slot gives. Admin runs are always general.
+ */
+export const REFRESH_DISCOVERY_EVERY_NTH_TICK = 5;
+
+/**
+ * The WEIGHT BUDGET of one refresh run (PLAN.md §24.7, M13b). A target weighs
+ * its `ingest_targets.games_seen` from its last SUCCESSFUL fetch (an empty
+ * slate weighs 1; one that has never succeeded, `last_ok_at IS NULL`, weighs
+ * this + 1, i.e. "big"). A run always takes its first, most-due target, then
+ * adds the next ones in claim order while the TOTAL weight, the first
+ * target's included, stays at or under this and the count under
+ * `REFRESH_TARGETS_PER_RUN`, stopping at the first that does not fit. So any
+ * two of an NFL date, an MLB day and an NBA night (each ≤ 16 games) pair up; a
+ * CFB Saturday or a D-I basketball slate always runs alone; and the dormant
+ * per-conference basketball segments (~5 games each, §24.8) pack five to a run.
+ */
+export const REFRESH_WEIGHT_BUDGET = 40;
+
+/**
+ * `/api/health/ingest` answers 503 when the newest refresh run with
+ * `status = 'ok'` started more than this many refresh periods ago (PLAN.md
+ * §24.5, M13a): 5 × 3 min = 15 min from M13b. M13a ships before the tick
+ * changes, so it multiplies by the period of the cron it deploys under (15 min
+ * → 75 min) and M13b switches the factor to `REFRESH_TICK_MS`. A run that
+ * claims ZERO targets still records `ok`, so a quiet 4 AM is not an outage.
+ */
+export const HEALTH_STALE_TICKS = 5;
+
+/**
+ * `withJobRun` reaps a job's `running` rows that started longer ago than this
+ * to `error` ("no finish recorded: killed or crashed", PLAN.md §24.4, M13a).
+ * 15 min is Cloudflare's wall-clock ceiling for a cron invocation, so no live
+ * run can be that old. It is deliberately NOT the lease TTL: a slow live run can
+ * outlast its lease, and reaping it would send a false "killed" alert.
+ */
+export const JOB_REAP_AFTER_MS = 15 * 60 * 1000;
+
+/* ---- In-app alerts as GitHub issues (PLAN.md §24.6b, M13a) ---- */
+
+/** The fixed label on every alert issue; with the `[alert] <kind>: <key>` title it makes the state recoverable from GitHub. */
+export const ALERT_GITHUB_LABEL = 'ops-alert';
+
+/**
+ * The FIRST interval between comments on an open alert issue: 1 h. It doubles
+ * per comment on the same issue (1, 2, 4, 8, 16 h) up to the cap below,
+ * because GitHub emails watchers on comments too and a flat hourly comment is
+ * 24 emails a day.
+ */
+export const ALERT_COMMENT_INTERVAL_MS = 60 * 60 * 1000;
+
+/** Ceiling of that doubling: at most one comment email a day per open alert. */
+export const ALERT_COMMENT_MAX_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * An alert whose condition has not fired for this long is resolved and its
+ * issue closed: 6 h, the parked-target probation and discovery period, so a
+ * still-broken target re-fires inside it instead of flapping.
+ */
+export const ALERT_RESOLVE_AFTER_MS = 6 * 60 * 60 * 1000;
+
+/** A recurrence within this long of resolving REOPENS the same issue (one email); later, a new issue. */
+export const ALERT_REOPEN_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Rolling-24h `dayRowsWritten` at which `d1-rows-near-cap` fires: the §24.13 retreat trigger. */
+export const ALERT_D1_ROWS_NEAR_CAP = 60_000;
+
+/** GitHub subrequests one job run may spend on alerts; further due actions wait a tick. */
+export const ALERT_MAX_GITHUB_CALLS_PER_RUN = 2;
+
+/** Timeout per GitHub alert call. A failure is logged and never fails the job. */
+export const ALERT_GITHUB_TIMEOUT_MS = 10_000;
+
+/**
+ * College basketball's board window, in ET calendar dates: today and the two
+ * after it (PLAN.md §24.10, M13c). Three, not one like MLB, because ESPN
+ * serves `team.conferenceId` only BEFORE a game's ET day is under way
+ * (measured 2026-11-07), and the upsert's `COALESCE` keeps an id once seen —
+ * so a game first ingested a day or two early carries its conference into the
+ * board filter, and one first seen on its own day lands in "Other".
+ */
+export const NCAAB_BOARD_ET_DAYS = 3;
+
+/**
+ * The NBA's board window, in ET calendar dates: today and tomorrow (PLAN.md
+ * §24.10, M13c). Two because DraftKings' NBA lines ARE on ESPN a day ahead
+ * (measured 2026-11-07: tomorrow's 7 games, 6 priced) and not two days ahead
+ * (0 of 8). The NBA needs no conference id, so nothing argues for a third day.
+ */
+export const NBA_BOARD_ET_DAYS = 2;
+
+/**
+ * Division I men's basketball conferences by ESPN `groups` id, for the
+ * college-basketball board filter (PLAN.md §24.14, M13d). BASKETBALL ids, not
+ * football's: the same conference has a different id per sport (the SEC is 8
+ * in football and 23 here). The 32 conferences ESPN's
+ * `…/mens-college-basketball/scoreboard/conferences?groups=50` listed on
+ * 2026-11-07; there is no independents group, so an independent — and any game
+ * first seen on its own ET day, when ESPN omits `conferenceId` — falls in the
+ * filter's "Other" bucket. Order is display order: the six high-major
+ * conferences first, then alphabetical.
+ */
+export const CBB_CONFERENCES: readonly { readonly id: string; readonly name: string }[] = [
+  { id: '2', name: 'ACC' },
+  { id: '8', name: 'Big 12' },
+  { id: '4', name: 'Big East' },
+  { id: '7', name: 'Big Ten' },
+  { id: '23', name: 'SEC' },
+  { id: '21', name: 'Pac-12' },
+  { id: '3', name: 'A-10' },
+  { id: '1', name: 'America East' },
+  { id: '62', name: 'American' },
+  { id: '46', name: 'ASUN' },
+  { id: '5', name: 'Big Sky' },
+  { id: '6', name: 'Big South' },
+  { id: '9', name: 'Big West' },
+  { id: '10', name: 'CAA' },
+  { id: '11', name: 'Conference USA' },
+  { id: '45', name: 'Horizon' },
+  { id: '12', name: 'Ivy' },
+  { id: '13', name: 'MAAC' },
+  { id: '14', name: 'MAC' },
+  { id: '16', name: 'MEAC' },
+  { id: '18', name: 'Missouri Valley' },
+  { id: '44', name: 'Mountain West' },
+  { id: '19', name: 'NEC' },
+  { id: '20', name: 'Ohio Valley' },
+  { id: '22', name: 'Patriot' },
+  { id: '24', name: 'SoCon' },
+  { id: '25', name: 'Southland' },
+  { id: '49', name: 'Summit' },
+  { id: '27', name: 'Sun Belt' },
+  { id: '26', name: 'SWAC' },
+  { id: '30', name: 'UAC' },
+  { id: '29', name: 'WCC' },
+];
