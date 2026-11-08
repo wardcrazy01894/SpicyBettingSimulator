@@ -372,6 +372,7 @@ describe('constants.ts vs PLAN.md §3.1', () => {
     // conference ids on the CBB board (§24.2).
     INGEST_MAX_INCOMPLETE_ATTEMPTS,
     INGEST_PARKED_RETRY_MS,
+    JOB_REAP_AFTER_MS,
     HEALTH_STALE_TICKS,
     REFRESH_TICK_MS,
     REFRESH_LIVE_TICKS,
@@ -385,7 +386,6 @@ describe('constants.ts vs PLAN.md §3.1', () => {
     // In-app alerts (PLAN §24.6b). These ARE the no-spam promise: how often a
     // firing alert may email, when it closes, when a recurrence reopens rather
     // than re-opens, and how many GitHub calls a job run may make.
-    JOB_REAP_AFTER_MS,
     ALERT_COMMENT_INTERVAL_MS,
     ALERT_COMMENT_MAX_INTERVAL_MS,
     ALERT_RESOLVE_AFTER_MS,

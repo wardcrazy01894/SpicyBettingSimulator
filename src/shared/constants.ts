@@ -732,8 +732,8 @@ export const REFRESH_DISCOVERY_EVERY_NTH_TICK = 5;
  * this + 1, i.e. "big"). A run always takes its first, most-due target, then
  * adds the next ones in claim order while the TOTAL weight, the first
  * target's included, stays at or under this and the count under
- * `REFRESH_TARGETS_PER_RUN`, stopping at the first that does not fit. So an
- * NFL date, an MLB day and an NBA night (each ≤ 16 games) share invocations; a
+ * `REFRESH_TARGETS_PER_RUN`, stopping at the first that does not fit. So any
+ * two of an NFL date, an MLB day and an NBA night (each ≤ 16 games) pair up; a
  * CFB Saturday or a D-I basketball slate always runs alone; and the dormant
  * per-conference basketball segments (~5 games each, §24.8) pack five to a run.
  */

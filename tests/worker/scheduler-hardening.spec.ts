@@ -14,6 +14,9 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
   it.todo(
     'a target with incomplete_attempts > 0 is never packed behind another target: it runs alone',
   );
+  it.todo(
+    '(M13a) the reserved slot and its fall-through never claim a target with incomplete_attempts > 0',
+  );
   it.todo('the success path sets last_ok_at; a target with last_ok_at NULL weighs as big');
   it.todo('the success reschedule resets incomplete_attempts to 0 and attempt_started_at to NULL');
   it.todo(

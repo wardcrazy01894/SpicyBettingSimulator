@@ -252,7 +252,7 @@ the one failure mode the whole checklist has.
    write-budget retreat is `REFRESH_LIVE_TICKS`, nothing else (§24.13). (ii)
    **A big slate runs alone**: the per-run weight budget
    (`REFRESH_WEIGHT_BUDGET`) is the only rule for sharing an invocation, and a
-   never-fetched target counts as big. (iii) **Alerts never fail a job, and
+   never-succeeded target (`last_ok_at IS NULL`) counts as big. (iii) **Alerts never fail a job, and
    never post without a claim**: each GitHub call is permitted only by
    `meta.changes` on a guarded `alerts` UPDATE (rule 5), and `refresh-stale` is
    evaluated by settle and maintenance too, because a killed refresh cannot
