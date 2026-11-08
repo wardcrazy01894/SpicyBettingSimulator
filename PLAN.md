@@ -37,6 +37,7 @@ a fresh fake $1,000 per `(league, season)`.
 21. [Secondary odds provider (The Odds API)](#21-secondary-odds-provider-the-odds-api)
 22. [Board window ends on Monday](#22-board-window-ends-on-monday)
 23. [MLB — a third league (M12)](#23-mlb--a-third-league-m12)
+24. [Basketball — college and NBA — after hardening the scheduler (M13)](#24-basketball--college-and-nba--after-hardening-the-scheduler-m13)
 
 ---
 
@@ -212,6 +213,25 @@ section explains the _why_.
 | `MLB_OFFICIAL_INNINGS`                | `5`             | a FINAL MLB game shorter than this was never official: EVERY market void, totals included (§23.6) — read from M12b                                                                                   |
 | `MLB_REGULATION_INNINGS`              | `9`             | a FINAL MLB game this long (extras included) grades every market; shorter, only the moneyline and a decided total have action (§23.6) — read from M12b                                               |
 | `MLB_POSTPONED_CONFIRM_MS`            | `10_800_000`    | 3 h after its ET day ends, a fetch still saying "postponed" is the evidence that voids an MLB game (§23.7) — read from M12b                                                                          |
+| `INGEST_MAX_INCOMPLETE_ATTEMPTS`      | `3`             | consecutive refresh attempts that never reached a reschedule (a CPU kill) before a target is PARKED (§24.4) — read from M13a                                                                         |
+| `INGEST_PARKED_RETRY_MS`              | `21_600_000`    | 6 h: a parked target gets ONE probation attempt after this long; killed again, it re-parks at once (§24.4) — read from M13a                                                                          |
+| `HEALTH_STALE_TICKS`                  | `5`             | refresh periods without a refresh run recorded `ok` before `GET /api/health/ingest` answers 503: 15 min at the 3-min tick (§24.5) — read from M13a                                                   |
+| `REFRESH_TICK_MS`                     | `180_000`       | the refresh tick FROM M13b (`*/3`, 480 runs a day); every cadence is a multiple of it, measured from the tick's NOMINAL instant (§24.7). The deployed cron is `*/15` until then — read from M13b     |
+| `REFRESH_LIVE_TICKS`                  | `1`             | a slate with a game live (or within 3 h) is due at the NEXT tick, every league; the write budget's retreat lever (§24.7, §24.13) — read from M13b                                                    |
+| `REFRESH_SOON_TICKS`                  | `20`            | 60 min: a slate with a kickoff within 48 h (§24.7) — read from M13b                                                                                                                                  |
+| `REFRESH_DISCOVERY_TICKS`             | `120`           | 6 h: line discovery (§24.7) — read from M13b                                                                                                                                                         |
+| `REFRESH_BACKOFF_BASE_TICKS`          | `5`             | 15 min: failure backoff base (doubling, capped at 6 h) and the poison guard's provisional reschedule (§24.4) — read from M13a/M13b                                                                   |
+| `REFRESH_DISCOVERY_EVERY_NTH_TICK`    | `5`             | every fifth tick (:00 :15 :30 :45, 96 a day) claims a non-live target first: discovery's reservation in time (§24.7) — read from M13b                                                                |
+| `REFRESH_WEIGHT_BUDGET`               | `40`            | games one refresh run may carry beyond its first target: NFL, MLB and NBA slates share a run, a CFB or D-I basketball slate runs alone (§24.7) — read from M13b                                      |
+| `NCAAB_BOARD_ET_DAYS`                 | `3`             | college basketball's board and ingest window: today and the next two ET dates, so games are seen while ESPN still sends their conference (§24.2) — read from M13c                                    |
+| `NBA_BOARD_ET_DAYS`                   | `2`             | the NBA's board and ingest window: today and tomorrow, because NBA lines are posted a day ahead (§24.2) — read from M13c                                                                             |
+| `ALERT_COMMENT_INTERVAL_MS`           | `3_600_000`     | 1 h: the FIRST interval between comments on an open alert issue; it doubles per comment (§24.6b) — read from M13a                                                                                    |
+| `ALERT_COMMENT_MAX_INTERVAL_MS`       | `86_400_000`    | 24 h: the ceiling of that doubling, so at most one comment email a day per alert (§24.6b) — read from M13a                                                                                           |
+| `ALERT_RESOLVE_AFTER_MS`              | `21_600_000`    | 6 h without the condition firing → closing comment, issue closed (§24.6b) — read from M13a                                                                                                           |
+| `ALERT_REOPEN_WINDOW_MS`              | `86_400_000`    | 24 h: a recurrence after resolve within this REOPENS the same issue; later, a new one (§24.6b) — read from M13a                                                                                      |
+| `ALERT_D1_ROWS_NEAR_CAP`              | `60_000`        | rolling-24h `dayRowsWritten` that fires `d1-rows-near-cap`, the write-budget retreat trigger (§24.13) — read from M13a                                                                               |
+| `ALERT_MAX_GITHUB_CALLS_PER_RUN`      | `2`             | GitHub subrequests one job run may spend on alerts (§24.6b) — read from M13a                                                                                                                         |
+| `ALERT_GITHUB_TIMEOUT_MS`             | `10_000`        | per alert call; a failure is logged and never fails the job (§24.6b) — read from M13a                                                                                                                |
 
 `TEASER_POINTS_TENTHS = [30, 40, 50, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140]`
 — the 3-to-14-point tiers (plus 6.5), in TENTHS, matching every other line
@@ -227,6 +247,9 @@ both in `constants.ts` since the M12 plan PR and read from M12a/M12b:
 (§23.8) — and `SECONDARY_LEAGUES = ['nfl', 'ncaaf']` — the only leagues The Odds
 API ever sweeps (§23.10). `tests/unit/docs.spec.ts` asserts both literals, because
 an exclusion that silently gains a member is the failure that costs something.
+Neither list gains `'ncaab'` or `'nba'` in M13 (§24.12): basketball is neither
+teasable nor swept. `CBB_CONFERENCES`, the board filter's basketball conference ids, is
+asserted against §24.2's table the same way.
 
 - `bankrolls.id` is an ordinary uuid. It **used** to be the deterministic
   `"<userId>:<league>:<season>"`, which is what made lazy per-season creation a
@@ -1589,7 +1612,7 @@ forever:
 | Game stuck `in_progress`                            | `status='in_progress' AND now > kickoff_at + 12h AND last_seen_at < now - 6h`                                                                                                                                                               | leave; alert via `job_runs.stats.stuck[]` (do **not** auto-void a game that might just be a feed glitch)                |
 | Expired sessions                                    | `expires_at < now`                                                                                                                                                                                                                          | delete                                                                                                                  |
 | Auth throttle rows                                  | `window_start < now - 1d`                                                                                                                                                                                                                   | delete                                                                                                                  |
-| `job_runs` history                                  | keep newest 200 per job                                                                                                                                                                                                                     | delete                                                                                                                  |
+| `job_runs` history                                  | keep newest 200 per job (600 from M13b, which runs refresh and settle 480 times a day each, §24.7)                                                                                                                                          | delete                                                                                                                  |
 
 Every auto-void writes a `job_runs.stats` entry naming the game id, so it is visible
 in `GET /api/admin/jobs`.
@@ -1600,11 +1623,13 @@ in `GET /api/admin/jobs`.
 
 ### 8.1 Endpoints we call
 
-| League | URL                                                                                                    | Notes                                                  |
-| ------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| NFL    | `{BASE}/apis/site/v2/sports/football/nfl/scoreboard?dates={YYYYMMDD}&limit=100`                        | Per ET date.                                           |
-| NCAAF  | `{BASE}/apis/site/v2/sports/football/college-football/scoreboard?groups=80&limit=300&dates={YYYYMMDD}` | FBS only (`groups=80` also covers bowls). Per ET date. |
-| MLB    | `{BASE}/apis/site/v2/sports/baseball/mlb/scoreboard?dates={YYYYMMDD}&limit=100`                        | Per ET date; today only (§23.4/§23.5). From M12a.      |
+| League | URL                                                                                                             | Notes                                                                                          |
+| ------ | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| NFL    | `{BASE}/apis/site/v2/sports/football/nfl/scoreboard?dates={YYYYMMDD}&limit=100`                                 | Per ET date.                                                                                   |
+| NCAAF  | `{BASE}/apis/site/v2/sports/football/college-football/scoreboard?groups=80&limit=300&dates={YYYYMMDD}`          | FBS only (`groups=80` also covers bowls). Per ET date.                                         |
+| MLB    | `{BASE}/apis/site/v2/sports/baseball/mlb/scoreboard?dates={YYYYMMDD}&limit=100`                                 | Per ET date; today only (§23.4/§23.5). From M12a.                                              |
+| NCAAB  | `{BASE}/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=50&limit=500&dates={YYYYMMDD}` | All of D-I (`groups=50`). Per ET date; today + 2 (§24.10). **Planned, M13c — not yet called.** |
+| NBA    | `{BASE}/apis/site/v2/sports/basketball/nba/scoreboard?dates={YYYYMMDD}&limit=100`                               | Per ET date; today + 1 (§24.10). **Planned, M13c — not yet called.**                           |
 
 `{BASE}` is the `ESPN_BASE_URL` var (default `https://site.api.espn.com`), pointed
 at the local fixture server in dev via `.dev.vars` (§15 M1).
@@ -1661,6 +1686,13 @@ An `ingest_targets` row is one request, and in v1 there is exactly one shape:
 - `nfl:date:20260913` → all NFL games on ET date 2026-09-13
 - `ncaaf:date:20260912` → all FBS games on ET date 2026-09-12
 - `mlb:date:20260929` → all MLB games on ET date 2026-09-29 (M12a; §23.5)
+- `ncaab:date:20261107` → every Division I men's basketball game on ET date
+  2026-11-07 (**planned, M13c**; §24.10). Still one request: ONE full
+  `groups=50` fetch per date. Per-conference shards are a reserve (§24.8), and
+  M13a's nullable `ingest_targets.conference_id` is the only trace of them (NULL
+  for every target the planner emits).
+- `nba:date:20261108` → every NBA game on ET date 2026-11-08 (**planned, M13c**;
+  §24.10).
 
 **VERIFIED against the live ESPN API on 2026-09-13** (Spike S4 parts (a) and (b)
 — see §18). `dates=YYYYMMDD` with **no `seasontype` parameter** buckets by US
@@ -1869,6 +1901,16 @@ Each run:
    45-minute cadence — which the sentence above already accepts; §23.11 has the
    arithmetic and why Spike S1 gates a third slot.
 
+   **What changes in M13 (§24, planned; the code above is current until
+   then).** M13a stamps a target before its fetch and PARKS one that keeps
+   being killed (§24.4), so a CPU kill can no longer pin the head of the queue.
+   M13b moves refresh to a 3-minute tick (`*/3`, 480 runs a day). The slot table
+   above gives way to a per-run WEIGHT BUDGET (a big slate runs alone, small
+   ones share, `REFRESH_WEIGHT_BUDGET`), and discovery's reservation moves from
+   slot 2 to every fifth tick (`REFRESH_DISCOVERY_EVERY_NTH_TICK`, §24.7). M13c
+   adds college basketball's three ET dates and the NBA's two, so in-window
+   targets reach **24** (9 + 9 + 1 + 3 + 2).
+
    The reserved-slot query excludes the id slot 1 already claimed
    (`AND id <> :slot1Id`) — on a run with no live target slot 1's pick would
    otherwise satisfy slot 2's predicate too and the run would fetch the same URL
@@ -1877,7 +1919,11 @@ Each run:
 
 3. For each: fetch → parse → upsert games (§8.5) → upsert `game_lines` → reschedule.
 
-Reschedule interval, derived from what the target actually contains:
+Reschedule interval, derived from what the target actually contains (**from
+M13b** each row becomes a whole number of 3-minute ticks counted from the tick's
+nominal instant, and the live row becomes ONE tick, the next one, in every
+league. The others keep their wall-clock values. §24.7 has the table and the
+alignment trap):
 
 | Target contains                            | Next refresh                 |
 | ------------------------------------------ | ---------------------------- |
@@ -1890,6 +1936,10 @@ Failures: exponential backoff `min(15min * 2^consecutive_failures, 6h)`, capped 
 failures before the target is parked at +6h and reported in `job_runs.stats`. **A
 failed fetch or a parse error writes nothing to `games`/`game_lines`** — parse first,
 into memory, then write. ESPN being down means stale data, never corrupt data.
+(That "+6h park" is only the backoff's ceiling, and a failure still writes its
+reschedule. M13a's PARKED state is a different thing: it is for an invocation
+KILLED before any reschedule could be written, the case this backoff never
+sees. §24.4.)
 
 ### 8.5 Upserts — and the three write-budget levers
 
@@ -2110,7 +2160,12 @@ board hides that market once `now - seen_at > lineStaleAfterMs(kickoff, seen_at)
 
 **Requests.** `2 targets/run × 96 runs/day = 192 ESPN calls/day` absolute worst
 case; typical is 60–100 because targets self-throttle to +6 h when nothing is
-near. That is **≤ 2 external subrequests per invocation** against a limit of 50,
+near. **From M13b** (§24.7) it is one slate per 3-minute tick, ~480 a day,
+more when small slates share a run under the weight budget (≤ 5 per
+invocation). §24.13 re-derives the rows-written budget for a live-every-tick
+cadence plus a 155-game college basketball Saturday and the NBA: **≈ 40–45k
+rows on the worst day, ≈ 45% of the hard cap**, against ≈ 5,100 today, with
+`REFRESH_LIVE_TICKS` as the one-line retreat. That is **≤ 2 external subrequests per invocation** against a limit of 50,
 and well under the "< 20 calls/run" goal.
 
 **Rows written.** This is the one that can actually break the app, so it is
@@ -2226,6 +2281,16 @@ both at startup:
 `docs/OPERATIONS.md` lists the same three cron expressions from the operator's
 side, and `tests/unit/docs.spec.ts` asserts all of it against `wrangler.jsonc`.
 
+**Changes in M13b** (§24.7; planned, and the block and table above stay current
+until then): the refresh cron becomes `*/3 * * * *` (480 runs a day) and settle
+`1-59/3 * * * *`, one minute after each refresh tick. Maintenance is unchanged,
+so it is still exactly 3 crons, ~960 invocations a day against 100,000.
+`REFRESH_TARGETS_PER_RUN` becomes `5` and changes meaning: it is now a COUNT cap
+under the per-run weight budget (`REFRESH_WEIGHT_BUDGET`, 40 games), so a big
+slate runs alone and small ones share. Spike S1 no longer gates the var (§18:
+measured). The M13b PR changes `wrangler.jsonc`, this section and
+`docs/OPERATIONS.md` together.
+
 ### 9.2 Lease
 
 ```sql
@@ -2239,7 +2304,18 @@ ON CONFLICT(name) DO UPDATE
 `meta.changes === 0` → someone else holds the lease → **exit immediately**, record a
 `job_runs` row with `status='skipped'`. TTL: `refresh` 5 min, `settle` 5 min,
 `maintenance` 10 min — all shorter than their cron period, so a crashed run's lease
-always expires before the next scheduled run.
+always expires before the next scheduled run. **M13b** (§24.7) moves `refresh` and
+`settle` to **2.5 min** with their crons to every 3 minutes, still strictly
+shorter.
+
+**A run killed for CPU is a crash that leaves no trace in its own job.** Its
+lease expires on the TTL, so the next tick runs normally. Until M13a, though, its
+`job_runs` row stays `running` forever and its target keeps the oldest
+`next_run_at` and is re-claimed first on every later run: the poison target of
+§24.3. M13a stamps the target before the fetch and parks it after three
+incomplete attempts (§24.4). `withJobRun` reaps the job's `running` rows older
+than its lease TTL to `error`, and `GET /api/health/ingest` makes the condition
+visible to an outside monitor (§24.5).
 
 Release on the way out sets `lease_until = 0`. That is a _separate statement_ from
 the one finalizing `job_runs` — they are different tables — but both go in the
@@ -2604,11 +2680,12 @@ and never removed, only added.
 
 ### 11.1 Public
 
-| Method | Path            | Response                                                                                                                                                                                                                                                                                                                                                                          |
-| ------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/health`   | `200 {ok, version, now, inviteRequired, bugReportsEnabled}` — no DB access; `bugReportsEnabled` is whether `GITHUB_TOKEN` is set (§11.7)                                                                                                                                                                                                                                          |
-| GET    | `/api/config`   | `200 {leagues, currentSeason:{nfl,ncaaf}, minStakeCents, maxParlayLegs, cutoffBufferMs, initialBankrollCents, maxPayoutCents, teaserPoints, teaserPayouts}` — these field names match `ConfigResponse` in `src/shared/api-types.ts` exactly; `maxPayoutCents` exists because the bet slip calls `exceedsPayoutCap()` for pre-flight (§5.2b) and must not disagree with the server |
-| GET    | `/api/auth/kdf` | `200 {version, algorithm, hash, iterations, keyLengthBytes, saltPrefix}`                                                                                                                                                                                                                                                                                                          |
+| Method | Path                 | Response                                                                                                                                                                                                                                                                                                                                                                          |
+| ------ | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/health`        | `200 {ok, version, now, inviteRequired, bugReportsEnabled}` — no DB access; `bugReportsEnabled` is whether `GITHUB_TOKEN` is set (§11.7)                                                                                                                                                                                                                                          |
+| GET    | `/api/config`        | `200 {leagues, currentSeason:{nfl,ncaaf}, minStakeCents, maxParlayLegs, cutoffBufferMs, initialBankrollCents, maxPayoutCents, teaserPoints, teaserPayouts}` — these field names match `ConfigResponse` in `src/shared/api-types.ts` exactly; `maxPayoutCents` exists because the bet slip calls `exceedsPayoutCap()` for pre-flight (§5.2b) and must not disagree with the server |
+| GET    | `/api/auth/kdf`      | `200 {version, algorithm, hash, iterations, keyLengthBytes, saltPrefix}`                                                                                                                                                                                                                                                                                                          |
+| GET    | `/api/health/ingest` | **Planned, M13a — not yet live** (§24.5). `200` or `503 {ok, now, lastRefreshOkAt, parkedTargets, reasons[]}`, one read statement, for an external uptime monitor. `/api/health` above is unchanged                                                                                                                                                                               |
 
 ### 11.2 Auth
 
@@ -3824,7 +3901,8 @@ individually, and the whole batch must finish inside the 30 s Cloudflare API tim
 
 ≤ 2 ESPN calls per cron run × 96 runs = ≤ 192/day. Worker invocations: 288 cron +
 actual API calls from ~10 users; static assets do not invoke the Worker at all.
-Nowhere near 100k/day.
+Nowhere near 100k/day. (From M13b, §24.7: ~960 cron invocations, ~480+ ESPN
+calls and 288 uptime-monitor checks a day. Still ~1%.)
 
 ### 14.14 Static assets vs API routes
 
@@ -3869,6 +3947,7 @@ Live at https://spicybetting.wardcrazy01894.workers.dev, first deployed
 | M10 player bet history                        | **DONE** — 2026-09-21 (§11.8)                                       |
 | M11 same-game parlays                         | **DONE** — 2026-09-21 (§5.2c)                                       |
 | M12 MLB as a third league                     | **DONE** — 2026-09-24; M12a, M12b, M12c (§23.15)                    |
+| M13 scheduler hardening + college basketball  | **PLANNED** — 2026-11-07; M13a → M13b → M13c → M13d (§24.17)        |
 
 Two things follow from the deploy having happened:
 
@@ -3877,12 +3956,14 @@ Two things follow from the deploy having happened:
   and an edit to it can never reach production. Every schema change is a new
   numbered `000N_*.sql`. §16.1 and the file's own header say the same thing; all
   three must move together.
-- **Spikes S1 and S2 are UNMEASURED, not blocked** (§18). Both were waiting for
-  a deployed Worker and now have one; they are two `wrangler tail` runs away
-  from an answer, and until somebody does them `REFRESH_TARGETS_PER_RUN` stays
-  at 2 and `SETTLE_CHUNK` at 20. S3 and S4(a)/(b) are resolved. The one item
-  still genuinely blocked on the calendar is **S4(c)**, the January postseason
-  reachability check, which is also a `docs/OPERATIONS.md` runbook item.
+- **Spike S1 is MEASURED (2026-11-07); S2 is still UNMEASURED, not blocked**
+  (§18). S1 read 30–34 ms of CPU on refresh runs that finished `ok`, against a
+  documented 10 ms. The cliff is somewhere above that and unknown, which is
+  what M13a's guard is for (§24.3). `REFRESH_TARGETS_PER_RUN` stays at 2 until
+  M13b lowers it to 1 (§24.7), and `SETTLE_CHUNK` stays at 20 until S2 is read.
+  S3 and S4(a)/(b) are resolved. The one item still genuinely blocked on the
+  calendar is **S4(c)**, the January postseason reachability check, which is
+  also a `docs/OPERATIONS.md` runbook item.
 
 ### M0 — Repo skeleton and toolchain — **DONE** _(no parallelism; everything depends on it)_
 
@@ -4273,6 +4354,24 @@ the shortened-game rows was planned and folded back into M12b on 2026-09-24:
 betting opens before the regular season ends, so a rain-shortened game is
 reachable, and nothing in the admin tools could close a bet held pending.)
 
+### M13 — Scheduler hardening, then basketball (college + NBA) — **PLANNED** _(plan 2026-11-07)_
+
+"Every Division I and every NBA game, after making a CPU-killed refresh
+survivable and loud." **§24 is the specification**; §24.17 is the shipping order:
+
+| PR           | What lands                                                                                                                                            | Depends on         |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| **M13-plan** | §24, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two `it.todo` contract files — no migration, no behaviour        | —                  |
+| **M13a**     | `0012_ingest_guard.sql`, the poison-target guard, `GET /api/health/ingest` + the uptime monitor, ESPN status counters, in-app alerts as GitHub issues | plan               |
+| **M13b**     | refresh `*/3` + settle `1-59/3`, leases 2.5 min, tick-relative cadences with live slates every tick, the per-run weight budget, the discovery tick    | M13a **merged**    |
+| **M13c**     | `0013_basketball_leagues.sql`, `'ncaab'` and `'nba'` in `LEAGUES`, ingest + settlement — boards visible, **betting CLOSED**                           | M13a + M13b merged |
+| **M13d**     | per-league board filter (`top25` default for college) — **betting OPENS** for both                                                                    | M13c verified      |
+
+The order is the design. With the poison target unguarded, a 155-game slate
+that is killed for CPU would freeze every league (§24.3). So the guard and the
+alerts ship first, then the rhythm that runs each big slate alone in its own
+invocation, then the slates.
+
 ---
 
 ## 16. Parallel-execution map
@@ -4584,28 +4683,29 @@ ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
 
 ## 17. Risks and mitigations
 
-| #   | Risk                                                                        | Likelihood    | Impact                                                                                                                                            | Mitigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| --- | --------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R1  | 10 ms CPU limit blown while ingesting an 86-game CFB Saturday               | **Medium**    | Ingest fails on the day that matters                                                                                                              | **Not** a parse problem — `JSON.parse` of the 1.3 MB file measures ~2.0 ms, and date-splitting saves only ~7% because the Saturday is 93% of the week. The risk is map + bind + `batch()`, and the M4 A/B split (§8.5) DOUBLED the statement count to ~172 for an 86-game target — a deliberate trade of CPU for rows written, since only the latter is hard-enforced. Spike S1 (re-scoped) measures it. Fallback ladder: `REFRESH_TARGETS_PER_RUN=1` → drop `display_clock` from the compare tuple (now worth only ~1,200 rows/Saturday, so try it last among the cheap rungs) → split the mapping across two invocations via an internal self-`fetch` (each gets a fresh 10 ms) → split CFB by `groups=<conf>` → **last resort** Workers Paid ($5), which needs Alex's sign-off (Q1).                                                                                                                  |
-| R2  | ESPN changes the payload shape or rate-limits us                            | Medium        | Stale lines/scores                                                                                                                                | Total parser, warnings surfaced, backoff, existing rows never corrupted. Provider adapter means a swap to The Odds API is a new file, not a rewrite.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| R3  | D1 "queries per invocation" is really 50 and a batch counts per-statement   | Medium        | Settlement throws mid-run                                                                                                                         | Chunk at 20 bets; the job is safely resumable so a throw just defers work 15 min. Spike S2 confirms before raising.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| R4  | ESPN never posts a line for a CFB game users want to bet                    | High (normal) | UX confusion                                                                                                                                      | `lines: null` is a first-class rendered state ("line not posted"), not an error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| R5  | A friend finds a way to bet after kickoff                                   | Low           | Game integrity                                                                                                                                    | The guard is a DB-level `WHERE` inside the insert batch, plus a 60 s buffer, plus `status='scheduled'`. Tested.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| R6  | Client-side KDF feels slow / breaks on an old phone                         | Low           | Login friction                                                                                                                                    | 210k iterations ≈ 300 ms on a modern phone; `CLIENT_KDF.iterations` is a versioned constant and §10.4 describes the migration path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| R7  | Free-tier D1 **write** budget exceeded on a big Saturday                    | **Medium**    | **D1 returns errors for the rest of the UTC day — this blocks BET PLACEMENT and SETTLEMENT, not just the board.** Hard-enforced since 2026-09-01. | Naive design measured ≈ **48,500 rows/day** on a CFB Saturday (49% of cap, with Sunday still to come). Levers are **v1 requirements**, not future work (§8.5): L1 compare-and-skip, **L1b the A/B split** — without which L1 buys NOTHING for a live game, because `display_clock` moves every refresh (measured: 33,196 rows for 86 games × 96 refreshes even WITH L1) — L2 no line writes for non-scheduled games (0 of 84 started games carry odds), L3 touch intervals. **Measured** after the split: **2,979 rows** for that Saturday's ingest, ≈ 5,100/day all in (5% of cap). `job_runs.stats.rowsWritten` is recorded per run, `GET /api/admin/jobs` surfaces a rolling-24h `dayRowsWritten`, and `ingest.spec.ts` asserts < 5,000 rows for 96 refreshes of the sample Saturday with the clock moving every time. Next knob if tight: drop `display_clock` from the compare tuple (~1,200 rows). |
-| R11 | A money or price value silently becomes a float in D1                       | Low (now)     | Unauditable cents; violates the project's first rule                                                                                              | SQLite `INTEGER` coerces >i64 to `REAL` (verified) and `bind()` truncates past 2^53. Mitigated structurally: **no rational is persisted** (§5.2), every money column is `CHECK`-bounded to `MAX_PAYOUT_CENTS`, leg prices are `CHECK abs(...) BETWEEN 100 AND 100000`, and eslint bans `Math.round/floor/ceil/trunc` and `parseFloat` in `src/shared` and `src/worker`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| R12 | Settlement queue starved by undecidable bets                                | Low           | Nothing settles at all                                                                                                                            | `bets.settle_attempts` + `ORDER BY settle_attempts ASC` + `MAX_SETTLE_ATTEMPTS` (§7.1). Columns added before the schema freeze.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| R13 | An `INSERT OR IGNORE` into `ledger` silently breaks `SUM(ledger) = balance` | Low           | Unrepairable drift in an append-only table                                                                                                        | the two `ledger_bi_*` `BEFORE INSERT` triggers — `RAISE(ABORT)` is not suppressible by `OR IGNORE` (verified both ways), and they raise distinct messages so an orphan-bankroll bug is not misreported to the user as insufficient funds. Plus a CLAUDE.md house rule and four named tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| R8  | Someone deletes/rewrites `migrations/0001_init.sql` after deploy            | Low           | Divergent prod schema                                                                                                                             | Frozen-after-M1 rule (§16) + `wrangler d1 migrations` tracking table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| R9  | ESPN rate limits / blocks the Worker IP range                               | Low           | Total ingest outage                                                                                                                               | Backoff + admin visibility; manual `refresh` trigger; documented fallback to The Odds API free tier (500 req/mo is enough at our cadence).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| R10 | Bet slip localStorage holds a stale line and the user is surprised          | Medium        | Trust                                                                                                                                             | `expected` + `409 LINE_CHANGED` + explicit "accept line change" confirm (§11.4).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| #   | Risk                                                                                                            | Likelihood    | Impact                                                                                                                                                                | Mitigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --- | --------------------------------------------------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| R1  | CPU limit exceeded on a large slate (an 86-game CFB Saturday; from M13c a 155-game college basketball Saturday) | **Medium**    | **Before M13a: one killed slate freezes EVERY league** (the poison target, §24.3). After M13a: that slate is parked and alerted, and every other league keeps flowing | **Superseded premise**: "10 ms blown = ingest fails" was wrong both ways. S1 MEASURED 30–34 ms on refresh runs that finished `ok` (§18), so the cliff is somewhere above that and UNKNOWN. Mitigation is to make a kill survivable and visible rather than to stay under an unknown line: M13a's stamp + park + probation guard (§24.4), `/api/health/ingest` + an external monitor (§24.5) and GitHub-issue alerts (§24.6b), and M13b's weight budget, under which a big slate always runs alone (§24.7). **Ladder, if a slate keeps parking**: (1) in-memory compare-skip, i.e. read the slate's current rows and bind statements only for changed games (the SQL guards stay, so this is an optimisation, not a read-then-write guard); (2) **flip the pre-sized per-conference switch for `ncaab`** (§24.8): exit criterion is a parked D-I target or an `exceededCpu` outcome, each conference is then refreshed every ~4 ticks (~12 min) instead of every tick, ESPN requests rise to ~1,750 on a big Saturday and reschedule rows by ~5,600; (3) drop `display_clock` from the compare tuple; (4) Workers Paid, which needs Alex's sign-off (§19 Q1). |
+| R2  | ESPN changes the payload shape or rate-limits us                                                                | Medium        | Stale lines/scores                                                                                                                                                    | Total parser, warnings surfaced, backoff, existing rows never corrupted. Provider adapter means a swap to The Odds API is a new file, not a rewrite.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| R3  | D1 "queries per invocation" is really 50 and a batch counts per-statement                                       | Medium        | Settlement throws mid-run                                                                                                                                             | Chunk at 20 bets; the job is safely resumable so a throw just defers work 15 min. Spike S2 confirms before raising.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| R4  | ESPN never posts a line for a CFB game users want to bet                                                        | High (normal) | UX confusion                                                                                                                                                          | `lines: null` is a first-class rendered state ("line not posted"), not an error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| R5  | A friend finds a way to bet after kickoff                                                                       | Low           | Game integrity                                                                                                                                                        | The guard is a DB-level `WHERE` inside the insert batch, plus a 60 s buffer, plus `status='scheduled'`. Tested.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| R6  | Client-side KDF feels slow / breaks on an old phone                                                             | Low           | Login friction                                                                                                                                                        | 210k iterations ≈ 300 ms on a modern phone; `CLIENT_KDF.iterations` is a versioned constant and §10.4 describes the migration path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| R7  | Free-tier D1 **write** budget exceeded on a big Saturday                                                        | **Medium**    | **D1 returns errors for the rest of the UTC day — this blocks BET PLACEMENT and SETTLEMENT, not just the board.** Hard-enforced since 2026-09-01.                     | Naive design measured ≈ **48,500 rows/day** on a CFB Saturday (49% of cap, with Sunday still to come). Levers are **v1 requirements**, not future work (§8.5): L1 compare-and-skip, **L1b the A/B split** — without which L1 buys NOTHING for a live game, because `display_clock` moves every refresh (measured: 33,196 rows for 86 games × 96 refreshes even WITH L1) — L2 no line writes for non-scheduled games (0 of 84 started games carry odds), L3 touch intervals. **Measured** after the split: **2,979 rows** for that Saturday's ingest, ≈ 5,100/day all in (5% of cap). `job_runs.stats.rowsWritten` is recorded per run, `GET /api/admin/jobs` surfaces a rolling-24h `dayRowsWritten`, and `ingest.spec.ts` asserts < 5,000 rows for 96 refreshes of the sample Saturday with the clock moving every time. Next knob if tight: drop `display_clock` from the compare tuple (~1,200 rows).                                                                                                                                                                                                                                                     |
+| R11 | A money or price value silently becomes a float in D1                                                           | Low (now)     | Unauditable cents; violates the project's first rule                                                                                                                  | SQLite `INTEGER` coerces >i64 to `REAL` (verified) and `bind()` truncates past 2^53. Mitigated structurally: **no rational is persisted** (§5.2), every money column is `CHECK`-bounded to `MAX_PAYOUT_CENTS`, leg prices are `CHECK abs(...) BETWEEN 100 AND 100000`, and eslint bans `Math.round/floor/ceil/trunc` and `parseFloat` in `src/shared` and `src/worker`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| R12 | Settlement queue starved by undecidable bets                                                                    | Low           | Nothing settles at all                                                                                                                                                | `bets.settle_attempts` + `ORDER BY settle_attempts ASC` + `MAX_SETTLE_ATTEMPTS` (§7.1). Columns added before the schema freeze.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| R13 | An `INSERT OR IGNORE` into `ledger` silently breaks `SUM(ledger) = balance`                                     | Low           | Unrepairable drift in an append-only table                                                                                                                            | the two `ledger_bi_*` `BEFORE INSERT` triggers — `RAISE(ABORT)` is not suppressible by `OR IGNORE` (verified both ways), and they raise distinct messages so an orphan-bankroll bug is not misreported to the user as insufficient funds. Plus a CLAUDE.md house rule and four named tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| R8  | Someone deletes/rewrites `migrations/0001_init.sql` after deploy                                                | Low           | Divergent prod schema                                                                                                                                                 | Frozen-after-M1 rule (§16) + `wrangler d1 migrations` tracking table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| R9  | ESPN rate limits / blocks the Worker IP range                                                                   | Low           | Total ingest outage                                                                                                                                                   | Backoff + admin visibility; manual `refresh` trigger; documented fallback to The Odds API free tier (500 req/mo is enough at our cadence).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| R10 | Bet slip localStorage holds a stale line and the user is surprised                                              | Medium        | Trust                                                                                                                                                                 | `expected` + `409 LINE_CHANGED` + explicit "accept line change" confirm (§11.4).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ---
 
 ## 18. Spikes
 
-Status at a glance: **S1 UNMEASURED** (no longer blocked — the Worker is
-deployed; nobody has read the number yet), **S2 UNMEASURED** (same),
+Status at a glance: **S1 MEASURED** (2026-11-07: 30–34 ms CPU on refresh runs
+that finished `ok`, §24.3), **S2 UNMEASURED** (no longer blocked — the Worker is
+deployed; nobody has read the number yet), **S7 / S8 OPEN** (basketball, §24.18),
 **S3 RESOLVED**, **S4(a)/(b) RESOLVED**, **S4(c) OPEN until January**,
 **S5 RESOLVED** (2026-09-16: `GET /v4/sports` returns the credit headers with
 `x-requests-last: 0`, so the budget probe is free — §21.5, §21.12).
@@ -4628,7 +4728,21 @@ together. For **S2**, the same tail shows whether a `batch()` of 60 statements
 returns an error — the probe below — and `outcome` says whether the invocation
 was killed for exceeding limits rather than failing in application code.
 
-**S1 — CPU cost of ingesting a full CFB Saturday (RE-SCOPED). UNMEASURED.**
+**S1 — CPU cost of ingesting a full CFB Saturday (RE-SCOPED). MEASURED 2026-11-07.**
+_RESULT_: `wrangler tail --format json` on Saturday 2026-11-07 with CFB games
+live: refresh cron 18:00 ET **30 ms** CPU (wall 2.8 s) and 18:15 ET **34 ms**
+(wall 3.1 s), both `outcome: ok`; settle 18:05 ET 8 ms; API GETs 1–10 ms.
+Cloudflare documents 10 ms per cron invocation on Free and reports `exceededCpu`
+over it, so enforcement has leeway of UNKNOWN size. Local parse-only: CFB
+Saturday sample (86 events, 1.3 MB) `JSON.parse` 1.96 ms + `parseScoreboard`
+0.15 ms; CBB Saturday (155 events, 2.8 MB) 4.16 + 0.14 ms; CBB opener (61
+events, 1.0 MB) 1.56 + 0.15 ms. Parsing is a small share of the 30 ms; the
+split of the rest (statement building, marshalling, batches) is unmeasured.
+_Decision_: neither "ship as is" nor a fallback rung. The cliff is unknown, so
+M13 makes a kill survivable (§24.4), visible (§24.5, §24.6b) and isolated
+(§24.7's weight budget), with §17 R1's ladder pre-sized behind it. The
+basketball follow-up is S7 (§24.18). The original framing follows, kept for the
+record.
 _Background_: an earlier version of this spike assumed `JSON.parse` was the risk.
 It is not. Measured locally, `JSON.parse` of the committed 1.3 MB CFB week file is
 **~2.0 ms** (20-run mean), and per-ET-date splitting barely helps anyway because
@@ -4647,11 +4761,11 @@ _Method_: `POST /api/admin/jobs/refresh` against the deployed Worker on a real
 Saturday date; read the `cpuTime` field off that invocation's `wrangler tail`
 line (see the recipe above) and cross-check the dashboard. Also instrument
 `performance.now()` around map/bind separately from parse in a pool-workers test.
-_Exit criterion_: a p95 CPU number for the worst target, plus a decision between (a) ship as is,
+_Exit criterion (met, see RESULT)_: a p95 CPU number for the worst target, plus a decision between (a) ship as is,
 (b) `REFRESH_TARGETS_PER_RUN=1`, (c) drop `display_clock` from the comparison
 tuple (§8.6), (d) split the mapping across two invocations via an internal
 self-`fetch`, (e) escalate to Alex re: Workers Paid.
-**Blocks raising `REFRESH_TARGETS_PER_RUN` above 2.**
+**Blocked raising `REFRESH_TARGETS_PER_RUN` above 2** (no longer: from M13b the var is a count cap under a weight budget, §24.7).
 
 **S2 — D1 statement accounting per invocation. UNMEASURED.**
 _Question_: does a `db.batch([...n])` count as 1 or n against the free-plan
@@ -4792,11 +4906,17 @@ Player props · live/in-play betting · round robins · futures ·
 multi-book line shopping (the schema is ready: `game_lines` is keyed by provider) ·
 line-movement history (`line_history` table) · email/push notifications ·
 password reset UI (admin script only) · private leagues/groups (one global friend
-group) · other sports (NBA, CBB, college baseball) · custom domain · social feed / bet comments ·
+group) · other sports (NHL, college baseball, women's basketball, the WNBA) · custom domain · social feed / bet comments ·
 CSV export · mobile app · half-point buy · cash-out · pruning of old `games` rows ·
 side pots (`bankrolls.kind = 'custom'` — the schema is ready, nothing writes one) ·
 DK-style "Super"/"Monster" specialty teasers (10/13 points, ties LOSE — a
 materially different rule set, §5.8).
+
+**Moved OUT of this list by M13 (planned, §24): men's college basketball and the
+NBA.** Every D-I game and every NBA game, with straights, parlays, same-game and
+cross-sport parlays, and boards of today + 2 and today + 1 ET dates. No
+basketball teasers and no secondary odds, both by decision rather than omission
+(§24.1).
 
 **Moved OUT of this list by M12 (planned, §23): MLB.** Straights, parlays,
 same-game and cross-sport parlays on the run line, total and moneyline, a
@@ -7583,3 +7703,1403 @@ upcomingGames, lineGaps }`. Wild Card day is 4 games; `lineGaps: 0` is normal
   (c) `canceled` becomes terminal in the ingest upsert for every league. Each is
   argued above; together they change one existing football outcome, a
   negligible one (§23.7 item 3).
+
+---
+
+## 24. Basketball — college and NBA — after hardening the scheduler (M13)
+
+Planned 2026-11-07, the day the 2026-27 men's college basketball season opened
+(61 Division I games, 48 of them priced by DraftKings on ESPN), with the NBA a
+few weeks into its season. **The product owner's ask: every Division I game and
+every NBA game on the board, bettable like any other league.** The milestones
+put two things first. The scheduler had a way to freeze the whole app that
+nobody had seen happen yet: M13a closes it. M13b then moves to a 3-minute tick
+with live slates refreshed on every tick and a per-run weight budget, so a
+155-game basketball Saturday never shares a CPU budget with an 86-game football
+Saturday. Both leagues arrive together after that (M13c read-only, M13d
+betting), on the MLB pattern (§23.15).
+
+**THE PLAN PR ADDS NO BEHAVIOUR AND NO SCHEMA.** It ships this chapter, the
+small edits other chapters need, nineteen numeric constants of record plus
+`ALERT_GITHUB_LABEL` and `CBB_CONFERENCES` in `src/shared/constants.ts` (nothing reads them yet), their
+`tests/unit/docs.spec.ts` assertions, and two `it.todo` contract files
+(`tests/worker/scheduler-hardening.spec.ts`, `tests/unit/basketball.spec.ts`).
+Neither `'ncaab'` nor `'nba'` is added to `LEAGUES`: that breaks every
+`Record<League, …>` in the repo until M13c fills them all (§24.16 is the
+checklist). **No file under `migrations/`, no change to `wrangler.jsonc`**: 0012
+ships with M13a's code, 0013 with M13c's, and the crons and
+`REFRESH_TARGETS_PER_RUN` change in M13b, together with §9.1 and
+`docs/OPERATIONS.md` (the docs guard asserts all three agree). Wherever this PR
+has to leave a current value standing, the text gives it together with "what
+ships in M13x".
+
+### 24.1 Goal, and what is deliberately not in it
+
+**Goal.** Two new `League`s: `'ncaab'` (men's college basketball, every Division
+I game ESPN lists) and `'nba'`. Both carry DraftKings' spread, total and
+moneyline, with straight bets, parlays, same-game and cross-sport parlays. The
+college board covers today and the next two ET dates, the NBA board today and
+tomorrow. And, first, a refresh scheduler that survives an invocation killed for
+CPU, says so out loud, and refreshes every live slate on every 3-minute tick.
+
+**Settled, not up for re-litigation** (the owner's and orchestrator's list,
+including the three amendments of 2026-11-07; the reviewer has it too):
+
+1. **Every D-I game is ingested.** No team or conference limit. One full fetch
+   per ET date, `groups=50` (all of D-I), the CFB pattern (§24.10).
+2. **Board windows**: `ncaab` today + 2 ET dates (`NCAAB_BOARD_ET_DAYS = 3`), so a
+   game is seen BEFORE its day, which is when ESPN still sends its conference;
+   `nba` today + 1 (`NBA_BOARD_ET_DAYS = 2`), because NBA lines are posted a day
+   ahead (§24.2).
+3. **Scheduler hardening ships FIRST and gates the leagues** (M13a): the
+   poison-target guard (§24.4), an ingest health check for an external uptime
+   monitor (§24.5), ESPN response-status counters (§24.6), **in-app alerts as
+   deduplicated, throttled GitHub issues** (§24.6b), and S1 written up as
+   MEASURED (§24.3).
+4. **Rhythm (M13b, the owner's decision)**: refresh `*/3` (480 runs a day) and
+   settle `1-59/3`, both leases 2.5 min. **Live slates are due at the next tick,
+   in every league.** Every cadence is a tick multiple measured from the tick's
+   nominal instant. A per-run **weight budget** lets small slates share an
+   invocation and keeps big ones alone (§24.7).
+5. **Per-conference sharding of `ncaab` is a pre-sized SWITCH, off by
+   default**: one planner decision, with every other piece shipped dormant
+   (§24.8).
+6. **Migrations**: 0013's four league CHECKs admit `'ncaab'` AND `'nba'`;
+   children-first, 0009's pattern (§24.9).
+7. **No teasers on basketball legs** (`TEASABLE_LEAGUES` unchanged,
+   `400 TEASER_INVALID`). **No secondary odds** (`SECONDARY_LEAGUES` unchanged).
+   `LEAGUE_BETTING_OPEN` gains both keys, landing `false` in M13c and flipped in
+   M13d (§24.12).
+8. **Settlement**: ONE basketball branch in `action.ts` that both leagues share.
+   A final has full action on every market, overtime included; `gradeLeg` stays
+   league-unaware (§24.11).
+9. **UI (M13d)**: two new tabs; day grouping for both leagues; the CFB board
+   filter generalised per league with `CBB_CONFERENCES`, for `ncaab` only, with
+   default `top25`. The NBA has 30 teams and no filter (§24.14).
+
+**Out of scope, stated so nobody re-proposes it:** women's basketball; the WNBA;
+first-half, quarter and team-total markets; player props; basketball teasers
+(4 / 4.5 / 5-point cards exist at some books, but `TEASER_PAYOUTS` is a football
+card, §5.8); a correlation model; The Odds API for basketball (500 credits a
+month cannot fund two daily sports, §21.5); NBA Summer League and preseason
+beyond what ESPN's date scoreboard returns; any change to how football or MLB
+settle.
+
+### 24.2 What ESPN serves for basketball — measured 2026-11-07
+
+Pulled live with the Worker's own User-Agent from
+`site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=50&limit=500&dates=…`.
+
+- **Volume.** The season opener, Sat 2026-11-07: **61 events, 1.04 MB, 48 with
+  a DraftKings block** (a morning capture, all scheduled). Mid-season Sat
+  2026-02-07: **155 events, 2.83 MB**; 18 ranked games; 30 distinct conference
+  ids. Wed 2026-02-11: 54 events, 1.14 MB. Conference-tournament Sat 2026-03-14: 21. NCAA first round 2026-03-19: 16, every one with a ranked team. A
+  155-event Saturday is **1.8 × the 86-event CFB Saturday** this design was
+  sized on, and the biggest slate the app will ever fetch.
+- **Lines are posted on game day, except for marquee games.** From the morning
+  of 11-07: that day 48 of 61 priced; +1 day, 36 events and 0 priced; +2, 50 and
+  0; +3 (Tue 11-10), 69 and 1 (the neutral-site Duke–Michigan State). The MLB
+  pattern (§23.2). The +1 / +2 targets are about schedule and conferences,
+  hardly about prices, so they can run at the slow tiers (§24.7).
+- **The odds block is the football shape**: `pointSpread / moneyline / total`,
+  `.home / .away .close` (with `open`), `overUnder`, `spread` = the HOME line.
+  The existing parser reads it unchanged (§24.10).
+- **Moneyline can be the literal string `"OFF"`.** Louisville −36.5 against
+  Morehead State carried `"OFF"` for the moneyline. §8.3's `pulled()` already
+  drops such a market as "off the board" before any leaf is read. Today, though,
+  that note also lands in `stats.warnings`, and on a 155-game slate with dozens
+  of 30-point favourites that would bury real schema drift under the
+  20-warning cap. M13c moves pull notes out of `warnings` (§24.10).
+- **Shape facts.** `season {year: 2027, type: 2}` for a November 2026 game (the
+  season is named for the year it ends); **no `week`** anywhere; a scheduled
+  game has `period 0` and `displayClock "0:00"`. Statuses seen:
+  `STATUS_SCHEDULED`, `STATUS_IN_PROGRESS`, `STATUS_END_PERIOD`,
+  `STATUS_FINAL`, all mapped by §8.3's `state`-driven table with no change. A
+  final has `period 2`, one overtime `3`, double overtime `4`. **The clock moves
+  in-game**, so a live game costs one (B) row per refresh, exactly like
+  football (§8.5).
+- **Rank**: `curatedRank.current`, 99 for unranked; the existing `parseRank`
+  keeps 1..25.
+- **`team.conferenceId` disappears on game day.** At 02:40 ET every team in the
+  11-07 slate carried it. At 18:30 ET the same date, 0 of 122 teams did,
+  whatever the game's status, in the full feed and the per-conference feeds
+  alike. The (B) live update already writes
+  `home_conference_id = COALESCE(?, home_conference_id)` (§8.5), so a game first
+  seen BEFORE its day keeps its ids, and one first seen on its day has NULL ids
+  and lands in the board filter's "Other" bucket. That is the reason for the
+  three-day window, and why the residual (a game added to ESPN's schedule on its
+  own day) is accepted, not fixed.
+- **`groups=<id>` filters ONE conference per request.** A comma list gets HTTP
+  400; a repeated parameter means the first one wins. A conference feed is a
+  faithful subset (same ids, odds and fields) and includes that conference's
+  non-conference games (either team). `…/scoreboard/conferences?groups=50` lists
+  32 D-I conferences plus the parent, and there is **no independents group**.
+  `limit=` truncates silently and has no offset. These are the facts §24.8's
+  reserve is built on.
+
+**The conferences** (ESPN BASKETBALL group ids, different from football's: the
+SEC is 8 in football and 23 here). The constant is `CBB_CONFERENCES`, and
+`tests/unit/docs.spec.ts` asserts this table against it, both ways:
+
+| ESPN id | Board label     | ESPN's name              |
+| ------- | --------------- | ------------------------ |
+| `2`     | ACC             | Atlantic Coast           |
+| `8`     | Big 12          | Big 12                   |
+| `4`     | Big East        | Big East                 |
+| `7`     | Big Ten         | Big Ten                  |
+| `23`    | SEC             | Southeastern             |
+| `21`    | Pac-12          | Pac-12                   |
+| `3`     | A-10            | Atlantic 10              |
+| `1`     | America East    | America East             |
+| `62`    | American        | American Athletic        |
+| `46`    | ASUN            | Atlantic Sun             |
+| `5`     | Big Sky         | Big Sky                  |
+| `6`     | Big South       | Big South                |
+| `9`     | Big West        | Big West                 |
+| `10`    | CAA             | Coastal Athletic         |
+| `11`    | Conference USA  | Conference USA           |
+| `45`    | Horizon         | Horizon League           |
+| `12`    | Ivy             | Ivy League               |
+| `13`    | MAAC            | Metro Atlantic           |
+| `14`    | MAC             | Mid-American             |
+| `16`    | MEAC            | Mid-Eastern Athletic     |
+| `18`    | Missouri Valley | Missouri Valley          |
+| `44`    | Mountain West   | Mountain West            |
+| `19`    | NEC             | Northeast                |
+| `20`    | Ohio Valley     | Ohio Valley              |
+| `22`    | Patriot         | Patriot League           |
+| `24`    | SoCon           | Southern                 |
+| `25`    | Southland       | Southland                |
+| `49`    | Summit          | Summit League            |
+| `27`    | Sun Belt        | Sun Belt                 |
+| `26`    | SWAC            | Southwestern Athletic    |
+| `30`    | UAC             | United Athletic (ex-WAC) |
+| `29`    | WCC             | West Coast               |
+
+**The NBA, measured the same day** with the Worker User-Agent at
+`{BASE}/apis/site/v2/sports/basketball/nba/scoreboard?dates=YYYYMMDD&limit=100`:
+
+- **Volume**: today (Sat 11-07) **7 events, 135 KB, 6 priced by DraftKings**. The
+  seventh was in progress at `period 4`: quarters, with ESPN's `period` counting them
+  (overtime as 5, 6, … by the same rule. Not yet observed, and nothing depends
+  on it, §24.11). +1 day: 7 events, **6 priced**. +2: 8 events, 0
+  priced. +3: 6 events, 0 priced. **NBA lines ARE posted a day ahead**, unlike
+  CBB and MLB, and not two days ahead. Hence `NBA_BOARD_ET_DAYS = 2`. A slate is
+  at most 15 games (all 30 teams playing) and ≤ 8 on most nights, so
+  `limit=100` is ample and an NBA slate is always "small" under §24.7's weight
+  budget.
+- **The odds block is the identical football/CBB shape**: `pointSpread /
+moneyline / total`, `.home / .away .close`, `overUnder`, top-level `spread`.
+  One captured event has `details "PHI -9.5"` with `spread 9.5` for home CHI,
+  i.e. Chicago +9.5. The top-level `spread` is the HOME team's line, exactly as
+  §8.3's fallback assumes, and `details` is still never parsed.
+- **No week, no conference, no rank to filter on.** `team.conferenceId` is
+  irrelevant (30 teams, no board filter). `curatedRank` is absent, so
+  `parseRank` yields NULL as for NFL competitors.
+- Statuses and clock follow the football pattern (`STATUS_SCHEDULED`,
+  `STATUS_IN_PROGRESS`, `STATUS_FINAL`; the clock moves in-game), so a live NBA
+  game costs one (B) row per refresh.
+
+**Captures for M13c's parser tests: taken, NOT committed in this PR.** M13c
+commits them under `docs/samples/`, the way M12a committed the MLB pair. The two
+NBA captures are listed in §24.10. College:
+
+- `espn-ncaab-scoreboard-2026-11-07.json`: 61 events, 48 priced, including the
+  `"OFF"` moneyline and every team's `conferenceId` (a morning capture);
+- `espn-ncaab-scoreboard-2026-11-07-evening.json`: the same date live and
+  final, with no `conferenceId` anywhere. This is the game-day fact as a
+  fixture.
+- The 155-event Saturday (`dates=20260207`, 2.83 MB) is **not committed**. It
+  would raise the committed samples from ~4.5 MB to ~7.3 MB to prove one number
+  (the 155-event parse cost, already recorded in §24.3). M13c's write-budget test
+  synthesises its 155 games (§24.13) as `tests/worker/fixtures.ts` already does
+  for CFB.
+
+### 24.3 Spike S1, measured — and why the scheduler is hardened first
+
+**S1 is MEASURED** (§18 carries the record): `wrangler tail --format json` on
+Sat 2026-11-07, with CFB games live:
+
+| Invocation             | `cpuTime` | wall  | `outcome` |
+| ---------------------- | --------- | ----- | --------- |
+| refresh cron, 18:00 ET | **30 ms** | 2.8 s | `ok`      |
+| refresh cron, 18:15 ET | **34 ms** | 3.1 s | `ok`      |
+| settle cron, 18:05 ET  | 8 ms      | —     | `ok`      |
+| API GETs (several)     | 1–10 ms   | —     | `ok`      |
+
+Cloudflare's limits page says a Free-plan cron invocation gets **10 ms** of CPU
+and reports `exceededCpu` when it goes over. Two refresh runs used 3× that and
+finished `ok`. So enforcement has leeway, **and nobody knows how much**: it is
+undocumented, it may differ by invocation type, and it may change without
+notice.
+
+Local parse-only figures (V8, `JSON.parse` + `parseScoreboard`, mean of runs),
+for scale:
+
+| Payload                         | Events | Size    | `JSON.parse` | `parseScoreboard` |
+| ------------------------------- | ------ | ------- | ------------ | ----------------- |
+| CFB Saturday (committed sample) | 86     | 1.3 MB  | 1.96 ms      | 0.15 ms           |
+| CBB mid-season Saturday         | 155    | 2.83 MB | 4.16 ms      | 0.14 ms           |
+| CBB opener                      | 61     | 1.0 MB  | 1.56 ms      | 0.15 ms           |
+
+Parsing is a small share of the 30 ms. The rest is statement building, D1
+marshalling and the batches, and how it splits is **unmeasured**. A 155-game
+target builds ~430 statements against CFB's ~172 (§24.13), so a basketball
+Saturday will cost well over 30 ms, at a cliff whose height is unknown.
+
+**What this replaces.** §17 R1 used to say "10 ms blown = ingest fails on the day
+that matters". The premise was wrong both ways. 10 ms is not the cliff (30 ms
+passed), and failing ingest on one slate was never the worst outcome. The
+worst outcome is the **poison target**:
+
+1. A refresh invocation is killed for CPU. A kill is not an exception:
+   `ingestTarget`'s `try/catch` never runs, so neither reschedule `UPDATE`
+   (success or failure) is written.
+2. The target keeps its old `next_run_at`, which is now the oldest in the queue.
+   `claimDueTargets` orders `priority ASC, next_run_at ASC`, so it wins slot 1
+   on **every** later run.
+3. It is processed first, and killed again. With two targets per run, the
+   second never gets its turn either.
+4. **Every league freezes**: no scores, no lines, nothing settles, and
+   `job_runs` shows a row stuck in `running` that nobody is paged about.
+
+R1's replacement: **the cliff is unknown; M13a's guard makes a kill survivable
+(one slate parks, every other league keeps flowing), M13a's health check makes it
+visible to a human within minutes (and M13a's alerts email the owner, §24.6b),
+and M13b's weight budget runs the biggest slates alone.**
+
+### 24.4 M13a — the poison-target guard (`migrations/0012_ingest_guard.sql`)
+
+**Definition.** An attempt is _incomplete_ when the target was stamped as
+started and **neither** reschedule path ran afterwards. The failure path (a
+thrown fetch, a non-2xx, a timeout, bad JSON, a D1 error inside `upsertSlate`)
+DOES write its reschedule, so it is not incomplete. Only a run that died between
+the stamp and the reschedule counts: a CPU kill, a wall-clock kill, an evicted
+isolate. **A legitimately slow run is never incomplete.** An 8 s ESPN timeout
+(`ESPN_TIMEOUT_MS`) throws a `ProviderError`, the failure path writes, and the
+counter resets.
+
+**The columns** (0012, plain `ALTER TABLE … ADD COLUMN`, no rebuild; the same
+file also creates §24.6b's `alerts` table):
+
+```sql
+-- SpicyBettingSimulator — 0012: the poison-target guard, sharding groundwork,
+-- and the alerts table (PLAN.md §24.6b; its CREATE TABLE follows these ALTERs)
+-- D1 (SQLite). A new file, never an edit to 0001 (CLAUDE.md rule 9, PLAN.md §16.1).
+--
+-- attempt_started_at / incomplete_attempts: stamped BEFORE the fetch, reset by
+-- BOTH reschedule paths, so only a run killed in between leaves them raised.
+-- PLAN.md §24.4. conference_id: NULL for every target the planner emits today;
+-- the scoping SQL that reads it is PLAN.md §24.8.
+ALTER TABLE ingest_targets ADD COLUMN attempt_started_at  INTEGER;
+ALTER TABLE ingest_targets ADD COLUMN incomplete_attempts INTEGER NOT NULL DEFAULT 0
+  CHECK (incomplete_attempts >= 0);
+ALTER TABLE ingest_targets ADD COLUMN conference_id       TEXT;
+```
+
+**The stamp**: one `UPDATE`, issued right after the claim and before the fetch,
+under the refresh lease, which is what makes claim-then-stamp race-free (§9.2):
+
+```sql
+UPDATE ingest_targets
+   SET attempt_started_at  = :now,
+       incomplete_attempts = incomplete_attempts + 1,
+       next_run_at         = :provisionalNext,   -- see below
+       updated_at          = :now
+ WHERE id = :id;
+```
+
+`:provisionalNext` is `base + min(REFRESH_BACKOFF_BASE_TICKS × 2^incomplete_attempts,
+REFRESH_DISCOVERY_TICKS) × REFRESH_TICK_MS`, computed in code from the claimed
+row and measured from the tick's nominal instant (§24.7): 15, 30, then 60 min.
+M13a, which ships before the tick changes, uses the same formula with its 15-min
+period. It is a provisional reschedule. A completed run overwrites it, so it
+changes nothing for a healthy target. A killed one falls BEHIND the other due
+targets instead of winning the very next tick, so three kills take at least
+45 minutes and do not take three consecutive ticks from everyone else.
+`next_run_at` is indexed (`idx_ingest_targets_due`), so the stamp costs 2 rows
+written (§24.13).
+
+**Both reschedule paths** gain `incomplete_attempts = 0, attempt_started_at =
+NULL` in their existing `SET` lists. Neither column is indexed, so this costs no
+extra row.
+
+**Parked**: `incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS` (3). Both
+claim queries (general and discovery, §24.7) gain:
+
+```sql
+AND (incomplete_attempts < :maxIncomplete
+     OR attempt_started_at <= :now - :parkedRetryMs)   -- INGEST_PARKED_RETRY_MS, 6 h
+```
+
+**Un-parking: three ways, every one deliberate.**
+
+1. **Automatic probation.** Six hours after its last attempt a parked target is
+   claimable again for ONE attempt. The counter is not reset by waiting, so if
+   the probation run is killed the target is parked again on the spot, and if it
+   completes the reschedule resets the counter. A deterministically poisonous
+   slate therefore costs at most four killed invocations a day after the first
+   three, and a transient one (a CPU spike, an ESPN payload bloated for an
+   afternoon) heals without a human.
+2. **The admin's per-game Refresh** (`bumpTargetForGame`, §9.3): its upsert's
+   `DO UPDATE` also sets `incomplete_attempts = 0, attempt_started_at = NULL`.
+   The run it then triggers stamps attempt 1. That run is an HTTP invocation
+   with the same CPU budget, so for a really poisonous slate the admin sees the
+   request die (Cloudflare's 1102 page). The runbook says so (OPERATIONS
+   "Parked target").
+3. **A fix**: §24.8's sharding, the R1 ladder's in-memory skip (§17), or the
+   owner's Workers Paid decision (§19 Q1). Each makes the slate cheaper, and the
+   next probation run completes.
+
+**A parked target must not strand money.** Its games keep whatever status they
+last had. Settlement selects only bets whose games are all `final`/`canceled`
+(§7.1), so a bet on a parked slate stays `pending`, which is correct and visible.
+The backstop already exists. §7.5's "dropped from the feed" branch voids a game
+still `scheduled`/`in_progress` more than `VOID_AFTER_MS` (7 d) past its original
+kickoff and unseen for 2 days, and a parked target sees nothing. So the
+worst case is a 7-day refund, never a wrong payout. Health is what stops it
+reaching that: it goes 503 the moment a target parks.
+
+**Reporting.** Every refresh run's `stats.parked` lists
+`{ targetId, incompleteAttempts, attemptStartedAt }` (one read of a ~30-row
+table; `stats` is `Record<string, unknown>`, so this is no change to the frozen
+`api-types.ts`). The admin Jobs page shows the newest run's list as a banner.
+
+**Killed runs become visible rows.** A killed run leaves its `job_runs` row in
+`running` forever. `withJobRun` (`jobs.ts`) gains one statement after it takes
+the lease. It sets that job's `running` rows older than the job's
+`JOB_LEASE_TTL_MS` to `status = 'error'`,
+`error = 'no finish recorded: killed (CPU or wall limit) or crashed'`, and
+`finished_at = started_at`. Holding the lease proves the old run's lease
+expired, so nothing live is touched. It writes zero rows on a normal run.
+That turns a kill from "a row that never ends" into an error on the Jobs page.
+
+**Guard and lease, together.** A killed run never releases its lease, so the
+lease expires on its own after `JOB_LEASE_TTL_MS.refresh`: 5 min today and 2.5
+min from M13b, in both cases shorter than the cron period (15 and 3 min). So
+**the next cron tick is NOT skipped** by a kill. It acquires normally, reaps the
+dead row, and claims the next target (not the killed one, thanks to the
+provisional `next_run_at`). Only an admin trigger that lands inside those 2.5–5
+minutes gets `409 JOB_LOCKED`.
+
+**False positives, enumerated.**
+
+- _A D1 outage that eats the reschedule write._ Then the counter stays raised,
+  because the guard cannot tell a kill from a lost write. It needs three
+  consecutive attempts on the same target, at least 45 minutes apart (the
+  provisional backoff), all losing their final write. After such an outage a
+  target may sit out 6 h, health says so, and the admin Refresh clears it.
+  Accepted.
+- _A deploy that lands mid-run._ At most one increment. The next completed run
+  resets it.
+- _An ESPN timeout or 5xx._ Not incomplete. The failure path writes (above).
+
+### 24.5 M13a — `GET /api/health/ingest` and the uptime monitor
+
+**This is the only alert that can see a kill.** The run that was killed records
+nothing, and the job that would notice is the same job. An outside observer
+polls, and alerts when the answer stops being 200.
+
+**The route: a NEW `GET /api/health/ingest`, not a change to `/api/health`.**
+The settled brief said "`/api/health` returns 503", and this is the one
+mechanical point where §24 departs from it. The SPA calls `/api/health` on every
+page load (`useHealth`) for `inviteRequired`, `bugReportsEnabled` and the build
+version. If it went 503 during an ingest stall, `apiGet` would throw, the
+"Report a bug" button would disappear (it renders only on
+`bugReportsEnabled === true`), and the diagnostics would lose the version, all
+exactly when a user is trying to report "the board is stale". It would also put
+D1 reads into every page load of a route documented as "no DB access" (§11.1).
+A sibling route keeps `/api/health` and its frozen `HealthResponse` byte-identical
+and gives the monitor a URL whose status means one thing. (Owner question 1 in
+§24.18. Collapsing the two later is a one-line change.)
+
+**Contract.** Public, no auth, no session, `200` or `503`, body (a type local to
+`src/worker/routes/meta.ts`; the browser never reads it, so `api-types.ts` is
+untouched):
+
+```ts
+interface IngestHealthBody {
+  readonly ok: boolean; // false ⇔ 503
+  readonly now: EpochMs;
+  readonly lastRefreshOkAt: EpochMs | null; // newest refresh job_runs row with status 'ok'
+  readonly parkedTargets: number; // incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS
+  readonly reasons: readonly ('refresh-stale' | 'targets-parked' | 'espn-all-failing')[];
+}
+```
+
+**The query: ONE statement, three scalar subqueries, each on an index or a
+~30-row table:**
+
+```sql
+SELECT
+  (SELECT MAX(started_at) FROM job_runs
+    WHERE job = 'refresh' AND status = 'ok')                 AS last_ok,   -- idx_job_runs_recent
+  (SELECT COUNT(*) FROM ingest_targets
+    WHERE incomplete_attempts >= ?1)                          AS parked,
+  (EXISTS (SELECT 1 FROM ingest_targets WHERE last_status = 'error')
+   AND NOT EXISTS (SELECT 1 FROM ingest_targets WHERE last_status = 'ok')) AS all_failing;
+```
+
+| Reason             | Condition                                                                                                                        | What it catches                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `refresh-stale`    | `last_ok` NULL or older than `HEALTH_STALE_TICKS` (5) refresh periods: 15 min at the 3-min tick, 75 min under M13a's 15-min cron | crons not firing, every run killed, the lease wedged, D1 unreachable    |
+| `targets-parked`   | `parked > 0`                                                                                                                     | a poison slate (§24.4), probation runs included until one completes     |
+| `espn-all-failing` | some target errored AND none is `ok`                                                                                             | an ESPN-wide 403/429 regime once every target has been retried (≤ ~6 h) |
+
+**Quiet periods are not outages.** `runRefresh` with zero due targets still
+completes. `planTargets` runs, `claimDueTargets` returns `[]`, `runSecondary`
+never throws, and `withJobRun` records `ok`. M13a pins that with a test. So at
+4 AM `last_ok` is never older than one cron period. `espn-all-failing` ignores
+targets the planner just created (`last_status` NULL), and it cannot fire while
+any target's newest fetch succeeded.
+
+**Cost.** A 5-minute monitor is 288 requests and 288 one-statement reads a day,
+against 100,000 requests and millions of D1 reads. Nothing is written. Like
+`/api/config`, it is public and unthrottled. Hammering it costs reads, not
+writes, and reveals two timestamps and a count.
+
+**The monitor** is an operator step (`docs/OPERATIONS.md` "Uptime monitor"): a
+free UptimeRobot-class HTTP monitor on
+`https://spicybetting.wardcrazy01894.workers.dev/api/health/ingest`, 5-minute
+interval, alert on any non-200, email to the owner. When M13a deploys, the first
+check after the deploy must come back 200.
+
+### 24.6 M13a — ESPN response-status counters
+
+A 403 or 429 regime should be a number on the Jobs page, not something found by
+reading `failures[]` strings.
+
+- `ProviderError` (`src/worker/providers.ts`) gains `kind: 'http' | 'timeout' |
+'network' | 'bad-json' | 'unsupported'`. That is an additive constructor
+  argument, and its three throw sites in `src/worker/espn.ts` already know which
+  is which: an `AbortSignal.timeout` rejection is a `TimeoutError`, any other
+  `fetch` rejection is network, `!response.ok` is http with `status`, and a
+  `response.json()` failure is bad-json.
+- `IngestTargetResult` gains `espn: string`, one of `'200'`, `'403'`, `'429'`,
+  `'5xx'` (any 500–599), `'4xx'` (any other 400–499), `'timeout'`, `'network'`,
+  `'bad-json'`. That is a fixed vocabulary, so the totals are summable.
+- Each refresh run records `stats.espnStatus: Record<string, number>`, one count
+  per target fetched. `recentRuns` (`jobs.ts`) folds a rolling-24h
+  `dayEspnStatus` into every run's `stats` the way it folds `dayRowsWritten`
+  (§8.6). It reads `CASE WHEN json_valid(stats) THEN json_extract(stats,
+'$.espnStatus') END` for refresh runs in the window (≤ 480 tiny JSON strings,
+  never the whole `stats` blob) and sums them in code. The `json_valid` guard is
+  load-bearing for the reason `dayRowsWritten` gives.
+- Parser warnings are NOT a status. A 200 whose events partly failed to parse is
+  `'200'`, and its warnings stay in `stats.warnings` as today.
+
+### 24.6b M13a — in-app alerts, as GitHub issues (deduplicated and throttled)
+
+**The owner's requirement:** an email when something fails, and no spam. The
+transport is the bug-report plumbing that already exists (`src/worker/bugs.ts`,
+`GITHUB_TOKEN` with Issues read+write on this one repo, `GITHUB_REPO`, §11.7). A
+new GitHub issue is the email, because GitHub notifies the repo's watchers. The
+feature is **OFF without the token**, like bug reports: every evaluation still
+records fingerprints in D1 and reports `stats.alerts = { enabled: false, … }`,
+and posts nothing.
+
+**Complementary to §24.5's monitor, not a replacement.**
+
+| Failure                                                                      | In-app alert (this section)                                      | External monitor (§24.5)                     |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
+| refresh killed for CPU every run                                             | **yes**: the next SETTLE or MAINTENANCE run sees `refresh-stale` | yes                                          |
+| a slate parked, ESPN 403/429, a stuck bet, budget exhausted, D1 near the cap | **yes**, with the detail                                         | parked and ESPN-wide failure only, no detail |
+| ALL jobs dead (cron outage, a broken deploy, every invocation killed)        | no: nothing runs to notice                                       | **yes**                                      |
+| D1 unreachable (the `alerts` table with it), token revoked                   | no                                                               | **yes** (503 or no answer)                   |
+
+**Fingerprints.** `kind` + `:` + `key`. The issue title is `[alert] <kind>: <key>`
+and the issue carries the fixed label `ALERT_GITHUB_LABEL` (`ops-alert`), so if
+the table is ever lost the state is recoverable from GitHub (open issues with the
+label, keyed by title). The kinds M13a ships with, and who evaluates each:
+
+| Kind                         | Key                                        | Fires when                                                                                       | Evaluated by                                                     |
+| ---------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| `refresh-stale`              | `-`                                        | §24.5's predicate: no `ok` refresh run within `HEALTH_STALE_TICKS` periods                       | **settle and maintenance** (and refresh, for completeness)       |
+| `target-parked`              | the target id                              | `incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS` (§24.4)                                  | refresh and settle                                               |
+| `job-error`                  | the job name                               | a run recorded `error`, including one the reaper turns from `running` to `error` (§24.4, a kill) | every job, for itself                                            |
+| `espn-status`                | `403` / `429`                              | a target fetch got that status (a regime signal, so it fires on the first)                       | refresh                                                          |
+| `espn-status`                | `5xx` / `timeout` / `network` / `bad-json` | a target reached `consecutive_failures >= 3` with that outcome (a blip is not an email)          | refresh                                                          |
+| `espn-all-failing`           | `-`                                        | §24.5's predicate                                                                                | refresh and settle                                               |
+| `settle-stuck`               | the bet id                                 | the bet is in the settle run's `stats.stuck[]` (past `MAX_SETTLE_ATTEMPTS`, §7.1)                | settle                                                           |
+| `secondary-budget-exhausted` | `-`                                        | a sweep was skipped for budget (`stats.secondary.budgetSkipped > 0`, §21.5)                      | refresh                                                          |
+| `d1-rows-near-cap`           | `-`                                        | rolling-24h `dayRowsWritten >= ALERT_D1_ROWS_NEAR_CAP` (60,000, §24.13's retreat trigger)        | maintenance, and refresh on discovery-first ticks (every 15 min) |
+
+Every condition that is a STATE (stale, parked, all-failing, stuck, budget, rows)
+is re-recorded on every evaluating run while it holds. That is what keeps it
+"firing" and what lets it resolve when it stops. EVENTS (`job-error`,
+`espn-status`) fire once per occurrence.
+
+**Storage: `alerts`, in 0012** beside the guard columns (one migration for
+M13a):
+
+```sql
+CREATE TABLE alerts (
+  fingerprint      TEXT    PRIMARY KEY,                 -- '<kind>:<key>'
+  kind             TEXT    NOT NULL,
+  key              TEXT    NOT NULL,
+  state            TEXT    NOT NULL CHECK (state IN ('firing', 'resolved')),
+  issue_number     INTEGER,                             -- NULL until GitHub accepted the create
+  opened_at        INTEGER NOT NULL,
+  last_seen_at     INTEGER NOT NULL,
+  last_notified_at INTEGER NOT NULL DEFAULT 0,          -- the throttle and the claim
+  resolved_at      INTEGER,                             -- non-NULL while firing = "issue is closed, reopen it"
+  occurrences      INTEGER NOT NULL DEFAULT 0 CHECK (occurrences >= 0),
+  pending          INTEGER NOT NULL DEFAULT 0 CHECK (pending >= 0),  -- since the last notification
+  comments         INTEGER NOT NULL DEFAULT 0 CHECK (comments >= 0), -- drives the comment backoff
+  last_detail      TEXT                                 -- ≤ 500 chars, no stack, no secret
+);
+```
+
+**Every transition is ONE guarded statement**, and `meta.changes` is the only
+permission to call GitHub (CLAUDE.md rule 5: no read-then-write). So two
+overlapping jobs (a settle tick and a refresh tick in the same minute) cannot
+double-post.
+
+1. **Occurrence** (always, for each condition that holds):
+   `INSERT … ON CONFLICT(fingerprint) DO UPDATE SET last_seen_at = :now,
+occurrences = occurrences + 1, pending = pending + 1, last_detail = :detail,
+…`. The recurrence-after-resolve cases are `CASE`s inside the same `SET`:
+   - `state = 'resolved' AND resolved_at >= :now - ALERT_REOPEN_WINDOW_MS` →
+     `state = 'firing'`, keep `issue_number` and `resolved_at` (the "reopen it"
+     marker);
+   - `state = 'resolved'` and older than that → a NEW alert: `state = 'firing'`,
+     `issue_number = NULL`, `resolved_at = NULL`, `occurrences = 1`,
+     `comments = 0`, `opened_at = :now`, `last_notified_at = 0`.
+2. **Create** (rule 1, "no open issue → one email"): `UPDATE alerts SET
+last_notified_at = :now, pending = 0 WHERE fingerprint = ? AND state =
+'firing' AND issue_number IS NULL AND last_notified_at <= :now -
+ALERT_COMMENT_INTERVAL_MS`. On `changes = 1`, POST the issue, then `UPDATE …
+SET issue_number = ?`. If GitHub fails, `SET last_notified_at = 0`, so the next
+   run retries instead of waiting an hour.
+3. **Reopen** (a recurrence inside 24 h → the SAME issue, one email): the same
+   claim with `resolved_at IS NOT NULL AND issue_number IS NOT NULL`. On success,
+   PATCH `state: open` plus a comment, and `SET resolved_at = NULL`.
+4. **Comment** (rule 2, while open): `… WHERE state = 'firing' AND resolved_at
+IS NULL AND issue_number IS NOT NULL AND pending > 0 AND last_notified_at <=
+:now - MIN(ALERT_COMMENT_INTERVAL_MS × 2^comments, ALERT_COMMENT_MAX_INTERVAL_MS)`,
+   which sets `pending = 0, comments = comments + 1`. The comment says
+   "N occurrences since the last comment, the last at <ET time>: <last_detail>".
+5. **Resolve** (rule 3): `UPDATE alerts SET state = 'resolved', resolved_at =
+:now WHERE state = 'firing' AND issue_number IS NOT NULL AND last_seen_at <=
+:now - ALERT_RESOLVE_AFTER_MS`. On `changes = 1`, post "quiet for 6 h,
+   closing" and PATCH `state: closed`. A firing alert whose create never
+   succeeded and has gone quiet is simply set `resolved` with no call.
+
+**The values, argued.**
+
+- `ALERT_COMMENT_INTERVAL_MS` = **1 h** (the owner's figure), as the FIRST
+  interval. **Every comment @mentions the alert login**, so every comment is an
+  email, and a flat hourly comment would be 24 emails a day for an alert that stays on all day, which is exactly the
+  spam the owner ruled out. The interval therefore doubles per comment on the
+  same open issue, 1, 2, 4, 8, 16, then capped at `ALERT_COMMENT_MAX_INTERVAL_MS`
+  = **24 h**. That is ~6 emails on day one and 1 a day after. The occurrence
+  count in D1 is never throttled.
+- `ALERT_RESOLVE_AFTER_MS` = **6 h**. A parked target's probation (§24.4) and the
+  discovery tier both run on 6 h, so a still-broken target re-fires inside the
+  window and does not flap closed and open. Shorter would close an alert between
+  probation attempts. Longer leaves the issue list stale after a real fix.
+- `ALERT_REOPEN_WINDOW_MS` = **24 h**. A condition that comes back the same day
+  is the same incident: one reopen email, with the history in one thread. After
+  a day it is a new incident, and a new issue is easier to read than a comment
+  on a closed one. A flapping condition is bounded at ~4 reopen emails a day
+  (resolve needs 6 quiet hours), and each reopen also passes the create/comment
+  throttle.
+- `ALERT_D1_ROWS_NEAR_CAP` = **60,000**, the retreat trigger of §24.13: the email
+  is the instruction to set `REFRESH_LIVE_TICKS` to 2.
+
+**Where it runs.** `withJobRun` (`jobs.ts`) calls `evaluateAlerts(env, now, job,
+run)` AFTER the run's own `job_runs` row is finalised, inside its own
+`try/catch`. **It never throws, and an alert that cannot be sent never fails or
+re-statuses the job.** Its stats ride in the NEXT run's `stats.alerts`
+(`{ enabled, recorded, created, commented, reopened, resolved, failed }`), plus a
+`[alert]` log line, because the current row is already final. The order inside:
+record occurrences, then ONE `SELECT` of alerts with an action due
+(`LIMIT ALERT_MAX_GITHUB_CALLS_PER_RUN`), creates first, then reopens, resolves
+and comments. A killed run cannot alert, which is the point of the
+`refresh-stale` row being evaluated by SETTLE: within ~15 min of the refresh job
+dying (`HEALTH_STALE_TICKS`), the next settle tick opens the issue.
+
+**Budget.** At most `ALERT_MAX_GITHUB_CALLS_PER_RUN` = **2** GitHub subrequests a
+run (a create or reopen is a POST/PATCH plus, for a reopen, a comment, so 2),
+each with a 10 s timeout (`ALERT_GITHUB_TIMEOUT_MS`), against 50 subrequests.
+Further due actions wait for the next run, at most 3 minutes later. Row writes:
+zero in a healthy run (no condition holds, so no occurrence and no claim). In an
+incident, one upsert per firing condition per evaluating run plus one claim per
+call, a few hundred rows a day at worst, which is noise in §24.13. GitHub's REST
+limit is 5,000 requests an hour per token, and even 2 calls on every one of ~960
+runs a day could not approach it. The secondary limit on content creation
+(roughly 80 a minute) is out of reach at one create per fingerprint.
+
+**Recipients: the @mention IS the email.** `GITHUB_TOKEN` belongs to
+`wardcrazy01894`, the account that owns the repo, and GitHub never notifies an
+account of its own activity. The repo has no watchers today either. So an issue
+the token opens emails NOBODY by default. M13a therefore adds a `wrangler.jsonc`
+var, **`ALERT_MENTION_LOGIN`** (not a secret, read additively in `env.ts`;
+empty means no mention). When it is set, the issue body AND every throttled
+comment and reopen begin with `@<login>`. That mention is what produces the
+email. The mentioned account needs GitHub's notification setting "Participating,
+@mentions and custom → Email" on. Watching the repo (Watch → Custom → Issues) is
+the alternative, and it only works for an account DIFFERENT from the token's.
+Because every email is a mention on a throttled post, the comment throttle bounds
+the emails too: one when the issue opens, then at most one per comment interval
+per open issue (1 h, doubling to 24 h), and one per reopen. A comment with no
+mention (login empty) emails only the repo's watchers. OPERATIONS' M13a step sets
+the var, then forces one alert and confirms the email arrives.
+
+**Tests first** (`tests/worker/scheduler-hardening.spec.ts`, GitHub stubbed like
+`bugs.spec.ts`):
+
+- the throttle: two occurrences within the hour → ONE comment, `pending` carried
+  to the next; the doubling interval and the 24 h cap;
+- reopen vs new: a recurrence 5 h after resolve PATCHes the same issue open; one
+  25 h after creates a new issue and resets the counters;
+- resolve: quiet for 6 h → a closing comment and `closed`; a create that never
+  succeeded goes quiet with no call;
+- no token → no GitHub call, occurrences still recorded, `stats.alerts.enabled =
+false`;
+- the issue body, each comment and each reopen begin with `@<ALERT_MENTION_LOGIN>`
+  when it is configured, and contain no mention when it is empty;
+- **the settle run detects a dead refresh**: no `ok` refresh row for 6 periods →
+  a settle run opens `refresh-stale`;
+- concurrency: two evaluations racing on one fingerprint post once
+  (`meta.changes`);
+- a GitHub 500 / timeout: logged, `failed` counted, the job's status untouched,
+  and the claim released (`last_notified_at = 0`) so the next run retries.
+
+### 24.7 M13b — a three-minute tick, live slates every tick, a weight budget per run
+
+**The owner's decision** (2026-11-07, superseding this chapter's first draft of
+`*/5` and one target per run): a refresh tick every **3 minutes**, and **a live
+slate is due again at the very next tick, in every league**. Everything ships in
+M13b, in ONE PR with `wrangler.jsonc`, §9.1 and `docs/OPERATIONS.md`, so the docs
+guard stays green.
+
+| Knob                                | Today                         | M13b                                                                           | Why                                                                                                                      |
+| ----------------------------------- | ----------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| refresh cron                        | `*/15 * * * *` (96/day)       | `*/3 * * * *` (**480/day**)                                                    | `REFRESH_TICK_MS`. Every invocation has its own CPU budget                                                               |
+| settle cron                         | `5-59/15 * * * *`             | `1-59/3 * * * *` (480/day)                                                     | one minute after each refresh tick, so a final is graded within ~4–6 minutes of ESPN calling it                          |
+| maintenance cron                    | `30 8 * * *`                  | unchanged                                                                      | still exactly 3 crons                                                                                                    |
+| refresh / settle `JOB_LEASE_TTL_MS` | 5 min / 5 min                 | **2.5 min / 2.5 min**                                                          | strictly under the 3-minute period (§9.2), so a killed run's lease is gone by the next tick                              |
+| live cadence                        | 15 min                        | **1 tick** (`REFRESH_LIVE_TICKS`)                                              | every league, every tick                                                                                                 |
+| within 48 h of a kickoff            | 60 min                        | 20 ticks (`REFRESH_SOON_TICKS`) = 60 min                                       | pre-game lines move slowly, and §8.5's staleness window is `max(3 h, 3 × cadence)`, so this tier is what keeps it at 3 h |
+| discovery                           | 6 h                           | 120 ticks (`REFRESH_DISCOVERY_TICKS`) = 6 h                                    | ESPN posts CBB and MLB lines on game day only (§24.2, §23.2). Faster discovery buys nothing                              |
+| all final                           | 24 h                          | 480 ticks = 24 h                                                               | unchanged                                                                                                                |
+| failure backoff base                | 15 min                        | 5 ticks (`REFRESH_BACKOFF_BASE_TICKS`) = 15 min, doubling, capped at 120 ticks | a failing ESPN must not be retried 20 times an hour (§24.6)                                                              |
+| targets per run                     | 2 (`REFRESH_TARGETS_PER_RUN`) | a **weight budget** (below); the var becomes a COUNT cap of `5`                | a big slate runs alone, small ones share                                                                                 |
+| `MAX_SETTLE_ATTEMPTS`               | 96 (24 h at 15 min)           | **480** (24 h at 3 min)                                                        | the constant means "24 h of patience" (§7.1); at 96 it would park a bet after 4.8 h. A §3.1 value change in M13b         |
+| `JOB_RUNS_KEPT_PER_JOB`             | 200                           | **600**                                                                        | 480 runs per job a day, and `dayRowsWritten` sums the last 24 h (below)                                                  |
+
+**Invocations**: 480 refresh + 480 settle + 1 maintenance ≈ **960 cron
+invocations a day**, plus 288 monitor checks and the friends' own requests.
+Workers Free allows 100,000 requests a day, so this is ~1%.
+
+**The alignment trap, and the rule that avoids it.** Every cadence above is a
+whole number of ticks **measured from the tick's NOMINAL instant**, not from
+`now`:
+
+```ts
+const base = scheduledTime ?? Math.floor(now / REFRESH_TICK_MS) * REFRESH_TICK_MS; // admin: floor
+next_run_at = base + ticks * REFRESH_TICK_MS;
+```
+
+The claim compares `next_run_at <= now`. A cron run starts a few seconds after
+its nominal minute. If the next run were stamped `now + 15 min` at `:00:05`, it
+would be `:15:05`, the `:15` tick would find it NOT due, and it would wait for
+`:18`. That is slower than today's 15 minutes, on the change meant to make
+things faster. `now + 1 tick` has the same trap: it would be picked every SECOND
+tick. A base on the nominal instant makes "due at the next tick" exactly true.
+So `computeNextRunAt` takes `scheduledTime` (passed from
+`controller.scheduledTime` through `runJob`), and §8.4's four tiers become tick
+multiples. The confirm cap of §23.7 (`postponedVoidConfirmAt`) is an absolute
+instant and stays one. M13b's test drives a run that starts 5 s late and asserts
+that a live slate is claimed on the very next tick.
+
+**The weight budget: who shares an invocation.** Each target has a WEIGHT, its
+`games_seen` from its last completed fetch. A target never fetched
+(`last_run_at IS NULL`) weighs `REFRESH_WEIGHT_BUDGET + 1`, i.e. "big", because
+its size is unknown. An empty slate weighs 1. A run:
+
+1. reads the due candidates in claim order, at most `REFRESH_TARGETS_PER_RUN`
+   (`"5"` from M13b, an existing var bounded 1–10 by `env.ts`) plus one;
+2. **always takes the first**, whatever it weighs;
+3. adds the next candidate while the running sum stays `<= REFRESH_WEIGHT_BUDGET`
+   (40) and the count stays `<= REFRESH_TARGETS_PER_RUN`, and **stops at the
+   first candidate that does not fit**. It does not skip ahead, so a big slate
+   is never overtaken indefinitely by small ones.
+
+So an NFL date (≤ 16 games), an MLB day (≤ 16) and an NBA night (≤ 15, usually
+≤ 8) share invocations: NBA + NFL, NBA + MLB or NBA + NBA tomorrow fit under 40. A CFB Saturday (60–86) or a D-I basketball slate (61–155) **always runs
+alone**, never sharing a CPU budget with another big slate, and empty future
+dates pack up to five to a run. **A typical winter evening** (a Tuesday in
+January) is CBB today alone on one tick, NBA today paired with NBA tomorrow or
+an NFL date on another, and future CBB dates on the discovery-first ticks. Two
+live slates, so each is refreshed about every second general tick. The SQL change is one read in place of the per-slot queries:
+
+```sql
+SELECT id, …, games_seen, last_run_at FROM ingest_targets AS t
+ WHERE next_run_at <= :now
+   AND (incomplete_attempts < :maxIncomplete OR attempt_started_at <= :now - :parkedRetryMs)
+   /*DISCOVERY*/          -- on a discovery-first tick: AND <NO_LIVE_GAME> (§24.8)
+ ORDER BY priority ASC, next_run_at ASC, id ASC
+ LIMIT :countCap + 1;
+```
+
+The packing is done in code on those rows (pure, unit-tested). On a
+discovery-first tick, if the `NO_LIVE_GAME` read returns nothing, the run falls
+back to the plain read, so no tick is wasted. Each claimed target is stamped
+(§24.4) before ANY fetch, because a kill takes the whole invocation.
+
+**Discovery: the reservation moves from space to time.** At one slot per big
+run there is no slot 2 to reserve. A tick is _discovery-first_ when
+`floor(scheduledTime / REFRESH_TICK_MS) % REFRESH_DISCOVERY_EVERY_NTH_TICK === 0`,
+i.e. every fifth tick (`:00 :15 :30 :45`), **96 a day, exactly the supply the
+reserved slot gives today**. Admin runs are always general, so a per-game Refresh
+still claims what it bumped (§9.3).
+
+**The bounds, proved.**
+
+- _No discovery starvation._ A discovery-first tick serves the most overdue
+  non-live target if one is due, and live slates cannot take that tick. So a due
+  non-live target with k others ahead of it waits at most `15·(k + 1)` minutes.
+  The worst rollover burst (8 new dates) fills in ≤ 2 h behind any live load.
+- _Live slates degrade explicitly._ Live slates are perpetually due, so the four
+  general ticks in every five serve them round-robin (`next_run_at ASC`). With L
+  BIG live slates, each is refreshed every L general ticks, i.e. every
+  `≈ L × 3.75` minutes of wall clock. **On a Saturday with CFB and CBB live, each
+  gets roughly every 2nd tick (~7.5 min). Add a December NFL Saturday slate and
+  the three get every ~3rd tick (~11 min)**, though NFL often rides along with a
+  small target. That is the stated degradation, and still better than today's
+  15 min (one live slate) and 30–45 min (two or three).
+- _Supply versus demand, December Saturday._ Live demand at one tick each:
+  CBB 17 h + CFB 17 h + NFL 13.5 h + NBA 9 h (16:00 → 01:00) of live tier =
+  56.5 h × 20 ticks = **1,130 slate-refreshes** against 384 general ticks (NBA
+  and NFL often share one). So the day is deliberately
+  oversubscribed while the slates overlap, and the round-robin above is what
+  happens. Non-live demand is unchanged by the tick (its tiers are the same
+  wall-clock intervals): ≈ 79 slate-refreshes (the §8.4 tiers over 7 non-live
+  targets), under the 96 discovery-first ticks, and many of them pack into one
+  run because their slates are small or empty.
+
+**The settle cron.** Settle now runs one minute after every refresh tick, so it
+reads scores the refresh just wrote, and it moves to its own 3-minute cadence
+with a 2.5-minute lease. `MAX_SETTLE_ATTEMPTS` becomes 480 to keep its meaning
+(24 h). Settle CPU was 8 ms on the 2026-11-07 tail. More frequent runs each
+carry LESS work (the same bets spread over five times the runs), and
+`SETTLE_CHUNK` stays 20 (S2).
+
+**`job_runs` retention.** 480 runs per job a day. With the daily prune keeping
+200, `dayRowsWritten` (the last 24 h) would cover ~10 h right after the prune
+and under-count the budget on exactly the busy days. 600 keeps a full day per
+job plus margin (§7.5's row moves with it). The admin list of the last 50 runs
+is now ~1.3 h of mixed history. The parked banner and `dayEspnStatus` do not
+depend on scrolling it.
+
+**The secondary provider is unaffected.** `runSecondary` now runs 480 times a
+day, costing one budget-row read per league when nothing is gapped. Its spending
+is gated by `SECONDARY_MIN_SWEEP_INTERVAL_MS` (2 h per league, a TIME throttle)
+and the credit claim's `WHERE` (§21.5), neither of which counts runs, so **five
+times the runs moves no credit**.
+
+**ESPN volume.** ~480 requests a day typical (one slate per tick), more on days
+when small slates pack (≤ 5 per invocation, against 50 subrequests). That is
+2.5× today's ≤ 192, from one User-Agent, on an unmetered API whose tolerance is
+unknown. The status counters of §24.6 (`dayEspnStatus`) are the gauge. A 429 or
+403 regime takes the existing backoff path (5 ticks × 2^n per target, capped at
+6 h), and `espn-all-failing` in §24.5 pages the owner. The retreat is the same
+lever as for the write budget: `REFRESH_LIVE_TICKS`.
+
+**§9.3's ACCEPTED RACE** (a cron tick between an admin's bump and its run)
+widens from one tick per 15 minutes to one per 3. The game is still refreshed,
+by the cron. Still not worth moving the bump inside the lease.
+
+### 24.8 Per-conference sharding: a pre-sized SWITCH, not a rewrite
+
+**Why it exists, and why it is off.** If a 155-game D-I slate is killed for CPU
+(the guard parks it, §24.4), the remedy is to fetch that date as conference
+segments (`groups=<id>`, §24.2), each ~1/32 of the work. The owner chose the
+3-minute tick partly so this would be cheap to turn on. It stays OFF until the
+evidence says otherwise.
+
+**The switch is ONE planner decision.** M13c ships every piece the sharded shape
+needs, dormant. Turning it on is a one-line change of
+`NCAAB_TARGET_SHAPE: 'full' | 'conference'` in `src/worker/ingest.ts` (a code
+constant, so it gets a reviewed PR and the Deploy workflow, no migration):
+
+| Piece                       | `'full'` (M13c default)          | `'conference'` (the switch)                                                                                      | Shipped dormant in |
+| --------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------ |
+| planner targets per ET date | `ncaab:date:<day>`               | `ncaab:conf:<id>:date:<day>` for each of the 32 `CBB_CONFERENCES`, `conference_id = <id>`, `kind 'date'`         | M13c               |
+| ESPN query                  | `groups=50&limit=500&dates=<d>`  | `groups=<id>&limit=500&dates=<d>` (from `SlateTarget.conferenceId`)                                              | M13c               |
+| `NO_LIVE_GAME`, retirement  | NULL-scoped (identical to today) | scoped to the segment's conference (SQL below)                                                                   | M13a               |
+| run packing                 | the slate is big and runs alone  | segments of ~5 games weigh ~5, so up to 5 pack into one run (weight budget 40, count cap 5)                      | M13b               |
+| `bumpTargetForGame`         | the date target                  | the segment(s) matching the game's home/away conference id, or ALL of the date's segments when both ids are NULL | M13c               |
+| §23.7's evidence `EXISTS`   | the date target                  | any target of the date (unchanged predicate: league + window)                                                    | already true       |
+| leftover full targets       | —                                | the planner deletes in-window `ncaab:date:*` targets, since the segments cover them                              | M13c               |
+
+**The groundwork SQL** (`ingest_targets.conference_id`, 0012). Wherever a target
+is judged by "the games in its window", a NON-NULL `conference_id` also scopes by
+team conference, and a NULL one, which is every target that exists until the
+switch, behaves **byte-for-byte as today**:
+
+```sql
+NOT EXISTS (
+  SELECT 1 FROM games g
+   WHERE g.league = t.league
+     AND g.kickoff_at >= t.window_start_at
+     AND g.kickoff_at <  t.window_end_at
+     AND (t.conference_id IS NULL
+          OR t.conference_id IN (g.home_conference_id, g.away_conference_id))
+     AND g.status = 'in_progress')
+```
+
+With `t.conference_id IS NULL` the parenthesis is TRUE, so the predicate is
+today's. With a value, `IN` against a NULL team id is NULL, not TRUE, so a game
+with unknown conferences matches no segment. The retire rule gains the same
+parenthesis on `ingest_targets.conference_id`. M13a's test asserts both
+predicates select exactly what today's SQL selects for NULL.
+
+**The degradation, sized now at 480 ticks a day** (a mid-season Saturday
+evening):
+
+- _Live segments._ ~15–20 conferences have a game in progress at once; take 18.
+  At ~4.5 segments a run, one round of all 18 takes 4 runs, so **each conference
+  is refreshed every ~4 ticks ≈ 12 min**, against every tick for the single D-I
+  fetch when it runs uncontended. With a CFB Saturday slate also live, a round
+  is 4 + 1 runs plus the discovery ticks, so ~15 min.
+- _Future segments._ 2 dates × 32 = 64 targets. Their games are within 48 h, so
+  §8.4 would put them on the 60-minute tier, 64 × 24 = 1,536 target-refreshes a
+  day, for slates that carry no lines (lines are game-day only, §24.2). **The
+  switch therefore includes one rule**: a conference segment for a date after
+  today runs on the discovery tier (120 ticks). That gives 64 × 4 = 256
+  target-refreshes; at 1–3 games a segment they pack five to a run, so **~51
+  runs a day**.
+- _Rows._ `games` and `game_lines` rows follow GAMES, not fetches, so they do not
+  grow. The live stream actually FALLS, because each game is refreshed every ~4
+  ticks instead of every tick. Reschedule rows grow, at 4 per target-refresh
+  (stamp 2 + reschedule 2): today's segments (~1,500 refreshes) plus futures
+  (256) come to ≈ 7,000 rows against ≈ 1,400 for one full target, about +5,600 a
+  day. That fits §24.13's margin.
+- _ESPN requests_ grow to the target-refresh count, ≈ 1,750 a day on a big
+  Saturday (≤ 5 per invocation), against ~480. That is a real increase for one
+  User-Agent, and a reason the switch is not the default.
+- _Residual._ A game between two teams with no conference group (independents,
+  non-D-I opponents) appears in no segment's feed. A conference team's
+  non-conference game is still in that conference's feed (§24.2), so in practice
+  this is the handful of independent-vs-independent games. Under the switch those
+  are not refreshed, and §7.5's 7-day void covers any bet on one.
+
+**Exit criterion: turn it on when** the D-I target for a date is PARKED (§24.4),
+or any `ncaab` refresh comes back `exceededCpu` in `wrangler tail`. It is rung 2
+of §17 R1's ladder. Rung 1, in-memory compare-skip, is cheaper and is tried
+first only if it can ship the same day.
+
+### 24.9 Data model — `migrations/0013_basketball_leagues.sql` (M13c)
+
+**Two migrations, by ship order.** 0012 (§24.4) is three `ADD COLUMN`s: no
+rebuild, no money table touched, safe to apply on any day. It ships with
+M13a, which must go first. 0013 is a children-first rebuild of six tables, the
+ledger among them. It ships with the code that writes basketball rows (M13c), and is
+verified on the live D1 while no basketball stake can exist (the M12a
+precedent, §23.15). Folding 0012's columns into 0013 would save one trivial file
+at the price of either delaying the hardening behind the riskiest migration in
+the milestone or dragging that migration forward into the hardening PR.
+
+**What changes:** four `CHECK (league IN (...))` constraints gain `'ncaab'` and
+`'nba'`. `games`, `bet_legs` and `ingest_targets` become `('nfl', 'ncaaf', 'mlb',
+'ncaab', 'nba')`, and `bets` becomes the same plus `'mixed'`. Nothing else.
+
+**Both leagues in one rebuild.** `'nba'` is a real league in M13c (§24.10–§24.14),
+not a placeholder, and the two share one six-table rebuild rather than two.
+`'nhl'` is what the spec now proves is refused.
+
+**The six tables and their order are §23.3's, verbatim in reasoning.** `games`
+and `game_lines` (CASCADE child, copied and dropped first), `bets`, `bet_legs`,
+`ledger` (child of `bets`), `ingest_targets`. Copy all six; drop leaf-first;
+recreate; copy back parent-first with explicit column lists; **only then**
+indexes and triggers (`ledger_ai_apply` must not exist during the copy, or every
+balance doubles); drop the copies. No PRAGMA, no `OR IGNORE`.
+
+**The DDL source is each table's LAST definer, not 0009.** A reviewer who
+diffs 0013 against 0009 alone will miss this, and an implementer who copies
+0009 will silently revert two later migrations:
+
+| Table            | Recreated from                                                                                                       |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `games`          | 0009 (incl. 0004's and 0007's columns in physical order)                                                             |
+| `game_lines`     | 0009 (incl. 0007's `*_book` columns)                                                                                 |
+| `bets`           | **0010** (`leg_count BETWEEN 1 AND 25`, the teaser ≤ 10 CHECK)                                                       |
+| `bet_legs`       | **0010** (and its `bet_legs_bi_one_side_per_game` trigger, as 0010 recreated it)                                     |
+| `ledger`         | **0011** (kinds `deposit_refill` / `bust_buyout`; the five ledger triggers as 0011 recreated them)                   |
+| `ingest_targets` | 0009 **plus 0012's three columns**, appended after `updated_at` in 0012's order, so `pragma_table_info` is unchanged |
+
+**Write cost: count first, and it is a GATE.** A rebuild writes every row twice
+(the copy and the copy back) plus every index entry on the way back (`games`
+carries five per row, the most of any table), and D1 counts all of it against
+the same hard 100,000 rows a UTC day as the app's own traffic. Since 0009
+(2026-09-24) the database has taken a full MLB postseason and two more months
+of football and betting, so 0013 is the biggest single write the app has ever
+made. A rough guess at M13c time is ~10,000 rows held across the six tables,
+which is ~45,000 rows written. M13c's PR states the measured figure:
+`Σ rows × (2 + index entries per row)`, from the OPERATIONS row-count query and
+`sqlite_master`. **Apply only if that estimate is under 60,000, and only on a
+Tuesday or Wednesday**, whose own traffic is a few thousand rows. Never on a
+football or basketball Saturday (§8.6). **Above 60,000, stop and ask the
+owner**: the remedies (pruning old `games` rows, which §20 lists as future
+work, or paid D1) are not this milestone's to choose. The D1 dashboard's
+rows-written for that day goes in the PR afterwards.
+
+**Specs (M13c).** `tests/worker/migration-0013.spec.ts`, 0009's spec with the
+league sets moved on: seeded through HTTP and the real triggers, then the file is
+re-run as one batch. It asserts every row of the six tables deep-equal; the
+`game_lines` and `bet_legs` counts equal; balances unchanged and
+`SUM(ledger) = balance_cents`; `PRAGMA foreign_key_check` empty; `pragma_table_info`
+equal; triggers and indexes equal by name AND `sqlite_master.sql`; no `_copy`
+left; `'ncaab'` and `'nba'` accepted by all four CHECKs, `'nhl'` refused, and
+`'mixed'` still bets-only. Plus `tests/unit/migration-0013-ddl.spec.ts`, which
+textually compares each recreated table, index and trigger against its last
+definer from the table above (the 0010/0011 DDL-spec pattern), so that the only
+permitted differences are the four CHECK lists and `ingest_targets`' three
+appended columns.
+
+**Deploy order and rollback.** As for 0009: applied by the Deploy workflow
+before the Worker; the old Worker runs harmlessly on wider CHECKs; a code
+rollback leaves 0013 in place; a bad apply is D1 Time Travel; and
+`npm run db:reconcile -- --remote` afterwards is not optional.
+
+### 24.10 ESPN client, parser, board windows (M13c)
+
+**URLs**: two `ESPN_SCOREBOARD` entries (`src/worker/espn.ts`). `query` gains
+the target so the dormant conference switch (§24.8) is a value, not a branch:
+
+```ts
+ncaab: {
+  sport: 'basketball',
+  league: 'mens-college-basketball',
+  query: (d, conferenceId) => `groups=${conferenceId ?? '50'}&limit=500&dates=${d}`,
+},
+nba: { sport: 'basketball', league: 'nba', query: (d) => `dates=${d}&limit=100` },
+```
+
+Parameter order is pinned as in §8.1, and no `seasontype` is sent, for §8.1's
+reason. The four existing URLs come out byte-identical (asserted).
+`limit=500` is 3.2× the largest D-I slate measured (155). ESPN truncates
+silently (§24.2), so `fetchScoreboard` adds one warning when a payload holds
+exactly `limit` events: "slate may be truncated at limit=N". That costs nothing
+until it is true, and every league gets it.
+
+**Parser.** `src/shared/espn.ts` is league-parameterised and needs **one**
+change, league-neutral. In `parseLines`, a note produced by `pulled()` (a market
+the book has taken off the board) no longer becomes a `ParseWarning`. It goes to
+a new `ParsedScoreboard.pulled` count, which the refresh run records as
+`stats.offTheBoard`. Notes from malformed values (`unusable …`,
+`sides disagree`, `dropped unusable …`) stay warnings. Coverage loses nothing:
+the pulled market still counts in `lineGaps` / `noMoneyline` and in
+`lineGapDetails` ("LOU @ MORE: no moneyline"), and a 36.5-point favourite is past
+`MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` (30.0), where the UI already says "No ML".
+Football's occasional "off the board" warning moves to the same counter. It is
+not schema drift and never was. `pulled()` itself is untouched, so a pull is
+still an all-null WRITE that withdraws a stored line (§8.3). `parseAmericanPrice`
+and `selectOddsEntry` never see the string `"OFF"`, because `pulled()` runs
+before any leaf parse. Rank, conference, the missing `week` and the statuses need
+no change (§24.2).
+
+**Board windows** (`src/shared/time.ts`). `boardWindowEnd`'s exhaustive switch
+gains ONE basketball arm, shared by both leagues, through a helper M13c adds,
+`etDaysEnd(now, days)`:
+
+```ts
+case 'ncaab': return etDaysEnd(now, NCAAB_BOARD_ET_DAYS); // today + 2
+case 'nba':   return etDaysEnd(now, NBA_BOARD_ET_DAYS);   // today + 1
+// etDaysEnd: walk `days` ET days with etDayBounds from today's; return the last end - 1
+```
+
+ET days come from `etDayBounds`, never `+ 86_400_000` (CLAUDE.md rule 3). The
+2026-11-01 and 2027-03-14 DST days both fall inside both seasons, and each has a
+test. MLB's `case` becomes `etDaysEnd(now, 1)`, byte-identical (asserted).
+`WeeklyLeague` is unchanged: an `Extract` of explicit literals, so neither
+basketball league is silently weekly. The planner keeps one target per league
+per ET date (§8.2), which is three `ncaab:date:*` and two `nba:date:*` a day,
+retired like MLB's two days after their date once every game is final or
+canceled. Out of season the slates are empty and sit on the discovery tier. There
+is still no league calendar.
+
+**Samples and dev.** M13c commits three captures under `docs/samples/`:
+`espn-ncaab-scoreboard-2026-11-07.json` and `…-2026-11-07-evening.json` (§24.2),
+and `espn-nba-scoreboard-2026-11-07.json` (7 events, 6 priced, one in progress
+at `period 4`; scratchpad `nba-20261107.json`). The +1 capture
+(`nba-20261108.json`, 6 of 7 priced) is the "lines a day ahead" fixture, and
+M13c commits it too, as `…-2026-11-08.json` (131 KB). `scripts/capture-espn-range.mjs`
+gains `ncaab` and `nba` entries taking dates from argv (MLB's pattern), and
+`scripts/fixture-server.mjs` serves both scoreboard paths.
+
+### 24.11 Settlement (M13c) — one basketball branch
+
+**The rule, both leagues.** A FINAL basketball game has action on every market,
+overtime included. That is DraftKings' basketball default and how every US book
+grades a spread, total or moneyline. ESPN's `period` (halves for college,
+quarters for the NBA, overtimes beyond) matters only to the clock label (§24.14)
+and is not consulted. `src/shared/action.ts`:
+
+```ts
+case 'nfl':
+case 'ncaaf':
+case 'ncaab':
+case 'nba':
+  return FULL_ACTION;
+```
+
+There is no `undecidable` row: a final with a NULL `period` is graded, since
+nothing about the verdict depends on it. `gradeLeg`, `gradeBet` and `projectLeg`
+are untouched and league-unaware (rule 7, rule 8g(i)). **Stated residual, not
+modelled:** a game called early (some books void college games below 35 played
+minutes, NBA games below 43) grades as final. ESPN does not give minutes played,
+and no such game has been observed.
+
+**Postponed and canceled.** `canceled` voids, as for every league. A
+`postponed` game reuses MLB's evidence rule (§23.7), generalised by league
+rather than copied, for both basketball leagues:
+
+- `postponedVoidConfirmAt` returns `windowEndAt + MLB_POSTPONED_CONFIRM_MS`
+  (03:00 ET the next morning) for `'mlb' | 'ncaab' | 'nba'`, the same constant and
+  the same instant. The rain-delay race of §23.7 has a basketball twin (a delayed
+  tip, or `STATUS_DELAYED` for a leak in the roof, mapped to `postponed` per
+  §23.4), and the evidence rule is correct for it unchanged;
+- `maintenance.ts`'s predicate becomes `league IN ('mlb', 'ncaab', 'nba') AND
+status = 'postponed' AND EXISTS (…)` with the same `EXISTS`. `status_detail`
+  names the league, so MLB's `'auto-void: MLB postponed, not played on its
+date'` is byte-identical and basketball's reads `'auto-void: NCAAB postponed,
+…'` / `'auto-void: NBA postponed, …'`;
+- `computeNextRunAt`'s confirm cap applies, because it already reads
+  `postponedVoidConfirmAt(target.league, …)`. Football keeps `null`.
+
+Whether ESPN replays a postponed basketball game under the same id (moving
+`event.date`) or a new one has **not been observed** (S8). The rule is safe
+either way, because a moved id is judged against its current date (§23.7). It is
+an **owner question** (§24.18) only because it refunds the next day where some
+books would hold the stakes for a replay inside the week.
+
+### 24.12 Teasers, secondary odds, same-game parlays
+
+- **Teasers**: `TEASABLE_LEAGUES` stays `['nfl', 'ncaaf']`. `applyTease`'s
+  existing league check refuses a basketball leg with `400 TEASER_INVALID`, and
+  the client's `unteasableReason` / `teaseText` / preview check do the same from
+  the slip leg's `league`. M13c adds the tests. No code path changes.
+- **Secondary**: `SECONDARY_LEAGUES` stays `['nfl', 'ncaaf']`. Basketball is
+  absent from `stats.secondary.sweeps[]` (§23.10's precedent) and costs no credit.
+- **Same-game and cross-sport parlays**: rule 8f is league-blind and matches
+  DraftKings' basketball same-game rule (spread OR moneyline, plus the total). A
+  CBB + NBA parlay, or NBA + NFL, is `'mixed'` (M5b). No change.
+- **Kill switch**: `LEAGUE_BETTING_OPEN` gains `ncaab: false, nba: false` in M13c
+  (boards read-only, placement `409 GAME_NOT_BETTABLE`), and both flip to `true`
+  in M13d.
+
+### 24.13 Write budget, requests, statements — at the 3-minute tick
+
+**The model.** Rows split into a part that follows the GAMES (first insert 6,
+two status transitions 8, pre-game line rows bounded by L3's 45-minute touch,
+L3 game touches) and a part that follows the REFRESHES of a live game (one (B)
+row per live game per refresh, because the clock moves). §8.6's measured CFB
+Saturday, 2,979 rows for 86 games, contains ~14 live refreshes per game (3.5 h at
+15 min). That is ~1,200 live rows and ~1,775 game-driven rows. At one tick, a
+game live 3.5 h gets **70** refreshes uncontended, five times as many.
+
+Two estimates per slate. **Model**: the game-driven part unchanged, plus the
+live part at the new count. **Ceiling**: every stream × 5, which is what the
+measurement would read if everything scaled with refreshes. Budget on the
+ceiling.
+
+| Slate (one day, uncontended, live every tick) | Model                                                                                         | Ceiling (× 5) |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------- |
+| CFB Saturday, 86 games, live 3.5 h            | 1,775 + 86 × 70 = **≈ 7,800**                                                                 | 14,900        |
+| CBB Saturday, 155 games, live ~2 h (40 ticks) | 3,200 + 155 × 40 = **≈ 9,400**                                                                | 26,850        |
+| NBA night, 15 games, live ~2.5 h (50 ticks)   | 310 + 15 × 50 = **≈ 1,060**                                                                   | ≈ 1,550       |
+| NFL Sunday, 13 games                          | 270 + 13 × 70 = **≈ 1,180**                                                                   | ≈ 2,250       |
+| MLB day, 15 games                             | ≈ 900 measured; writes on run/inning change, not clock (§23.11), so more refreshes add little | ≈ 1,500       |
+
+**Worst day.** Live refreshes cannot exceed the ticks (§24.7), so two big slates
+live together each get about half of them. The worst day is therefore a
+**February Saturday**: CBB at 155 games with nothing big to share with, plus the
+NBA:
+
+| Stream                                | Arithmetic                                                                                                                 | Rows/day                                        |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| CBB Saturday (ceiling)                | above                                                                                                                      | 26,850                                          |
+| NBA tonight + tomorrow (ceiling)      | above, plus tomorrow's line rows                                                                                           | ≈ 1,800                                         |
+| CBB +1 / +2 targets                   | first inserts 6 × ≤ 155, L3 touches 4 × ≤ 175 (the Thursday before is worse for this line, but has no 155-game live slate) | ≈ 1,600                                         |
+| `ingest_targets` stamps + reschedules | ≈ 480 runs × ~1.5 targets × 4 rows (stamp 2, reschedule 2, both rewriting `idx_ingest_targets_due`)                        | ≈ 2,900                                         |
+| `job_runs` / `job_locks`              | ≈ 960 runs × ~6 (run INSERT 3 incl. PK and `idx_job_runs_recent`, finalize 1, lease 2). ESTIMATED                          | ≈ 5,800                                         |
+| bets / legs / ledger, sessions        | §8.6                                                                                                                       | < 800                                           |
+| **Total**                             |                                                                                                                            | **≈ 39,800 → call it 40–45k, ≈ 45% of the cap** |
+
+A **November or December Saturday** with CFB, CBB and NFL live comes to about
+the same total: each big slate gets ~half or a third of the ticks (CFB ceiling
+× ½ ≈ 7,500, CBB × ½ ≈ 13,400), and NFL, NBA and a larger fixed part make up
+the rest, ≈ 34,000. The impossible bound, with every big slate uncontended at
+once, is ≈ 57,000.
+
+**Say it plainly.**
+
+- **This roughly halves the headroom.** The measured worst day today is ≈ 5,100
+  rows. This chapter's first draft (15-minute live cadence plus basketball) was
+  ≈ 15,000, about 6.6× under the cap. At every-tick live cadence it is ≈ 40–45k,
+  about **2× under the cap**.
+- **The cap is a HARD error.** Past 100,000 rows in a UTC day D1 refuses writes,
+  and that blocks **bet placement and settlement**, not just the board (§8.5).
+- **The gauge** is `dayRowsWritten` in every run's stats on the admin Jobs page
+  (§8.6), now with a full day of `job_runs` behind it (600 kept, §24.7).
+  OPERATIONS' weekly check says: if it passes 60,000 on any day, retreat.
+- **The one-line retreat is the live-cadence multiple**: `REFRESH_LIVE_TICKS`
+  1 → 2 halves the live stream, the only part that grew, and 5 restores today's
+  15 minutes. Nothing else moves.
+- The `job_runs` line is ESTIMATED from statement shapes, and it also puts §8.6's
+  "< 300" for sessions, throttle and `job_runs` under review: at 96 + 96 runs a
+  day today it is already nearer 1,100. M13b records the job bookkeeping's own
+  `meta.rows_written` and corrects §8.6 either way.
+
+**Regression bounds move with the cadence: an M13b task, NOT raising a bound to
+fit.** `tests/worker/ingest.spec.ts`'s CFB soak (today 96 refreshes, < 5,000)
+becomes 480 ticks with the slate live every tick for its games' live hours. Its
+bound is re-derived as the M13b-measured value's ~1.68× headroom (the ratio
+today's 5,000 has over 2,979). The model says ≈ 7,800, so a bound near 13,000 is
+expected. `tests/worker/mlb.spec.ts` (684 measured, < 1,000) is re-run at 480
+ticks. MLB writes on score or inning change, so little movement is expected, and
+if it exceeds 1,000 the arithmetic in §23.11 is re-derived. M13c's
+`tests/worker/basketball.spec.ts` drives 155 synthesised CBB games through 480
+ticks in six tip-off waves (12:00, 14:00, 16:00, 18:00, 19:00, 21:00 ET), each
+live 40 ticks with the clock moving every tick, plus a 15-game NBA night (19:00
+and 22:00 ET waves, 50 ticks live). It asserts **< 16,000** (CBB, the 9,400
+model × 1.68) and **< 1,800** (NBA), each cross-checked against an
+`env.DB.batch` probe. The measured values go in the PR.
+
+**Requests.** ~480 ESPN calls a day typical, more when small slates pack (§24.7),
+≤ 5 per invocation against 50 subrequests. Plus the secondary's credit-gated
+calls.
+
+**Statements per invocation.** ~2 per game plus 1 per line row worth writing
+(L2: scheduled games only). A 155-game morning slate with ~120 priced games is
+~430 statements, `MAX_BATCH_STATEMENTS = 40` a batch, so **~11 batches** in one
+invocation, against CFB's ~172 in ~5. **S2 is still UNMEASURED** (§18). What can
+be said is that the CFB Saturday target, ~2 statements a game in one invocation,
+has run every Saturday since the deploy (first 2026-09-19) with no
+statement-limit failure reported in `job_runs`. If "50 statements per
+invocation, each counted" were the rule, every one of those runs would have
+failed, so that reading is ruled out whatever the true rule is. (This is an
+inference from the absence of reported failures. Nobody has read the counts off
+a tail.) ~430 is a new magnitude. M13c's first production basketball Saturday
+reads `wrangler tail` for a D1 error, and S2's exit is now "the largest slate's
+statement count, observed OK". A packed run of small slates (weight ≤ 40, so
+≤ ~80 games of statements) stays under the CFB figure by construction.
+
+### 24.14 UI (M13d, with the `Record` fills in M13c)
+
+| Where                                                                                  | Change                                                                                                                                                                                                                                                                                  | In   |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| `labels.ts` `LEAGUE_LABEL` / `LEAGUE_BADGE` / `BET_LEAGUE_LABEL` / `MARKET_HEAD_LABEL` | `ncaab`: `'NCAAB'` / `'CBB'` (the CFB pattern) / `'NCAAB'` / football's heads. `nba`: `'NBA'` / `'NBA'` / `'NBA'` / football's heads. The `Record` types force all eight entries                                                                                                        | M13c |
+| `labels.ts` `CLOCK_STYLE`, `gameClockLabel`                                            | `nba: 'quarters'` (exists: "Q3 · 4:12"). `ncaab` gets a NEW style `'halves'`: `"1st · 12:34"`, `"2nd · 4:12"`, `"OT · 1:05"`, `"2OT · 0:44"`, from `period` + `displayClock`; halftime and finals use ESPN's `statusDetail`. Football and MLB pinned byte-identical in `labels.spec.ts` | M13c |
+| `grouping.ts` `BOARD_HAS_WEEKS`                                                        | both `false`: no week picker, and `groupBoardGames` groups by ET date (the MLB path, §23.12) across each window                                                                                                                                                                         | M13c |
+| `routes/meta.ts` `currentSeason`                                                       | two more keys (ESPN's season year for each)                                                                                                                                                                                                                                             | M13c |
+| `GamesPage.tsx`'s two `league === 'ncaaf'` sites                                       | become `BOARD_FILTERS[league] !== null`: `board-filter.ts` keyed by league (`Record<League, BoardFilterSpec \| null>`): `ncaaf` → `CFB_CONFERENCES`, default `'all'`; `ncaab` → `CBB_CONFERENCES`, **default `'top25'`**; `nfl`, `mlb`, `nba` → null (no filter)                        | M13d |
+| `BoardFilterSelect`                                                                    | takes the league's spec. The "Other" bucket is "not a listed conference OR no conference id" (the game-day fact, §24.2)                                                                                                                                                                 | M13d |
+| `boardEmptyCopy`                                                                       | `ncaab`: "No Top 25 games in the next three days — try All games" when the default filter empties the board. `nba`: "Tomorrow's games appear with their lines a day ahead"                                                                                                              | M13d |
+| league tabs, leaderboard, My Bets                                                      | none: built from `config.leagues`, so two tabs appear when `LEAGUES` gains both (M13c, read-only boards)                                                                                                                                                                                | M13c |
+| default board league                                                                   | stays `'nfl'`                                                                                                                                                                                                                                                                           | —    |
+
+**Board payload.** `/api/games?league=ncaab` returns the window's games, capped
+by `BOARD_MAX_GAMES` (300, applied to games ordered by kickoff, so an overflow
+would drop the LAST day's latest games). The worst realistic window: a
+mid-season Saturday 155 + Sunday ~30 + Monday ~40 + the 12 h lookback ~20, so
+**~245 cards**. At an estimated ~1 KB of JSON a card (two team views with logo
+URLs, one line row, since there is no secondary) that is ~250 KB raw and ~30–40 KB
+gzipped, re-polled every 60 s (`BOARD_POLL_MS`) per open tab. The NBA's is ≤ 30
+cards. Rendering 155 cards a day is why the college default filter is Top 25.
+**No new query parameter is needed**, because `from` / `to` already exist on
+`GET /api/games` (§11.3). M13d's DoD reads the real payload size and the route's
+`cpuTime` on the first big Saturday. If either is uncomfortable (> 300 KB raw,
+near the 300 cap, or a GET near the refresh runs' 30 ms), the client fetches one
+ET day per request with `from` / `to` and a day selector replaces the grouping,
+with no contract change.
+
+### 24.15 Tests, written first
+
+The plan PR lands the contracts as `it.todo`:
+`tests/worker/scheduler-hardening.spec.ts` (M13a's guard, health, counters,
+reaper and alerts, §24.6b's list; M13b's tick bases, weight packing, discovery tick, leases and retention)
+and `tests/unit/basketball.spec.ts` (M13c's windows, URLs, parser on the
+captures, pull counting, `gameAction`, `postponedVoidConfirmAt`; M13d's filter
+specs). M13c adds `tests/worker/basketball.spec.ts` (ingest budget, kill switches,
+settlement end to end, the postponed void, the teaser refusal) and the two 0013
+specs (§24.9). Each `describe` names its milestone.
+
+**Existing tests whose facts move**, so CI does not discover them:
+
+| File                                                                      | What moves                                                                                                                                                                                                                                                                         | In   |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| `tests/worker/ingest.spec.ts`                                             | claim: parked targets skipped, probation after 6 h, stamp and reset on both paths; `NO_LIVE_GAME` / retire unchanged for NULL `conference_id`                                                                                                                                      | M13a |
+| `tests/worker/jobs.spec.ts`                                               | the reaper; a zero-target run records `ok`; `dayEspnStatus`                                                                                                                                                                                                                        | M13a |
+| `tests/worker/routes.spec.ts`                                             | `/api/health` byte-identical; `/api/health/ingest` 200 / 503 per reason                                                                                                                                                                                                            | M13a |
+| `tests/worker/schema.spec.ts`                                             | 0012's three columns and the `incomplete_attempts` CHECK                                                                                                                                                                                                                           | M13a |
+| `tests/worker/ingest.spec.ts`                                             | tick-relative reschedule (a run 5 s late still claims a live slate on the next tick); weight packing (NFL + MLB pair, CFB alone, a fresh target alone, stop at the first misfit); discovery tick; admin always general; the CFB soak re-run at 480 ticks with its re-derived bound | M13b |
+| `tests/unit/time.spec.ts`                                                 | the four tiers as tick multiples; `lineStaleAfterMs` unchanged (3 h floor)                                                                                                                                                                                                         | M13b |
+| `tests/worker/mlb.spec.ts`                                                | the MLB soak re-run at 480 ticks                                                                                                                                                                                                                                                   | M13b |
+| `tests/unit/docs.spec.ts`                                                 | crons and `REFRESH_TARGETS_PER_RUN` follow wrangler (automatic); `MAX_SETTLE_ATTEMPTS` 480 in §3.1; NEW: both leases `< REFRESH_TICK_MS`, and wrangler's refresh cron is `*/(REFRESH_TICK_MS / 60 000)`                                                                            | M13b |
+| `tests/worker/settle.spec.ts`, `maintenance.spec.ts`                      | `MAX_SETTLE_ATTEMPTS` 480; `JOB_RUNS_KEPT_PER_JOB` 600                                                                                                                                                                                                                             | M13b |
+| `tests/worker/ingest.spec.ts`, `routes.spec.ts`                           | planner counts +5 a day (3 `ncaab` + 2 `nba`); `currentSeason` gains two keys                                                                                                                                                                                                      | M13c |
+| `tests/worker/migration-0005/0008/0009/0010.spec.ts`                      | every spec that re-runs an older rebuild composes FORWARD through 0013 (re-running 0009 or 0010 alone would narrow the CHECKs again); 0009's "`'nba'` refused" moves to 0013's `'nhl'`                                                                                             | M13c |
+| `tests/worker/schema.spec.ts:351`                                         | `insertBet('nba')` is now ACCEPTED; the refusal case moves to `'nhl'`                                                                                                                                                                                                              | M13c |
+| `tests/unit/espn.spec.ts`                                                 | OFF notes counted, not warned (football fixtures included); the limit-truncation warning; the four existing URLs byte-identical                                                                                                                                                    | M13c |
+| `tests/unit/time.spec.ts`, `validate.spec.ts`, `tests/web/labels.spec.ts` | `boardWindowEnd` for both leagues incl. both DST days, MLB unchanged; league messages from `LEAGUES`; the halves clock                                                                                                                                                             | M13c |
+| `tests/web/board-filter.spec.ts`, `grouping.spec.ts`                      | per-league filter specs, `top25` default, NBA none, "Other" includes NULL ids                                                                                                                                                                                                      | M13d |
+
+### 24.16 File-by-file, and the `Record<League, …>` checklist
+
+`src/shared/{types,api-types,errors,constants}.ts` re-open for **M13c**
+(both leagues in `LEAGUES`; `api-types.ts` changes by inference alone). M13a
+touches none of the four. M13b touches only `constants.ts` values: the two
+leases and `MAX_SETTLE_ATTEMPTS`. **No error code is added, removed or
+repurposed**: `GAME_NOT_BETTABLE`, `TEASER_INVALID` and `VALIDATION` mean exactly
+what M13 needs.
+
+**One league-add PR for both basketball leagues, not two.** The MLB precedent was
+one league per PR because MLB brought its own settlement rule, window and race.
+The two basketball leagues share every code path: one `action.ts` arm, one
+`boardWindowEnd` arm differing by a constant, one URL shape, one migration
+(0013 admits both), and the same `Record` tables. Two PRs would edit every one of
+those sites twice and verify the same rebuild twice. One M13c of roughly M12a +
+M12b's size is the smaller total review.
+
+**Every site the two leagues must fill when they join `LEAGUES`** (grep
+`Record<League`, `switch (league)` and `satisfies readonly League[]`,
+2026-11-07). The compiler finds all but the two marked. The list exists so M13c
+is a checklist, not a hunt:
+
+| Site                                                                                                           | `ncaab`                                                          | `nba`                   |
+| -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------- |
+| `src/worker/espn.ts` `ESPN_SCOREBOARD`                                                                         | §24.10                                                           | §24.10                  |
+| `src/worker/bets.ts` `LEAGUE_BETTING_OPEN`                                                                     | `false` → `true` (M13d)                                          | `false` → `true` (M13d) |
+| `src/shared/action.ts` `gameAction`, `postponedVoidConfirmAt`                                                  | the shared arm (§24.11)                                          | the shared arm          |
+| `src/shared/time.ts` `boardWindowEnd`                                                                          | `etDaysEnd(now, 3)`                                              | `etDaysEnd(now, 2)`     |
+| `src/web/lib/labels.ts` `LEAGUE_LABEL`, `LEAGUE_BADGE`, `BET_LEAGUE_LABEL`, `MARKET_HEAD_LABEL`, `CLOCK_STYLE` | §24.14, `'halves'`                                               | §24.14, `'quarters'`    |
+| `src/web/lib/grouping.ts` `BOARD_HAS_WEEKS`                                                                    | `false`                                                          | `false`                 |
+| `ConfigResponse.currentSeason` → `src/worker/routes/meta.ts`                                                   | a `currentSeasonFor` call (the object literal must gain the key) | same                    |
+| `src/web/lib/board-filter.ts` (M13d)                                                                           | `CBB_CONFERENCES`, default `'top25'`                             | `null`                  |
+| `src/worker/maintenance.ts` `MLB_POSTPONED_CONFIRMED` **(SQL, invisible to the compiler)**                     | in the `IN (…)` list                                             | in the `IN (…)` list    |
+| `src/worker/ingest.ts` `NCAAB_TARGET_SHAPE` **(the dormant switch, §24.8)**                                    | `'full'`                                                         | —                       |
+| `TEASABLE_LEAGUES`, `SECONDARY_LEAGUES`, `WeeklyLeague`                                                        | **unchanged**: explicit lists, which is the point                | unchanged               |
+| `src/shared/validate.ts` `BET_LEAGUES`, league messages                                                        | derived from `LEAGUES`                                           | derived                 |
+
+| File                                                                    | M13a                                                                                                             | M13b                                                                | M13c                                                                   | M13d                               |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------- |
+| `migrations/0012_ingest_guard.sql`                                      | **new**, §24.4 verbatim                                                                                          | —                                                                   | —                                                                      | —                                  |
+| `migrations/0013_basketball_leagues.sql`                                | —                                                                                                                | —                                                                   | **new**, §24.9                                                         | —                                  |
+| `src/worker/ingest.ts`                                                  | stamp, reset, parked predicate, `stats.parked`, `espn` per target, conference scoping                            | tick-based `computeNextRunAt`, weight packing, discovery tick       | `stats.offTheBoard`, the dormant `NCAAB_TARGET_SHAPE`, budget comments | —                                  |
+| `src/shared/time.ts`                                                    | —                                                                                                                | the four tiers as tick multiples                                    | `etDaysEnd`, two window arms                                           | —                                  |
+| `src/worker/alerts.ts` (new), `bugs.ts`                                 | `evaluateAlerts`, the five guarded transitions, the GitHub calls (reusing `bugs.ts`'s client, label `ops-alert`) | —                                                                   | —                                                                      | —                                  |
+| `src/worker/jobs.ts`                                                    | reaper, `dayEspnStatus`, `evaluateAlerts` after finalise                                                         | `scheduledTime` through `runJob`                                    | —                                                                      | —                                  |
+| `src/worker/espn.ts`, `providers.ts`                                    | `ProviderError.kind`                                                                                             | —                                                                   | two routes, `query(d, conferenceId)`, truncation warning               | —                                  |
+| `src/worker/routes/meta.ts`                                             | `/api/health/ingest`                                                                                             | threshold factor → `REFRESH_TICK_MS`                                | `currentSeason` keys                                                   | —                                  |
+| `src/worker/index.ts`                                                   | —                                                                                                                | pass `controller.scheduledTime`; dispatch the two new cron strings  | —                                                                      | —                                  |
+| `src/worker/maintenance.ts`                                             | —                                                                                                                | `JOB_RUNS_KEPT_PER_JOB` 600                                         | the postponed predicate                                                | —                                  |
+| `src/shared/constants.ts`                                               | —                                                                                                                | leases 2.5 min, `MAX_SETTLE_ATTEMPTS` 480                           | —                                                                      | —                                  |
+| `wrangler.jsonc`, `src/worker/env.ts`                                   | the `ALERT_MENTION_LOGIN` var (string, empty = off), read additively                                             | `*/3`, `1-59/3`, `REFRESH_TARGETS_PER_RUN` `"5"` (a count cap now)  | —                                                                      | —                                  |
+| `src/shared/types.ts`, `action.ts`, `espn.ts`                           | —                                                                                                                | —                                                                   | both leagues, the shared arm, pull counting                            | —                                  |
+| `src/worker/bets.ts`                                                    | —                                                                                                                | —                                                                   | both keys `false`                                                      | both `true`                        |
+| `src/web/lib/labels.ts`, `grouping.ts`                                  | —                                                                                                                | —                                                                   | the five tables, halves clock, `BOARD_HAS_WEEKS`                       | —                                  |
+| `src/web/pages/AdminPage.tsx`                                           | parked banner, ESPN status tally                                                                                 | —                                                                   | —                                                                      | —                                  |
+| `src/web/lib/board-filter.ts`, `BoardFilterSelect.tsx`, `GamesPage.tsx` | —                                                                                                                | —                                                                   | —                                                                      | per-league filter, `top25` default |
+| samples, `capture-espn-range.mjs`, `fixture-server.mjs`                 | —                                                                                                                | —                                                                   | four captures, argv entries, two routes                                | —                                  |
+| docs (`PLAN`, `CLAUDE`, `README`, `OPERATIONS`)                         | §11.1 row live, §9.2 reaper, OPERATIONS monitor                                                                  | §7.1 / §7.5 / §8.4 / §8.6 / §9.1 / §9.2 values, crons in OPERATIONS | §3.2 enums, §8.1 / §8.2 live, the 0013 row                             | README, §12 notes                  |
+
+### 24.17 Milestones and the parallel-execution map
+
+**The target, set by the owner: both basketball leagues bettable while the
+seasons are young**, with the hardening and the new rhythm in production first.
+Each PR is green on the gate and leaves football and MLB behaviour byte-identical
+except where this chapter says otherwise: pull notes leave `warnings` (§24.10),
+and the rhythm and cadences change (§24.7).
+
+| PR           | What lands                                                                                                                                                                                                   | Depends on               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
+| **M13-plan** | this chapter, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two contract files                                                                                             | —                        |
+| **M13a**     | 0012 (guard columns + `alerts`), the poison guard (stamp, reset, park, probation, admin un-park), `/api/health/ingest`, ESPN status counters, the reaper, GitHub-issue alerts; the monitor set up            | plan                     |
+| **M13b**     | `*/3` refresh and `1-59/3` settle, leases 2.5 min, tick-relative cadences, live every tick, the weight budget, the discovery tick, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600                                 | **M13a merged**          |
+| **M13c**     | 0013, `'ncaab'` and `'nba'` in `LEAGUES`, every `Record`, URLs, windows, pull counting, the shared settlement arm, the postponed rule, the dormant shard switch, samples: **boards visible, betting CLOSED** | **M13a and M13b merged** |
+| **M13d**     | the per-league board filter with the `top25` default, empty copy, payload check: **betting OPENS** for both                                                                                                  | M13c merged and verified |
+
+```
+M13-plan ──► M13a ──► M13b ──► M13c ──► M13d
+               │                  ▲        ▲
+               └─ (M13c written on a stacked branch, reviewed in parallel)
+                                  └─ (M13d written on M13c's branch)
+```
+
+**Why M13b waits for M13a to MERGE, not just be written.** With five times the
+invocations, a poison target freezes the app five times as fast. The rhythm
+change is only safe once a kill is survivable and visible. **Why M13c waits for
+both**: its first deploy is the first time a 155-game slate can reach
+production. It must land in a scheduler that runs it alone (M13b) and parks it if
+it is killed (M13a), and M13b's write-budget measurement must be in hand before
+basketball adds ~30k rows on a Saturday. Writing and reviewing can overlap:
+M13c and M13d are disjoint from M13a/M13b except `ingest.ts` (M13c adds one stats
+field, the dormant switch and comments), `time.ts` (separate functions),
+`meta.ts` (separate handlers) and the docs.
+
+**Verification gates** (OPERATIONS carries the steps):
+
+- _M13a_: the monitor is created and green; one forced alert reaches the
+  owner's inbox (§24.6b's recipient check); one `wrangler tail` refresh shows the
+  stamp and the reset (`incomplete_attempts` back to 0); a forced zero-target run
+  records `ok`; the Jobs page shows `espnStatus`.
+- _M13b_: 30 minutes of `wrangler tail` after the merge show refresh at every
+  3-minute tick and settle a minute after, a live slate claimed on CONSECUTIVE
+  ticks (the alignment check), and NFL + MLB sharing a run. The next day,
+  `dayRowsWritten` is within §24.13's model, and the PR records it.
+- _M13c_: the 0013 write estimate under its gate before merging (§24.9), then a
+  merge right after a refresh tick on a Tuesday or Wednesday;
+  `db:reconcile -- --remote` clean; three `ncaab:date:*` and two `nba:date:*`
+  targets in `coverage[]`; **Spike S7 data recorded**: `cpuTime` and game count
+  for every basketball target refreshed over the first weekend.
+- _M13d_: S7 shows a college slate of at least 60 games completing
+  (`outcome: ok`) with no park; one final of each league settled end to end with
+  the ledger reconciled.
+
+**DoD, each**: the gate green; that milestone's `it.todo`s discharged; the docs
+in §24.16's last row moved in the same PR (rule 11).
+
+### 24.18 Open questions and spikes
+
+**For the owner:**
+
+1. **The health URL** (§24.5): a new `/api/health/ingest` for the monitor
+   (recommended), or `/api/health` itself returning 503 as first briefed, at the
+   cost of the bug-report button and DB reads on every page load during an
+   outage.
+2. **Postponed basketball games** (§24.11): void the next morning on evidence
+   (the MLB rule, recommended, a refund), or hold to §7.5's 7-day rule in case
+   the replay keeps its id.
+3. **Labels**: `NCAAB` for headings and `CBB` for the slip badge (matching
+   `NCAAF` / `CFB`), and `NBA` for both?
+4. **The 155-game Saturday sample** stays uncommitted (§24.2), so its parse
+   figure lives in this chapter rather than in CI. Commit it (+2.8 MB) if you
+   want CI to re-measure it.
+5. **The write budget at every-tick live cadence is ≈ 45% of the hard cap on the
+   worst day** (§24.13), and the retreat (`REFRESH_LIVE_TICKS` → 2) is ready.
+   Confirm a `dayRowsWritten` of 60,000 as the retreat trigger.
+6. **0013's write cost is gated** (§24.9). If the measured estimate exceeds
+   60,000 rows, the next step (pruning old `games` rows or paid D1) is yours.
+
+**Spikes:**
+
+- **S7: CPU of a basketball slate, by game count. OPEN** (opened by this
+  chapter). _Question_: `cpuTime` for an `ncaab` refresh as the slates grow from
+  61 (November) to 155 (February); is the curve linear in games, and does any run
+  come back `exceededCpu`? _Method_: `wrangler tail --format json` filtered to
+  refresh runs, joined to `stats.coverage[]` from `GET /api/admin/jobs`. _Exit_:
+  a per-game slope and the largest slate observed OK. **If the D-I target parks
+  or any `ncaab` run reports `exceededCpu`, flip §24.8's switch** (R1, §17). _Does
+  not block M13c_ (read-only, guarded). It gates M13d only to the extent of "one
+  ≥ 60-game slate observed OK".
+- **S8: ESPN's handling of a postponed basketball game. OPEN.** Same id with a
+  moved `event.date`, or a new id? _Exit_: one observed postponement recorded in
+  §24.2. §24.11 is correct either way.
+- **S2** (§18) gains §24.13's ~430-statement data point as its exit.
+- **S1 is MEASURED** (§24.3, §18). Unknown and not measurable from outside: the
+  size of Cloudflare's CPU leeway. The design no longer depends on knowing it.
