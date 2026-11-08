@@ -49,8 +49,8 @@ import {
   HEALTH_STALE_AFTER_MS,
   ingestTarget,
   isDiscoveryTick,
-  NO_LIVE_GAME,
   nextDiscoveryTick,
+  NO_LIVE_GAME,
   planTargets,
   refreshTickBase,
   RETIRE_PREDICATE,
@@ -185,6 +185,7 @@ async function loadTarget(id: string): Promise<IngestTargetRow> {
     next_run_at: number;
     consecutive_failures: number;
     incomplete_attempts: number;
+    last_ok_at: number | null;
   }>();
   if (row === null) throw new Error(`no target ${id}`);
   return {
@@ -197,6 +198,7 @@ async function loadTarget(id: string): Promise<IngestTargetRow> {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    lastOkAt: row.last_ok_at,
     incompleteAttempts: row.incomplete_attempts,
   };
 }
@@ -1376,6 +1378,7 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
         priority: 100,
         nextRunAt: base,
         consecutiveFailures: 0,
+        lastOkAt: T0 - DAY, // a FETCHED slate: the 1-tick first retry applies
         incompleteAttempts: 0,
       };
       const at = (status: EventSpec['status'], kickoffAt: number): number =>
@@ -1395,10 +1398,12 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
       expect(computeNextRunAt(target, slateOf(league, [], now), false, now, base), league).toBe(
         base + REFRESH_DISCOVERY_TICKS * TICK,
       );
-      // Failure backoff: 5 ticks × 2^n from the base, capped at the discovery tier.
+      // Failure backoff (F5): the first failure retries on the next tick, then
+      // 5 ticks × 2^(n−2) from the base, capped at the discovery tier.
       for (const [failures, ticks] of [
-        [0, REFRESH_BACKOFF_BASE_TICKS],
-        [1, 2 * REFRESH_BACKOFF_BASE_TICKS],
+        [0, 1],
+        [1, REFRESH_BACKOFF_BASE_TICKS],
+        [2, 2 * REFRESH_BACKOFF_BASE_TICKS],
         [9, REFRESH_DISCOVERY_TICKS],
       ] as const) {
         expect(
@@ -1412,6 +1417,227 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
     expect(REFRESH_SOON_TICKS * TICK).toBe(HOUR);
     expect(REFRESH_DISCOVERY_TICKS * TICK).toBe(6 * HOUR);
     expect(REFRESH_BACKOFF_BASE_TICKS * TICK).toBe(15 * MIN);
+  });
+
+  it('(F5) a NEVER-fetched date that 403s retries on the discovery grid, so the live slates keep every general tick', async () => {
+    // F2's promise, under failure: the new date sits 1 ms before a discovery
+    // tick; it fails there; a next-tick retry would make it the oldest due row
+    // on the next GENERAL tick, where it runs alone (never-fetched weighs big)
+    // and the live slate waits. Instead it goes back to the grid.
+    const disc = nextDiscoveryTick(GENERAL);
+    const live = await insertTarget({
+      day: 0,
+      nextRunAt: disc - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 10,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5-grid');
+    const fresh = await insertTarget({ day: 2, nextRunAt: disc - 1 });
+    espn.setResponder(keyOf(2), () => new Response('forbidden', { status: 403 }));
+
+    const run = await runJob(env, 'refresh', 'cron', disc + 5_000, { scheduledTime: disc });
+    expect(run.status).toBe('ok');
+    const row = await guardRow(fresh);
+    expect(row.consecutive_failures).toBe(1);
+    expect(row.next_run_at).toBe(nextDiscoveryTick(disc));
+    expect(row.next_run_at).not.toBe(disc + TICK);
+
+    // The four general ticks that follow are the live slate's, every one.
+    for (let k = 1; k < 5; k += 1) {
+      expect(
+        ids(await claimDueTargets(env, disc + k * TICK + 5_000, 5, false)),
+        `tick +${String(k)}`,
+      ).toEqual([live]);
+    }
+    // A target that HAS fetched before still pays only its own next tick (the
+    // sibling test above); this exception is for the never-fetched alone.
+  });
+
+  it('(F5) inside a BURST a failed new date costs the live slate at most ONE general tick (accepted residual, PLAN.md §24.7 (c))', async () => {
+    // Two burst dates stamped 1 ms before consecutive discovery ticks; the
+    // first 403s once. Its grid retry collides with the second date's slot and
+    // spills to the next general tick — the bound this test pins is "one".
+    const d1 = nextDiscoveryTick(GENERAL);
+    const d2 = nextDiscoveryTick(d1);
+    const live = await insertTarget({
+      day: 0,
+      nextRunAt: d1 - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 10,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5-burst');
+    // The live slate keeps answering with a live game, so it stays on the live
+    // tier (an EMPTY board would drop it to the 6 h discovery tier).
+    espn.set(keyOf(0), [event('nfl', 'in', T0 - HOUR)]);
+    const date1 = await insertTarget({ day: 2, nextRunAt: d1 - 1 });
+    const date2 = await insertTarget({ day: 3, nextRunAt: d2 - 1 });
+    let date1Calls = 0;
+    espn.setResponder(keyOf(2), () => {
+      date1Calls += 1;
+      return date1Calls === 1 ? new Response('forbidden', { status: 403 }) : emptyBoard();
+    });
+    espn.setResponder(keyOf(3), () => emptyBoard());
+
+    const processed = async (tick: number): Promise<string[]> => {
+      const run = await runJob(env, 'refresh', 'cron', tick + 5_000, { scheduledTime: tick });
+      expect(run.status).toBe('ok');
+      return (run.stats as { coverage: { targetId: string }[] }).coverage.map((c) => c.targetId);
+    };
+
+    expect(await processed(d1)).toEqual([date1]); // the discovery pick; 403
+    expect((await guardRow(date1)).next_run_at).toBe(d2); // back to the grid…
+    for (let k = 1; k < 5; k += 1) expect(await processed(d1 + k * TICK)).toEqual([live]);
+    expect(await processed(d2)).toEqual([date2]); // …but date2 owns that slot
+    const after: string[][] = [];
+    for (let k = 1; k < 5; k += 1) after.push(await processed(d2 + k * TICK));
+    const liveTicks = after.filter((ids) => ids.includes(live)).length;
+    const date1Ticks = after.filter((ids) => ids.includes(date1)).length;
+    expect(date1Ticks).toBe(1); // the spilled retry, exactly once
+    expect(liveTicks).toBeGreaterThanOrEqual(3); // the live slate loses at most one
+    expect((await guardRow(date1)).last_status).toBe('ok'); // and the retry succeeded
+  });
+
+  it('(F5) a burst date that KEEPS failing spills once, then stays on the discovery grid (round-3 bound)', async () => {
+    // The same burst, but date1 403s on EVERY call. Its spilled retry lands on
+    // a general tick; with `base + step` from there every later retry would
+    // also be a general tick (5, 10, 20 ticks on) and the live slate would
+    // lose one tick per backoff step for hours. The snap puts the second
+    // failure's step on the grid: due at d4 (the first grid tick ≥ spill + 5
+    // ticks), then d6 (step 10 from a grid tick), and no general tick again.
+    const d1 = nextDiscoveryTick(GENERAL);
+    const d2 = nextDiscoveryTick(d1);
+    const live = await insertTarget({
+      day: 0,
+      nextRunAt: d1 - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 10,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5-persist');
+    espn.set(keyOf(0), [event('nfl', 'in', T0 - HOUR)]);
+    const date1 = await insertTarget({ day: 2, nextRunAt: d1 - 1 });
+    const date2 = await insertTarget({ day: 3, nextRunAt: d2 - 1 });
+    espn.setResponder(keyOf(2), () => new Response('forbidden', { status: 403 }));
+    espn.setResponder(keyOf(3), () => emptyBoard());
+    // Left alone, the planner would stamp the other leagues' dates one per
+    // discovery tick behind date2 — a burst of its own that keeps colliding
+    // with the retry for the whole test. Create them now, fetched and far
+    // from due, so the burst under test is date1 + date2 and then DRAINS.
+    await planTargets(env, d1 - HOUR);
+    await env.DB.prepare(
+      'UPDATE ingest_targets SET last_ok_at = ?1, games_seen = 1, next_run_at = ?2 WHERE id NOT IN (?3, ?4, ?5)',
+    )
+      .bind(T0 - DAY, d2 + DAY, live, date1, date2)
+      .run();
+
+    const processed = async (tick: number): Promise<string[]> => {
+      const run = await runJob(env, 'refresh', 'cron', tick + 5_000, { scheduledTime: tick });
+      expect(run.status).toBe('ok');
+      return (run.stats as { coverage: { targetId: string }[] }).coverage.map((c) => c.targetId);
+    };
+
+    expect(await processed(d1)).toEqual([date1]); // 403 #1 → the grid (d2)
+    for (let k = 1; k < 5; k += 1) expect(await processed(d1 + k * TICK)).toEqual([live]);
+    expect(await processed(d2)).toEqual([date2]); // date2 owns that slot
+
+    // The next 20 ticks: four discovery periods, d3 … d6 among them.
+    const generalWithDate1: number[] = [];
+    const discoveryWithDate1: number[] = [];
+    for (let k = 1; k <= 20; k += 1) {
+      const tick = d2 + k * TICK;
+      const got = await processed(tick);
+      const discovery = k % 5 === 0;
+      if (got.includes(date1)) (discovery ? discoveryWithDate1 : generalWithDate1).push(k);
+      // Every general tick date1 does not take serves the live slate (the
+      // planner's own today-targets for the other leagues, fetched once on a
+      // grid tick, may pack beside it — light, so no cost to the live slate).
+      if (!discovery && !got.includes(date1)) expect(got, `tick +${String(k)}`).toContain(live);
+    }
+    expect(generalWithDate1).toHaveLength(1); // the one spill (403 #2)…
+    expect(generalWithDate1[0]).toBeLessThan(5); // …right after d2
+    // 403 #2 from a general tick snaps to d4 (k = 10), 403 #3 from d4 steps 10
+    // ticks to d6 (k = 20): on the grid, never a general tick again.
+    expect(discoveryWithDate1).toEqual([10, 20]);
+    const row = await guardRow(date1);
+    expect(row.consecutive_failures).toBe(4);
+    expect(row.next_run_at).toBe(d2 + 40 * TICK); // 403 #4 at d6: step 20 → d6 + 20 ticks
+    expect(row.next_run_at % (5 * TICK)).toBe(0); // still on the grid
+  });
+
+  it('(F5) a live slate that 403s ONCE is due at the very next tick, and a 200 there puts it back on every tick', async () => {
+    // Measured 2026-11-08 04:24 UTC: one transient 403 on the live CFB slate
+    // backed it off 15 min. Now the first failure costs exactly one tick.
+    const id = await insertTarget({
+      day: 0,
+      nextRunAt: GENERAL - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 1,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5');
+    const dropOthers = (): Promise<unknown> =>
+      env.DB.prepare('DELETE FROM ingest_targets WHERE id <> ?1').bind(id).run();
+
+    espn.setResponder(keyOf(0), () => new Response('forbidden', { status: 403 }));
+    const failed = await runJob(env, 'refresh', 'cron', GENERAL + 5_000, {
+      scheduledTime: GENERAL,
+    });
+    expect(failed.status).toBe('ok');
+    const stats = failed.stats as {
+      espnStatus: Record<string, number>;
+      failures: { targetId: string; espn: string; consecutiveFailures: number }[];
+    };
+    // The ESPN status counter (and so the `espn-status` alert) sees the 403
+    // exactly as before: the schedule does not touch what is counted.
+    expect(stats.espnStatus['403']).toBe(1);
+    expect(stats.failures).toEqual([
+      expect.objectContaining({ targetId: id, espn: '403', consecutiveFailures: 1 }),
+    ]);
+    // …and the per-run regime alert fires on that single 403, regardless of backoff.
+    expect((await alertRow('espn-status:403'))?.state).toBe('firing');
+    let row = await guardRow(id);
+    expect(row.consecutive_failures).toBe(1);
+    expect(row.last_status).toBe('error');
+    expect(row.next_run_at).toBe(GENERAL + TICK);
+
+    // The next tick claims it (not one tick sooner).
+    await dropOthers();
+    expect(ids(await claimDueTargets(env, GENERAL + TICK - 1, 5, false))).toEqual([]);
+    expect(ids(await claimDueTargets(env, GENERAL + TICK + 5_000, 5, false))).toEqual([id]);
+
+    // ESPN answers 200 there: the streak resets and the slate is live again.
+    espn.set(keyOf(0), [event('nfl', 'in', T0 - HOUR)]);
+    const healed = await runJob(env, 'refresh', 'cron', GENERAL + TICK + 5_000, {
+      scheduledTime: GENERAL + TICK,
+    });
+    expect(healed.status).toBe('ok');
+    row = await guardRow(id);
+    expect(row.consecutive_failures).toBe(0);
+    expect(row.last_status).toBe('ok');
+    expect(row.next_run_at).toBe(GENERAL + TICK + REFRESH_LIVE_TICKS * TICK);
+  });
+
+  it('(F5) a sustained outage backs off 1, 5, 10, 20 ticks — unchanged but for the first step', async () => {
+    const id = await insertTarget({
+      day: 0,
+      nextRunAt: GENERAL - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 1,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5-outage');
+    espn.setResponder(keyOf(0), () => new Response('forbidden', { status: 403 }));
+
+    let tick = GENERAL;
+    const steps: number[] = [];
+    for (let n = 1; n <= 4; n += 1) {
+      const run = await runJob(env, 'refresh', 'cron', tick + 5_000, { scheduledTime: tick });
+      expect(run.status).toBe('ok');
+      const row = await guardRow(id);
+      expect(row.consecutive_failures).toBe(n);
+      steps.push((row.next_run_at - tick) / TICK);
+      tick = row.next_run_at;
+      // Only this target, so the planner's never-fetched dates do not crowd it out.
+      await env.DB.prepare('DELETE FROM ingest_targets WHERE id <> ?1').bind(id).run();
+    }
+    expect(steps).toEqual([1, REFRESH_BACKOFF_BASE_TICKS, 10, 20]);
   });
 
   it('a target with last_ok_at NULL weighs as big', async () => {

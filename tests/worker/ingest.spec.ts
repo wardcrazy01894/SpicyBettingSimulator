@@ -23,8 +23,8 @@ import {
   claimDueTargets,
   computeNextRunAt,
   GAME_LIVE_SQL,
-  isDiscoveryTick,
   ingestTarget,
+  isDiscoveryTick,
   lineGapsOf,
   lineRowsWorthWriting,
   nextDiscoveryTick,
@@ -88,6 +88,7 @@ interface TargetDbRow {
   readonly consecutive_failures: number;
   readonly games_seen: number;
   readonly incomplete_attempts: number;
+  readonly last_ok_at: number | null;
 }
 
 function targetDbRow(id: string): Promise<TargetDbRow | null> {
@@ -107,6 +108,7 @@ async function loadTarget(id: string): Promise<IngestTargetRow> {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    lastOkAt: row.last_ok_at,
     incompleteAttempts: row.incomplete_attempts,
   };
 }
@@ -1171,11 +1173,15 @@ describe('upstream failures leave the database untouched', () => {
     it(`${label} leaves the database completely untouched`, async () => {
       const t = await sundayNflTarget();
       await ingestSlate([BASE_SPEC], T0, t);
+      // Reload: the successful ingest set last_ok_at, so this is a FETCHED
+      // target whose first failure retries on the next tick (F5).
+      const fetched = await loadTarget(t.id);
+      expect(fetched.lastOkAt).not.toBeNull();
       const before = await gameRow('nfl:401872925');
       const beforeLine = await lineRow('nfl:401872925');
 
       espn.setResponder(t.key, responder);
-      const res = await ingestTarget(env, new EspnProvider(env), t, T0 + HOUR);
+      const res = await ingestTarget(env, new EspnProvider(env), fetched, T0 + HOUR);
       expect(res.error).not.toBeNull();
       expect(res.gamesUpserted).toBe(0);
       expect(res.linesUpserted).toBe(0);
@@ -1185,7 +1191,10 @@ describe('upstream failures leave the database untouched', () => {
       const row = await targetDbRow(t.id);
       expect(row?.last_status).toBe('error');
       expect(row?.consecutive_failures).toBe(1);
-      expect(row?.next_run_at).toBe(T0 + HOUR + 15 * MIN);
+      // A FIRST failure of a FETCHED target retries on the next tick (F5), not
+      // 15 min later; a never-fetched one goes to the discovery grid instead
+      // (the computeNextRunAt unit case below).
+      expect(row?.next_run_at).toBe(T0 + HOUR + LIVE_MS);
     });
   }
 
@@ -1856,6 +1865,7 @@ describe('computeNextRunAt', () => {
     priority: 100,
     nextRunAt: T0,
     consecutiveFailures: 0,
+    lastOkAt: T0 - DAY, // a FETCHED target: the 1-tick first retry applies
     incompleteAttempts: 0,
   };
 
@@ -1876,8 +1886,9 @@ describe('computeNextRunAt', () => {
     expect(computeNextRunAt(target, live, false, late, T0)).toBe(T0 + LIVE_MS);
     const far = makeSlate([spec({ status: 'pre', kickoffAt: T0 + 8 * DAY })], 'nfl', late);
     expect(computeNextRunAt(target, far, false, late)).toBe(T0 + 6 * HOUR);
+    // A second consecutive failure (one stored): 5 ticks = 15 min (F5).
     expect(computeNextRunAt({ ...target, consecutiveFailures: 1 }, null, true, late)).toBe(
-      T0 + 30 * MIN,
+      T0 + 15 * MIN,
     );
   });
 
@@ -1969,14 +1980,48 @@ describe('computeNextRunAt', () => {
     expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + LIVE_MS);
   });
 
-  it('failure -> exponential backoff capped at 6h', () => {
+  it('failure on a NEVER-fetched target -> the next DISCOVERY tick, not the next general one (F5 as built)', () => {
+    // It weighs big and runs alone (§24.7); a general-tick retry would take
+    // that tick from the live slates. Every step is snapped onto the grid.
+    const fresh = { ...target, lastOkAt: null, consecutiveFailures: 0 };
+    expect(T0 % (5 * REFRESH_TICK_MS)).toBe(0); // T0 is itself a discovery tick
+    expect(computeNextRunAt(fresh, null, true, T0)).toBe(nextDiscoveryTick(T0));
+    expect(computeNextRunAt(fresh, null, true, T0)).not.toBe(T0 + LIVE_MS);
+    // From a GRID tick the later steps are the shared schedule itself (each is
+    // a whole number of discovery periods).
+    expect(computeNextRunAt({ ...fresh, consecutiveFailures: 1 }, null, true, T0)).toBe(
+      T0 + 5 * REFRESH_TICK_MS,
+    );
+    expect(computeNextRunAt({ ...fresh, consecutiveFailures: 2 }, null, true, T0)).toBe(
+      T0 + 10 * REFRESH_TICK_MS,
+    );
+    // From a GENERAL tick (a retry that spilled off the grid inside a burst,
+    // §24.7 (c)) every step snaps UP to the grid — never `base + step`, which
+    // would keep each later retry on a general tick (round-3 finding).
+    const general = T0 + REFRESH_TICK_MS;
+    expect(computeNextRunAt(fresh, null, true, general)).toBe(T0 + 5 * REFRESH_TICK_MS);
+    expect(computeNextRunAt({ ...fresh, consecutiveFailures: 1 }, null, true, general)).toBe(
+      T0 + 10 * REFRESH_TICK_MS,
+    );
+    expect(computeNextRunAt({ ...fresh, consecutiveFailures: 1 }, null, true, general)).not.toBe(
+      general + 5 * REFRESH_TICK_MS,
+    );
+    // A target that HAS fetched keeps the plain schedule from any tick.
+    expect(computeNextRunAt({ ...target, consecutiveFailures: 1 }, null, true, general)).toBe(
+      general + 5 * REFRESH_TICK_MS,
+    );
+  });
+
+  it('failure -> the next tick the first time, then exponential backoff capped at 6h (F5)', () => {
+    // `consecutiveFailures` is the STORED streak, before this failure.
     const branches: readonly [number, number][] = [
-      [0, 15 * MIN],
-      [1, 30 * MIN],
-      [2, 60 * MIN],
-      [3, 120 * MIN],
-      [4, 240 * MIN],
-      [5, 6 * HOUR], // 480 min, capped
+      [0, LIVE_MS], // the first failure: the very next tick (3 min)
+      [1, 15 * MIN],
+      [2, 30 * MIN],
+      [3, 60 * MIN],
+      [4, 120 * MIN],
+      [5, 240 * MIN],
+      [6, 6 * HOUR], // 480 min, capped
       [8, 6 * HOUR],
       [40, 6 * HOUR], // no overflow to Infinity
     ];

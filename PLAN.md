@@ -220,7 +220,7 @@ section explains the _why_.
 | `REFRESH_LIVE_TICKS`                  | `1`             | a slate with a game live (or within 3 h) is due at the NEXT tick, every league; the write budget's retreat lever (§24.7, §24.13) — read since M13b                                                                                                                                                                                     |
 | `REFRESH_SOON_TICKS`                  | `20`            | 60 min: a slate with a kickoff within 48 h (§24.7) — read since M13b                                                                                                                                                                                                                                                                   |
 | `REFRESH_DISCOVERY_TICKS`             | `120`           | 6 h: line discovery (§24.7) — read since M13b                                                                                                                                                                                                                                                                                          |
-| `REFRESH_BACKOFF_BASE_TICKS`          | `5`             | 15 min: failure backoff base (doubling, capped at 6 h) and the poison guard's provisional reschedule (§24.4) — read since M13a/M13b                                                                                                                                                                                                    |
+| `REFRESH_BACKOFF_BASE_TICKS`          | `5`             | 15 min: failure backoff base from the SECOND consecutive failure (doubling, capped at 6 h; the first retries next tick, F5) and the poison guard's provisional reschedule (§24.4) — read since M13a/M13b                                                                                                                               |
 | `REFRESH_DISCOVERY_EVERY_NTH_TICK`    | `5`             | every fifth tick (:00 :15 :30 :45, 96 a day) claims a non-live target first: discovery's reservation in time (§24.7) — read since M13b                                                                                                                                                                                                 |
 | `REFRESH_WEIGHT_BUDGET`               | `40`            | the most games one refresh run may carry IN TOTAL, the first target's weight included. The first target always runs, even if it alone exceeds this, and then nothing joins it. So any two of the NFL, MLB and NBA slates pair up (all three, 47 games, do not), and a CFB or D-I basketball slate runs alone (§24.7) — read since M13b |
 | `NCAAB_BOARD_ET_DAYS`                 | `3`             | college basketball's board and ingest window: today and the next two ET dates, so games are seen while ESPN still sends their conference (§24.2) — read from M13c                                                                                                                                                                      |
@@ -1940,11 +1940,21 @@ before `now`), never from `now`: a run starts seconds after its tick, and
 | otherwise (line discovery for next week)   | +120 ticks (6 h)                             |
 | all games `final`/`canceled`               | +480 ticks (24 h), and drop after 2 days     |
 
-Failures: exponential backoff `min(5 ticks (15 min) × 2^consecutive_failures, 6h)`, capped at 8
-failures before the target is parked at +6h and reported in `job_runs.stats`. **A
+Failures (`failureBackoffTicks` in `src/shared/time.ts`, since F5): the **first**
+failure retries on the **next tick** (+1 tick, 3 min); from the second
+consecutive failure on, `min(5 ticks (15 min) × 2^(n−2), 120 ticks (6 h))` —
+15 min, 30, 60, 120, 240, then the 6 h ceiling from the 7th consecutive failure
+— every failure reported in `job_runs.stats.failures[]`. The first step is one
+tick because ESPN's edge 403s the Worker intermittently (§14.8): one bad answer
+must not freeze a live slate for 15 min. The one exception is a target that has
+NEVER fetched (`last_ok_at IS NULL`): it weighs big and runs alone, so each of
+its steps is snapped onto the discovery grid instead of a general tick
+(§24.7 (c)). A sustained outage costs at most **4
+fetches in any hour** per target (at ticks 0, 1, 6, 16; then 36, 76, …), against
+3 before F5 and nowhere near the 20 a one-tick retry would cost. **A
 failed fetch or a parse error writes nothing to `games`/`game_lines`** — parse first,
 into memory, then write. ESPN being down means stale data, never corrupt data.
-(That "+6h park" is only the backoff's ceiling, and a failure still writes its
+(That 6 h ceiling is only the backoff's cap, and a failure still writes its
 reschedule. M13a's PARKED state is a different thing: it is for an invocation
 KILLED before any reschedule could be written, the case this backoff never
 sees. §24.4.)
@@ -3874,8 +3884,19 @@ placement window and the cancel/edit window, because both guards read the curren
 
 The parser is total (never throws), skips bad events with a warning, and ingestion
 writes only after a successful full parse. A non-200, a timeout (`AbortSignal.timeout(8000)`),
-or a JSON error increments `consecutive_failures` and backs off. Existing rows are
+or a JSON error increments `consecutive_failures` and backs off (§8.4). Existing rows are
 never modified on failure. Warnings are visible in `GET /api/admin/jobs`.
+
+**Intermittent 403s from the Worker's egress (observed 2026-11-08, F5).** After the
+3-minute tick went live, ESPN's edge answered **403** to 2 of 13 Worker fetches —
+at 04:12 and 04:24 UTC — while the same URLs, with the same User-Agent, returned
+200 from a laptop minutes later: the Worker's shared Cloudflare egress IP is being
+scored, intermittently, not our UA rejected. The 04:24 one hit the LIVE CFB
+Saturday slate, and the backoff of the time (15 min on the first failure) froze
+its live scores for 15 minutes — the staleness the 3-minute tick was bought to
+remove. Since F5 the first failure retries on the next tick and the doubling
+starts at the second (§8.4). The `espn-status` alert still fires on the first
+403 (§24.6b), so a regime is still seen.
 
 ### 14.9 CFB specifics
 
@@ -8547,20 +8568,20 @@ slate is due again at the very next tick, in every league**. Everything ships in
 M13b, in ONE PR with `wrangler.jsonc`, §9.1 and `docs/OPERATIONS.md`, so the docs
 guard stays green.
 
-| Knob                                | Before M13b                   | Since M13b                                                                     | Why                                                                                                                      |
-| ----------------------------------- | ----------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| refresh cron                        | `*/15 * * * *` (96/day)       | `*/3 * * * *` (**480/day**)                                                    | `REFRESH_TICK_MS`. Every invocation has its own CPU budget                                                               |
-| settle cron                         | `5-59/15 * * * *`             | `1-59/3 * * * *` (480/day)                                                     | one minute after each refresh tick, so a final is graded within ~4–6 minutes of ESPN calling it                          |
-| maintenance cron                    | `30 8 * * *`                  | unchanged                                                                      | still exactly 3 crons                                                                                                    |
-| refresh / settle `JOB_LEASE_TTL_MS` | 5 min / 5 min                 | **2.5 min / 2.5 min**                                                          | strictly under the 3-minute period (§9.2), so a killed run's lease is gone by the next tick                              |
-| live cadence                        | 15 min                        | **1 tick** (`REFRESH_LIVE_TICKS`)                                              | every league, every tick                                                                                                 |
-| within 48 h of a kickoff            | 60 min                        | 20 ticks (`REFRESH_SOON_TICKS`) = 60 min                                       | pre-game lines move slowly, and §8.5's staleness window is `max(3 h, 3 × cadence)`, so this tier is what keeps it at 3 h |
-| discovery                           | 6 h                           | 120 ticks (`REFRESH_DISCOVERY_TICKS`) = 6 h                                    | ESPN posts CBB and MLB lines on game day only (§24.2, §23.2). Faster discovery buys nothing                              |
-| all final                           | 24 h                          | 480 ticks = 24 h                                                               | unchanged                                                                                                                |
-| failure backoff base                | 15 min                        | 5 ticks (`REFRESH_BACKOFF_BASE_TICKS`) = 15 min, doubling, capped at 120 ticks | a failing ESPN must not be retried 20 times an hour (§24.6)                                                              |
-| targets per run                     | 2 (`REFRESH_TARGETS_PER_RUN`) | a **weight budget** (below); the var becomes a COUNT cap of `5`                | a big slate runs alone, small ones share                                                                                 |
-| `MAX_SETTLE_ATTEMPTS`               | 96 (24 h at 15 min)           | **480** (24 h at 3 min)                                                        | the constant means "24 h of patience" (§7.1); at 96 it would park a bet after 4.8 h. A §3.1 value change in M13b         |
-| `JOB_RUNS_KEPT_PER_JOB`             | 200                           | **600**                                                                        | 480 runs per job a day, and `dayRowsWritten` sums the last 24 h (below)                                                  |
+| Knob                                | Before M13b                   | Since M13b                                                                                                                                                        | Why                                                                                                                      |
+| ----------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| refresh cron                        | `*/15 * * * *` (96/day)       | `*/3 * * * *` (**480/day**)                                                                                                                                       | `REFRESH_TICK_MS`. Every invocation has its own CPU budget                                                               |
+| settle cron                         | `5-59/15 * * * *`             | `1-59/3 * * * *` (480/day)                                                                                                                                        | one minute after each refresh tick, so a final is graded within ~4–6 minutes of ESPN calling it                          |
+| maintenance cron                    | `30 8 * * *`                  | unchanged                                                                                                                                                         | still exactly 3 crons                                                                                                    |
+| refresh / settle `JOB_LEASE_TTL_MS` | 5 min / 5 min                 | **2.5 min / 2.5 min**                                                                                                                                             | strictly under the 3-minute period (§9.2), so a killed run's lease is gone by the next tick                              |
+| live cadence                        | 15 min                        | **1 tick** (`REFRESH_LIVE_TICKS`)                                                                                                                                 | every league, every tick                                                                                                 |
+| within 48 h of a kickoff            | 60 min                        | 20 ticks (`REFRESH_SOON_TICKS`) = 60 min                                                                                                                          | pre-game lines move slowly, and §8.5's staleness window is `max(3 h, 3 × cadence)`, so this tier is what keeps it at 3 h |
+| discovery                           | 6 h                           | 120 ticks (`REFRESH_DISCOVERY_TICKS`) = 6 h                                                                                                                       | ESPN posts CBB and MLB lines on game day only (§24.2, §23.2). Faster discovery buys nothing                              |
+| all final                           | 24 h                          | 480 ticks = 24 h                                                                                                                                                  | unchanged                                                                                                                |
+| failure backoff base                | 15 min                        | 5 ticks (`REFRESH_BACKOFF_BASE_TICKS`) = 15 min, doubling, capped at 120 ticks; since F5 from the SECOND consecutive failure — the first retries on the next tick | a failing ESPN must not be retried 20 times an hour (§24.6); one transient 403 must not freeze a live slate (§14.8)      |
+| targets per run                     | 2 (`REFRESH_TARGETS_PER_RUN`) | a **weight budget** (below); the var becomes a COUNT cap of `5`                                                                                                   | a big slate runs alone, small ones share                                                                                 |
+| `MAX_SETTLE_ATTEMPTS`               | 96 (24 h at 15 min)           | **480** (24 h at 3 min)                                                                                                                                           | the constant means "24 h of patience" (§7.1); at 96 it would park a bet after 4.8 h. A §3.1 value change in M13b         |
+| `JOB_RUNS_KEPT_PER_JOB`             | 200                           | **600**                                                                                                                                                           | 480 runs per job a day, and `dayRowsWritten` sums the last 24 h (below)                                                  |
 
 **Invocations**: 480 refresh + 480 settle + 1 maintenance ≈ **960 cron
 invocations a day**, plus 288 monitor checks and the friends' own requests.
@@ -8672,7 +8693,31 @@ still claims what it bumped (§9.3).
   date between 20:00 and 20:20 ET is one) counts as non-live for the discovery
   pick; if it missed the previous tick because big slates were taking turns, it
   is older than the T − 1 ms stamp and wins. The burst test uses `in_progress`
-  slates only, so it cannot see (b); it is bounded to one tick per slip. Before F2 the planner
+  slates only, so it cannot see (b); it is bounded to one tick per slip. (c)
+  Fetch FAILURES interact with the grid (F5): a never-fetched date whose fetch
+  fails retries on the DISCOVERY grid, never a general tick — for a
+  `last_ok_at IS NULL` target `computeNextRunAt` snaps EVERY failure's step to
+  the first discovery tick at or after it (the step itself from a grid tick,
+  since each step is a whole number of discovery periods; at most one period
+  later from a general tick). The snap is unconditional because a retry that
+  has spilled onto a general tick (next sentence) would otherwise anchor every
+  later step off the grid too. Alone — outside a burst — a never-fetched date
+  therefore costs no general tick however many times it fails (tested, with a
+  date that 403s on every call). INSIDE A BURST the grid slot the retry lands
+  on may already belong to the next burst date, stamped 1 ms earlier, which
+  wins the discovery pick; the failed date is then the oldest due row on a
+  general tick shortly after it (the first such tick a live slate was not
+  already due on) and runs alone there — **one live tick per failed retry
+  that collides with the burst, none once the burst has drained**, accepted
+  and tested as a bound (two of ~22 fetches 403'd on the first night, so a
+  10-date burst expects about one such tick; two failures in a row on one
+  date, at most about one burst in ten; a date that fails on EVERY call inside
+  a 10-date burst — about 50 ticks — collides on steps 1, 5, 10 and 20, so the
+  worst case is four live ticks per burst). The F2 chain anchor excludes failed rows, so
+  the chain does not step around the retry; the fix, if this ever matters, is
+  to re-stamp a failed never-fetched date at the END of the chain in the
+  reschedule itself. A target that has fetched before retries on the very
+  next tick and pays with its own slot. Before F2 the planner
   stamped `next_run_at = now`, and the burst drained on consecutive general
   ticks ahead of every live slate for ~24–30 minutes (~60 before M13b); bet
   locks are kickoff-based, so no money ever moved.
@@ -8721,8 +8766,8 @@ times the runs moves no credit**.
 when small slates pack (≤ 5 per invocation, against 50 subrequests). That is
 2.5× today's ≤ 192, from one User-Agent, on an unmetered API whose tolerance is
 unknown. The status counters of §24.6 (`dayEspnStatus`) are the gauge. A 429 or
-403 regime takes the existing backoff path (5 ticks × 2^n per target, capped at
-6 h), and `espn-all-failing` in §24.5 pages the owner. The retreat is the same
+403 regime takes the existing backoff path (since F5: the next tick once, then
+5 ticks × 2^(n−2) per target, capped at 6 h — at most 4 fetches in any hour), and `espn-all-failing` in §24.5 pages the owner. The retreat is the same
 lever as for the write budget: `REFRESH_LIVE_TICKS`.
 
 **§9.3's ACCEPTED RACE** (a cron tick between an admin's bump and its run)

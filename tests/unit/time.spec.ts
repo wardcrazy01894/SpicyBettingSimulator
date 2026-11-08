@@ -6,6 +6,7 @@ import {
   LINE_STALE_MS,
   NCAAF_WEEK_ROLLOVER_ET_HOUR,
   NFL_WEEK_ROLLOVER_ET_HOUR,
+  REFRESH_BACKOFF_BASE_TICKS,
   REFRESH_DISCOVERY_TICKS,
   REFRESH_LIVE_TICKS,
   REFRESH_SOON_TICKS,
@@ -18,6 +19,7 @@ import {
   etDateKey,
   etDateKeyRange,
   etDayBounds,
+  failureBackoffTicks,
   lockAtFor,
   parseIsoToEpochMs,
   expectedRefreshMs,
@@ -259,6 +261,49 @@ describe('expectedRefreshMs / lineStaleAfterMs (PLAN §8.4 / §8.5)', () => {
     expect(REFRESH_SOON_MS).toBe(HOUR);
     expect(REFRESH_DISCOVERY_MS).toBe(6 * HOUR);
     expect(REFRESH_DONE_MS).toBe(24 * HOUR);
+  });
+
+  it('(F5) failure backoff: the FIRST failure retries on the next tick, then 5 × 2^(n−2) ticks, capped', () => {
+    // n is the streak INCLUDING the failure being scheduled. One transient ESPN
+    // 403 must not freeze a live slate for 15 min (two measured 2026-11-08);
+    // from the second failure on it is today's doubling, so a real outage is
+    // still not retried 20 times an hour.
+    const table: readonly (readonly [number, number])[] = [
+      [1, 1],
+      [2, REFRESH_BACKOFF_BASE_TICKS], // 5 ticks = 15 min
+      [3, 10],
+      [4, 20],
+      [5, 40],
+      [6, 80],
+      [7, REFRESH_DISCOVERY_TICKS], // 160, capped at 120 ticks = 6 h
+      [8, REFRESH_DISCOVERY_TICKS],
+      [9, REFRESH_DISCOVERY_TICKS],
+      [41, REFRESH_DISCOVERY_TICKS], // no overflow to Infinity
+      [1_000_000, REFRESH_DISCOVERY_TICKS],
+    ];
+    for (const [n, ticks] of table) {
+      expect(failureBackoffTicks(n), `streak ${String(n)}`).toBe(ticks);
+      expect(Number.isInteger(failureBackoffTicks(n))).toBe(true);
+    }
+    // Defensive: a streak below 1 (the caller always passes ≥ 1) is a first failure.
+    expect(failureBackoffTicks(0)).toBe(1);
+    expect(failureBackoffTicks(-3)).toBe(1);
+    // Wall-clock: 3 min, 15 min, 30 min, … 6 h.
+    expect(failureBackoffTicks(1) * REFRESH_TICK_MS).toBe(3 * 60 * 1000);
+    expect(failureBackoffTicks(2) * REFRESH_TICK_MS).toBe(15 * 60 * 1000);
+    expect(failureBackoffTicks(7) * REFRESH_TICK_MS).toBe(6 * HOUR);
+  });
+
+  it('(F5) a sustained outage costs at most 4 fetches in any hour, per target', () => {
+    // Fetch instants (in ticks) of a target that fails every time, from t = 0.
+    const at: number[] = [0];
+    for (let n = 1; n <= 30; n += 1) at.push((at[n - 1] ?? 0) + failureBackoffTicks(n));
+    const hourTicks = HOUR / REFRESH_TICK_MS; // 20
+    let worst = 0;
+    for (const start of at)
+      worst = Math.max(worst, at.filter((t) => t >= start && t < start + hourTicks).length);
+    expect(at.slice(0, 6)).toEqual([0, 1, 6, 16, 36, 76]);
+    expect(worst).toBe(4);
   });
 
   it('the window is 3 cycles at the tier when the line was SEEN, floored at 3 h', () => {

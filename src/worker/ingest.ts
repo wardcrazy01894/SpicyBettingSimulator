@@ -82,6 +82,7 @@ import {
   etDateKey,
   etDateKeyRange,
   etDayBounds,
+  failureBackoffTicks,
 } from '../shared/time.js';
 import { LEAGUES } from '../shared/types.js';
 import type { EpochMs, Game, GameLines, League } from '../shared/types.js';
@@ -105,6 +106,12 @@ export interface IngestTargetRow {
   readonly priority: number;
   readonly nextRunAt: EpochMs;
   readonly consecutiveFailures: number;
+  /**
+   * `ingest_targets.last_ok_at`: when a fetch last succeeded, NULL for a
+   * never-fetched target — which weighs big and runs alone (§24.7), so its
+   * failure retries stay on the discovery grid (`computeNextRunAt`, F5).
+   */
+  readonly lastOkAt: EpochMs | null;
   /**
    * The poison-target guard's counter (PLAN.md §24.4): attempts stamped but
    * never rescheduled. > 0 means the target runs alone; at
@@ -268,13 +275,6 @@ const DAY_MS = 24 * HOUR_MS;
  * staleness window that is derived from them; `KICKOFF_GRACE_MS` is only
  * meaningful to the planner and stays here. */
 const KICKOFF_GRACE_MS = 4 * 60 * 60 * 1000;
-/**
- * Failure backoff: `min(5 ticks × 2^consecutive_failures, 120 ticks)` = 15 min
- * doubling to 6 h — the pre-M13b wall-clock values, kept so a failing ESPN is
- * not retried 20 times an hour (§24.7). Counted from the tick's base.
- */
-const BACKOFF_BASE_MS = REFRESH_BACKOFF_BASE_TICKS * REFRESH_TICK_MS;
-const BACKOFF_CAP_MS = REFRESH_DISCOVERY_TICKS * REFRESH_TICK_MS;
 /** A target whose window ended this long ago is retired by the planner. */
 const TARGET_RETIRE_AFTER_MS = 2 * DAY_MS;
 
@@ -605,12 +605,12 @@ interface TargetDbRow {
   readonly consecutive_failures: number;
   readonly incomplete_attempts: number;
   readonly conference_id: string | null;
+  readonly last_ok_at: number | null;
 }
 
 /** A claim candidate: the target plus what it WEIGHS (§24.7). */
 interface ClaimDbRow extends TargetDbRow {
   readonly games_seen: number;
-  readonly last_ok_at: number | null;
 }
 
 function toTargetRow(row: TargetDbRow): IngestTargetRow {
@@ -624,6 +624,7 @@ function toTargetRow(row: TargetDbRow): IngestTargetRow {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    lastOkAt: row.last_ok_at,
     incompleteAttempts: row.incomplete_attempts,
     conferenceId: row.conference_id,
   };
@@ -631,7 +632,7 @@ function toTargetRow(row: TargetDbRow): IngestTargetRow {
 
 const TARGET_COLUMNS = `id, league, kind, key, window_start_at, window_end_at,
                         priority, next_run_at, consecutive_failures, incomplete_attempts,
-                        conference_id`;
+                        conference_id, last_ok_at`;
 
 /**
  * The `NOT EXISTS` that makes a target "not live" — no in-progress game in it.
@@ -802,8 +803,16 @@ export function packCount(
  * stamps them one per DISCOVERY tick, starting at the next one: each is that
  * tick's discovery pick and none is ever the oldest due row on a general
  * tick, so a burst of k dates fills within k discovery ticks (≤ 15·k min) and
- * the live slates never wait. (Stamped `now`, as before F2, the burst drained
- * on consecutive general ticks ahead of every live slate for ~24-30 min.)
+ * the live slates never wait. When a new date's fetch FAILS, F5 snaps every
+ * retry of a never-fetched target onto the discovery grid rather than a
+ * general tick — but inside a burst that grid slot may already belong to the
+ * next burst date (stamped 1 ms earlier), so the retry spills to a general
+ * tick shortly after it and costs the live slates ONE tick per failed retry
+ * that collides with the burst, none after the burst drains. Accepted
+ * residual, PLAN.md §24.7 (c); the fix if it ever matters is to re-stamp a
+ * failed never-fetched date at the END of the F2 chain.
+ * (Stamped `now`, as before F2, the burst drained on consecutive general ticks
+ * ahead of every live slate for ~24-30 min.)
  *
  * NOTE this reads but does not write: the lease (PLAN.md §9.2) is what makes two
  * runs non-overlapping, so "claiming" needs no marker row and costs no writes.
@@ -824,7 +833,7 @@ export async function claimDueTargets(
     limit: number,
   ): Promise<readonly ClaimDbRow[]> => {
     const res = await env.DB.prepare(
-      `SELECT ${TARGET_COLUMNS}, games_seen, last_ok_at FROM ingest_targets AS t
+      `SELECT ${TARGET_COLUMNS}, games_seen FROM ingest_targets AS t
         WHERE next_run_at <= ? ${notInClause(exclude.length)}
           AND ${NOT_PARKED} ${where}
         ORDER BY priority ASC, next_run_at ASC, id ASC
@@ -1294,7 +1303,9 @@ export async function upsertSlate(
  *   kickoff < 48h         -> +REFRESH_SOON_TICKS      (20 ticks = 60 min)
  *   otherwise             -> +REFRESH_DISCOVERY_TICKS (120 ticks = 6 h)
  *   all games final       -> +24 h
- * On failure: `min(15min * 2^consecutiveFailures, 6h)`.
+ * On failure: `failureBackoffTicks(streak)` (src/shared/time.ts, F5) — the
+ *   first failure retries on the NEXT tick, then 5, 10, 20, … ticks, capped at
+ *   120 ticks (6 h).
  * MLB, NCAAB and the NBA (§24.11): a target holding an unfinished game is capped at
  * `postponedVoidConfirmAt(league, windowEndAt)` while that is still ahead
  * (PLAN.md §23.7) — see the end of the function.
@@ -1329,11 +1340,30 @@ export function computeNextRunAt(
   // still decides WHICH tier (distances to kickoff); `base` decides WHEN.
   const base = refreshTickBase(tick);
   if (failed) {
-    // `2 ** 40` is finite but enormous; clamp the exponent so the arithmetic
-    // stays exact and the cap is what actually decides.
-    const exponent = Math.min(Math.max(target.consecutiveFailures, 0), 20);
-    const delay = Math.min(BACKOFF_BASE_MS * 2 ** exponent, BACKOFF_CAP_MS);
-    return base + delay;
+    // `consecutiveFailures` is the STORED streak; the failure being scheduled
+    // makes it one longer. The first failure retries on the next tick (one
+    // transient ESPN 403 must not freeze a live slate, F5); the doubling from
+    // the second keeps a real outage off ESPN's back.
+    const streak = Math.max(target.consecutiveFailures, 0) + 1;
+    const step = failureBackoffTicks(streak) * REFRESH_TICK_MS;
+    // A NEVER-fetched target weighs big and runs alone (§24.7). Retrying it on
+    // a GENERAL tick would take that tick from the live slates — the very cost
+    // F2 removed — so EVERY failure of one is snapped onto the discovery grid:
+    // the first discovery tick at or after the schedule's step (the step
+    // itself when `base` is a grid tick, since each step is a whole number of
+    // discovery periods; at most one period later when it is not). The snap
+    // is unconditional, not first-failure-only: once a retry has spilled onto
+    // a general tick (below), `base` is that general tick, and a plain
+    // `base + step` would keep every later retry off the grid too (round 3).
+    // A target that HAS fetched before carries its own weight and pays only
+    // its own tick.
+    // Known residual (§24.7 (c)): inside a rollover burst the grid slot the
+    // retry lands on may already be the next burst date's (stamped 1 ms
+    // earlier), so the retry spills to a general tick shortly after it — one
+    // live tick per failed retry that collides with the burst, none once the
+    // burst has drained.
+    if (target.lastOkAt === null) return nextDiscoveryTick(base + step - REFRESH_TICK_MS);
+    return base + step;
   }
 
   const games = slate?.games ?? [];

@@ -631,6 +631,7 @@ async function readTarget(id: string): Promise<IngestTargetRow & { lastRunAt: nu
       next_run_at: number;
       consecutive_failures: number;
       incomplete_attempts: number;
+      last_ok_at: number | null;
       last_run_at: number | null;
     }>();
   if (row === null) throw new Error(`target ${id} should exist`);
@@ -644,6 +645,7 @@ async function readTarget(id: string): Promise<IngestTargetRow & { lastRunAt: nu
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    lastOkAt: row.last_ok_at,
     incompleteAttempts: row.incomplete_attempts,
     lastRunAt: row.last_run_at,
   };

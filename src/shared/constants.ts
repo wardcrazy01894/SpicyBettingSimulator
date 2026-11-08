@@ -724,9 +724,13 @@ export const REFRESH_DISCOVERY_TICKS = 120;
 
 /**
  * Failure backoff base, and the poison guard's provisional reschedule: 5 ticks
- * = 15 min, doubling, capped at the discovery tier — today's backoff, kept at
- * 15 min rather than one tick so a failing ESPN is not retried 20 times an
- * hour (§24.4, §24.7).
+ * = 15 min, doubling, capped at the discovery tier, so a failing ESPN sees at
+ * most 4 fetches an hour per target (§8.4; §24.4, §24.7). Since F5 the failure
+ * backoff applies it from the SECOND consecutive failure — the first retries
+ * on the next tick, or on the next DISCOVERY tick for a never-fetched target
+ * that would otherwise run alone on a general tick (`failureBackoffTicks`,
+ * src/shared/time.ts; `computeNextRunAt`; PLAN §8.4, §14.8). The poison
+ * guard's provisional stamp still uses it from the first.
  */
 export const REFRESH_BACKOFF_BASE_TICKS = 5;
 
