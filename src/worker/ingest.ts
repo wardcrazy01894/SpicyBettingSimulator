@@ -369,7 +369,7 @@ export function plannedTargetsFor(
  *
  * ACCEPTED RACE: the bump and the caller's `runJob` are two round trips. A cron
  * tick that takes the lease in between claims the bumped target itself (it is
- * the most due for slot 1 there too), and the admin's run then refreshes the
+ * the first claimed there too), and the admin's run then refreshes the
  * next most due slate — the game IS refreshed, by the cron, but the admin's
  * `job_runs` row describes a different slate. Closing it would need the bump
  * inside the lease; at one cron tick per 3 min the window is not worth that.
@@ -1232,14 +1232,14 @@ export async function upsertSlate(
  *   otherwise             -> +REFRESH_DISCOVERY_TICKS (120 ticks = 6 h)
  *   all games final       -> +24 h
  * On failure: `min(15min * 2^consecutiveFailures, 6h)`.
- * MLB only: a target holding an unfinished game is capped at
+ * MLB, NCAAB and the NBA (§24.11): a target holding an unfinished game is capped at
  * `postponedVoidConfirmAt(league, windowEndAt)` while that is still ahead
  * (PLAN.md §23.7) — see the end of the function.
  *
  * DELIBERATE ORDERING NOTE: §8.4's table lists "all final" last, but it is
  * checked FIRST here. A game that went final an hour ago still satisfies
  * "kickoff within 3h" (the horizon is signed), so evaluating the table top-down
- * would pin a finished slate to the 15-minute live cadence forever — 96 pointless
+ * would pin a finished slate to the live tier (every tick) forever — 480 pointless
  * refreshes a day of rows that can never change again. The four tiers are a
  * partition, not a sequence.
  *
@@ -1247,7 +1247,7 @@ export async function upsertSlate(
  * is only {final, canceled}, so a `postponed` or `unknown` game stays in
  * `unfinished` indefinitely — and with a one-sided `kickoffAt - now <= 3h` test a
  * nominal kickoff five hours in the PAST still reads as "live", pinning its
- * target to the 15-minute tier for as long as the game sits there. Requiring
+ * target to the live tier (one tick) for as long as the game sits there. Requiring
  * `0 <= kickoffAt - now` drops postponed/unknown games to the discovery tier
  * (+6 h), which is the right cadence for "watch it in case it comes back";
  * `maintenance` (§7.5) is what eventually converts a stuck one to `canceled`.
@@ -1285,7 +1285,7 @@ export function computeNextRunAt(
    * `kickoffAt` is ahead of `now` by no more than `horizon`. Clamped both ends —
    * except that a still-`scheduled` game gets a post-kickoff grace: ESPN can
    * take a few minutes to flip a game to `in_progress`, and a game that has
-   * genuinely started must stay on the 15-minute tier or settlement waits
+   * genuinely started must stay on the live tier (one tick) or settlement waits
    * hours. The grace is bounded (KICKOFF_GRACE_MS) so a silently-postponed
    * game still drops to the discovery tier eventually. `postponed`/`unknown`
    * games get no grace.

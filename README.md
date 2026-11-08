@@ -34,8 +34,11 @@ money?" prompt will refill you $1,000, but the loss stays on the board and a
   run line is void, and a total counts only if it was already decided; before
   5 innings everything is void. A rainout is voided the next morning and your
   stake comes back. MLB legs can't go in a teaser (PLAN.md §23).
-- **Coming next: college basketball and the NBA** — every Division I game and every NBA game,
-  planned in PLAN.md §24 after a round of reliability work on the refresh schedule.
+- **College basketball and the NBA**, on the board since M13c: every Division I men's game
+  (today and the next two days) and every NBA game (today and tomorrow, when the lines are
+  already up), with DraftKings' spread, total and moneyline. **Betting on them opens in M13d**;
+  until then the boards are look-only. A final counts overtime on every market, a postponed game
+  is voided the next morning, and basketball legs can't go in a teaser (PLAN.md §24).
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 25 legs (as at
   DraftKings), and the legs can mix Saturday and Sunday. Teasers stop at 10
@@ -46,7 +49,7 @@ money?" prompt will refill you $1,000, but the loss stays on the board and a
   the one thing the slip will not build.
 - **Teasers** from 3 to 14 points (plus 6.5). Every leg moves your way by that
   much, and you pay for it in the price. Spreads and totals only, since a
-  moneyline has no line to move, and football only: MLB legs can't be teased. A push still reduces the bet instead of
+  moneyline has no line to move, and football only: MLB and basketball legs can't be teased. A push still reduces the bet instead of
   killing it, at every tier.
 - A **Top 25 / conference filter** on the college tab, because 80 games is a
   lot of games.
@@ -71,7 +74,7 @@ money?" prompt will refill you $1,000, but the loss stays on the board and a
    account page has the full ledger, every cent of it, and the leaderboard
    ranks everyone by **net profit**: equity (balance plus whatever is still
    riding) minus what the house has put in. My Bets, the leaderboard and
-   every player's page have an **All / NFL / NCAAF / MLB** switch, so "how am
+   every player's page have an **All / NFL / NCAAF / MLB / NCAAB / NBA** switch, so "how am
    I doing in just MLB" is one tap: the record, profit and ROI narrow to that
    sport, and so does the bet list under them. A parlay that mixes sports
    counts under All only; the money is the whole account either way.

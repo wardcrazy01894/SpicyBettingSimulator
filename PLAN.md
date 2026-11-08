@@ -286,9 +286,10 @@ itself, so a D1 dump does not hand an attacker live sessions. Plus `user_id`,
 **`games`** — the canonical game row.
 Notable columns:
 
-- `league ∈ {nfl, ncaaf, mlb}` — a `CHECK`; `'mlb'` since migration
-  `0009_mlb_league.sql` (M12a, §23.3). A game's league is part of its id and
-  never changes.
+- `league ∈ {nfl, ncaaf, mlb, ncaab, nba}` — a `CHECK`; `'mlb'` since migration
+  `0009_mlb_league.sql` (M12a, §23.3), `'ncaab'` and `'nba'` since
+  `0013_basketball_leagues.sql` (M13c, §24.9). A game's league is part of its id
+  and never changes.
 - `home_conference_id` / `away_conference_id` (migration `0004_games_conference.sql`)
   — ESPN `team.conferenceId` as a TEXT id (`"8"` = SEC; the FBS list is
   `CFB_CONFERENCES` in constants.ts), NULL for the NFL. Denormalized like rank
@@ -379,8 +380,8 @@ potential_payout_cents, status, payout_cents, placed_at, earliest_kickoff_at,
 settled_at, cancelled_at, settle_run_id, settle_attempts, settle_error,
 replaces_bet_id, replaced_by_bet_id, created_at, updated_at`.
 
-- `league ∈ {nfl, ncaaf, mlb, mixed}` and `season` are **informational labels** since
-  M5b (`'mlb'` since 0009, M12a). `mixed` means the legs span more than one league; `season` is the season of the
+- `league ∈ {nfl, ncaaf, mlb, ncaab, nba, mixed}` and `season` are **informational labels** since
+  M5b (`'mlb'` since 0009, M12a; `'ncaab'` / `'nba'` since 0013, M13c). `mixed` means the legs span more than one league; `season` is the season of the
   EARLIEST-KICKOFF leg. Neither selects a balance any more (`bankroll_id` does),
   so neither constrains what a bet may contain — they drive the stats filters and
   the UI, and nothing else.
@@ -431,7 +432,7 @@ replaces_bet_id, replaced_by_bet_id, created_at, updated_at`.
 original_line_tenths, american_price, provider, line_captured_at, snapshot_at,
 kickoff_at_snapshot, home_abbr, away_abbr, result, graded_at`.
 
-- `league ∈ {nfl, ncaaf, mlb}` (`'mlb'` since 0009, M12a) — the leg's game's
+- `league ∈ {nfl, ncaaf, mlb, ncaab, nba}` (`'mlb'` since 0009, M12a; basketball since 0013, M13c) — the leg's game's
   league, snapshotted at placement; never `'mixed'`.
 - `original_line_tenths` is the BOOK's line before a tease, for display and
   audit; `NULL` on a straight or parlay leg, which is never moved. `line_tenths`
@@ -482,8 +483,8 @@ It is NOT a money table and carries no trigger: the guard is a conditional
 permission to make the request. §21.3 / §21.5.
 
 **`ingest_targets`** — the ingestion work queue. §8.4.
-`id PRIMARY KEY` (`"<league>:<kind>:<key>"`), `league ∈ {nfl, ncaaf, mlb}`
-(`'mlb'` since 0009, M12a), `kind ('week'|'date')`,
+`id PRIMARY KEY` (`"<league>:<kind>:<key>"`), `league ∈ {nfl, ncaaf, mlb, ncaab, nba}`
+(`'mlb'` since 0009, M12a; `'ncaab'` / `'nba'` since 0013, M13c), `kind ('week'|'date')`,
 `key`, `window_start_at`, `window_end_at`, `priority`, `next_run_at`,
 `last_run_at`, `last_status`, `last_error`, `consecutive_failures`, `games_seen`.
 
@@ -1625,18 +1626,18 @@ in `GET /api/admin/jobs`.
 
 ### 8.1 Endpoints we call
 
-| League | URL                                                                                                             | Notes                                                                                          |
-| ------ | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| NFL    | `{BASE}/apis/site/v2/sports/football/nfl/scoreboard?dates={YYYYMMDD}&limit=100`                                 | Per ET date.                                                                                   |
-| NCAAF  | `{BASE}/apis/site/v2/sports/football/college-football/scoreboard?groups=80&limit=300&dates={YYYYMMDD}`          | FBS only (`groups=80` also covers bowls). Per ET date.                                         |
-| MLB    | `{BASE}/apis/site/v2/sports/baseball/mlb/scoreboard?dates={YYYYMMDD}&limit=100`                                 | Per ET date; today only (§23.4/§23.5). From M12a.                                              |
-| NCAAB  | `{BASE}/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=50&limit=500&dates={YYYYMMDD}` | All of D-I (`groups=50`). Per ET date; today + 2 (§24.10). **Planned, M13c — not yet called.** |
-| NBA    | `{BASE}/apis/site/v2/sports/basketball/nba/scoreboard?dates={YYYYMMDD}&limit=100`                               | Per ET date; today + 1 (§24.10). **Planned, M13c — not yet called.**                           |
+| League | URL                                                                                                             | Notes                                                                 |
+| ------ | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| NFL    | `{BASE}/apis/site/v2/sports/football/nfl/scoreboard?dates={YYYYMMDD}&limit=100`                                 | Per ET date.                                                          |
+| NCAAF  | `{BASE}/apis/site/v2/sports/football/college-football/scoreboard?groups=80&limit=300&dates={YYYYMMDD}`          | FBS only (`groups=80` also covers bowls). Per ET date.                |
+| MLB    | `{BASE}/apis/site/v2/sports/baseball/mlb/scoreboard?dates={YYYYMMDD}&limit=100`                                 | Per ET date; today only (§23.4/§23.5). From M12a.                     |
+| NCAAB  | `{BASE}/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=50&limit=500&dates={YYYYMMDD}` | All of D-I (`groups=50`). Per ET date; today + 2 (§24.10). From M13c. |
+| NBA    | `{BASE}/apis/site/v2/sports/basketball/nba/scoreboard?dates={YYYYMMDD}&limit=100`                               | Per ET date; today + 1 (§24.10). From M13c.                           |
 
 `{BASE}` is the `ESPN_BASE_URL` var (default `https://site.api.espn.com`), pointed
 at the local fixture server in dev via `.dev.vars` (§15 M1).
 
-**No URL sends `seasontype`** (the three are `ESPN_SCOREBOARD` in `src/worker/espn.ts`, a `Record<League, …>`). Doing so would filter out postseason games
+**No URL sends `seasontype`** (the five are `ESPN_SCOREBOARD` in `src/worker/espn.ts`, a `Record<League, …>`). Doing so would filter out postseason games
 that fall on a date inside the regular-season calendar, and vice versa.
 
 **Why both leagues are fetched by ET DATE, not by week.** Two reasons, and
@@ -1689,12 +1690,12 @@ An `ingest_targets` row is one request, and in v1 there is exactly one shape:
 - `ncaaf:date:20260912` → all FBS games on ET date 2026-09-12
 - `mlb:date:20260929` → all MLB games on ET date 2026-09-29 (M12a; §23.5)
 - `ncaab:date:20261107` → every Division I men's basketball game on ET date
-  2026-11-07 (**planned, M13c**; §24.10). Still one request: ONE full
-  `groups=50` fetch per date. Per-conference shards are a reserve (§24.8), and
-  M13a's nullable `ingest_targets.conference_id` is the only trace of them (NULL
-  for every target the planner emits).
-- `nba:date:20261108` → every NBA game on ET date 2026-11-08 (**planned, M13c**;
-  §24.10).
+  2026-11-07 (M13c; §24.10). Still one request: ONE full `groups=50` fetch per
+  date. Per-conference shards are a reserve (§24.8): M13c ships the
+  `ncaab:conf:<id>:date:<day>` shape DORMANT behind `NCAAB_TARGET_SHAPE =
+'full'`, so `ingest_targets.conference_id` is NULL for every target the
+  planner emits.
+- `nba:date:20261108` → every NBA game on ET date 2026-11-08 (M13c; §24.10).
 
 **VERIFIED against the live ESPN API on 2026-09-13** (Spike S4 parts (a) and (b)
 — see §18). `dates=YYYYMMDD` with **no `seasontype` parameter** buckets by US
@@ -1911,8 +1912,8 @@ id ASC`. The first always runs; the next joins while the summed weight stays
    pin the head of the queue; a blamed target (one whose `incomplete_attempts`
    is above zero) runs alone if it is first and ends the packing otherwise.
    M13b (SHIPPED) is the tick, the weight budget and the discovery tick above.
-   M13c adds college basketball's three ET dates and the NBA's two, so in-window
-   targets reach **24** (9 + 9 + 1 + 3 + 2).
+   M13c (SHIPPED) adds college basketball's three ET dates and the NBA's two, so
+   in-window targets reach **24** (9 + 9 + 1 + 3 + 2).
 
    The discovery read and the general read that follows it exclude each
    other's id, so a run never fetches the same URL twice.
@@ -3963,7 +3964,7 @@ Live at https://spicybetting.wardcrazy01894.workers.dev, first deployed
 | M10 player bet history                        | **DONE** — 2026-09-21 (§11.8)                                       |
 | M11 same-game parlays                         | **DONE** — 2026-09-21 (§5.2c)                                       |
 | M12 MLB as a third league                     | **DONE** — 2026-09-24; M12a, M12b, M12c (§23.15)                    |
-| M13 scheduler hardening + college basketball  | **M13a, M13b DONE** 2026-11-07; M13c → M13d **PLANNED** (§24.17)    |
+| M13 scheduler hardening + college basketball  | **M13a, M13b, M13c DONE** 2026-11-07; M13d **PLANNED** (§24.17)     |
 
 Two things follow from the deploy having happened:
 
@@ -4372,7 +4373,7 @@ the shortened-game rows was planned and folded back into M12b on 2026-09-24:
 betting opens before the regular season ends, so a rain-shortened game is
 reachable, and nothing in the admin tools could close a bet held pending.)
 
-### M13 — Scheduler hardening, then basketball (college + NBA) — **M13a, M13b SHIPPED** 2026-11-07; M13c–d **PLANNED** _(plan 2026-11-07)_
+### M13 — Scheduler hardening, then basketball (college + NBA) — **M13a, M13b, M13c SHIPPED** 2026-11-07; M13d **PLANNED** _(plan 2026-11-07)_
 
 "Every Division I and every NBA game, after making a CPU-killed refresh
 survivable and loud." **§24 is the specification**; §24.17 is the shipping order:
@@ -4382,7 +4383,7 @@ survivable and loud." **§24 is the specification**; §24.17 is the shipping ord
 | **M13-plan** | §24, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two `it.todo` contract files — no migration, no behaviour                                                                     | —                  |
 | **M13a**     | **DONE 2026-11-07** (branch `m13a`; 0012 applies on merge) — `0012_ingest_guard.sql`, the poison-target guard, `GET /api/health/ingest` + the uptime monitor, ESPN status counters, in-app alerts as GitHub issues | plan               |
 | **M13b**     | **DONE 2026-11-07** (branch `m13b`) — refresh `*/3` + settle `1-59/3`, leases 2.5 min, tick-relative cadences with live slates every tick, the per-run weight budget, the discovery tick                           | M13a **merged**    |
-| **M13c**     | `0013_basketball_leagues.sql`, `'ncaab'` and `'nba'` in `LEAGUES`, ingest + settlement — boards visible, **betting CLOSED**                                                                                        | M13a + M13b merged |
+| **M13c**     | **DONE 2026-11-07** (branch `m13c`; 0013 applies on merge, GATED §24.9) — `0013_basketball_leagues.sql`, `'ncaab'` and `'nba'` in `LEAGUES`, ingest + settlement — boards visible, **betting CLOSED**              | M13a + M13b merged |
 | **M13d**     | per-league board filter (`top25` default for college) — **betting OPENS** for both                                                                                                                                 | M13c verified      |
 
 The order is the design. With the poison target unguarded, a 155-game slate
@@ -6467,11 +6468,14 @@ The two effects to expect, stated for the runbook:
    "big" and runs ALONE, and `ORDER BY priority ASC, next_run_at ASC` serves the
    OLDEST overdue target first — the new rows are the least overdue thing in the
    queue. At one tick every 3 minutes on an otherwise idle queue that is about
-   25 minutes to pull all eight (seven CFB dates and MLB's) — and the same
+   24 minutes to pull all eight (seven CFB dates and MLB's) — and the same
    ~24 minutes behind a live Saturday, because the new rows are the OLDEST due
    rows and win the general ticks ahead of the live slates, which wait (§24.7).
    (Before M13b: two slots per 15-minute run, about an hour idle and ~60 min of
-   live starvation behind a live Saturday.) So at 00:15 ET on a Sunday a CFB board can legitimately be a
+   live starvation behind a live Saturday.) Since M13c the basketball windows
+   roll a date at every ET midnight too (NCAAB's third date, the NBA's second),
+   so the Sunday 00:00 ET burst is TEN new targets (~30 min), and every other
+   midnight adds three (MLB's, NCAAB's, the NBA's: ~9 min). So at 00:15 ET on a Sunday a CFB board can legitimately be a
    handful of games with no lines yet, filling as the runs go by. Nothing is
    broken and nothing needs kicking; `GET /api/admin/jobs` shows the targets
    being taken. (An operator in a hurry can force it with the per-game Refresh
@@ -7762,7 +7766,12 @@ reaper, GitHub-issue alerts; `wrangler.jsonc` gained only
 2026-11-07**: crons `*/3` / `1-59/3`, `REFRESH_TARGETS_PER_RUN` a count cap of
 5 under the weight budget, tick-relative cadences, the discovery tick, leases
 2.5 min, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600; every M13b `it.todo` is a
-real test, and "M13b as built" closes §24.7. M13c and M13d are **PLANNED**. The implementation choices §24.4–§24.6b left open are recorded
+real test, and "M13b as built" closes §24.7. **M13c SHIPPED 2026-11-07**
+(`migrations/0013_basketball_leagues.sql`, `'ncaab'` and `'nba'` in `LEAGUES`,
+every `Record` filled, the two URLs, pull counting, the shared settlement arm,
+the postponed rule by league, the dormant `NCAAB_TARGET_SHAPE` switch, the three
+captures): **boards visible, betting CLOSED**; every M13c `it.todo` is a real
+test and "M13c as built" closes §24.11. M13d is **PLANNED**. The implementation choices §24.4–§24.6b left open are recorded
 in "M13a as built" at the end of §24.6b.
 
 ### 24.1 Goal, and what is deliberately not in it
@@ -8611,8 +8620,12 @@ still claims what it bumped (§9.3).
   dates drain on consecutive GENERAL ticks ahead of every live slate in ~24
   minutes, during which no live slate is refreshed (before M13b the same burst
   starved live slates for ~60 min; bet locks are kickoff-based, so no money
-  moves). OPEN for the owner: stamp planner-created dates at the next
-  discovery tick instead, so a burst fills in ≤ 2 h strictly behind live load.
+  moves). The NFL's rollover is Sunday 20:00 ET, ~20 minutes before the Sunday
+  Night Football kickoff, so its ~24-minute burst covers that game's last
+  pre-kickoff line updates: bets stay open at a line at most ~24 minutes old,
+  well inside `LINE_STALE_MS` (3 h), so correctness is unaffected. OPEN for the
+  owner: stamp planner-created dates at the next discovery tick instead, so a
+  burst fills in ≤ 2 h strictly behind live load.
 - _Live slates degrade explicitly._ Between bursts live slates are perpetually
   due, so the four general ticks in every five serve them round-robin
   (`next_run_at ASC`; a non-live target whose tier expires takes one tick). With L
@@ -8827,6 +8840,25 @@ owner**: the remedies (pruning old `games` rows, which §20 lists as future
 work, or paid D1) are not this milestone's to choose. The D1 dashboard's
 rows-written for that day goes in the PR afterwards.
 
+**MEASURED at M13c (2026-11-07), `tests/worker/migration-0013.spec.ts`.** The
+per-row cost of the rebuild is `2 + index entries`: **games 7, game_lines 3,
+bets 6, bet_legs 7, ledger 7, ingest_targets 4** (read off `sqlite_master` and
+pinned by the spec). On a D1 seeded with 10,078 games, 8,101 line rows, 494
+bets, 919 legs, 505 ledger rows and 106 targets, applying 0013 wrote
+**107,827 rows** (D1's own `meta.rows_written`, every statement of the file)
+against the formula's 108,205 — the formula over-estimates by 0.35% (the
+partial `idx_bets_pending` skips settled bets) and the spec holds it within 1%.
+**So "~10,000 rows held, ~45,000 written" was optimistic about what 10,000
+means: 10,000 GAMES alone cost 70,000, over the gate and ~70% of the daily
+cap.** The gate is still the live database's: run the OPERATIONS row-count
+query and compute `7·games + 3·lines + 6·bets + 7·legs + 7·ledger + 4·targets`.
+Since the deploy (2026-09-14) the planner has ingested roughly 1,000–1,500 games
+(nine FBS weeks of ~65, nine NFL weeks of ~15, MLB's last fortnight and
+postseason, and the first basketball day), which puts the estimate near
+20,000–30,000 and under 60,000 — but that is an estimate from the schedule, not
+a count, and **the count is what decides. Above 60,000, stop and ask the owner.**
+About 8,500 games are the most the gate admits with nothing else held.
+
 **Specs (M13c).** `tests/worker/migration-0013.spec.ts`, 0009's spec with the
 league sets moved on: seeded through HTTP and the real triggers, then the file is
 re-run as one batch. It asserts every row of the six tables deep-equal; the
@@ -8881,6 +8913,17 @@ still an all-null WRITE that withdraws a stored line (§8.3). `parseAmericanPric
 and `selectOddsEntry` never see the string `"OFF"`, because `pulled()` runs
 before any leaf parse. Rank, conference, the missing `week` and the statuses need
 no change (§24.2).
+
+**M13c as built — one more parser change, found by the captures.** "The existing
+parser reads it unchanged" was wrong in one respect: `MAX_ABS_LINE_TENTHS` was
+±100.0 points, a football bound, and every basketball TOTAL (140.5–176.5 for
+college, 220.5–238.5 for the NBA on 2026-11-07) came back "unusable line" — 48
+warnings on the college capture and no total anywhere. The bound is ±400.0
+points since M13c (`constants.ts`, §8.3); with it the 11-07 college capture
+parses 61 games and 48 line rows (47 with all three markets) with ZERO warnings
+and one pulled market, and both NBA captures parse 7 games and 6 line rows with
+zero warnings. `ProviderSlate` and `ParsedScoreboard` carry `pulled`;
+`IngestTargetResult` and the run's stats carry `offTheBoard`.
 
 **Board windows** (`src/shared/time.ts`). `boardWindowEnd`'s exhaustive switch
 gains ONE basketball arm, shared by both leagues, through a helper M13c adds,
@@ -8957,6 +9000,18 @@ either way, because a moved id is judged against its current date (§23.7). It i
 an **owner question** (§24.18) only because it refunds the next day where some
 books would hold the stakes for a replay inside the week.
 
+**M13c as built.** `gameAction` and `postponedVoidConfirmAt` gained the arms
+above. In `maintenance.ts` the league list is `NEXT_DAY_VOID_LEAGUES`
+(`['mlb', 'ncaab', 'nba']`), which `tests/worker/basketball.spec.ts` asserts
+equals the leagues `postponedVoidConfirmAt` covers, and `status_detail` is
+`'auto-void: ' || UPPER(league) || ' postponed, not played on its date'` — MLB's
+string byte-identical. The dormant switch (§24.8) ships as
+`NCAAB_TARGET_SHAPE = 'full'` in `ingest.ts`; `planTargets` and
+`bumpTargetForGame` take the shape as a defaulted parameter so the conference
+shape is exercised by tests without flipping the constant. The client's teaser
+copy names the league (`"NBA can't be teased"`, `"remove the NBA pick"`); MLB's
+strings are unchanged.
+
 ### 24.12 Teasers, secondary odds, same-game parlays
 
 - **Teasers**: `TEASABLE_LEAGUES` stays `['nfl', 'ncaaf']`. `applyTease`'s
@@ -9032,7 +9087,7 @@ once, is ≈ 57,000.
   15 minutes. Nothing else moves.
 - The `job_runs` line is ESTIMATED from statement shapes, and it also puts §8.6's
   "< 300" for sessions, throttle and `job_runs` under review: at 96 + 96 runs a
-  day today it is already nearer 1,100, and ≈ 5,800/day from M13b (960 runs).
+  day before M13b it is already nearer 1,100, and ≈ 5,800/day from M13b (960 runs).
   Recording the bookkeeping's own `meta.rows_written` is DEFERRED (the finalize
   write cannot count itself), so **`dayRowsWritten` under-reads by that ≈ 5,800
   a day** and the 60k retreat line is read with that blind spot (OPERATIONS).
@@ -9044,21 +9099,28 @@ fit.** `tests/worker/ingest.spec.ts`'s CFB soak (96 refreshes, < 5,000) became
 the model's ≈ 7,800, so the model holds. The bound is 7,922 × 1.68 (the headroom
 5,000 had over 2,979) ≈ **< 13,300**. `tests/worker/mlb.spec.ts` re-ran at 480
 ticks with the score and inning moving on the 15-minute wall-clock grid (12
-changes per game — a REALISTIC case, not the worst: a real game changes state
-~18 or more times): **741 rows** against 684 at 96 refreshes. Five times the
-refreshes added only 57 rows because the fixture's changes are pinned to that
-grid, so the figure measures the fixture's design as much as the cadence; the
-extra rows are consistent with the 45-minute L3 line touch firing on the first
-tick past it (~every 48 min instead of every 60). The live stream follows the
-score, not the refresh count, as §23.11 says. It stays under §23.11's < 1,000
-with ~1.35× headroom, so that bound did not move; a worst-case fixture (~20
-changes per game) is worth adding if that headroom is ever questioned. M13c's
+changes per game): **741 rows** against 684 at 96 refreshes. The fixture is
+OPTIMISTIC — fewer changes than a real game, which changes state ~18 or more
+times, and pinned to the 15-minute grid — so five times the refreshes added
+only 57 rows, and the figure measures the fixture's design as much as the
+cadence; the extra rows are consistent with the 45-minute L3 line touch firing
+on the first tick past it (~every 48 min instead of every 60). The live stream
+follows the score, not the refresh count, as §23.11 says. The ~1.35× headroom
+under §23.11's < 1,000 is headroom for the FIXTURE: the bound may not hold for
+a real MLB day at the 3-minute tick (still trivial against 100k), and a
+worst-case fixture (~20 changes per game) is worth adding if it is ever
+questioned. M13c's
 `tests/worker/basketball.spec.ts` drives 155 synthesised CBB games through 480
 ticks in six tip-off waves (12:00, 14:00, 16:00, 18:00, 19:00, 21:00 ET), each
 live 40 ticks with the clock moving every tick, plus a 15-game NBA night (19:00
 and 22:00 ET waves, 50 ticks live). It asserts **< 16,000** (CBB, the 9,400
 model × 1.68) and **< 1,800** (NBA), each cross-checked against an
-`env.DB.batch` probe. The measured values go in the PR.
+`env.DB.batch` probe. **MEASURED at M13c (2026-11-07): 12,032 rows for the
+155-game CBB day** — above the 9,400 model, because the fixture moves the score
+on every live tick as well as the clock, so every live tick writes its (B) row
+and the game-driven part is larger than CFB's — and under the 16,000 bound;
+**1,295 rows for the NBA night** (the 22:00 wave's last 10 live ticks fall after
+midnight, outside the measured day), under 1,800. Neither bound moved.
 
 **Requests.** ~480 ESPN calls a day typical, more when small slates pack (§24.7),
 ≤ 5 per invocation against 50 subrequests. Plus the secondary's credit-gated
@@ -9206,13 +9268,13 @@ Each PR is green on the gate and leaves football and MLB behaviour byte-identica
 except where this chapter says otherwise: pull notes leave `warnings` (§24.10),
 and the rhythm and cadences change (§24.7).
 
-| PR           | What lands                                                                                                                                                                                                              | Depends on               |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| **M13-plan** | this chapter, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two contract files                                                                                                        | —                        |
-| **M13a**     | **DONE 2026-11-07** — 0012 (guard columns + `alerts`), the poison guard (stamp, reset, park, probation, admin un-park), `/api/health/ingest`, ESPN status counters, the reaper, GitHub-issue alerts; the monitor set up | plan                     |
-| **M13b**     | **DONE 2026-11-07** — `*/3` refresh and `1-59/3` settle, leases 2.5 min, tick-relative cadences, live every tick, the weight budget, the discovery tick, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600                      | **M13a merged**          |
-| **M13c**     | 0013, `'ncaab'` and `'nba'` in `LEAGUES`, every `Record`, URLs, windows, pull counting, the shared settlement arm, the postponed rule, the dormant shard switch, samples: **boards visible, betting CLOSED**            | **M13a and M13b merged** |
-| **M13d**     | the per-league board filter with the `top25` default, empty copy, payload check: **betting OPENS** for both                                                                                                             | M13c merged and verified |
+| PR           | What lands                                                                                                                                                                                                                         | Depends on               |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| **M13-plan** | this chapter, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two contract files                                                                                                                   | —                        |
+| **M13a**     | **DONE 2026-11-07** — 0012 (guard columns + `alerts`), the poison guard (stamp, reset, park, probation, admin un-park), `/api/health/ingest`, ESPN status counters, the reaper, GitHub-issue alerts; the monitor set up            | plan                     |
+| **M13b**     | **DONE 2026-11-07** — `*/3` refresh and `1-59/3` settle, leases 2.5 min, tick-relative cadences, live every tick, the weight budget, the discovery tick, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600                                 | **M13a merged**          |
+| **M13c**     | **DONE 2026-11-07** — 0013, `'ncaab'` and `'nba'` in `LEAGUES`, every `Record`, URLs, windows, pull counting, the shared settlement arm, the postponed rule, the dormant shard switch, samples: **boards visible, betting CLOSED** | **M13a and M13b merged** |
+| **M13d**     | the per-league board filter with the `top25` default, empty copy, payload check: **betting OPENS** for both                                                                                                                        | M13c merged and verified |
 
 ```
 M13-plan ──► M13a ──► M13b ──► M13c ──► M13d

@@ -1,7 +1,7 @@
 # CLAUDE.md — SpicyBettingSimulator
 
-Fake-money sports-betting simulator (NFL + FBS college football, and MLB from
-M12) for Alex and a few friends. Real lines, real odds, real payouts, **no real
+Fake-money sports-betting simulator (NFL + FBS college football, MLB from M12,
+and men's college basketball + the NBA from M13c) for Alex and a few friends. Real lines, real odds, real payouts, **no real
 money**. MLB is in `LEAGUES` since M12a and its betting is OPEN since M12b
 (both 2026-09-24): the board shows today's ET date only, and
 `LEAGUE_BETTING_OPEN` in `src/worker/bets.ts` is the per-league kill switch
@@ -10,9 +10,11 @@ scheduler hardening (the poison-target guard, `GET /api/health/ingest`, ESPN
 status counters, the reaper) and in-app alerts as GitHub issues. **M13b is
 SHIPPED**: refresh every 3 minutes (`*/3`, settle `1-59/3`), live slates on
 every tick, cadences counted in ticks from the tick's scheduled instant, and a
-per-run weight budget so a big slate runs alone. **M13c–d are PLANNED**: men's
-college basketball and the
-NBA as `'ncaab'` / `'nba'` (M13c, M13d). Neither is in `LEAGUES` yet; rule 8i is
+per-run weight budget so a big slate runs alone. **M13c is SHIPPED**: men's
+college basketball (every Division I game) and the NBA are in `LEAGUES` as
+`'ncaab'` / `'nba'`, with migration 0013, ingest and settlement — the boards
+show both leagues, **betting on them is CLOSED** (`LEAGUE_BETTING_OPEN` false)
+until **M13d (PLANNED)** adds the college board filter and opens it. Rule 8i is
 what the code must keep.
 
 **Read `PLAN.md` before changing anything.** It is the architecture of record:
@@ -240,8 +242,8 @@ the one failure mode the whole checklist has.
    2026-10-20). The history — every refill, and when its badge went — is
    `GET /api/users/:id/busts`, shown on `/players/:userId`.
    8i. **Scheduler hardening and basketball (M13, PLAN.md §24).** (0), (iii)
-   and (iv) are IN THE CODE since M13a (2026-11-07), (i) and (ii) since M13b;
-   (v) is what M13c–d must keep when they land. (0) **A CPU kill is not an exception.** Each target's
+   and (iv) are IN THE CODE since M13a (2026-11-07), (i) and (ii) since M13b,
+   (v) since M13c (M13d must keep it when it opens betting). (0) **A CPU kill is not an exception.** Each target's
    `ingest_targets.incomplete_attempts` is stamped immediately before THAT
    target's own fetch, never for the whole claim at once, so a kill blames only
    the target in flight. BOTH reschedule paths reset it. The ONE other sanctioned
@@ -266,9 +268,13 @@ the one failure mode the whole checklist has.
    (§24.5). (v) **Basketball shares ONE settlement arm** (a final has full action,
    OT included), has no teasers and no secondary sweeps (`TEASABLE_LEAGUES` /
    `SECONDARY_LEAGUES` stay football-only), and reuses MLB's next-day postponed
-   void (§24.11). The per-conference split of `ncaab` is a dormant SWITCH
-   (`NCAAB_TARGET_SHAPE`), flipped only on a parked D-I target or an
-   `exceededCpu` (§24.8).
+   void (§24.11) — `NEXT_DAY_VOID_LEAGUES` in `maintenance.ts` is the SQL's
+   restatement of `postponedVoidConfirmAt`, and a spec holds the two equal.
+   The per-conference split of `ncaab` is a dormant SWITCH
+   (`NCAAB_TARGET_SHAPE = 'full'` in `ingest.ts`), flipped only on a parked
+   D-I target or an `exceededCpu` (§24.8). A pulled ("OFF") market is COUNTED
+   (`stats.offTheBoard`), never a warning (§24.10). `MAX_ABS_LINE_TENTHS` is
+   ±400 points: a basketball total is 140–240.
 
 9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
    2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will
@@ -310,11 +316,17 @@ the one failure mode the whole checklist has.
      table, no rebuild (§24.4/§24.6b). Because 0009 rebuilds `ingest_targets`
      from its own text, `migration-0009.spec.ts` re-adds 0012's columns after
      re-running 0009 (composing forward).
-     **PLANNED, not written** (the M13 plan PR shipped no migration, PLAN.md
-     §24): `0013_basketball_leagues.sql` (M13c: 0009's six-table children-first
-     rebuild admitting `'ncaab'` and `'nba'`, each table recreated from its LAST
-     definer (0010 for `bets`/`bet_legs`, 0011 for `ledger`), and GATED on a
-     measured write estimate under 60,000 rows, §24.9).
+     `0013_basketball_leagues.sql` (M13c, 2026-11-07, §24.9) is 0009's
+     six-table children-first rebuild admitting `'ncaab'` and `'nba'`, each
+     table recreated from its LAST definer (0009 for `games` / `game_lines`,
+     0010 for `bets` / `bet_legs`, 0011 for `ledger`, 0009 plus 0012's four
+     columns for `ingest_targets`) — `tests/unit/migration-0013-ddl.spec.ts`
+     diffs each against it. Its apply is GATED: the estimate
+     `7·games + 3·lines + 6·bets + 7·legs + 7·ledger + 4·targets` (per-row
+     costs measured by `migration-0013.spec.ts`) must be under 60,000 rows,
+     applied on a Tuesday or Wednesday; above it, stop and ask the owner
+     (docs/OPERATIONS.md). Every spec that re-runs an older rebuild composes
+     FORWARD through 0013, putting 0012's columns back before it.
      `0007_secondary_odds.sql` shipped with M9b and is frozen like the rest;
      PLAN.md §21.3 carries the same text as its specification. The plan PR that
      added §21 and §22 deliberately shipped NO migration: the Deploy
@@ -464,8 +476,8 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               25-leg parlays (teasers stay at 10; PLAN.md §16.2), 0011 rebuilds
               ledger alone for the deposit_refill / bust_buyout kinds (PLAN.md §4.5),
               0012 adds the poison-guard columns to ingest_targets and the
-              alerts table (PLAN.md §24.4/§24.6b); 0013 (basketball) is
-              PLANNED, not written (PLAN.md §24)
+              alerts table (PLAN.md §24.4/§24.6b), 0013 rebuilds six tables
+              to admit leagues 'ncaab' and 'nba' (PLAN.md §24.9)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ @cloudflare/vitest-plugin tests with a real D1; fixtures.ts SYNTHESISES
@@ -482,7 +494,12 @@ docs/samples/ captured payloads, read only by the unit project and deliberately
               plus two MLB days read by M12a's parser tests (PLAN.md §23.2):
               espn-mlb-scoreboard-2026-09-24.json (12 events, 9 with DraftKings
               odds, 3 live) and -2026-09-22.json (16: finals incl. Final/12, a
-              postponement, a makeup under a new id)
+              postponement, a makeup under a new id), and three basketball
+              captures read by M13c's (PLAN.md §24.10):
+              espn-ncaab-scoreboard-2026-11-07.json (61 D-I events, 48 priced,
+              one "OFF" moneyline, every conferenceId) and
+              espn-nba-scoreboard-2026-11-07.json / -2026-11-08.json (7 events,
+              6 priced, each — the second is "lines a day ahead")
 docs/         teaser-odds.md — the sourcing behind TEASER_PAYOUTS
 scripts/      fixture server, admin password tool, ledger reconcile, branch
               protection, icon rasteriser, teaser card generator, and the

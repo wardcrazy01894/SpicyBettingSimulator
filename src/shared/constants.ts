@@ -669,11 +669,9 @@ export const MLB_POSTPONED_CONFIRM_MS = 3 * 60 * 60 * 1000;
 /* ------------------------------------------------------------------ *
  * Basketball (college + NBA) and scheduler hardening (PLAN.md §24, M13)
  *
- * PLAN-PR VALUES: nothing reads any of these until the milestone named on
- * each, and `'ncaab'` is NOT yet a member of `LEAGUES` (adding it would break
- * every `Record<League, …>` table in the repo until M13c fills them — the M12
- * precedent; the same holds for `'nba'`). They land now, with their docs-drift assertions, so §24's
- * arithmetic is pinned to the code from the first commit.
+ * Landed in the plan PR with their docs-drift assertions, so §24's arithmetic
+ * was pinned to the code from the first commit; each is read from the
+ * milestone named on it. `'ncaab'` and `'nba'` joined `LEAGUES` in M13c.
  * ------------------------------------------------------------------ */
 
 /**
