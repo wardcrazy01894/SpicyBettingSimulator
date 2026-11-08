@@ -247,7 +247,7 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   With two or three big live slates at once they take turns, each every 2nd or 3rd tick. A NEW date
   (the Sunday rollover burst, a midnight's new days) is due at its own discovery tick, one per tick
   from the next one, so the new week's dates appear over ≤ 2.5 h after 00:00 ET (≤ 1¾ h after the
-  NFL's 20:00 ET) strictly behind live load, and live slates are never starved (PLAN §24.7, F2).
+  NFL's 20:00 ET) strictly behind live load, and live slates are never starved (one tick's slip is possible; PLAN §24.7) (PLAN §24.7, F2).
   With nothing live and nothing due — a fresh database, `npm run dev`'s first board load — new
   dates are due at once instead.
 - Per-run work is capped by two `wrangler.jsonc` vars: `REFRESH_TARGETS_PER_RUN` (5: a COUNT cap

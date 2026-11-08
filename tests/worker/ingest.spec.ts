@@ -736,7 +736,10 @@ describe('planTargets', () => {
     await env.DB.prepare(
       "UPDATE ingest_targets SET next_run_at = ?1, incomplete_attempts = 1, attempt_started_at = ?2 WHERE id = 'nfl:date:20260914'",
     )
-      .bind(T0 + 6 * HOUR, T0)
+      // The provisional stamp must be AFTER the planning time (monday), or the
+      // anchor's `next_run_at > now` clause drops the row before the
+      // incomplete_attempts filter is ever reached and the test proves nothing.
+      .bind(T0 + DAY + 6 * HOUR, T0 + DAY - HOUR)
       .run();
     const monday = T0 + DAY;
     await planTargets(env, monday);
