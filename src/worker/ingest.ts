@@ -39,14 +39,15 @@
  * Observability, not faith: every run reports `rowsWritten` (summed from D1's
  * `meta.rows_written`, which counts index entries) and `rowsSkipped` into
  * `job_runs.stats`, and `tests/worker/ingest.spec.ts` carries the CI regression
- * guard for 96 live refreshes of an 86-game Saturday.
+ * guard for an 86-game Saturday refreshed on all 480 three-minute ticks
+ * (M13b: 7,922 rows measured, < 13,300 asserted, PLAN.md §24.13).
  *
  * MLB (PLAN.md §23.11) is CHEAPER per live refresh than football: ESPN's MLB
  * `displayClock` is always "0:00", so (B) writes only when the score or the
  * inning (`period`) moves. ≈ 55 rows per game per day, ≈ 1,050/day for a
  * 15-game slate including its target's reschedules — about 1% of the cap.
- * `tests/worker/mlb.spec.ts` guards it at < 1,000 rows for 15 games over 96
- * refreshes, beside the CFB guard.
+ * `tests/worker/mlb.spec.ts` guards it at < 1,000 rows for 15 games over 480
+ * ticks (741 measured at M13b), beside the CFB guard.
  *
  * STATEMENT COUNT: two per game plus one per line, chunked through `runBatch` at
  * MAX_BATCH_STATEMENTS. An 86-game target is ~172 statements in one invocation,
@@ -63,9 +64,10 @@ import {
   INGEST_WINDOW_MS,
   LINE_SEEN_TOUCH_MS,
   REFRESH_BACKOFF_BASE_TICKS,
+  REFRESH_DISCOVERY_EVERY_NTH_TICK,
   REFRESH_DISCOVERY_TICKS,
   REFRESH_TICK_MS,
-  RESERVED_DISCOVERY_SLOTS,
+  REFRESH_WEIGHT_BUDGET,
 } from '../shared/constants.js';
 import type { ParseWarning } from '../shared/espn.js';
 import {
@@ -174,6 +176,17 @@ export interface RefreshOptions {
    * admin "Run refresh".
    */
   readonly forceSecondaryGameId: string | null;
+  /**
+   * The tick's NOMINAL instant, `controller.scheduledTime` on a cron run
+   * (PLAN.md §24.7). Absent (an admin run, a direct call): the floor fallback,
+   * the tick at or before `now`.
+   */
+  readonly scheduledTime?: EpochMs | null;
+  /**
+   * `'admin'` runs are ALWAYS general — never discovery-first — so a per-game
+   * Refresh claims the slate it just bumped (§9.3). Default `'cron'`.
+   */
+  readonly trigger?: 'cron' | 'admin';
 }
 
 export interface TargetCoverage {
@@ -238,9 +251,13 @@ const DAY_MS = 24 * HOUR_MS;
  * staleness window that is derived from them; `KICKOFF_GRACE_MS` is only
  * meaningful to the planner and stays here. */
 const KICKOFF_GRACE_MS = 4 * 60 * 60 * 1000;
-/** Failure backoff: `min(15min * 2^consecutive_failures, 6h)`. */
-const BACKOFF_BASE_MS = REFRESH_LIVE_MS;
-const BACKOFF_CAP_MS = REFRESH_DISCOVERY_MS;
+/**
+ * Failure backoff: `min(5 ticks × 2^consecutive_failures, 120 ticks)` = 15 min
+ * doubling to 6 h — the pre-M13b wall-clock values, kept so a failing ESPN is
+ * not retried 20 times an hour (§24.7). Counted from the tick's base.
+ */
+const BACKOFF_BASE_MS = REFRESH_BACKOFF_BASE_TICKS * REFRESH_TICK_MS;
+const BACKOFF_CAP_MS = REFRESH_DISCOVERY_TICKS * REFRESH_TICK_MS;
 /** A target whose window ended this long ago is retired by the planner. */
 const TARGET_RETIRE_AFTER_MS = 2 * DAY_MS;
 
@@ -301,7 +318,7 @@ export function targetId(league: League, key: string): string {
  * the most due for slot 1 there too), and the admin's run then refreshes the
  * next most due slate — the game IS refreshed, by the cron, but the admin's
  * `job_runs` row describes a different slate. Closing it would need the bump
- * inside the lease; at one cron tick per 15 min the window is not worth that.
+ * inside the lease; at one cron tick per 3 min the window is not worth that.
  */
 export async function bumpTargetForGame(
   env: Env,
@@ -401,7 +418,9 @@ export async function planTargets(env: Env, now: EpochMs): Promise<number> {
           day.startAt,
           day.endAt,
           // Due immediately: a brand new date has no lines at all, and the
-          // reserved discovery slot is what actually paces it afterwards.
+          // its own tier (§24.7) is what actually paces it afterwards.
+          // NOTE this makes a burst of new dates the OLDEST due rows: see
+          // the ROLLOVER BURST note on planTargets.
           now,
           now,
           now,
@@ -439,6 +458,12 @@ interface TargetDbRow {
   readonly next_run_at: number;
   readonly consecutive_failures: number;
   readonly incomplete_attempts: number;
+}
+
+/** A claim candidate: the target plus what it WEIGHS (§24.7). */
+interface ClaimDbRow extends TargetDbRow {
+  readonly games_seen: number;
+  readonly last_ok_at: number | null;
 }
 
 function toTargetRow(row: TargetDbRow): IngestTargetRow {
@@ -496,47 +521,118 @@ function notInClause(count: number): string {
 }
 
 /**
- * Claim the due targets for this run. The slots are NOT interchangeable:
+ * The tick's NOMINAL instant (PLAN.md §24.7): `scheduledTime` from the cron
+ * controller, else the floor fallback — the tick at or before `now` — for an
+ * admin trigger or a direct call. Both are floored to the tick, which is the
+ * identity for a `*\/3` controller and makes the base robust to anything else.
+ * Every refresh cadence is a whole number of ticks from THIS, never from `now`:
+ * a run that starts 7 s late and stamps `now + 1 tick` misses the next tick by
+ * 7 s and waits a whole extra one (the alignment trap). Integer arithmetic:
+ * `t - t % tick` is the floor without `Math.floor` (banned here, rule 2).
+ */
+export function refreshTickBase(now: EpochMs, scheduledTime?: EpochMs | null): EpochMs {
+  const t = scheduledTime ?? now;
+  return t - (t % REFRESH_TICK_MS);
+}
+
+/**
+ * Is this tick DISCOVERY-FIRST (PLAN.md §24.7)? Every
+ * `REFRESH_DISCOVERY_EVERY_NTH_TICK`-th tick — :00 :15 :30 :45, 96 a day,
+ * exactly the supply the pre-M13b reserved slot gave. Judged on the tick's
+ * nominal instant. Admin runs never ask (they are always general).
+ */
+export function isDiscoveryTick(tick: EpochMs): boolean {
+  const base = refreshTickBase(tick);
+  return (base / REFRESH_TICK_MS) % REFRESH_DISCOVERY_EVERY_NTH_TICK === 0;
+}
+
+/**
+ * A target's WEIGHT for the per-run budget (PLAN.md §24.7): `games_seen` from
+ * its last SUCCESSFUL fetch, at least 1 (an empty slate that succeeded still
+ * costs a request). A target that has never succeeded (`last_ok_at IS NULL`,
+ * written only by the success reschedule) weighs `REFRESH_WEIGHT_BUDGET + 1`,
+ * i.e. BIG: its size is unknown, and a failed first fetch leaves
+ * `games_seen = 0`, which must not make a 155-game date look empty.
+ */
+export function targetWeight(gamesSeen: number, lastOkAt: EpochMs | null): number {
+  if (lastOkAt === null) return REFRESH_WEIGHT_BUDGET + 1;
+  return Math.max(gamesSeen, 1);
+}
+
+/** What the packing reads per candidate. Pure, so it is unit-testable. */
+export interface PackCandidate {
+  readonly weight: number;
+  readonly incompleteAttempts: number;
+}
+
+/**
+ * THE PACKING RULE (PLAN.md §24.7), over candidates already in claim order.
+ * Returns how many to take:
  *
- *   slot 1            the most-due target overall (in practice, a live one)
- *   slot 2 (RESERVED) the most-overdue target that has NO in-progress game
+ *   1. the first ALWAYS runs, whatever it weighs;
+ *   2. a first with `incomplete_attempts > 0` runs ALONE (§24.4, M13a);
+ *   3. then the next is added while the summed weight, the first's included,
+ *      stays `<= budget` and the count `<= countCap`;
+ *   4. it STOPS at the first candidate that does not fit, or that is blamed
+ *      (`incomplete_attempts > 0`): no skipping ahead, so a big slate is never
+ *      overtaken indefinitely by small ones, and a blamed target is never
+ *      packed behind another (it is first in line on the next tick).
+ */
+export function packCount(
+  candidates: readonly PackCandidate[],
+  countCap: number,
+  budget: number = REFRESH_WEIGHT_BUDGET,
+): number {
+  const first = candidates[0];
+  if (first === undefined || countCap <= 0) return 0;
+  if (first.incompleteAttempts > 0) return 1;
+  let total = first.weight;
+  let taken = 1;
+  for (const next of candidates.slice(1)) {
+    if (taken >= countCap) break;
+    if (next.incompleteAttempts > 0) break;
+    if (total + next.weight > budget) break;
+    total += next.weight;
+    taken += 1;
+  }
+  return taken;
+}
+
+/**
+ * Claim the due targets for this run (PLAN.md §24.7, M13b).
  *
- * Without the reservation a Saturday with a live CFB target and a live NFL
- * target would eat both slots on all 96 runs and the other ~20 targets (next
- * week's line discovery) would starve forever — `ORDER BY priority, next_run_at`
- * alone does not prevent that, because live targets are perpetually the most due.
+ * ONE read of the due candidates in claim order (`priority ASC, next_run_at
+ * ASC, id ASC`), at most `countCap` of them, then `packCount` decides how many
+ * run: the first always, then more while the WEIGHT BUDGET
+ * (`REFRESH_WEIGHT_BUDGET`, 40 games) and the count cap
+ * (`REFRESH_TARGETS_PER_RUN`, 5) allow, stopping at the first misfit. So a CFB
+ * Saturday or a D-I basketball slate always runs alone, an NFL date and an MLB
+ * day share, and empty future dates pack up to five to a run.
  *
- * Budget (computed, PLAN.md §8.4/§22): the window spans at most 9 ET dates per
- * football league (2 at its narrowest), plus MLB's one day (§23.5), so at most
- * 19 targets — 17 on a Monday, 15 from Tuesday on — plus two or three past MLB
- * dates lingering on the +24 h tier until retired. Worst case: 17 non-live
- * football targets wanting 4 refreshes/day each plus ~2 lingering MLB dates at
- * 1/day ≈ 70 slot-uses/day against the reserved slot's 96 (§23.11). Two
- * simultaneously-live targets alternate in slot 1 and each get a 30-minute
- * cadence; three (a CFB Saturday or NFL Sunday with MLB live) get 45 minutes,
- * which §23.11 accepts until Spike S1 allows a third slot. DST needs no footnote: a weekday-anchored window spans at
- * most 9 dates however long its days are.
+ * DISCOVERY, IN TIME (`discoveryFirst`, every fifth tick): the first pick is
+ * the most-overdue target with NO in-progress game (`NO_LIVE_GAME`), and the
+ * rest follow in the general order (excluding it). If no non-live target is
+ * due the tick falls through to the plain read, so no tick is wasted. Live
+ * slates are perpetually due, so without this a day with two live slates
+ * would starve next week's line discovery forever. The bound (§24.7): a due
+ * non-live target with k others ahead of it waits at most 15·(k + 1) minutes.
  *
- * ROLLOVER BURST: at a Sunday rollover the window gains
- * seven ET dates for one league at once, all with `next_run_at = now`. They are
- * the LEAST overdue rows in the queue, and a run takes at most
- * REFRESH_TARGETS_PER_RUN of them (one through the reserved slot), so next
- * week's board fills over about an hour of cron ticks on an idle queue and up
- * to ~4 h behind a live Saturday. That is expected, not a stall (PLAN §22.6).
+ * THE POISON-TARGET GUARD (§24.4, M13a). A PARKED target is skipped until
+ * `INGEST_PARKED_RETRY_MS` after its last attempt (`NOT_PARKED`), then
+ * claimable for one probation run. A BLAMED one (`incomplete_attempts > 0`)
+ * runs alone if first and ends the packing otherwise (`packCount`). Every
+ * guard is a WHERE clause or a pure rule over the rows just read (rule 5).
  *
- * The reserved-slot query MUST exclude the id already claimed by slot 1
- * (`AND id <> :slot1Id`): on a run with no live target — most runs — slot 1's
- * pick also satisfies slot 2's predicate, and without the exclusion the run
- * fetches the same URL twice and wastes half its capacity. The two picks are
- * always distinct ids. If the reserved slot has no eligible non-live target, it
- * falls through to the general queue (same exclusion) so a run is never wasted.
- *
- * THE POISON-TARGET GUARD (PLAN.md §24.4, M13a). A PARKED target
- * (`incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS`) is skipped until
- * `INGEST_PARKED_RETRY_MS` after its last attempt, then claimable for one
- * probation run. A BLAMED one (`incomplete_attempts > 0`) is only ever claimed
- * into slot 1, and then alone: slot 2 is skipped, and the later queries all
- * add `incomplete_attempts = 0`.
+ * Budget (computed, PLAN.md §8.4/§22/§23.11): at most 19 in-window targets
+ * plus two or three past MLB dates on the +24 h tier; ≈ 70 discovery
+ * refreshes a day against 96 discovery-first ticks. ROLLOVER BURST: the
+ * Sunday rollover adds seven or eight never-fetched dates at once, stamped
+ * `next_run_at = now`. Each weighs big and runs alone, and because they are
+ * then the OLDEST due rows they drain on consecutive GENERAL ticks ahead of
+ * every live slate — about 24 minutes during which no live slate is refreshed
+ * (before M13b the same burst starved live slates for ~60 min). Bet locks are
+ * kickoff-based, so no money moves; whether the planner should stamp new dates
+ * at the next discovery tick instead is an owner question (PLAN.md §24.7).
  *
  * NOTE this reads but does not write: the lease (PLAN.md §9.2) is what makes two
  * runs non-overlapping, so "claiming" needs no marker row and costs no writes.
@@ -546,92 +642,47 @@ function notInClause(count: number): string {
 export async function claimDueTargets(
   env: Env,
   now: EpochMs,
-  limit: number,
-  reservedDiscoverySlots: number,
+  countCap: number,
+  discoveryFirst: boolean,
 ): Promise<readonly IngestTargetRow[]> {
-  if (limit <= 0) return [];
-  // SLOT 1 IS NEVER RESERVED. §8.4 numbers the reservation from slot 2, so on a
-  // one-slot run — `REFRESH_TARGETS_PER_RUN` forced to 1 for an admin trigger
-  // (§9.3), or a future tightening — the single slot must still be "most due
-  // overall". Reserving it would leave a live Saturday target unrefreshed for as
-  // long as any discovery target was due, which is exactly backwards.
-  const reserved = Math.min(Math.max(reservedDiscoverySlots, 0), Math.max(limit - 1, 0));
-  const general = limit - reserved;
-  const claimed: IngestTargetRow[] = [];
+  if (countCap <= 0) return [];
 
-  const pick = async (sql: string, extraArgs: readonly unknown[]): Promise<void> => {
-    const ids = claimed.map((t) => t.id);
-    const stmt = env.DB.prepare(sql.replace('/*EXCLUDE*/', notInClause(ids.length))).bind(
-      now,
-      ...ids,
-      ...extraArgs,
-    );
-    const res = await stmt.all<TargetDbRow>();
-    for (const row of res.results) claimed.push(toTargetRow(row));
-  };
-
-  // Slot 1: the most-due target overall that is not parked — a parked one
-  // only on its probation attempt (PLAN.md §24.4).
-  await pick(
-    `SELECT ${TARGET_COLUMNS} FROM ingest_targets
-      WHERE next_run_at <= ? /*EXCLUDE*/
-        AND ${NOT_PARKED}
-      ORDER BY priority ASC, next_run_at ASC, id ASC
-      LIMIT 1`,
-    [now],
-  );
-  const first = claimed[0];
-  if (first === undefined) return claimed; // nothing at all is due
-
-  // A BLAMED TARGET RUNS ALONE (§24.4, M13a rule (a)): CPU accumulates across
-  // one invocation, so nothing may share a run with a target that may have
-  // been killed by its own cost — or that may be the innocent victim of a
-  // neighbour's. Slot 2 is skipped outright.
-  if (first.incompleteAttempts > 0) return claimed;
-
-  // Every later slot adds `incomplete_attempts = 0` (rule (b)), so a blamed
-  // target is never packed BEHIND another one. That also excludes every parked
-  // target, so NOT_PARKED is not repeated.
-  if (general > 1) {
-    await pick(
-      `SELECT ${TARGET_COLUMNS} FROM ingest_targets
-        WHERE next_run_at <= ? /*EXCLUDE*/
-          AND incomplete_attempts = 0
+  const read = async (
+    where: string,
+    exclude: readonly string[],
+    limit: number,
+  ): Promise<readonly ClaimDbRow[]> => {
+    const res = await env.DB.prepare(
+      `SELECT ${TARGET_COLUMNS}, games_seen, last_ok_at FROM ingest_targets AS t
+        WHERE next_run_at <= ? ${notInClause(exclude.length)}
+          AND ${NOT_PARKED} ${where}
         ORDER BY priority ASC, next_run_at ASC, id ASC
         LIMIT ?`,
-      [general - 1],
-    );
-  }
+    )
+      .bind(now, ...exclude, now, limit)
+      .all<ClaimDbRow>();
+    return res.results;
+  };
 
-  // The RESERVED slots, one at a time so each exclusion list is up to date.
-  for (let i = 0; i < reserved; i += 1) {
-    if (claimed.length >= limit) break;
-    const before = claimed.length;
-    await pick(
-      `SELECT ${TARGET_COLUMNS} FROM ingest_targets AS t
-        WHERE next_run_at <= ? /*EXCLUDE*/
-          AND incomplete_attempts = 0
-          AND ${NO_LIVE_GAME}
-        ORDER BY priority ASC, next_run_at ASC, id ASC
-        LIMIT 1`,
-      [],
-    );
-    if (claimed.length === before) {
-      // Nothing non-live is due: fall through to the general queue (same
-      // exclusion, and still never a blamed target) so the run is never wasted.
-      await pick(
-        `SELECT ${TARGET_COLUMNS} FROM ingest_targets
-          WHERE next_run_at <= ? /*EXCLUDE*/
-            AND incomplete_attempts = 0
-          ORDER BY priority ASC, next_run_at ASC, id ASC
-          LIMIT 1`,
-        [],
-      );
-      if (claimed.length === before) break; // nothing else is due
+  let candidates: readonly ClaimDbRow[] = [];
+  if (discoveryFirst) {
+    const head = await read(`AND ${NO_LIVE_GAME}`, [], 1);
+    const first = head[0];
+    if (first !== undefined) {
+      candidates = [first, ...(await read('', [first.id], countCap - 1))];
     }
   }
+  // A general tick, or a discovery tick with nothing non-live due.
+  if (candidates.length === 0) candidates = await read('', [], countCap);
 
-  return claimed;
+  const take = packCount(
+    candidates.map((row) => ({
+      weight: targetWeight(row.games_seen, row.last_ok_at),
+      incompleteAttempts: row.incomplete_attempts,
+    })),
+    countCap,
+  );
+  return candidates.slice(0, take).map(toTargetRow);
 }
 
 /** Translate an `ingest_targets` row into the provider's target shape. */
@@ -1064,10 +1115,10 @@ export async function upsertSlate(
  * ------------------------------------------------------------------ */
 
 /**
- * Tiered reschedule (PLAN.md §8.4):
- *   live or kickoff < 3h  -> +15 min
- *   kickoff < 48h         -> +60 min
- *   otherwise             -> +6 h
+ * Tiered reschedule (PLAN.md §8.4, §24.7), in ticks from the tick's nominal instant:
+ *   live or kickoff < 3h  -> +REFRESH_LIVE_TICKS      (1 tick = 3 min)
+ *   kickoff < 48h         -> +REFRESH_SOON_TICKS      (20 ticks = 60 min)
+ *   otherwise             -> +REFRESH_DISCOVERY_TICKS (120 ticks = 6 h)
  *   all games final       -> +24 h
  * On failure: `min(15min * 2^consecutiveFailures, 6h)`.
  * MLB only: a target holding an unfinished game is capped at
@@ -1096,22 +1147,28 @@ export function computeNextRunAt(
   slate: ProviderSlate | null,
   failed: boolean,
   now: EpochMs,
+  tick: EpochMs = refreshTickBase(now),
 ): EpochMs {
+  // THE BASE IS THE TICK'S NOMINAL INSTANT (PLAN.md §24.7), never `now`: the
+  // claim compares `next_run_at <= now`, and a run starts seconds after its
+  // tick, so `now + N ticks` would miss the Nth tick and wait one more. `now`
+  // still decides WHICH tier (distances to kickoff); `base` decides WHEN.
+  const base = refreshTickBase(tick);
   if (failed) {
     // `2 ** 40` is finite but enormous; clamp the exponent so the arithmetic
     // stays exact and the cap is what actually decides.
     const exponent = Math.min(Math.max(target.consecutiveFailures, 0), 20);
     const delay = Math.min(BACKOFF_BASE_MS * 2 ** exponent, BACKOFF_CAP_MS);
-    return now + delay;
+    return base + delay;
   }
 
   const games = slate?.games ?? [];
   // An empty slate is line discovery, not a finished day: ESPN returns zero
   // events for a date whose games are not yet published (PLAN.md §14.9).
-  if (games.length === 0) return now + REFRESH_DISCOVERY_MS;
+  if (games.length === 0) return base + REFRESH_DISCOVERY_MS;
 
   const unfinished = games.filter((g) => !TERMINAL_STATUSES.has(g.status));
-  if (unfinished.length === 0) return now + REFRESH_DONE_MS;
+  if (unfinished.length === 0) return base + REFRESH_DONE_MS;
 
   /**
    * `kickoffAt` is ahead of `now` by no more than `horizon`. Clamped both ends —
@@ -1129,21 +1186,23 @@ export function computeNextRunAt(
   };
 
   const live = unfinished.some((g) => g.status === 'in_progress' || within(g, LIVE_HORIZON_MS));
-  if (live) return now + REFRESH_LIVE_MS;
+  // Live: due at the NEXT tick (`REFRESH_LIVE_TICKS` = 1), in every league.
+  if (live) return base + REFRESH_LIVE_MS;
 
   const soon = unfinished.some((g) => within(g, SOON_HORIZON_MS));
-  const tierNext = now + (soon ? REFRESH_SOON_MS : REFRESH_DISCOVERY_MS);
+  const tierNext = base + (soon ? REFRESH_SOON_MS : REFRESH_DISCOVERY_MS);
 
   // THE CONFIRM CAP (PLAN.md §23.7). An MLB target still holding an unfinished
   // game must be fetched at `postponedVoidConfirmAt` (03:00 ET after its date),
   // so maintenance's evidence exists before its 08:30 UTC run — instead of
   // whenever the +6 h tier next comes round, which after a late rain delay is
   // AFTER maintenance. Only ever EARLIER than the tier (the `min`), never
-  // sooner than the live cadence (the `max`), and only while that instant is
-  // still ahead. `null` for football: no cap, behaviour unchanged.
+  // sooner than the live cadence (the `max`, the next tick), and only while
+  // that instant is still ahead. It is an ABSOLUTE instant (03:00 ET, itself a
+  // tick), not a tick multiple. `null` for football: no cap.
   const confirmAt = postponedVoidConfirmAt(target.league, target.windowEndAt);
   if (confirmAt !== null && confirmAt > now) {
-    return Math.min(tierNext, Math.max(now + REFRESH_LIVE_MS, confirmAt));
+    return Math.min(tierNext, Math.max(base + REFRESH_LIVE_MS, confirmAt));
   }
   return tierNext;
 }
@@ -1238,13 +1297,16 @@ export function espnOutcome(err: unknown): string {
 /**
  * The provisional `next_run_at` the guard's stamp writes (PLAN.md §24.4):
  * `base + min(REFRESH_BACKOFF_BASE_TICKS × 2^incomplete_attempts,
- * REFRESH_DISCOVERY_TICKS) × REFRESH_TICK_MS` — 15, 30, then 60 min. Under
- * M13a's 15-minute cron the base is §24.7's floor fallback, the tick at or
- * before `now` (`scheduledTime` reaches `runJob` only in M13b). Integer
- * arithmetic throughout: `now - now % tick` is the floor without `Math.floor`.
+ * REFRESH_DISCOVERY_TICKS) × REFRESH_TICK_MS` — 15, 30, then 60 min — where
+ * the base is the tick's nominal instant (`scheduledTime`, else the floor
+ * fallback, §24.7).
  */
-export function provisionalNextRunAt(target: IngestTargetRow, now: EpochMs): EpochMs {
-  const base = now - (now % REFRESH_TICK_MS);
+export function provisionalNextRunAt(
+  target: IngestTargetRow,
+  now: EpochMs,
+  tick: EpochMs = refreshTickBase(now),
+): EpochMs {
+  const base = refreshTickBase(tick);
   const exponent = Math.min(Math.max(target.incompleteAttempts, 0), 20);
   const ticks = Math.min(REFRESH_BACKOFF_BASE_TICKS * 2 ** exponent, REFRESH_DISCOVERY_TICKS);
   return base + ticks * REFRESH_TICK_MS;
@@ -1257,7 +1319,7 @@ export function provisionalNextRunAt(target: IngestTargetRow, now: EpochMs): Epo
  * flight, is left blamed. Both reschedule paths in `ingestTarget` undo it; a
  * kill, which no `catch` can see, is the only way it survives. The provisional
  * `next_run_at` drops a killed target BEHIND the other due ones instead of
- * letting it win slot 1 on the very next tick. Never move this after the
+ * letting it win the head of the queue on the very next tick. Never move this after the
  * fetch (CLAUDE.md rule 8i). Returns D1's `rows_written` (2: the row and
  * `idx_ingest_targets_due`).
  */
@@ -1265,6 +1327,7 @@ export async function stampAttempt(
   env: Env,
   target: IngestTargetRow,
   now: EpochMs,
+  tick: EpochMs = refreshTickBase(now),
 ): Promise<number> {
   const res = await env.DB.prepare(
     `UPDATE ingest_targets
@@ -1274,7 +1337,7 @@ export async function stampAttempt(
             updated_at          = ?1
       WHERE id = ?3`,
   )
-    .bind(now, provisionalNextRunAt(target, now), target.id)
+    .bind(now, provisionalNextRunAt(target, now, tick), target.id)
     .run();
   return rowsWrittenOf(res);
 }
@@ -1293,6 +1356,7 @@ export async function ingestTarget(
   provider: ScoreProvider,
   target: IngestTargetRow,
   now: EpochMs,
+  tick: EpochMs = refreshTickBase(now),
 ): Promise<IngestTargetResult> {
   let slate: ProviderSlate | null = null;
   let error: string | null = null;
@@ -1304,7 +1368,7 @@ export async function ingestTarget(
   // ESPN failure), no ESPN outcome (`'skipped'`, which no alert streak counts).
   let rowsWritten = 0;
   try {
-    rowsWritten += await stampAttempt(env, target, now);
+    rowsWritten += await stampAttempt(env, target, now, tick);
   } catch (err) {
     return {
       gamesUpserted: 0,
@@ -1345,7 +1409,7 @@ export async function ingestTarget(
   }
 
   const failed = error !== null;
-  const nextRunAt = computeNextRunAt(target, failed ? null : slate, failed, now);
+  const nextRunAt = computeNextRunAt(target, failed ? null : slate, failed, now, tick);
 
   // The reschedule is itself a row write (plus `idx_ingest_targets_due`, since
   // `next_run_at` is indexed), so it belongs in the same total the §8.6 budget
@@ -1411,7 +1475,9 @@ export async function runRefresh(
 ): Promise<IngestStats> {
   await planTargets(env, now);
 
-  const targets = await claimDueTargets(env, now, maxTargets, RESERVED_DISCOVERY_SLOTS);
+  const tick = refreshTickBase(now, options.scheduledTime);
+  const discoveryFirst = options.trigger !== 'admin' && isDiscoveryTick(tick);
+  const targets = await claimDueTargets(env, now, maxTargets, discoveryFirst);
   const provider = new EspnProvider(env, now);
 
   let gamesUpserted = 0;
@@ -1433,7 +1499,7 @@ export async function runRefresh(
   const coverage: TargetCoverage[] = [];
 
   for (const target of targets) {
-    const result = await ingestTarget(env, provider, target, now);
+    const result = await ingestTarget(env, provider, target, now, tick);
     gamesUpserted += result.gamesUpserted;
     linesUpserted += result.linesUpserted;
     rowsSkipped += result.rowsSkipped;
@@ -1494,9 +1560,10 @@ export async function runRefresh(
 }
 
 /**
- * How many targets one run may take. PLAN.md §9.3: an admin trigger runs INLINE
- * in an HTTP invocation with the same 10 ms CPU budget, so it takes one target
- * rather than two and returns 200 with the stats.
+ * The COUNT cap of one run (`REFRESH_TARGETS_PER_RUN`, 5 since M13b), under
+ * the weight budget that actually decides sharing (§24.7). PLAN.md §9.3: an
+ * admin trigger runs INLINE in an HTTP invocation with the same CPU budget, so
+ * it takes ONE target and returns 200 with the stats.
  */
 export function refreshTargetsPerRun(env: Env, trigger: 'cron' | 'admin'): number {
   const configured = readConfig(env).refreshTargetsPerRun;
@@ -1529,14 +1596,11 @@ export async function listParkedTargets(env: Env): Promise<readonly ParkedTarget
  * ------------------------------------------------------------------ */
 
 /**
- * The refresh cron's period while M13a is deployed (`*\/15`). M13b's tick
- * switches the factor below to `REFRESH_TICK_MS` (§24.16); until then the
- * threshold is measured in the periods of the cron that actually runs.
+ * No `ok` refresh run for this long = `refresh-stale`: `HEALTH_STALE_TICKS`
+ * refresh ticks, 5 × 3 min = 15 min since M13b (75 min under M13a's 15-minute
+ * cron). The uptime monitor's threshold moves with it (docs/OPERATIONS.md).
  */
-const M13A_REFRESH_PERIOD_MS = 15 * MIN_MS;
-
-/** No `ok` refresh run for this long = `refresh-stale`: 5 × 15 min = 75 min in M13a. */
-export const HEALTH_STALE_AFTER_MS = HEALTH_STALE_TICKS * M13A_REFRESH_PERIOD_MS;
+export const HEALTH_STALE_AFTER_MS = HEALTH_STALE_TICKS * REFRESH_TICK_MS;
 
 export type IngestHealthReason = 'refresh-stale' | 'targets-parked' | 'espn-all-failing';
 

@@ -28,7 +28,7 @@ import type { EpochMs } from '../shared/types.js';
 import { alertActivity, evaluateAlerts } from './alerts.js';
 import type { Env } from './env.js';
 import { newId } from './db.js';
-import { refreshTargetsPerRun, runRefresh } from './ingest.js';
+import { isDiscoveryTick, refreshTargetsPerRun, runRefresh } from './ingest.js';
 import { runMaintenance } from './maintenance.js';
 import { runSettle } from './settle.js';
 import { readConfig } from './env.js';
@@ -306,8 +306,12 @@ export async function withJobRun(
   // holds the lease, and nothing below can change `finished.status`
   // (PLAN.md §24.6b). `evaluateAlerts` never throws; the guard here covers the
   // two reads that feed it.
+  // `d1-rows-near-cap` reads the rolling 24 h sum (a scan of ~1,200 job_runs
+  // rows), so since M13b it is read on DISCOVERY-FIRST refresh ticks (every
+  // 15 minutes, 96 a day — the old refresh rate) and by maintenance, not on
+  // all 480 refresh ticks (PLAN.md §24.6b).
   let dayRows: number | null = null;
-  if (job === 'refresh') {
+  if (job === 'refresh' ? isDiscoveryTick(now) : job === 'maintenance') {
     try {
       dayRows = await dayRowsWritten(env, now);
     } catch (err) {
@@ -354,9 +358,9 @@ async function insertRun(env: Env, run: JobRun): Promise<void> {
 /** Maps a cron expression from `ScheduledEvent.cron` to a job name. */
 export function jobForCron(cron: string): JobName | null {
   switch (cron.trim()) {
-    case '*/15 * * * *':
+    case '*/3 * * * *':
       return 'refresh';
-    case '5-59/15 * * * *':
+    case '1-59/3 * * * *':
       return 'settle';
     case '30 8 * * *':
       return 'maintenance';
@@ -372,6 +376,12 @@ export interface RunJobOptions {
    * secondary-sweep retry backoff is waived. Only the `refresh` job reads it.
    */
   readonly forceSecondaryGameId?: string;
+  /**
+   * The cron controller's `scheduledTime`: the tick's NOMINAL instant, which
+   * every refresh cadence is counted from (PLAN.md §24.7). Absent on an admin
+   * trigger, whose base is the floor fallback.
+   */
+  readonly scheduledTime?: EpochMs;
 }
 
 export function runJob(
@@ -386,6 +396,8 @@ export function runJob(
       case 'refresh': {
         const stats = await runRefresh(env, now, refreshTargetsPerRun(env, trigger), {
           forceSecondaryGameId: options.forceSecondaryGameId ?? null,
+          scheduledTime: options.scheduledTime ?? null,
+          trigger,
         });
         return { ...stats };
       }

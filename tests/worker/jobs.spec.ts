@@ -307,11 +307,15 @@ describe('job_runs', () => {
 });
 
 describe('cron dispatch', () => {
-  it('"*/15 * * * *" -> refresh', () => {
-    expect(jobForCron('*/15 * * * *')).toBe('refresh');
+  it('"*/3 * * * *" -> refresh (M13b, PLAN §24.7)', () => {
+    expect(jobForCron('*/3 * * * *')).toBe('refresh');
   });
-  it('"5-59/15 * * * *" -> settle', () => {
-    expect(jobForCron('5-59/15 * * * *')).toBe('settle');
+  it('"1-59/3 * * * *" -> settle (one minute after each refresh tick)', () => {
+    expect(jobForCron('1-59/3 * * * *')).toBe('settle');
+  });
+  it('the retired 15-minute expressions dispatch nothing', () => {
+    expect(jobForCron('*/15 * * * *')).toBeNull();
+    expect(jobForCron('5-59/15 * * * *')).toBeNull();
   });
   it('"30 8 * * *" -> maintenance', () => {
     expect(jobForCron('30 8 * * *')).toBe('maintenance');
@@ -324,7 +328,7 @@ describe('cron dispatch', () => {
   it('the three expressions match wrangler.jsonc exactly', () => {
     // If someone edits a cron in wrangler.jsonc without editing jobForCron, the
     // deployed Worker silently stops running that job. Pin both ends.
-    expect(['*/15 * * * *', '5-59/15 * * * *', '30 8 * * *'].map(jobForCron)).toEqual([
+    expect(['*/3 * * * *', '1-59/3 * * * *', '30 8 * * *'].map(jobForCron)).toEqual([
       'refresh',
       'settle',
       'maintenance',

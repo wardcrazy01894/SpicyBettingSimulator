@@ -6,6 +6,10 @@ import {
   LINE_STALE_MS,
   NCAAF_WEEK_ROLLOVER_ET_HOUR,
   NFL_WEEK_ROLLOVER_ET_HOUR,
+  REFRESH_DISCOVERY_TICKS,
+  REFRESH_LIVE_TICKS,
+  REFRESH_SOON_TICKS,
+  REFRESH_TICK_MS,
 } from '../../src/shared/constants.js';
 import {
   ET_TIME_ZONE,
@@ -19,6 +23,8 @@ import {
   expectedRefreshMs,
   lineStaleAfterMs,
   REFRESH_DISCOVERY_MS,
+  REFRESH_DONE_MS,
+  REFRESH_DONE_TICKS,
   REFRESH_LIVE_MS,
   REFRESH_SOON_MS,
 } from '../../src/shared/time.js';
@@ -243,8 +249,20 @@ describe('expectedRefreshMs / lineStaleAfterMs (PLAN §8.4 / §8.5)', () => {
     expect(expectedRefreshMs(T - HOUR, T)).toBe(REFRESH_LIVE_MS);
   });
 
+  it('(M13b) the four tiers are whole numbers of REFRESH_TICK_MS ticks (PLAN §24.7)', () => {
+    expect(REFRESH_LIVE_MS).toBe(REFRESH_LIVE_TICKS * REFRESH_TICK_MS);
+    expect(REFRESH_SOON_MS).toBe(REFRESH_SOON_TICKS * REFRESH_TICK_MS);
+    expect(REFRESH_DISCOVERY_MS).toBe(REFRESH_DISCOVERY_TICKS * REFRESH_TICK_MS);
+    expect(REFRESH_DONE_MS).toBe(REFRESH_DONE_TICKS * REFRESH_TICK_MS);
+    // Live is every tick (3 min); the other three keep their wall-clock values.
+    expect(REFRESH_LIVE_MS).toBe(3 * 60 * 1000);
+    expect(REFRESH_SOON_MS).toBe(HOUR);
+    expect(REFRESH_DISCOVERY_MS).toBe(6 * HOUR);
+    expect(REFRESH_DONE_MS).toBe(24 * HOUR);
+  });
+
   it('the window is 3 cycles at the tier when the line was SEEN, floored at 3 h', () => {
-    // Seen inside 3 h: 3 × 15 min = 45 min, floored to 3 h.
+    // Seen inside 3 h: 3 × 3 min (one tick) = 9 min, floored to 3 h — unchanged by M13b.
     expect(lineStaleAfterMs(T + HOUR, T)).toBe(LINE_STALE_MS);
     // Seen inside 48 h: 3 × 1 h = 3 h.
     expect(lineStaleAfterMs(T + 24 * HOUR, T)).toBe(LINE_STALE_MS);

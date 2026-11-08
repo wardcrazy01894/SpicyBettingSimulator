@@ -181,58 +181,58 @@ section explains the _why_.
   reasons about them, and `tests/unit/docs.spec.ts` fails if the two ever disagree.
   Change the constant and this table in the same PR.
 
-| Constant                              | Value           | Meaning                                                                                                                                                                                                                                                                                                                               |
-| ------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                                                                                                                                                                         |
-| `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                                                                                                                                                                     |
-| `REFILL_DEFAULT_CENTS`                | `100_000`       | what the admin's Refill button proposes for a BUSTED account (any positive amount up to `MAX_PAYOUT_CENTS` may be typed) and the ONLY amount the player's own "Run out of money?" button pays (§4.5)                                                                                                                                  |
-| `BUST_BUYOUT_CENTS`                   | `100_000`       | the price of removing ONE bust badge, paid from the player's own balance, which must be STRICTLY above it (§4.5)                                                                                                                                                                                                                      |
-| `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                                                                                                                                                                  |
-| `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                                                                                                                                                                |
-| `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5)                                                                                                                                                 |
-| `SESSION_TTL_MS`                      | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                                                                                                                                                                  |
-| `MAX_SETTLE_ATTEMPTS`                 | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                                                                                                                                                                                                                                                                       |
-| `VOID_AFTER_MS`                       | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                                                                                                                                                                               |
-| `MAX_PARLAY_LEGS`                     | `25`            | DraftKings' parlay limit; also `CHECK(leg_count BETWEEN 1 AND 25)` on `bets` (10 until migration 0010, §16.2)                                                                                                                                                                                                                         |
-| `MIN_TEASER_LEGS`                     | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                                                                                                                                                                         |
-| `MAX_TEASER_LEGS`                     | `10`            | the teaser card's width (§5.8), below `MAX_PARLAY_LEGS`; also `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` on `bets` (0010)                                                                                                                                                                                                      |
-| `NFL_WEEK_ROLLOVER_ET_HOUR`           | `20`            | Sunday 20:00 ET: the NFL board rolls over to next week's Monday (§22)                                                                                                                                                                                                                                                                 |
-| `NCAAF_WEEK_ROLLOVER_ET_HOUR`         | `0`             | Sunday 00:00 ET: the CFB board rolls over to next week's Monday (§22)                                                                                                                                                                                                                                                                 |
-| `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` | `300`           | 30.0 pt: past this a missing moneyline is normal, not a gap — the UI hint and the sweep rule (§21.2)                                                                                                                                                                                                                                  |
-| `SECONDARY_RETRY_MS`                  | `14_400_000`    | 4 h before the secondary re-attempts a game it could not fill (§21.5)                                                                                                                                                                                                                                                                 |
-| `SECONDARY_RESWEEP_MARGIN_MS`         | `2_700_000`     | re-confirm a secondary fill this long before its staleness window closes (§21.5)                                                                                                                                                                                                                                                      |
-| `SECONDARY_MIN_SWEEP_INTERVAL_MS`     | `7_200_000`     | floor between two sweeps of the SAME league; the blast-radius limiter (§21.5)                                                                                                                                                                                                                                                         |
-| `SECONDARY_MATCH_WINDOW_MS`           | `5_400_000`     | kickoff tolerance of the mascot fallback matcher (§21.7)                                                                                                                                                                                                                                                                              |
-| `ODDS_API_MONTHLY_CREDITS`            | `500`           | the free tier's monthly allowance; also the literal 0007 seeds (§21.3)                                                                                                                                                                                                                                                                |
-| `ODDS_API_COST_PER_SWEEP`             | `3`             | credits one league sweep costs: markets (3) × regions (1), MEASURED (§21.5)                                                                                                                                                                                                                                                           |
-| `ODDS_API_CREDIT_RESERVE`             | `25`            | sweeping stops below this — a cushion for debit drift, not for the probe, which is FREE (§21.5)                                                                                                                                                                                                                                       |
-| `ODDS_API_BUDGET_PROBE_MS`            | `86_400_000`    | while the reserve blocks, one FREE `GET /v4/sports` a day to notice the monthly reset (§21.5)                                                                                                                                                                                                                                         |
-| `ODDS_API_COOLDOWN_MS`                | `3_600_000`     | first cooldown after a 429 or a transport failure (§21.9)                                                                                                                                                                                                                                                                             |
-| `ODDS_API_COOLDOWN_MAX_MS`            | `28_800_000`    | ceiling on the doubling of that cooldown across consecutive failures (§21.9)                                                                                                                                                                                                                                                          |
-| `ODDS_API_TIMEOUT_MS`                 | `8_000`         | request timeout, same as ESPN's; a slow provider must not eat the CPU budget (§21.6)                                                                                                                                                                                                                                                  |
-| `MLB_OFFICIAL_INNINGS`                | `5`             | a FINAL MLB game shorter than this was never official: EVERY market void, totals included (§23.6) — read from M12b                                                                                                                                                                                                                    |
-| `MLB_REGULATION_INNINGS`              | `9`             | a FINAL MLB game this long (extras included) grades every market; shorter, only the moneyline and a decided total have action (§23.6) — read from M12b                                                                                                                                                                                |
-| `MLB_POSTPONED_CONFIRM_MS`            | `10_800_000`    | 3 h after its ET day ends, a fetch still saying "postponed" is the evidence that voids an MLB game (§23.7) — read from M12b                                                                                                                                                                                                           |
-| `INGEST_MAX_INCOMPLETE_ATTEMPTS`      | `3`             | consecutive refresh attempts that never reached a reschedule (a CPU kill) before a target is PARKED (§24.4) — read from M13a                                                                                                                                                                                                          |
-| `INGEST_PARKED_RETRY_MS`              | `21_600_000`    | 6 h: a parked target gets ONE probation attempt after this long; killed again, it re-parks at once (§24.4) — read from M13a                                                                                                                                                                                                           |
-| `HEALTH_STALE_TICKS`                  | `5`             | refresh periods without a refresh run recorded `ok` before `GET /api/health/ingest` answers 503: 15 min at the 3-min tick (§24.5) — read from M13a                                                                                                                                                                                    |
-| `REFRESH_TICK_MS`                     | `180_000`       | the refresh tick FROM M13b (`*/3`, 480 runs a day); every cadence is a multiple of it, measured from the tick's NOMINAL instant (§24.7). The deployed cron is `*/15` until then — read from M13b                                                                                                                                      |
-| `REFRESH_LIVE_TICKS`                  | `1`             | a slate with a game live (or within 3 h) is due at the NEXT tick, every league; the write budget's retreat lever (§24.7, §24.13) — read from M13b                                                                                                                                                                                     |
-| `REFRESH_SOON_TICKS`                  | `20`            | 60 min: a slate with a kickoff within 48 h (§24.7) — read from M13b                                                                                                                                                                                                                                                                   |
-| `REFRESH_DISCOVERY_TICKS`             | `120`           | 6 h: line discovery (§24.7) — read from M13b                                                                                                                                                                                                                                                                                          |
-| `REFRESH_BACKOFF_BASE_TICKS`          | `5`             | 15 min: failure backoff base (doubling, capped at 6 h) and the poison guard's provisional reschedule (§24.4) — read from M13a/M13b                                                                                                                                                                                                    |
-| `REFRESH_DISCOVERY_EVERY_NTH_TICK`    | `5`             | every fifth tick (:00 :15 :30 :45, 96 a day) claims a non-live target first: discovery's reservation in time (§24.7) — read from M13b                                                                                                                                                                                                 |
-| `REFRESH_WEIGHT_BUDGET`               | `40`            | the most games one refresh run may carry IN TOTAL, the first target's weight included. The first target always runs, even if it alone exceeds this, and then nothing joins it. So any two of the NFL, MLB and NBA slates pair up (all three, 47 games, do not), and a CFB or D-I basketball slate runs alone (§24.7) — read from M13b |
-| `NCAAB_BOARD_ET_DAYS`                 | `3`             | college basketball's board and ingest window: today and the next two ET dates, so games are seen while ESPN still sends their conference (§24.2) — read from M13c                                                                                                                                                                     |
-| `NBA_BOARD_ET_DAYS`                   | `2`             | the NBA's board and ingest window: today and tomorrow, because NBA lines are posted a day ahead (§24.2) — read from M13c                                                                                                                                                                                                              |
-| `JOB_REAP_AFTER_MS`                   | `900_000`       | 15 min, Cloudflare's cron wall-clock ceiling: a `running` `job_runs` row older than this is reaped to `error` as killed. Deliberately NOT the lease TTL, which a slow live run may outlast (§24.4) — read from M13a                                                                                                                   |
-| `ALERT_COMMENT_INTERVAL_MS`           | `3_600_000`     | 1 h: the FIRST interval between comments on an open alert issue; it doubles per comment (§24.6b) — read from M13a                                                                                                                                                                                                                     |
-| `ALERT_COMMENT_MAX_INTERVAL_MS`       | `86_400_000`    | 24 h: the ceiling of that doubling, so at most one comment email a day per alert (§24.6b) — read from M13a                                                                                                                                                                                                                            |
-| `ALERT_RESOLVE_AFTER_MS`              | `21_600_000`    | 6 h without the condition firing → closing comment, issue closed (§24.6b) — read from M13a                                                                                                                                                                                                                                            |
-| `ALERT_REOPEN_WINDOW_MS`              | `86_400_000`    | 24 h: a recurrence after resolve within this REOPENS the same issue; later, a new one (§24.6b) — read from M13a                                                                                                                                                                                                                       |
-| `ALERT_D1_ROWS_NEAR_CAP`              | `60_000`        | rolling-24h `dayRowsWritten` that fires `d1-rows-near-cap`, the write-budget retreat trigger (§24.13) — read from M13a                                                                                                                                                                                                                |
-| `ALERT_MAX_GITHUB_CALLS_PER_RUN`      | `2`             | GitHub subrequests one job run may spend on alerts (§24.6b) — read from M13a                                                                                                                                                                                                                                                          |
-| `ALERT_GITHUB_TIMEOUT_MS`             | `10_000`        | per alert call; a failure is logged and never fails the job (§24.6b) — read from M13a                                                                                                                                                                                                                                                 |
+| Constant                              | Value           | Meaning                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                                                                                                                                                                          |
+| `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                                                                                                                                                                      |
+| `REFILL_DEFAULT_CENTS`                | `100_000`       | what the admin's Refill button proposes for a BUSTED account (any positive amount up to `MAX_PAYOUT_CENTS` may be typed) and the ONLY amount the player's own "Run out of money?" button pays (§4.5)                                                                                                                                   |
+| `BUST_BUYOUT_CENTS`                   | `100_000`       | the price of removing ONE bust badge, paid from the player's own balance, which must be STRICTLY above it (§4.5)                                                                                                                                                                                                                       |
+| `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                                                                                                                                                                   |
+| `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                                                                                                                                                                 |
+| `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5)                                                                                                                                                  |
+| `SESSION_TTL_MS`                      | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                                                                                                                                                                   |
+| `MAX_SETTLE_ATTEMPTS`                 | `480`           | 24 h at the 3-min settle cadence (`1-59/3`, since M13b; it was 96 at the 15-min one) before a bet is parked (§7.1)                                                                                                                                                                                                                     |
+| `VOID_AFTER_MS`                       | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                                                                                                                                                                                |
+| `MAX_PARLAY_LEGS`                     | `25`            | DraftKings' parlay limit; also `CHECK(leg_count BETWEEN 1 AND 25)` on `bets` (10 until migration 0010, §16.2)                                                                                                                                                                                                                          |
+| `MIN_TEASER_LEGS`                     | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                                                                                                                                                                          |
+| `MAX_TEASER_LEGS`                     | `10`            | the teaser card's width (§5.8), below `MAX_PARLAY_LEGS`; also `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` on `bets` (0010)                                                                                                                                                                                                       |
+| `NFL_WEEK_ROLLOVER_ET_HOUR`           | `20`            | Sunday 20:00 ET: the NFL board rolls over to next week's Monday (§22)                                                                                                                                                                                                                                                                  |
+| `NCAAF_WEEK_ROLLOVER_ET_HOUR`         | `0`             | Sunday 00:00 ET: the CFB board rolls over to next week's Monday (§22)                                                                                                                                                                                                                                                                  |
+| `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` | `300`           | 30.0 pt: past this a missing moneyline is normal, not a gap — the UI hint and the sweep rule (§21.2)                                                                                                                                                                                                                                   |
+| `SECONDARY_RETRY_MS`                  | `14_400_000`    | 4 h before the secondary re-attempts a game it could not fill (§21.5)                                                                                                                                                                                                                                                                  |
+| `SECONDARY_RESWEEP_MARGIN_MS`         | `2_700_000`     | re-confirm a secondary fill this long before its staleness window closes (§21.5)                                                                                                                                                                                                                                                       |
+| `SECONDARY_MIN_SWEEP_INTERVAL_MS`     | `7_200_000`     | floor between two sweeps of the SAME league; the blast-radius limiter (§21.5)                                                                                                                                                                                                                                                          |
+| `SECONDARY_MATCH_WINDOW_MS`           | `5_400_000`     | kickoff tolerance of the mascot fallback matcher (§21.7)                                                                                                                                                                                                                                                                               |
+| `ODDS_API_MONTHLY_CREDITS`            | `500`           | the free tier's monthly allowance; also the literal 0007 seeds (§21.3)                                                                                                                                                                                                                                                                 |
+| `ODDS_API_COST_PER_SWEEP`             | `3`             | credits one league sweep costs: markets (3) × regions (1), MEASURED (§21.5)                                                                                                                                                                                                                                                            |
+| `ODDS_API_CREDIT_RESERVE`             | `25`            | sweeping stops below this — a cushion for debit drift, not for the probe, which is FREE (§21.5)                                                                                                                                                                                                                                        |
+| `ODDS_API_BUDGET_PROBE_MS`            | `86_400_000`    | while the reserve blocks, one FREE `GET /v4/sports` a day to notice the monthly reset (§21.5)                                                                                                                                                                                                                                          |
+| `ODDS_API_COOLDOWN_MS`                | `3_600_000`     | first cooldown after a 429 or a transport failure (§21.9)                                                                                                                                                                                                                                                                              |
+| `ODDS_API_COOLDOWN_MAX_MS`            | `28_800_000`    | ceiling on the doubling of that cooldown across consecutive failures (§21.9)                                                                                                                                                                                                                                                           |
+| `ODDS_API_TIMEOUT_MS`                 | `8_000`         | request timeout, same as ESPN's; a slow provider must not eat the CPU budget (§21.6)                                                                                                                                                                                                                                                   |
+| `MLB_OFFICIAL_INNINGS`                | `5`             | a FINAL MLB game shorter than this was never official: EVERY market void, totals included (§23.6) — read from M12b                                                                                                                                                                                                                     |
+| `MLB_REGULATION_INNINGS`              | `9`             | a FINAL MLB game this long (extras included) grades every market; shorter, only the moneyline and a decided total have action (§23.6) — read from M12b                                                                                                                                                                                 |
+| `MLB_POSTPONED_CONFIRM_MS`            | `10_800_000`    | 3 h after its ET day ends, a fetch still saying "postponed" is the evidence that voids an MLB game (§23.7) — read from M12b                                                                                                                                                                                                            |
+| `INGEST_MAX_INCOMPLETE_ATTEMPTS`      | `3`             | consecutive refresh attempts that never reached a reschedule (a CPU kill) before a target is PARKED (§24.4) — read from M13a                                                                                                                                                                                                           |
+| `INGEST_PARKED_RETRY_MS`              | `21_600_000`    | 6 h: a parked target gets ONE probation attempt after this long; killed again, it re-parks at once (§24.4) — read from M13a                                                                                                                                                                                                            |
+| `HEALTH_STALE_TICKS`                  | `5`             | refresh periods without a refresh run recorded `ok` before `GET /api/health/ingest` answers 503: 15 min at the 3-min tick (§24.5) — read from M13a                                                                                                                                                                                     |
+| `REFRESH_TICK_MS`                     | `180_000`       | the refresh tick since M13b (`*/3`, 480 runs a day); every cadence is a multiple of it, measured from the tick's NOMINAL instant (§24.7). `docs.spec.ts` pins wrangler's refresh cron to it                                                                                                                                            |
+| `REFRESH_LIVE_TICKS`                  | `1`             | a slate with a game live (or within 3 h) is due at the NEXT tick, every league; the write budget's retreat lever (§24.7, §24.13) — read since M13b                                                                                                                                                                                     |
+| `REFRESH_SOON_TICKS`                  | `20`            | 60 min: a slate with a kickoff within 48 h (§24.7) — read since M13b                                                                                                                                                                                                                                                                   |
+| `REFRESH_DISCOVERY_TICKS`             | `120`           | 6 h: line discovery (§24.7) — read since M13b                                                                                                                                                                                                                                                                                          |
+| `REFRESH_BACKOFF_BASE_TICKS`          | `5`             | 15 min: failure backoff base (doubling, capped at 6 h) and the poison guard's provisional reschedule (§24.4) — read since M13a/M13b                                                                                                                                                                                                    |
+| `REFRESH_DISCOVERY_EVERY_NTH_TICK`    | `5`             | every fifth tick (:00 :15 :30 :45, 96 a day) claims a non-live target first: discovery's reservation in time (§24.7) — read since M13b                                                                                                                                                                                                 |
+| `REFRESH_WEIGHT_BUDGET`               | `40`            | the most games one refresh run may carry IN TOTAL, the first target's weight included. The first target always runs, even if it alone exceeds this, and then nothing joins it. So any two of the NFL, MLB and NBA slates pair up (all three, 47 games, do not), and a CFB or D-I basketball slate runs alone (§24.7) — read since M13b |
+| `NCAAB_BOARD_ET_DAYS`                 | `3`             | college basketball's board and ingest window: today and the next two ET dates, so games are seen while ESPN still sends their conference (§24.2) — read from M13c                                                                                                                                                                      |
+| `NBA_BOARD_ET_DAYS`                   | `2`             | the NBA's board and ingest window: today and tomorrow, because NBA lines are posted a day ahead (§24.2) — read from M13c                                                                                                                                                                                                               |
+| `JOB_REAP_AFTER_MS`                   | `900_000`       | 15 min, Cloudflare's cron wall-clock ceiling: a `running` `job_runs` row older than this is reaped to `error` as killed. Deliberately NOT the lease TTL, which a slow live run may outlast (§24.4) — read from M13a                                                                                                                    |
+| `ALERT_COMMENT_INTERVAL_MS`           | `3_600_000`     | 1 h: the FIRST interval between comments on an open alert issue; it doubles per comment (§24.6b) — read from M13a                                                                                                                                                                                                                      |
+| `ALERT_COMMENT_MAX_INTERVAL_MS`       | `86_400_000`    | 24 h: the ceiling of that doubling, so at most one comment email a day per alert (§24.6b) — read from M13a                                                                                                                                                                                                                             |
+| `ALERT_RESOLVE_AFTER_MS`              | `21_600_000`    | 6 h without the condition firing → closing comment, issue closed (§24.6b) — read from M13a                                                                                                                                                                                                                                             |
+| `ALERT_REOPEN_WINDOW_MS`              | `86_400_000`    | 24 h: a recurrence after resolve within this REOPENS the same issue; later, a new one (§24.6b) — read from M13a                                                                                                                                                                                                                        |
+| `ALERT_D1_ROWS_NEAR_CAP`              | `60_000`        | rolling-24h `dayRowsWritten` that fires `d1-rows-near-cap`, the write-budget retreat trigger (§24.13) — read from M13a                                                                                                                                                                                                                 |
+| `ALERT_MAX_GITHUB_CALLS_PER_RUN`      | `2`             | GitHub subrequests one job run may spend on alerts (§24.6b) — read from M13a                                                                                                                                                                                                                                                           |
+| `ALERT_GITHUB_TIMEOUT_MS`             | `10_000`        | per alert call; a failure is logged and never fails the job (§24.6b) — read from M13a                                                                                                                                                                                                                                                  |
 
 `TEASER_POINTS_TENTHS = [30, 40, 50, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140]`
 — the 3-to-14-point tiers (plus 6.5), in TENTHS, matching every other line
@@ -1304,12 +1304,13 @@ at the head of the queue would be re-selected every 15 minutes forever and
   `settle_error`. **That single UPDATE is the only thing a `pending` outcome ever
   writes**; it touches no money, no bet status and no leg results.
 - `ORDER BY settle_attempts ASC` pushes repeat offenders behind fresh work.
-- At `MAX_SETTLE_ATTEMPTS = 96` a bet leaves the selection set and is reported in
+- At `MAX_SETTLE_ATTEMPTS = 480` a bet leaves the selection set and is reported in
   `job_runs.stats.stuck[]` for a human. It stays `pending` — money is never
   silently forfeited.
 
-**Why 96, and how the counter resets.** 96 attempts at the 15-minute settle
-cadence is **24 hours** (computed: 96 × 15 / 60 = 24.00 h). An earlier value of 5
+**Why 480, and how the counter resets.** 480 attempts at the 3-minute settle
+cadence (since M13b, §24.7) is **24 hours** (computed: 480 × 3 / 60 = 24.00 h);
+it was 96 at the old 15-minute cadence, the same 24 h. An earlier value of 5
 gave up after **1.25 h**, which is comfortably inside the window in which a
 briefly malformed ESPN score is plausible — and, worse, nothing reset it, so a
 transient feed glitch could park a bet permanently with no documented way out.
@@ -1613,7 +1614,7 @@ forever:
 | Game stuck `in_progress`                            | `status='in_progress' AND now > kickoff_at + 12h AND last_seen_at < now - 6h`                                                                                                                                                               | leave; alert via `job_runs.stats.stuck[]` (do **not** auto-void a game that might just be a feed glitch)                |
 | Expired sessions                                    | `expires_at < now`                                                                                                                                                                                                                          | delete                                                                                                                  |
 | Auth throttle rows                                  | `window_start < now - 1d`                                                                                                                                                                                                                   | delete                                                                                                                  |
-| `job_runs` history                                  | keep newest 200 per job (600 from M13b, which runs refresh and settle 480 times a day each, §24.7)                                                                                                                                          | delete                                                                                                                  |
+| `job_runs` history                                  | keep newest 600 per job (`JOB_RUNS_KEPT_PER_JOB`; 200 before M13b, which runs refresh and settle 480 times a day each, §24.7)                                                                                                               | delete                                                                                                                  |
 
 Every auto-void writes a `job_runs.stats` entry naming the game id, so it is visible
 in `GET /api/admin/jobs`.
@@ -1850,7 +1851,7 @@ kickoff        event.date, ISO with no seconds ("2026-09-13T17:00Z").
                skips the event rather than storing NaN.
 ```
 
-### 8.4 Scheduling (`refresh` job, cron `*/15 * * * *`)
+### 8.4 Scheduling (`refresh` job, cron `*/3 * * * *`)
 
 Each run:
 
@@ -1865,77 +1866,72 @@ Each run:
    Delete targets whose window ended more than 2 days ago and that have no
    non-final games. Beyond that weekday rule the planner still needs no league
    calendar, which is what keeps bowls and the NFL postseason free (§8.2).
-2. **Pick** up to `REFRESH_TARGETS_PER_RUN = 2` targets with `next_run_at <= now`.
-   **The two slots are not interchangeable**:
+2. **Pick** the due targets (`next_run_at <= now`) under a per-run **WEIGHT
+   BUDGET** (since M13b, §24.7). One read takes up to `REFRESH_TARGETS_PER_RUN`
+   (5, a COUNT cap) candidates in claim order, `priority ASC, next_run_at ASC,
+id ASC`. The first always runs; the next joins while the summed weight stays
+   `<= REFRESH_WEIGHT_BUDGET` (40) and the run STOPS at the first that does not
+   fit. A target weighs its `games_seen` from its last successful fetch (at
+   least 1), or 41, "big", if it has never succeeded (`last_ok_at IS NULL`). So
+   a CFB Saturday runs alone, an NFL date and an MLB day share, and empty future
+   dates pack five to a run.
 
-   | Slot | Selection                                                                                      |
-   | ---- | ---------------------------------------------------------------------------------------------- |
-   | 1    | the most-due target overall, `ORDER BY priority ASC, next_run_at ASC` — in practice a live one |
-   | 2    | **RESERVED**: the most-overdue target that has **no in-progress game** (line discovery)        |
-
-   Without the reservation, a Saturday with a live CFB target and a live NFL
-   target would consume both slots on all 96 runs and the other ~20 targets would
-   **starve indefinitely** — `priority ASC, next_run_at ASC` does not prevent
-   that, because live targets are perpetually the most due. Next week's CFB lines
-   would simply never be discovered.
+   **Discovery is reserved in TIME.** Every fifth tick (`:00 :15 :30 :45`,
+   `REFRESH_DISCOVERY_EVERY_NTH_TICK`) is _discovery-first_: its first pick is the
+   most-overdue target with **no in-progress game**, then the general order
+   follows. Without it, a Saturday with a live CFB and a live NFL target would
+   take every tick and the other ~20 targets would **starve indefinitely** —
+   `priority ASC, next_run_at ASC` does not prevent that, because live targets
+   are perpetually the most due. If nothing non-live is due the tick falls
+   through to the plain order, so no tick is wasted. Admin runs are always
+   general (§9.3).
 
    Budget check, computed (under §22's window): at most 9 ET dates × 2 leagues =
    **18 targets**, 16 on a Monday and 14 from Tuesday on. Worst case 2
    are live, leaving **16** discovery targets that each want a +6 h refresh =
-   4/day = **64 slot-uses/day**, against a supply of **96** — fits with 32 to
-   spare, where the 10-day window it replaced left 16. The DST footnote that used
-   to sit here (a 23 h day makes a 10-day window span twelve ET dates) no longer
-   binds: a weekday-anchored window spans at most 9 dates however long its days
-   are. If two targets are live simultaneously they alternate
-   in slot 1 and each gets a **30-minute** cadence; settlement tolerates that (it
-   is a fake-money app, and the settle job runs independently of ingest).
+   4/day = **64 refreshes/day**, against **96** discovery-first ticks — fits with
+   32 to spare. A weekday-anchored window spans at most 9 dates however long its
+   days are, so DST needs no footnote. Two big live targets take turns on the
+   general ticks, each refreshed about every second tick (~7.5 min); three, about
+   every third (~11 min). Settlement tolerates that (§24.7's bounds).
 
    **Since M12a, MLB adds one target per ET day** (`mlb:date:YYYYMMDD`, a
    day-only window — §23.5), so at most **19** in-window targets (17 on a
    Monday, 15 on a Tuesday) plus two or three past MLB dates on the +24 h tier
    until retired — so for an hour or two after midnight there are TWO live MLB
    targets (yesterday's late game and today's). 00:00 ET is also MLB's daily
-   rollover, so a CFB Sunday-rollover burst is eight new targets, not seven.
-   Discovery demand at the widest point is ≈ 70 of the 96 slot-uses the reserved
-   slot alone supplies. The MLB target is live ~10:00–01:00 ET daily, so on a
-   football weekend slot 1 alternates among two or three live targets — 30- or
-   45-minute cadence — which the sentence above already accepts; §23.11 has the
-   arithmetic and why Spike S1 gates a third slot.
+   rollover, so a CFB Sunday-rollover burst is eight new targets, not seven;
+   never fetched, each runs alone, one a tick. Discovery demand at the widest
+   point is ≈ 70 of the 96 discovery-first ticks. An MLB day (≤ 16 games) shares
+   a run with an NFL date.
 
-   **What changes in M13 (§24).** M13a (SHIPPED 2026-11-07) stamps a target
-   before its fetch and PARKS one that keeps being killed (§24.4), so a CPU kill
-   can no longer pin the head of the queue; a blamed target (one whose
-   `incomplete_attempts` is above zero) is claimed only into slot 1 and runs
-   alone. The rest is planned, and the slot table above is current until M13b.
-   M13b moves refresh to a 3-minute tick (`*/3`, 480 runs a day). The slot table
-   above gives way to a per-run WEIGHT BUDGET (a big slate runs alone, small
-   ones share, `REFRESH_WEIGHT_BUDGET`), and discovery's reservation moves from
-   slot 2 to every fifth tick (`REFRESH_DISCOVERY_EVERY_NTH_TICK`, §24.7). M13c
-   adds college basketball's three ET dates and the NBA's two, so in-window
+   **M13 (§24).** M13a (SHIPPED 2026-11-07) stamps a target before its fetch
+   and PARKS one that keeps being killed (§24.4), so a CPU kill can no longer
+   pin the head of the queue; a blamed target (one whose `incomplete_attempts`
+   is above zero) runs alone if it is first and ends the packing otherwise.
+   M13b (SHIPPED) is the tick, the weight budget and the discovery tick above.
+   M13c adds college basketball's three ET dates and the NBA's two, so in-window
    targets reach **24** (9 + 9 + 1 + 3 + 2).
 
-   The reserved-slot query excludes the id slot 1 already claimed
-   (`AND id <> :slot1Id`) — on a run with no live target slot 1's pick would
-   otherwise satisfy slot 2's predicate too and the run would fetch the same URL
-   twice. If the reserved slot finds no eligible non-live target it falls through
-   to the general queue (same exclusion) so a run is never wasted.
+   The discovery read and the general read that follows it exclude each
+   other's id, so a run never fetches the same URL twice.
 
 3. For each: fetch → parse → upsert games (§8.5) → upsert `game_lines` → reschedule.
 
-Reschedule interval, derived from what the target actually contains (**from
-M13b** each row becomes a whole number of 3-minute ticks counted from the tick's
-nominal instant, and the live row becomes ONE tick, the next one, in every
-league. The others keep their wall-clock values. §24.7 has the table and the
-alignment trap):
+Reschedule interval, derived from what the target actually contains. Since
+M13b each row is a whole number of 3-minute ticks counted from the tick's
+NOMINAL instant (`controller.scheduledTime`; an admin run uses the tick at or
+before `now`), never from `now`: a run starts seconds after its tick, and
+`now + N ticks` would miss the Nth tick (the alignment trap, §24.7):
 
-| Target contains                            | Next refresh                 |
-| ------------------------------------------ | ---------------------------- |
-| a game `in_progress`, or kickoff within 3h | +15 min (every run)          |
-| a game kicking off within 48h              | +60 min                      |
-| otherwise (line discovery for next week)   | +6 h                         |
-| all games `final`/`canceled`               | +24 h, and drop after 2 days |
+| Target contains                            | Next refresh                                 |
+| ------------------------------------------ | -------------------------------------------- |
+| a game `in_progress`, or kickoff within 3h | +1 tick (3 min, the next tick), every league |
+| a game kicking off within 48h              | +20 ticks (60 min)                           |
+| otherwise (line discovery for next week)   | +120 ticks (6 h)                             |
+| all games `final`/`canceled`               | +480 ticks (24 h), and drop after 2 days     |
 
-Failures: exponential backoff `min(15min * 2^consecutive_failures, 6h)`, capped at 8
+Failures: exponential backoff `min(5 ticks (15 min) × 2^consecutive_failures, 6h)`, capped at 8
 failures before the target is parked at +6h and reported in `job_runs.stats`. **A
 failed fetch or a parse error writes nothing to `games`/`game_lines`** — parse first,
 into memory, then write. ESPN being down means stale data, never corrupt data.
@@ -2161,16 +2157,16 @@ board hides that market once `now - seen_at > lineStaleAfterMs(kickoff, seen_at)
 
 ### 8.6 Request and write budget
 
-**Requests.** `2 targets/run × 96 runs/day = 192 ESPN calls/day` absolute worst
-case; typical is 60–100 because targets self-throttle to +6 h when nothing is
-near. **From M13b** (§24.7) it is one slate per 3-minute tick, ~480 a day,
-more when small slates share a run under the weight budget (≤ 5 per
-invocation). §24.13 re-derives the rows-written budget for a live-every-tick
-cadence plus a 155-game college basketball Saturday and the NBA: **≈ 40–45k
-rows on the worst day, ≈ 45% of the hard cap**, against ≈ 5,100 today, with
-`REFRESH_LIVE_TICKS` as the one-line retreat. Today that is **≤ 2 external
-subrequests per invocation** (≤ 5 from M13b, plus ≤ 2 alert calls, §24.6b) against
-a limit of 50, and well under the "< 20 calls/run" goal.
+**Requests.** Since M13b (§24.7) it is about one slate per 3-minute tick, ~480
+ESPN calls a day, more when small slates share a run under the weight budget
+(**≤ 5 external subrequests per invocation**, plus ≤ 2 alert calls, §24.6b,
+against a limit of 50, and well under the "< 20 calls/run" goal). Before M13b
+it was `2 targets/run × 96 runs/day = 192` at worst. §24.13 re-derives the
+rows-written budget for a live-every-tick cadence plus a 155-game college
+basketball Saturday and the NBA: **≈ 40–45k rows on the worst day, ≈ 45% of
+the hard cap**, against ≈ 5,100 before M13b, with `REFRESH_LIVE_TICKS` as the
+one-line retreat. The tables below are the pre-M13b measurement at 96 refreshes
+a day; the CFB slate re-measured at 480 ticks is 7,922 rows (§24.13).
 
 **Rows written.** This is the one that can actually break the app, so it is
 budgeted from the worst real day rather than an average, and an earlier draft's
@@ -2201,15 +2197,15 @@ the one that used to be a guess; it is now the output of
 kickoff waves (scheduled → in_progress for 3.5 h → final), moving the clock on
 **every** refresh, and sums `meta.rows_written`:
 
-| Stream                              | Arithmetic                                               | Rows                          |
-| ----------------------------------- | -------------------------------------------------------- | ----------------------------- |
-| CFB Saturday `games` + `game_lines` | **measured**: 86 games × 96 refreshes, A/B split         | **2,979**                     |
-| NFL Sunday `games` + `game_lines`   | 13/86 of the above                                       | ~450                          |
-| Other 8 date targets (quiet days)   | mostly 0 rows; L3 touches at 1 row each                  | ~500                          |
-| `ingest_targets` reschedules        | 96 runs × 2 targets × 2 (row + `idx_ingest_targets_due`) | 384                           |
-| bets / legs / ledger (10 users)     | —                                                        | < 500                         |
-| sessions / throttle / job_runs      | —                                                        | < 300                         |
-| **Total**                           |                                                          | **≈ 5,100 / day — 5% of cap** |
+| Stream                              | Arithmetic                                                        | Rows                          |
+| ----------------------------------- | ----------------------------------------------------------------- | ----------------------------- |
+| CFB Saturday `games` + `game_lines` | **measured**: 86 games × 96 refreshes, A/B split                  | **2,979**                     |
+| NFL Sunday `games` + `game_lines`   | 13/86 of the above                                                | ~450                          |
+| Other 8 date targets (quiet days)   | mostly 0 rows; L3 touches at 1 row each                           | ~500                          |
+| `ingest_targets` reschedules        | 96 runs × 2 targets × 2 (row + `idx_ingest_targets_due`)          | 384                           |
+| bets / legs / ledger (10 users)     | —                                                                 | < 500                         |
+| sessions / throttle / job_runs      | pre-M13b; ≈ 5,800/day from M13b, NOT in `dayRowsWritten` (§24.13) | < 300                         |
+| **Total**                           |                                                                   | **≈ 5,100 / day — 5% of cap** |
 
 **MLB (since M12a) adds ≈ 900 rows/day, measured** — two figures, which are
 not a contradiction: the pre-measurement **ESTIMATE** was ≈ 1,050 rows/day
@@ -2260,7 +2256,8 @@ and `rowsSkipped` in `job_runs.stats`. `GET /api/admin/jobs` folds a rolling-24h
 `dayRowsWritten` total into every run's `stats` — inside `stats` rather than
 beside it, because `api-types.ts` is frozen and `JobRunView.stats` is already
 `Record<string, unknown>`. `tests/worker/ingest.spec.ts` carries the regression
-assertion that 96 refreshes of the 86-game CFB Saturday write **< 5,000** rows,
+assertion that 480 three-minute ticks of the 86-game CFB Saturday write
+**< 13,300** rows (measured 7,922 at M13b, §24.13; it was < 5,000 at 96 refreshes),
 cross-checked against an independent `env.DB.batch` probe, so a change that
 silently defeats a lever fails CI rather than failing on a Saturday in November.
 
@@ -2270,38 +2267,37 @@ silently defeats a lever fails CI rather than failing on a Saturday in November.
 
 ```jsonc
 "triggers": { "crons": [
-  "*/15 * * * *",      // refresh   :00 :15 :30 :45
-  "5-59/15 * * * *",   // settle    :05 :20 :35 :50
+  "*/3 * * * *",       // refresh   every 3 minutes (REFRESH_TICK_MS), since M13b
+  "1-59/3 * * * *",    // settle    one minute after each refresh tick
   "30 8 * * *"         // maintenance, 08:30 UTC
 ]}
 ```
 
 `scheduled(event)` dispatches on `event.cron`. Three small jobs rather than one big
 one, because the 10 ms CPU limit is per invocation and staggering them means the
-settle job never competes with a 1 MB `JSON.parse`. Settle runs 5 minutes after
-refresh so it grades against freshly written scores.
+settle job never competes with a 1 MB `JSON.parse`. Settle runs a minute after
+each refresh tick so it grades against freshly written scores: a final is graded
+within ~4–6 minutes of ESPN calling it. ~960 cron invocations a day against
+Workers Free's 100,000 requests.
 
 **How much work each run does** is two `wrangler.jsonc` vars, not constants —
 they are the knobs Spikes S1 and S2 exist to justify, and `env.ts` bounds-checks
 both at startup:
 
-| Var                       | Value | What it caps                                                                   |
-| ------------------------- | ----- | ------------------------------------------------------------------------------ |
-| `REFRESH_TARGETS_PER_RUN` | `2`   | ET-date targets ingested per `refresh` run (§8.4). Spike S1 blocks raising it. |
-| `SETTLE_CHUNK`            | `20`  | bets settled per `settle` run (§7.1). Spike S2 blocks raising it.              |
+| Var                       | Value | What it caps                                                                                                                                    |
+| ------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REFRESH_TARGETS_PER_RUN` | `5`   | a COUNT cap on ET-date targets per `refresh` run, under the per-run weight budget (`REFRESH_WEIGHT_BUDGET`, §8.4, §24.7). An admin run takes 1. |
+| `SETTLE_CHUNK`            | `20`  | bets settled per `settle` run (§7.1). Spike S2 blocks raising it.                                                                               |
 
 `docs/OPERATIONS.md` lists the same three cron expressions from the operator's
 side, and `tests/unit/docs.spec.ts` asserts all of it against `wrangler.jsonc`.
 
-**Changes in M13b** (§24.7; planned, and the block and table above stay current
-until then): the refresh cron becomes `*/3 * * * *` (480 runs a day) and settle
-`1-59/3 * * * *`, one minute after each refresh tick. Maintenance is unchanged,
-so it is still exactly 3 crons, ~960 invocations a day against 100,000.
-`REFRESH_TARGETS_PER_RUN` becomes `5` and changes meaning: it is now a COUNT cap
-under the per-run weight budget (`REFRESH_WEIGHT_BUDGET`, 40 games), so a big
-slate runs alone and small ones share. Spike S1 no longer gates the var (§18:
-measured). The M13b PR changes `wrangler.jsonc`, this section and
-`docs/OPERATIONS.md` together.
+**Since M13b** (§24.7, shipped): before it the crons were `*/15 * * * *` and
+`5-59/15 * * * *` and `REFRESH_TARGETS_PER_RUN` was `2` slots. The var now means
+a COUNT cap under the weight budget, so a big slate runs alone and small ones
+share; Spike S1 no longer gates it (§18: measured). Maintenance is unchanged:
+still exactly 3 crons. `controller.scheduledTime` reaches the refresh job
+through `runJob` as the tick's nominal instant every cadence counts from.
 
 ### 9.2 Lease
 
@@ -2314,11 +2310,11 @@ ON CONFLICT(name) DO UPDATE
 ```
 
 `meta.changes === 0` → someone else holds the lease → **exit immediately**, record a
-`job_runs` row with `status='skipped'`. TTL: `refresh` 5 min, `settle` 5 min,
-`maintenance` 10 min — all shorter than their cron period, so a crashed run's lease
-always expires before the next scheduled run. **M13b** (§24.7) moves `refresh` and
-`settle` to **2.5 min** with their crons to every 3 minutes, still strictly
-shorter.
+`job_runs` row with `status='skipped'`. TTL: `refresh` 2.5 min, `settle` 2.5 min,
+`maintenance` 10 min — all shorter than their cron period (3 min, 3 min, a day), so a
+crashed run's lease always expires before the next scheduled run. (Refresh and settle
+were 5 min under the 15-minute crons before M13b, §24.7; `docs.spec.ts` asserts both
+stay under `REFRESH_TICK_MS`.)
 
 **A run killed for CPU is a crash that leaves no trace in its own job.** Its
 lease expires on the TTL, so the next tick runs normally. Before M13a its
@@ -2367,12 +2363,14 @@ encoder still has the final say on whether it can be serialised.
 
 `POST /api/admin/jobs/:job` (`refresh | settle | maintenance`) runs the identical
 function with `trigger='admin'`, takes the same lease, and returns the `job_runs` row
-including stats. This is how we test in production without waiting 15 minutes, and
+including stats. This is how we test in production without waiting for a tick, and
 it is the documented recovery action if a job wedges.
 
 **What ships: INLINE, returning `200` with the run.** The admin trigger runs in
 an HTTP invocation with the same 10 ms budget, so `refreshTargetsPerRun()` drops
-an admin `refresh` to ONE target. `ctx.waitUntil` was considered and rejected: it
+an admin `refresh` to ONE target, and it is never discovery-first (§24.7). Its
+cadences count from the tick at or before `now` (the floor fallback), as a cron
+run's count from `scheduledTime`. `ctx.waitUntil` was considered and rejected: it
 grants extra wall time, not extra CPU, so if S1 comes back bad the remedy is
 R1's fallback ladder, not `waitUntil`. There is no `202` path in the code.
 
@@ -2393,8 +2391,9 @@ The button lives on the board's game card and is rendered only for admins.
 ACCEPTED RACE: the bump and the run are two round trips, so a cron tick that
 takes the lease in between claims the bumped slate itself and the admin's own
 run refreshes the next most due one — the game is refreshed either way, but
-that run's `job_runs` row describes a different slate. Rare (one tick per 15
-min) and not worth moving the bump inside the lease.
+that run's `job_runs` row describes a different slate. One tick every 3 minutes
+since M13b (it was one per 15), so less rare, and still not worth moving the
+bump inside the lease.
 
 **A job whose BODY threw still returns `200`, with `run.status === 'error'` and
 the message in `run.error`.** That is deliberate. The HTTP status answers "did
@@ -3915,10 +3914,10 @@ individually, and the whole batch must finish inside the 30 s Cloudflare API tim
 
 ### 14.13 Free-tier request budget
 
-≤ 2 ESPN calls per cron run × 96 runs = ≤ 192/day. Worker invocations: 288 cron +
-actual API calls from ~10 users; static assets do not invoke the Worker at all.
-Nowhere near 100k/day. (From M13b, §24.7: ~960 cron invocations, ~480+ ESPN
-calls and 288 uptime-monitor checks a day. Still ~1%.)
+Since M13b (§24.7): ~960 cron invocations, ~480+ ESPN calls (≤ 5 per run) and
+288 uptime-monitor checks a day, plus actual API calls from ~10 users; static
+assets do not invoke the Worker at all. ~1% of 100k/day. (Before M13b: 288 cron
+invocations and ≤ 192 ESPN calls.)
 
 ### 14.14 Static assets vs API routes
 
@@ -3963,7 +3962,7 @@ Live at https://spicybetting.wardcrazy01894.workers.dev, first deployed
 | M10 player bet history                        | **DONE** — 2026-09-21 (§11.8)                                       |
 | M11 same-game parlays                         | **DONE** — 2026-09-21 (§5.2c)                                       |
 | M12 MLB as a third league                     | **DONE** — 2026-09-24; M12a, M12b, M12c (§23.15)                    |
-| M13 scheduler hardening + college basketball  | **M13a DONE** 2026-11-07; M13b → M13c → M13d **PLANNED** (§24.17)   |
+| M13 scheduler hardening + college basketball  | **M13a, M13b DONE** 2026-11-07; M13c → M13d **PLANNED** (§24.17)    |
 
 Two things follow from the deploy having happened:
 
@@ -3976,9 +3975,9 @@ Two things follow from the deploy having happened:
   (§18). S1 read 30–34 ms of CPU on refresh runs that finished `ok`, against a
   documented 10 ms. The cliff is not at 10 ms and its location is unknown (two
   passing runs do not prove every 34 ms run passes), which is what M13a's guard
-  is for (§24.3). `REFRESH_TARGETS_PER_RUN` stays at 2 until M13b turns it into
-  a COUNT cap of 5 under the per-run weight budget (§24.7), and `SETTLE_CHUNK`
-  stays at 20 until S2 is read.
+  is for (§24.3). Since M13b `REFRESH_TARGETS_PER_RUN` is a COUNT cap of 5
+  under the per-run weight budget (§24.7), and `SETTLE_CHUNK` stays at 20 until
+  S2 is read.
   S3 and S4(a)/(b) are resolved. The one item still genuinely blocked on the
   calendar is **S4(c)**, the January postseason reachability check, which is
   also a `docs/OPERATIONS.md` runbook item.
@@ -4372,7 +4371,7 @@ the shortened-game rows was planned and folded back into M12b on 2026-09-24:
 betting opens before the regular season ends, so a rain-shortened game is
 reachable, and nothing in the admin tools could close a bet held pending.)
 
-### M13 — Scheduler hardening, then basketball (college + NBA) — **M13a SHIPPED** 2026-11-07; M13b–d **PLANNED** _(plan 2026-11-07)_
+### M13 — Scheduler hardening, then basketball (college + NBA) — **M13a, M13b SHIPPED** 2026-11-07; M13c–d **PLANNED** _(plan 2026-11-07)_
 
 "Every Division I and every NBA game, after making a CPU-killed refresh
 survivable and loud." **§24 is the specification**; §24.17 is the shipping order:
@@ -4381,7 +4380,7 @@ survivable and loud." **§24 is the specification**; §24.17 is the shipping ord
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
 | **M13-plan** | §24, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two `it.todo` contract files — no migration, no behaviour                                                                     | —                  |
 | **M13a**     | **DONE 2026-11-07** (branch `m13a`; 0012 applies on merge) — `0012_ingest_guard.sql`, the poison-target guard, `GET /api/health/ingest` + the uptime monitor, ESPN status counters, in-app alerts as GitHub issues | plan               |
-| **M13b**     | refresh `*/3` + settle `1-59/3`, leases 2.5 min, tick-relative cadences with live slates every tick, the per-run weight budget, the discovery tick                                                                 | M13a **merged**    |
+| **M13b**     | **DONE 2026-11-07** (branch `m13b`) — refresh `*/3` + settle `1-59/3`, leases 2.5 min, tick-relative cadences with live slates every tick, the per-run weight budget, the discovery tick                           | M13a **merged**    |
 | **M13c**     | `0013_basketball_leagues.sql`, `'ncaab'` and `'nba'` in `LEAGUES`, ingest + settlement — boards visible, **betting CLOSED**                                                                                        | M13a + M13b merged |
 | **M13d**     | per-league board filter (`top25` default for college) — **betting OPENS** for both                                                                                                                                 | M13c verified      |
 
@@ -4783,7 +4782,7 @@ _Exit criterion (met, see RESULT)_: a p95 CPU number for the worst target, plus 
 (b) `REFRESH_TARGETS_PER_RUN=1`, (c) drop `display_clock` from the comparison
 tuple (§8.6), (d) split the mapping across two invocations via an internal
 self-`fetch`, (e) escalate to Alex re: Workers Paid.
-**Blocked raising `REFRESH_TARGETS_PER_RUN` above 2** (no longer: from M13b the var is a count cap under a weight budget, §24.7).
+**Blocked raising `REFRESH_TARGETS_PER_RUN` above 2** (no longer: since M13b the var is a count cap of 5 under a weight budget, §24.7).
 
 **S2 — D1 statement accounting per invocation. UNMEASURED.**
 _Question_: does a `db.batch([...n])` count as 1 or n against the free-plan
@@ -5004,7 +5003,7 @@ total has been told nothing useful.
 
 | Path                                      | Entry point                                                      | Secondary behaviour                                    |
 | ----------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------ |
-| cron `*/15 * * * *`                       | `scheduled()` → `runJob('refresh','cron')` → `runRefresh`        | normal decision (§21.5)                                |
+| cron `*/3 * * * *`                        | `scheduled()` → `runJob('refresh','cron')` → `runRefresh`        | normal decision (§21.5)                                |
 | admin `POST /api/admin/jobs/refresh`      | `runJob('refresh','admin')` → `runRefresh`                       | normal decision                                        |
 | admin `POST /api/admin/games/:id/refresh` | `bumpTargetForGame` → `runJob('refresh','admin')` → `runRefresh` | `force` for THAT game: skips `SECONDARY_RETRY_MS` only |
 
@@ -6463,13 +6462,15 @@ The two effects to expect, stated for the runbook:
    the rollover.** This is the support answer, so it belongs in the runbook
    rather than being rediscovered at 1am. At the rollover the window gains SEVEN
    ET dates for that league at once, and each is a brand-new `ingest_targets` row
-   with `next_run_at = now`. But a run claims at most `REFRESH_TARGETS_PER_RUN`
-   (2) targets, of which exactly ONE is the reserved discovery slot (§8.4), and
-   `ORDER BY priority ASC, next_run_at ASC` serves the OLDEST overdue discovery
-   target first — the new rows are the least overdue thing in the queue. With a
-   cron tick every 15 minutes and an otherwise idle queue (where slot 1 also
-   takes a discovery target) that is about an hour to pull all seven; with a
-   live Saturday or a backlog competing for slot 1 it can be ~4 h. So at 00:15 ET on a Sunday a CFB board can legitimately be a
+   with `next_run_at = now`. Since M13b (§24.7) a never-fetched target weighs
+   "big" and runs ALONE, and `ORDER BY priority ASC, next_run_at ASC` serves the
+   OLDEST overdue target first — the new rows are the least overdue thing in the
+   queue. At one tick every 3 minutes on an otherwise idle queue that is about
+   25 minutes to pull all eight (seven CFB dates and MLB's) — and the same
+   ~24 minutes behind a live Saturday, because the new rows are the OLDEST due
+   rows and win the general ticks ahead of the live slates, which wait (§24.7).
+   (Before M13b: two slots per 15-minute run, about an hour idle and ~60 min of
+   live starvation behind a live Saturday.) So at 00:15 ET on a Sunday a CFB board can legitimately be a
    handful of games with no lines yet, filling as the runs go by. Nothing is
    broken and nothing needs kicking; `GET /api/admin/jobs` shows the targets
    being taken. (An operator in a hurry can force it with the per-game Refresh
@@ -7461,8 +7462,9 @@ where it describes the stats.
 dates linger on the +24 h tier until retired two days after their date — two or
 three rows, one slot-use a day each. Discovery demand at the widest point:
 17 non-live football targets × 4/day + ~2 lingering MLB × 1/day ≈ **70 of the 96**
-slot-uses the reserved slot alone supplies — it fits, because slot 2 serves
-discovery however many targets are live.
+slot-uses the reserved slot alone supplied — it fits, because that slot served
+discovery however many targets were live. (Since M13b the supply is the 96
+discovery-first ticks a day, §24.7: the same number, reserved in time.)
 
 **Live contention, accepted.** The MLB day target is "live" (a game in progress
 or within 3 h) from ~10:00 to ~01:00 ET every day. Slot 1 alternates among live
@@ -7687,7 +7689,7 @@ upcomingGames, lineGaps }`. Wild Card day is 4 games; `lineGaps: 0` is normal
    expected**: ESPN carries MLB lines on game day only, and when DraftKings
    posts on a postseason day is not yet measured (S6). Check this row's
    `lineGaps` before assuming a parser failure.
-2. **Nothing there?** The planner runs every 15 minutes, so a missing row is a
+2. **Nothing there?** The planner runs on every refresh tick, so a missing row is a
    failing target: `stats.failures[]` names it. Force it with the Refresh button
    on any MLB game card (`POST /api/admin/games/:id/refresh` — it bumps that
    game's date to the head of the queue) or `POST /api/admin/jobs/refresh`.
@@ -7755,9 +7757,11 @@ ships in M13x".
 poison-target guard, `GET /api/health/ingest`, ESPN status counters, the
 reaper, GitHub-issue alerts; `wrangler.jsonc` gained only
 `ALERT_MENTION_LOGIN`). Every M13a `it.todo` in
-`tests/worker/scheduler-hardening.spec.ts` is a real test. The crons are still
-`*/15` / `5-59/15` and `REFRESH_TARGETS_PER_RUN` is still 2: M13b, M13c and M13d
-are **PLANNED**. The implementation choices §24.4–§24.6b left open are recorded
+`tests/worker/scheduler-hardening.spec.ts` is a real test. **M13b SHIPPED
+2026-11-07**: crons `*/3` / `1-59/3`, `REFRESH_TARGETS_PER_RUN` a count cap of
+5 under the weight budget, tick-relative cadences, the discovery tick, leases
+2.5 min, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600; every M13b `it.todo` is a
+real test, and "M13b as built" closes §24.7. M13c and M13d are **PLANNED**. The implementation choices §24.4–§24.6b left open are recorded
 in "M13a as built" at the end of §24.6b.
 
 ### 24.1 Goal, and what is deliberately not in it
@@ -8051,10 +8055,9 @@ REFRESH_DISCOVERY_TICKS) × REFRESH_TICK_MS`, computed in code from the claimed
 row and measured from the tick's nominal instant (§24.7): **15, 30, then 60 min**,
 in M13a as in M13b. The formula reads constants, not the cron: `REFRESH_BACKOFF_BASE_TICKS
 × REFRESH_TICK_MS` is 15 min whatever cron is deployed. Under M13a's `*/15` cron
-the base is §24.7's floor fallback, `floor(now / REFRESH_TICK_MS) × REFRESH_TICK_MS`
-(`scheduledTime` is plumbed through `runJob` only in M13b, §24.16), which coincides
-with the tick's nominal instant whenever the cron fires less than 3 min late, so
-the values still land on 15-minute ticks. It is a provisional reschedule. A completed run overwrites it, so it
+the base was §24.7's floor fallback, `floor(now / REFRESH_TICK_MS) × REFRESH_TICK_MS`;
+since M13b a cron run passes `scheduledTime` through `runJob` and the stamp uses
+it, and only an admin run uses the floor. It is a provisional reschedule. A completed run overwrites it, so it
 changes nothing for a healthy target. A killed one falls BEHIND the other due
 targets instead of winning the very next tick, so three kills take at least
 45 minutes and do not take three consecutive ticks from everyone else.
@@ -8149,8 +8152,8 @@ anyway.
 That turns a kill from "a row that never ends" into an error on the Jobs page.
 
 **Guard and lease, together.** A killed run never releases its lease, so the
-lease expires on its own after `JOB_LEASE_TTL_MS.refresh`: 5 min today and 2.5
-min from M13b, in both cases shorter than the cron period (15 and 3 min). So
+lease expires on its own after `JOB_LEASE_TTL_MS.refresh`: 2.5 min since M13b
+(5 min under M13a), in both cases shorter than the cron period (3 and 15 min). So
 **the next cron tick is NOT skipped** by a kill. It acquires normally, reaps the
 dead row, and claims the next target (not the killed one, thanks to the
 provisional `next_run_at`). Only an admin trigger that lands inside those 2.5–5
@@ -8298,17 +8301,17 @@ and the issue carries the fixed label `ALERT_GITHUB_LABEL` (`ops-alert`), so if
 the table is ever lost the state is recoverable from GitHub (open issues with the
 label, keyed by title). The kinds M13a ships with, and who evaluates each:
 
-| Kind                         | Key                                        | Fires when                                                                                                                                                                                        | Evaluated by                                                                                                                                                    |
-| ---------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `refresh-stale`              | `-`                                        | §24.5's predicate: no `ok` refresh run within `HEALTH_STALE_TICKS` periods                                                                                                                        | **settle and maintenance** (and refresh, for completeness)                                                                                                      |
-| `target-parked`              | the target id                              | `incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS` (§24.4)                                                                                                                                   | refresh and settle                                                                                                                                              |
-| `job-error`                  | the job name                               | a run recorded `error`, including one the reaper turns from `running` to `error` (§24.4, a kill)                                                                                                  | every job, for itself                                                                                                                                           |
-| `espn-status`                | `403` / `429`                              | a target fetch got that status (a regime signal, so it fires on the first)                                                                                                                        | refresh                                                                                                                                                         |
-| `espn-status`                | `5xx` / `timeout` / `network` / `bad-json` | a target reached `consecutive_failures >= 3` with that outcome (a blip is not an email)                                                                                                           | refresh                                                                                                                                                         |
-| `espn-all-failing`           | `-`                                        | §24.5's predicate                                                                                                                                                                                 | refresh and settle                                                                                                                                              |
-| `settle-stuck`               | `-` (one fingerprint)                      | the settle run's `stats.stuck[]` is non-empty (past `MAX_SETTLE_ATTEMPTS`, §7.1); the detail lists the stuck bet ids and their games. One `period`-NULL final with ten bets is ONE issue, not ten | settle                                                                                                                                                          |
-| `secondary-budget-exhausted` | `-`                                        | a sweep was skipped for budget (`stats.secondary.budgetSkipped > 0`, §21.5)                                                                                                                       | refresh                                                                                                                                                         |
-| `d1-rows-near-cap`           | `-`                                        | rolling-24h `dayRowsWritten >= ALERT_D1_ROWS_NEAR_CAP` (60,000, §24.13's retreat trigger)                                                                                                         | **every refresh run in M13a** (96 a day; maintenance alone would be a day late), and from M13b refresh on discovery-first ticks (every 15 min) plus maintenance |
+| Kind                         | Key                                        | Fires when                                                                                                                                                                                        | Evaluated by                                                                                                                                                      |
+| ---------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refresh-stale`              | `-`                                        | §24.5's predicate: no `ok` refresh run within `HEALTH_STALE_TICKS` periods                                                                                                                        | **settle and maintenance** (and refresh, for completeness)                                                                                                        |
+| `target-parked`              | the target id                              | `incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS` (§24.4)                                                                                                                                   | refresh and settle                                                                                                                                                |
+| `job-error`                  | the job name                               | a run recorded `error`, including one the reaper turns from `running` to `error` (§24.4, a kill)                                                                                                  | every job, for itself                                                                                                                                             |
+| `espn-status`                | `403` / `429`                              | a target fetch got that status (a regime signal, so it fires on the first)                                                                                                                        | refresh                                                                                                                                                           |
+| `espn-status`                | `5xx` / `timeout` / `network` / `bad-json` | a target reached `consecutive_failures >= 3` with that outcome (a blip is not an email)                                                                                                           | refresh                                                                                                                                                           |
+| `espn-all-failing`           | `-`                                        | §24.5's predicate                                                                                                                                                                                 | refresh and settle                                                                                                                                                |
+| `settle-stuck`               | `-` (one fingerprint)                      | the settle run's `stats.stuck[]` is non-empty (past `MAX_SETTLE_ATTEMPTS`, §7.1); the detail lists the stuck bet ids and their games. One `period`-NULL final with ten bets is ONE issue, not ten | settle                                                                                                                                                            |
+| `secondary-budget-exhausted` | `-`                                        | a sweep was skipped for budget (`stats.secondary.budgetSkipped > 0`, §21.5)                                                                                                                       | refresh                                                                                                                                                           |
+| `d1-rows-near-cap`           | `-`                                        | rolling-24h `dayRowsWritten >= ALERT_D1_ROWS_NEAR_CAP` (60,000, §24.13's retreat trigger)                                                                                                         | refresh on **discovery-first ticks** (every 15 min, 96 a day) plus maintenance, since M13b (`withJobRun` reads the 24 h sum only then); every refresh run in M13a |
 
 Every condition that is a STATE (stale, parked, all-failing, stuck, budget, rows)
 is re-recorded on every evaluating run while it holds. That is what keeps it
@@ -8503,7 +8506,7 @@ resolved_at = NULL`, guarded on the resolve's own `resolved_at`) so the next
   error banner and the rolling `dayEspnStatus` as one line under it
   (`src/web/lib/ingest-health.ts`).
 
-### 24.7 M13b — a three-minute tick, live slates every tick, a weight budget per run
+### 24.7 M13b — a three-minute tick, live slates every tick, a weight budget per run — **SHIPPED 2026-11-07**
 
 **The owner's decision** (2026-11-07, superseding this chapter's first draft of
 `*/5` and one target per run): a refresh tick every **3 minutes**, and **a live
@@ -8511,7 +8514,7 @@ slate is due again at the very next tick, in every league**. Everything ships in
 M13b, in ONE PR with `wrangler.jsonc`, §9.1 and `docs/OPERATIONS.md`, so the docs
 guard stays green.
 
-| Knob                                | Today                         | M13b                                                                           | Why                                                                                                                      |
+| Knob                                | Before M13b                   | Since M13b                                                                     | Why                                                                                                                      |
 | ----------------------------------- | ----------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | refresh cron                        | `*/15 * * * *` (96/day)       | `*/3 * * * *` (**480/day**)                                                    | `REFRESH_TICK_MS`. Every invocation has its own CPU budget                                                               |
 | settle cron                         | `5-59/15 * * * *`             | `1-59/3 * * * *` (480/day)                                                     | one minute after each refresh tick, so a final is graded within ~4–6 minutes of ESPN calling it                          |
@@ -8602,9 +8605,16 @@ still claims what it bumped (§9.3).
 - _No discovery starvation._ A discovery-first tick serves the most overdue
   non-live target if one is due, and live slates cannot take that tick. So a due
   non-live target with k others ahead of it waits at most `15·(k + 1)` minutes.
-  The worst rollover burst (8 new dates) fills in ≤ 2 h behind any live load.
-- _Live slates degrade explicitly._ Live slates are perpetually due, so the four
-  general ticks in every five serve them round-robin (`next_run_at ASC`). With L
+  A rollover burst is the exception, AS BUILT: the planner stamps new dates
+  `next_run_at = now`, which makes them the oldest due rows, so the eight new
+  dates drain on consecutive GENERAL ticks ahead of every live slate in ~24
+  minutes, during which no live slate is refreshed (before M13b the same burst
+  starved live slates for ~60 min; bet locks are kickoff-based, so no money
+  moves). OPEN for the owner: stamp planner-created dates at the next
+  discovery tick instead, so a burst fills in ≤ 2 h strictly behind live load.
+- _Live slates degrade explicitly._ Between bursts live slates are perpetually
+  due, so the four general ticks in every five serve them round-robin
+  (`next_run_at ASC`; a non-live target whose tier expires takes one tick). With L
   BIG live slates, each is refreshed every L general ticks, i.e. every
   `≈ L × 3.75` minutes of wall clock. **On a Saturday with CFB and CBB live, each
   gets roughly every 2nd tick (~7.5 min). Add a December NFL Saturday slate and
@@ -8654,6 +8664,28 @@ lever as for the write budget: `REFRESH_LIVE_TICKS`.
 **§9.3's ACCEPTED RACE** (a cron tick between an admin's bump and its run)
 widens from one tick per 15 minutes to one per 3. The game is still refreshed,
 by the cron. Still not worth moving the bump inside the lease.
+
+**M13b as built** (2026-11-07). The choices the text above left open:
+
+- `refreshTickBase(now, scheduledTime)` floors whichever instant it is given to
+  the tick, so a cron's `scheduledTime` (already on the tick) is unchanged and
+  anything else still lands on one. `computeNextRunAt`, the guard's
+  provisional stamp and `ingestTarget` all take that base; `now` still decides
+  WHICH tier (distances to kickoff), the base decides WHEN.
+- The candidate read is `LIMIT countCap`, not `countCap + 1`: the packing never
+  takes more than the cap, so the extra row would be read and discarded. A
+  general tick is ONE read; a discovery-first tick is two (the non-live head,
+  then the general order excluding it) or, with nothing non-live due, one.
+- `packCount` is the pure rule (unit-tested through `claimDueTargets`), and
+  `targetWeight` floors a successful empty slate at 1.
+- An admin run passes no `scheduledTime` (its base is the floor), takes ONE
+  target (`refreshTargetsPerRun`) and is never discovery-first.
+- `d1-rows-near-cap` reads the 24 h sum only on discovery-first refresh ticks
+  and in maintenance (§24.6b's table), not on all 480 refresh runs.
+- `RESERVED_DISCOVERY_SLOTS` stays in `constants.ts`, value unchanged and read
+  by nothing, because that file changes only by value outside a contract PR.
+- The soaks, measured: CFB 7,922 rows over 480 ticks (bound < 13,300), MLB 741
+  (bound < 1,000 unchanged), §24.13.
 
 ### 24.8 Per-conference sharding: a pre-sized SWITCH, not a rewrite
 
@@ -8999,17 +9031,27 @@ once, is ≈ 57,000.
   15 minutes. Nothing else moves.
 - The `job_runs` line is ESTIMATED from statement shapes, and it also puts §8.6's
   "< 300" for sessions, throttle and `job_runs` under review: at 96 + 96 runs a
-  day today it is already nearer 1,100. M13b records the job bookkeeping's own
-  `meta.rows_written` and corrects §8.6 either way.
+  day today it is already nearer 1,100, and ≈ 5,800/day from M13b (960 runs).
+  Recording the bookkeeping's own `meta.rows_written` is DEFERRED (the finalize
+  write cannot count itself), so **`dayRowsWritten` under-reads by that ≈ 5,800
+  a day** and the 60k retreat line is read with that blind spot (OPERATIONS).
 
-**Regression bounds move with the cadence: an M13b task, NOT raising a bound to
-fit.** `tests/worker/ingest.spec.ts`'s CFB soak (today 96 refreshes, < 5,000)
-becomes 480 ticks with the slate live every tick for its games' live hours. Its
-bound is re-derived as the M13b-measured value's ~1.68× headroom (the ratio
-today's 5,000 has over 2,979). The model says ≈ 7,800, so a bound near 13,000 is
-expected. `tests/worker/mlb.spec.ts` (684 measured, < 1,000) is re-run at 480
-ticks. MLB writes on score or inning change, so little movement is expected, and
-if it exceeds 1,000 the arithmetic in §23.11 is re-derived. M13c's
+**Regression bounds moved with the cadence (M13b), re-derived, NOT raised to
+fit.** `tests/worker/ingest.spec.ts`'s CFB soak (96 refreshes, < 5,000) became
+480 ticks with the slate refreshed on every one, the clock moving each time.
+**MEASURED at M13b: 7,922 rows** (6,385 changed games, 593 line rows) against
+the model's ≈ 7,800, so the model holds. The bound is 7,922 × 1.68 (the headroom
+5,000 had over 2,979) ≈ **< 13,300**. `tests/worker/mlb.spec.ts` re-ran at 480
+ticks with the score and inning moving on the 15-minute wall-clock grid (12
+changes per game — a REALISTIC case, not the worst: a real game changes state
+~18 or more times): **741 rows** against 684 at 96 refreshes. Five times the
+refreshes added only 57 rows because the fixture's changes are pinned to that
+grid, so the figure measures the fixture's design as much as the cadence; the
+extra rows are consistent with the 45-minute L3 line touch firing on the first
+tick past it (~every 48 min instead of every 60). The live stream follows the
+score, not the refresh count, as §23.11 says. It stays under §23.11's < 1,000
+with ~1.35× headroom, so that bound did not move; a worst-case fixture (~20
+changes per game) is worth adding if that headroom is ever questioned. M13c's
 `tests/worker/basketball.spec.ts` drives 155 synthesised CBB games through 480
 ticks in six tip-off waves (12:00, 14:00, 16:00, 18:00, 19:00, 21:00 ET), each
 live 40 ticks with the clock moving every tick, plus a 15-game NBA night (19:00
@@ -9167,7 +9209,7 @@ and the rhythm and cadences change (§24.7).
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
 | **M13-plan** | this chapter, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two contract files                                                                                                        | —                        |
 | **M13a**     | **DONE 2026-11-07** — 0012 (guard columns + `alerts`), the poison guard (stamp, reset, park, probation, admin un-park), `/api/health/ingest`, ESPN status counters, the reaper, GitHub-issue alerts; the monitor set up | plan                     |
-| **M13b**     | `*/3` refresh and `1-59/3` settle, leases 2.5 min, tick-relative cadences, live every tick, the weight budget, the discovery tick, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600                                            | **M13a merged**          |
+| **M13b**     | **DONE 2026-11-07** — `*/3` refresh and `1-59/3` settle, leases 2.5 min, tick-relative cadences, live every tick, the weight budget, the discovery tick, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600                      | **M13a merged**          |
 | **M13c**     | 0013, `'ncaab'` and `'nba'` in `LEAGUES`, every `Record`, URLs, windows, pull counting, the shared settlement arm, the postponed rule, the dormant shard switch, samples: **boards visible, betting CLOSED**            | **M13a and M13b merged** |
 | **M13d**     | the per-league board filter with the `top25` default, empty copy, payload check: **betting OPENS** for both                                                                                                             | M13c merged and verified |
 

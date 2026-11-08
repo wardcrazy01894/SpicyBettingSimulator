@@ -234,20 +234,33 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
 ## Data feed
 
 - Source: ESPN's public scoreboard API (no key). Crons, exactly as `wrangler.jsonc` deploys them
-  (PLAN §9.1): `*/15 * * * *` refresh (:00 :15 :30 :45), `5-59/15 * * * *` settle (:05 :20 :35
-  :50), `30 8 * * *` maintenance (08:30 UTC). Manual:
-  `POST /api/admin/jobs/{refresh|settle|maintenance}` as admin.
-- Per-run work is capped by two `wrangler.jsonc` vars: `REFRESH_TARGETS_PER_RUN` (2 ET-date
-  targets per refresh) and `SETTLE_CHUNK` (20 bets per settle). Do not raise `SETTLE_CHUNK` before
-  PLAN Spike S2 is measured — see below.
-- **What changes in M13b (PLANNED, PLAN §24.7; the crons above are what runs until then):**
-  refresh becomes every 3 minutes and settle one minute after each refresh tick (~960 cron
-  invocations a day), live slates are refreshed on every tick in every league, and
-  `REFRESH_TARGETS_PER_RUN` becomes a count cap of 5 under a 40-game per-run weight budget, so a
-  CFB or college-basketball slate always runs alone. The M13b PR updates this list with
-  `wrangler.jsonc`. The write budget grows about 8× on the worst day (≈ 5,100 today → ≈ 41–45k of the 100,000 hard
-  cap, PLAN §24.13): **if `dayRowsWritten` passes 60,000, set `REFRESH_LIVE_TICKS` to 2** (it
-  halves the live stream) and deploy.
+  (PLAN §9.1): `*/3 * * * *` refresh (every 3 minutes, the refresh TICK), `1-59/3 * * * *` settle
+  (one minute after each refresh tick), `30 8 * * *` maintenance (08:30 UTC) — ~960 cron
+  invocations a day. Manual: `POST /api/admin/jobs/{refresh|settle|maintenance}` as admin.
+- **The rhythm (since M13b, PLAN §24.7).** A slate with a game in progress or a kickoff within 3 h
+  is refreshed on EVERY tick, in every league; within 48 h hourly; otherwise every 6 h; all final
+  daily. Every cadence counts whole ticks from the tick's scheduled instant, so a live slate is
+  claimed on consecutive ticks. One refresh run takes the most-due slate and adds more only while
+  their summed game counts stay ≤ 40 (`REFRESH_WEIGHT_BUDGET`): a CFB Saturday or a slate never
+  fetched before always runs ALONE; an NFL date and an MLB day share. Every fifth tick (:00 :15 :30
+  :45) serves a non-live slate first, so next week's lines are discovered behind any live load.
+  With two or three big live slates at once they take turns, each every 2nd or 3rd tick. The one
+  exception is the Sunday rollover burst: the seven or eight NEW dates are the oldest due rows and
+  drain on consecutive ticks AHEAD of the live slates, so for ~24 minutes after 00:00 ET and after
+  20:00 ET on a Sunday no live slate is refreshed (PLAN §24.7).
+- Per-run work is capped by two `wrangler.jsonc` vars: `REFRESH_TARGETS_PER_RUN` (5: a COUNT cap
+  under the weight budget above) and `SETTLE_CHUNK` (20 bets per settle). Do not raise
+  `SETTLE_CHUNK` before PLAN Spike S2 is measured — see below.
+- **Write budget at the 3-minute tick.** The worst day grows from ≈ 5,100 rows to ≈ 41–45k of the
+  100,000 hard cap once basketball lands (PLAN §24.13; the CFB Saturday slate alone measured 7,922
+  rows over 480 ticks in CI). **If `dayRowsWritten` passes 60,000, set `REFRESH_LIVE_TICKS` to 2**
+  in `src/shared/constants.ts` (it halves the live stream; 5 restores the old 15 minutes) and
+  deploy.
+- **Verify after the M13b deploy** (PLAN §24.17): 30 minutes of `npx wrangler tail` show a refresh
+  invocation on every 3-minute tick and a settle a minute after each; a live slate claimed on
+  CONSECUTIVE ticks (its `coverage[]` entry in back-to-back runs on the Jobs page); an NFL and an
+  MLB target in the SAME run's `coverage[]`. The next day, read `dayRowsWritten` and record it in
+  the PR.
 - **ESPN's edge filters on User-Agent, and the rule is opaque.** Measured 2026-09-14: no UA, an empty
   UA, `Mozilla/5.0 (compatible; …)`, a real Chrome UA, and the BARE product token
   `SpicyBettingSimulator/0.1` all get **403**; the token WITH the GitHub comment
@@ -264,7 +277,10 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   backs off) but is only discovered by looking — check `failures[]` and `dayRowsWritten` weekly.
 
 - Budget: `GET /api/admin/jobs` → newest run's `stats.dayRowsWritten` is the rolling 24 h rows-written
-  total against D1's hard 100,000/day. Modelled ≈5k on a college Saturday.
+  total against D1's hard 100,000/day. Measured ≈ 8k for the CFB soak, modelled ≈ 17k with the
+  fixed streams on a college Saturday at the 3-minute tick (PLAN §24.13). The gauge EXCLUDES the
+  job bookkeeping's own ≈ 5.8k/day (deferred, §24.13), so read the 60,000 retreat line as
+  ≈ 54,000 on the gauge.
 - **Board coverage:** ESPN carries exactly ONE book (DraftKings), so there is no in-feed fallback
   when a market is missing. Each refresh run records `stats.upcomingGames` (scheduled, not yet
   kicked off, in the slates it fetched), `stats.lineGaps` (how many of those have no line or are
@@ -378,7 +394,7 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT remaining_credit
 
 A settle run that could not settle a bet records `status='error'` with the stats intact; the bet is
 retried automatically (`settle_attempts`) and parked in `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`
-(96 × the 15-minute cadence = 24 h).
+(480 × the 3-minute settle cadence = 24 h).
 
 A parlay or teaser settles `lost` as soon as ONE leg loses, without waiting for its other games
 (PLAN §7.1b). The settle run counts these in `stats.earlyLost`. The legs it left open stay ungraded
@@ -457,8 +473,9 @@ by itself.
   unreachable). Create a free UptimeRobot-class HTTP monitor on
   **`https://spicybetting.wardcrazy01894.workers.dev/api/health/ingest`**, interval 5 minutes,
   alerting on any non-200 by email to the owner. It answers `200` with `ok: true`, or `503` with
-  `reasons[]` saying why: `refresh-stale` (no refresh run recorded `ok` within 5 refresh periods —
-  75 min under today's 15-minute cron, 15 min from M13b), `targets-parked`, `espn-all-failing`. The
+  `reasons[]` saying why: `refresh-stale` (no refresh run recorded `ok` within 5 refresh ticks —
+  **15 minutes** since M13b; it was 75 under M13a's 15-minute cron), `targets-parked`,
+  `espn-all-failing`. The
   body also carries `lastRefreshOkAt` and `parkedTargets`. One read, nothing written. The first
   check after the M13a deploy must be 200. `/api/health` itself stays 200 and DB-free; do not point
   the monitor there.
@@ -476,7 +493,7 @@ by itself.
   `429` on the first one; `5xx` / `timeout` / `network` / `bad-json` after 3 in a row on one
   target), `espn-all-failing`, `settle-stuck` (one issue for every stuck bet),
   `secondary-budget-exhausted`, `d1-rows-near-cap` (rolling 24 h ≥ 60,000 rows: the instruction to
-  set `REFRESH_LIVE_TICKS` to 2 once M13b is in). At most 2 GitHub calls per job run; a GitHub
+  set `REFRESH_LIVE_TICKS` to 2). At most 2 GitHub calls per job run; a GitHub
   failure is logged as `[alert]` and never fails the job.
 
   **The @mention is what sends the email.** `GITHUB_TOKEN` belongs to `wardcrazy01894`, the repo's

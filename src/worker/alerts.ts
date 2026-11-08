@@ -79,7 +79,7 @@ export interface AlertStats {
 export interface AlertContext {
   /** `running` rows of this job the reaper just turned into `error` (§24.4). */
   readonly reaped?: number;
-  /** Rolling-24h `dayRowsWritten` (§8.6), for `d1-rows-near-cap`. Refresh only. */
+  /** Rolling-24h `dayRowsWritten` (§8.6), for `d1-rows-near-cap`: discovery-first refresh ticks and maintenance. */
   readonly dayRowsWritten?: number | null;
 }
 
@@ -428,11 +428,11 @@ async function act(
   try {
     await record();
   } catch (err) {
-    logFailure(fingerprint, action, err);
+    logBookkeepingFailure(fingerprint, action, err);
     try {
       await record();
     } catch (again) {
-      logFailure(fingerprint, action, again);
+      logBookkeepingFailure(fingerprint, action, again);
     }
   }
   return 'done';
@@ -441,6 +441,17 @@ async function act(
 function logFailure(fingerprint: string, action: Action, err: unknown): void {
   const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   console.error('[alert] GitHub call failed', fingerprint, action, message.slice(0, 200));
+}
+
+/** The GitHub call LANDED; it is the D1 write after it that failed. A distinct prefix, so a tail reader looks at D1, not GitHub. */
+function logBookkeepingFailure(fingerprint: string, action: Action, err: unknown): void {
+  const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  console.error(
+    '[alert] bookkeeping write failed after a successful post',
+    fingerprint,
+    action,
+    message.slice(0, 200),
+  );
 }
 
 /**
@@ -596,14 +607,17 @@ async function conditionsFor(
         detail: `a secondary odds sweep was skipped for budget in refresh run ${run.id}`,
       });
     }
-    const rows = context.dayRowsWritten ?? null;
-    if (rows !== null && rows >= ALERT_D1_ROWS_NEAR_CAP) {
-      out.push({
-        kind: 'd1-rows-near-cap',
-        key: '-',
-        detail: `rolling-24h rows written is ${String(rows)}, at or over ${String(ALERT_D1_ROWS_NEAR_CAP)} of the 100,000 D1 cap: set REFRESH_LIVE_TICKS to 2 (PLAN.md §24.13)`,
-      });
-    }
+  }
+
+  // Whichever job the caller read the 24 h sum for (since M13b: discovery-first
+  // refresh ticks and maintenance, `withJobRun`, PLAN.md §24.6b).
+  const rows = context.dayRowsWritten ?? null;
+  if (rows !== null && rows >= ALERT_D1_ROWS_NEAR_CAP) {
+    out.push({
+      kind: 'd1-rows-near-cap',
+      key: '-',
+      detail: `rolling-24h rows written is ${String(rows)}, at or over ${String(ALERT_D1_ROWS_NEAR_CAP)} of the 100,000 D1 cap: set REFRESH_LIVE_TICKS to 2 (PLAN.md §24.13)`,
+    });
   }
 
   if (job === 'settle') {

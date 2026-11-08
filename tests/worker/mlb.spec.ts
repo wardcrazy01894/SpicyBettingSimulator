@@ -26,6 +26,7 @@ import {
   INITIAL_BANKROLL_CENTS,
   MAX_SETTLE_ATTEMPTS,
   MLB_POSTPONED_CONFIRM_MS,
+  REFRESH_TICK_MS,
   VOID_AFTER_MS,
 } from '../../src/shared/constants.js';
 import type { ApiErrorBody } from '../../src/shared/errors.js';
@@ -257,16 +258,21 @@ describe('M12a — ingest and the board', () => {
   });
 
   it(
-    'WRITE BUDGET: an MLB day of 15 games over 96 refreshes (scheduled → live with the score ' +
-      'and period moving on every refresh → final) writes < 1,000 rows (§23.11; measured value ' +
-      'recorded in the PR), cross-checked against an env.DB.batch probe',
+    'WRITE BUDGET: an MLB day of 15 games over 480 three-minute ticks (scheduled → live, the ' +
+      'score and inning moving every 15 minutes → final) writes < 1,000 rows (§23.11, §24.13; ' +
+      'measured value recorded in the PR), cross-checked against an env.DB.batch probe',
     async () => {
-      // §23.11's model: 15 games, staggered first pitches like a real slate
-      // (the CFB test's waves), each live for ~3 h = 12 of the 96 refreshes,
-      // with the score AND the inning moving on EVERY live refresh. The
-      // displayClock never moves — ESPN's MLB clock is always "0:00" (§23.2).
+      // §23.11's model at M13b's tick (§24.13): 15 games, staggered first
+      // pitches like a real slate (the CFB test's waves), each live for ~3 h =
+      // 60 of the 480 ticks, refreshed on EVERY one of them. The score and the
+      // inning move on the 15-minute WALL-CLOCK grid (12 changes a game, as
+      // before M13b): baseball changes when a run scores or an inning turns,
+      // not when we look, and the displayClock never moves — ESPN's MLB clock
+      // is always "0:00" (§23.2). So five times the refreshes should add
+      // almost nothing; that is the claim this measures.
       const GAMES = 15;
-      const REFRESHES = 96;
+      const TICK = REFRESH_TICK_MS;
+      const REFRESHES = (24 * HOUR) / TICK;
       const LIVE_MS = 3 * HOUR;
       /** First pitches, ET: 12:05 13:05 16:05 19:05 20:05, three games each. */
       const WAVES = [12, 13, 16, 19, 20].map((h) => DAY_START + h * HOUR + 5 * MIN);
@@ -288,17 +294,17 @@ describe('M12a — ingest and the board', () => {
       const at = (run: number, i: number): EventSpec => {
         const e = base[i];
         if (e === undefined) throw new Error('no game');
-        const elapsed = DAY_START + run * 15 * MIN - e.kickoffAt;
+        const elapsed = DAY_START + run * TICK - e.kickoffAt;
         if (elapsed < 0) return e;
         if (elapsed >= LIVE_MS) {
           return { ...e, status: 'post', period: 9, homeScore: 6, awayScore: 4 };
         }
-        const liveRun = elapsed / (15 * MIN); // an integer: kickoffs are on the grid + 5 min
-        const step = liveRun - (liveRun % 1);
+        // Whole 15-minute steps since first pitch (the wall-clock grid).
+        const step = (elapsed - (elapsed % (15 * MIN))) / (15 * MIN);
         return {
           ...e,
           status: 'in',
-          // The inning AND the score move on every live refresh — the worst case.
+          // The inning AND the score move every 15 minutes, as before M13b.
           period: step + 1,
           displayClock: '0:00',
           homeScore: step,
@@ -311,7 +317,7 @@ describe('M12a — ingest and the board', () => {
       let liveRefreshes = 0;
       try {
         for (let run = 0; run < REFRESHES; run += 1) {
-          const now = DAY_START + run * 15 * MIN;
+          const now = DAY_START + run * TICK;
           const specs = base.map((_, i) => at(run, i));
           liveRefreshes += specs.filter((e) => e.status === 'in').length;
           const res = await upsertSlate(env, makeSlate(specs, 'mlb', now), now);
@@ -320,13 +326,16 @@ describe('M12a — ingest and the board', () => {
       } finally {
         probe.restore();
       }
-      // The model is what §23.11 says it is: ~12 live refreshes per game.
-      expect(liveRefreshes).toBe(GAMES * 12);
+      // The model is what §24.13 says it is: every tick of ~3 h live, 60 per game.
+      expect(liveRefreshes).toBe(GAMES * 60);
       expect(rowsWritten).toBe(probe.rows);
       // THE GUARD. Re-derive §23.11 if this fails; never raise it to fit.
-      // MEASURED on this exact fixture (miniflare D1, summed meta.rows_written,
-      // 2026-09-24): 684 rows — against §23.11's ≈ 850 estimate for the games
-      // stream, which assumed more line-price moves than this fixture makes.
+      // MEASURED on this exact fixture (miniflare D1, summed meta.rows_written):
+      // 684 rows at 96 refreshes (2026-09-24), 741 at M13b's 480 ticks
+      // (2026-11-07). The +57 is consistent with the 45-min L3 line touch
+      // firing on the first tick past it (~every 48 min, not every 60); the
+      // live stream follows the score, not the refresh count (§24.13). The
+      // bound stays §23.11's 1,000: the measurement fits, so it does not move.
       expect(rowsWritten).toBeLessThan(1_000);
       // ...and not trivially small: every live change landed.
       expect(rowsWritten).toBeGreaterThan(GAMES * 12);
@@ -842,13 +851,14 @@ describe('M12b — the postponed void and the rain-delay race (maintenance)', ()
     async () => {
       await planTargets(env, onDay(12));
       const target = await readTarget(RAIN_TARGET);
-      const at = nextDay(0, 10); // 00:10 ET, the rain day is over
+      const at = nextDay(0, 12); // 00:12 ET, the rain day is over (and a refresh tick, §24.7)
       const postponed = makeSlate([rainGame('cn1', { status: 'postponed', period: 6 })], 'mlb', at);
       expect(computeNextRunAt(target, postponed, false, at)).toBe(CONFIRM_AT);
       expect(CONFIRM_AT).toBeLessThan(at + 6 * HOUR);
-      // Never sooner than the live cadence: at 02:55 the cap is +15 min, not 03:00.
+      // Never sooner than the live cadence (the next tick): at 02:55 that is
+      // 02:57, earlier than the cap, so the cap — itself a tick — decides.
       const late = CONFIRM_AT - 5 * MIN;
-      expect(computeNextRunAt(target, postponed, false, late)).toBe(late + 15 * MIN);
+      expect(computeNextRunAt(target, postponed, false, late)).toBe(CONFIRM_AT);
       // Past the confirm instant the cap is spent: back to the +6 h tier.
       expect(computeNextRunAt(target, postponed, false, CONFIRM_AT)).toBe(CONFIRM_AT + 6 * HOUR);
       // All final: +24 h, uncapped.

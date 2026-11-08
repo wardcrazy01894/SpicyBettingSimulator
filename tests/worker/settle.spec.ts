@@ -906,7 +906,7 @@ describe('runSettle — head-of-line blocking', () => {
     await expectNoDrift();
   });
 
-  it('a bet at MAX_SETTLE_ATTEMPTS (96 = 24h) is skipped and reported in stats.stuck[]', async () => {
+  it('a bet at MAX_SETTLE_ATTEMPTS (480 = 24h of 3-minute settles) is skipped and reported in stats.stuck[]', async () => {
     const user = await register();
     const gid = await seedScheduled(g(1));
     const betId = await place(user.id, [spreadLeg(gid)], 2500);

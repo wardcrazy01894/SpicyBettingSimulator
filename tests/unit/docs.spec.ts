@@ -43,6 +43,7 @@ import {
   INGEST_MAX_INCOMPLETE_ATTEMPTS,
   INGEST_PARKED_RETRY_MS,
   INITIAL_BANKROLL_CENTS,
+  JOB_LEASE_TTL_MS,
   JOB_REAP_AFTER_MS,
   LINE_STALE_MS,
   MAX_PARLAY_LEGS,
@@ -604,6 +605,20 @@ describe('wrangler.jsonc crons vs PLAN.md §9.1', () => {
         `${JSON.stringify(crons)}. CLAUDE.md's platform table says we use exactly 3 — ` +
         `a fourth needs the per-Worker cap re-checked first.`,
     ).toBe(3);
+  });
+
+  it('(M13b) the refresh cron fires every REFRESH_TICK_MS and both leases are shorter (PLAN §24.7)', () => {
+    // The tick is a CONSTANT the cadence arithmetic is built on, and the cron is
+    // what actually fires: if one moves without the other, every live slate
+    // waits a whole extra tick (the alignment trap) or the lease outlives it.
+    const minutes = REFRESH_TICK_MS / 60_000;
+    const refresh = `*/${String(minutes)} * * * *`;
+    expect(
+      crons,
+      `wrangler.jsonc must run refresh as \`${refresh}\` (REFRESH_TICK_MS = ${String(REFRESH_TICK_MS)}).`,
+    ).toContain(refresh);
+    expect(JOB_LEASE_TTL_MS.refresh).toBeLessThan(REFRESH_TICK_MS);
+    expect(JOB_LEASE_TTL_MS.settle).toBeLessThan(REFRESH_TICK_MS);
   });
 
   it('documents each one in §9.1', () => {
