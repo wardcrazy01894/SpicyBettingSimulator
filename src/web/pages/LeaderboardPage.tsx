@@ -37,12 +37,12 @@ export function LeaderboardPage(): ReactElement {
       <p className="muted page-note">
         Ranked by <strong>net profit</strong> — your equity (balance plus whatever is riding on open
         bets) minus what the house has put in, so a stake in flight neither helps nor hurts you
-        until it settles, and a bust refill never erases what was lost before it. A 💀 is a bust:
-        the player ran out of money and the house refilled it. The sport tabs filter each
-        player&rsquo;s record, profit and ROI; the money is the whole account either way, and a
-        parlay that mixes sports counts under All only. Profit is what settled bets won minus what
-        they lost. ROI is that profit per dollar wagered on decided bets, not the change in your
-        balance &mdash; the same dollars can be bet, won and bet again.
+        until it settles, and a bust refill never erases what was lost before it. A badge (💀, then
+        🍤, then the photo) is a bust: the player ran out of money and the house refilled it. The
+        sport tabs filter each player&rsquo;s record, profit and ROI; the money is the whole account
+        either way, and a parlay that mixes sports counts under All only. Profit is what settled
+        bets won minus what they lost. ROI is that profit per dollar wagered on decided bets, not
+        the change in your balance &mdash; the same dollars can be bet, won and bet again.
       </p>
 
       {board.error !== undefined && board.data === undefined && (

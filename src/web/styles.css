@@ -683,7 +683,7 @@ abbr.help {
   color: var(--text-dim);
 }
 
-/* Bust badges (PLAN.md §4.5): one 💀 per refill not yet bought off. Inline
+/* Bust badges (PLAN.md §4.5): one per refill not yet bought off — 💀, 🍤, then a photo. Inline
    after a name, so the row's height does not change when one appears. */
 .bust-badges {
   display: inline-flex;
@@ -697,11 +697,12 @@ abbr.help {
   text-transform: none;
   letter-spacing: 0;
 }
-/* The third badge is a photo: sized to the emoji line, round, never stretched. */
+/* The third badge is a photo: sized to the emoji line (so the row's height does
+   not change when it appears), round, never stretched. */
 .bust-badge-img {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   object-fit: cover;
 }

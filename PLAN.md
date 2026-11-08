@@ -857,7 +857,7 @@ buyouts` is never negative. The guard — a badge exists and `balance_cents`
    buyout's `ref_id` — when (and for how much) its badge was bought off, or
    `null` while it is still on the name. `bustCount` is the number of entries
    still `null`. `/players/:userId` shows the count as "1 bust, 1 bought
-   off" beside the skulls and the dated list under the stats, so a bought-off
+   off" beside the badges and the dated list under the stats, so a bought-off
    bust stays visible as history rather than vanishing with its badge.
 
 `migrations/0011_ledger_refill_buyout.sql` is the leaf rebuild of `ledger`
