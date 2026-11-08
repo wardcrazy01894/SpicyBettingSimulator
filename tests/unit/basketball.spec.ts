@@ -12,7 +12,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { FULL_ACTION, gameAction, postponedVoidConfirmAt } from '../../src/shared/action.js';
+import {
+  BASKETBALL_REGULATION_PERIODS,
+  FULL_ACTION,
+  gameAction,
+  postponedVoidConfirmAt,
+} from '../../src/shared/action.js';
 import type { GameCard } from '../../src/shared/api-types.js';
 import {
   CBB_CONFERENCES,
@@ -220,6 +225,26 @@ describe('M13c: settlement (PLAN.md §24.11)', () => {
       for (const status of ['in_progress', 'scheduled', 'postponed'] as const) {
         expect(gameAction(league, { status, period: 1 })).toBe(FULL_ACTION);
       }
+    }
+  });
+
+  it('a final SHORT of regulation (an abandoned game) is undecidable — fail-closed, never paid', () => {
+    expect(BASKETBALL_REGULATION_PERIODS).toEqual({ ncaab: 2, nba: 4 });
+    for (const [league, shortPeriods] of [
+      ['ncaab', [0, 1]],
+      ['nba', [0, 1, 2, 3]],
+    ] as const) {
+      for (const period of shortPeriods) {
+        const action = gameAction(league, { status: 'final', period });
+        expect(action.kind, `${league} ${String(period)}`).toBe('undecidable');
+        if (action.kind === 'undecidable') expect(action.reason).toMatch(/abandoned/);
+      }
+      // Exactly regulation is a full game.
+      expect(gameAction(league, { status: 'final', period: league === 'nba' ? 4 : 2 })).toBe(
+        FULL_ACTION,
+      );
+      // A short period on a NON-final game is not the arm's business.
+      expect(gameAction(league, { status: 'in_progress', period: 1 })).toBe(FULL_ACTION);
     }
   });
 

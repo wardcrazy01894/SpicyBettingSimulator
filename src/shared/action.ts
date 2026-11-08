@@ -67,6 +67,16 @@ export const FULL_ACTION: GameAction = {
   markets: { moneyline: 'action', spread: 'action', total: 'action' },
 };
 
+/**
+ * Regulation length in `games.period` units for the basketball leagues: halves
+ * for college, quarters for the NBA (PLAN.md §24.11). A FINAL with a known
+ * period below this is an abandoned game and is `undecidable`, never graded.
+ */
+export const BASKETBALL_REGULATION_PERIODS: Readonly<Record<'ncaab' | 'nba', number>> = {
+  ncaab: 2,
+  nba: 4,
+};
+
 /** The two `games` columns the verdict depends on, beside the league. */
 export interface ActionFacts {
   readonly status: GameStatus;
@@ -88,19 +98,28 @@ export interface ActionFacts {
  */
 export function gameAction(league: League, game: ActionFacts): GameAction {
   switch (league) {
-    // BASKETBALL (M13c, PLAN.md §24.11) shares football's arm: ONE arm for
-    // both leagues. A final has action on every market, overtime included —
-    // DraftKings' basketball default. `period` (halves for college, quarters
-    // for the NBA, overtimes beyond) is a clock label only and is NOT
-    // consulted, so a final with a NULL period is graded too: no
-    // `undecidable` row, unlike MLB, because nothing about the verdict
-    // depends on it. Stated residual, not modelled: a game called early
-    // grades as final (ESPN gives no minutes played).
     case 'nfl':
     case 'ncaaf':
-    case 'ncaab':
-    case 'nba':
       return FULL_ACTION;
+    // BASKETBALL (M13c, PLAN.md §24.11): ONE arm for both leagues. A final has
+    // action on every market, overtime included — DraftKings' basketball
+    // default — and a final with a NULL period is graded too, because nothing
+    // about the verdict depends on the clock label. The ONE exception is
+    // FAIL-CLOSED: a final whose period is KNOWN and short of regulation
+    // (college < 2 halves, NBA < 4 quarters) can only be an abandoned game, so
+    // it is `undecidable` — the bet stays pending and surfaces in `stuck[]` for
+    // an admin — rather than paid on a result some books would void.
+    case 'ncaab':
+    case 'nba': {
+      const regulation = BASKETBALL_REGULATION_PERIODS[league];
+      if (game.status === 'final' && game.period !== null && game.period < regulation) {
+        return {
+          kind: 'undecidable',
+          reason: `final after period ${String(game.period)} of ${String(regulation)} (abandoned game): an admin decides`,
+        };
+      }
+      return FULL_ACTION;
+    }
     case 'mlb':
       return mlbGameAction(game);
     default: {

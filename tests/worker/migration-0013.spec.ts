@@ -223,7 +223,7 @@ async function seedHistory(
       env.DB.prepare(
         `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
        VALUES (?1, ?2, 'bust_buyout', ?3, NULL, -2500, ?4, 'seed buyout')`,
-      ).bind(`r13-buyout-${s}`, main.id, `refill-${s}`, Date.now() - HOUR),
+      ).bind(`r13-buyout-${s}`, main.id, `r13-refill-${s}`, Date.now() - HOUR), // ref = the refill's ledger id, as the app writes it
     ]);
   await seedSettledBet(env.DB, {
     id: `r13-won-${s}`,
@@ -578,6 +578,10 @@ describe('migration 0013 (basketball league CHECK rebuild) — M13c', () => {
 
       // Every row of all six tables, deep-equal.
       expect(after.rows).toEqual(before.rows);
+      // Pin the coverage: 0011's two ledger kinds were in the copied history.
+      expect(before.rows.ledger.map((r) => r['kind'])).toEqual(
+        expect.arrayContaining(['deposit_refill', 'bust_buyout']),
+      );
       // Counts equal: dropping games fired no ON DELETE CASCADE into game_lines
       // (game_lines was dropped first) and nothing was lost from bet_legs.
       expect(after.counts).toEqual(before.counts);
