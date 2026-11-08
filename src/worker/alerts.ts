@@ -428,11 +428,11 @@ async function act(
   try {
     await record();
   } catch (err) {
-    logFailure(fingerprint, action, err);
+    logBookkeepingFailure(fingerprint, action, err);
     try {
       await record();
     } catch (again) {
-      logFailure(fingerprint, action, again);
+      logBookkeepingFailure(fingerprint, action, again);
     }
   }
   return 'done';
@@ -441,6 +441,17 @@ async function act(
 function logFailure(fingerprint: string, action: Action, err: unknown): void {
   const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   console.error('[alert] GitHub call failed', fingerprint, action, message.slice(0, 200));
+}
+
+/** The GitHub call LANDED; it is the D1 write after it that failed. A distinct prefix, so a tail reader looks at D1, not GitHub. */
+function logBookkeepingFailure(fingerprint: string, action: Action, err: unknown): void {
+  const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  console.error(
+    '[alert] bookkeeping write failed after a successful post',
+    fingerprint,
+    action,
+    message.slice(0, 200),
+  );
 }
 
 /**
