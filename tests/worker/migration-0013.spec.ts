@@ -201,9 +201,30 @@ async function balanceDrift(): Promise<number> {
  * `sameGame: false` leaves out the same-game parlay — the one row shape 0005's
  * `bet_legs` (UNIQUE (bet_id, game_id)) cannot hold.
  */
-async function seedHistory(opts: { sameGame?: boolean } = {}): Promise<Seeded> {
+async function seedHistory(
+  opts: { sameGame?: boolean; ledgerKinds?: boolean } = {},
+): Promise<Seeded> {
   const alex = await register();
   const s = String(seq);
+  // 0011's two ledger kinds, written straight into the ledger so the copy-back
+  // and the recreated triggers meet rows the pre-0011 CHECK would have refused
+  // (the app's own guards — busted, UNIQUE per ref — are WHERE clauses, not
+  // triggers, so a direct insert is a legitimate historical row).
+  // `ledgerKinds: false` for the tests that RE-RUN an older rebuild (0005–0010)
+  // on this database: their recreated ledger carries the pre-0011 kinds CHECK and
+  // would refuse these rows — an artificial order production never saw.
+  const main = await mainBankroll(alex.id);
+  if (opts.ledgerKinds !== false)
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
+       VALUES (?1, ?2, 'deposit_refill', ?3, NULL, 10000, ?4, 'seed refill')`,
+      ).bind(`r13-refill-${s}`, main.id, `refill-${s}`, Date.now() - 2 * HOUR),
+      env.DB.prepare(
+        `INSERT INTO ledger (id, bankroll_id, kind, ref_id, bet_id, amount_cents, created_at, memo)
+       VALUES (?1, ?2, 'bust_buyout', ?3, NULL, -2500, ?4, 'seed buyout')`,
+      ).bind(`r13-buyout-${s}`, main.id, `refill-${s}`, Date.now() - HOUR),
+    ]);
   await seedSettledBet(env.DB, {
     id: `r13-won-${s}`,
     userId: alex.id,
@@ -476,17 +497,17 @@ describe('migration 0013 (basketball league CHECK rebuild) — M13c', () => {
       // each chain runs on a history without those rows — exactly why
       // production never replays an old rebuild. 0005's bet_legs also predates
       // same-game parlays, so its chain runs without one.
-      await seedHistory({ sameGame: false });
+      await seedHistory({ sameGame: false, ledgerKinds: false });
       await purgeRows(['mlb', 'ncaab', 'nba']);
       const before = await state();
       await rerun('0005_', '0008_', '0009_', '0010_', '0011_', '0012_', '0013_');
       expect(await state()).toEqual(before);
-      await seedHistory();
+      await seedHistory({ ledgerKinds: false });
       await purgeRows(['mlb', 'ncaab', 'nba']);
       const withSameGame = await state();
       await rerun('0008_', '0009_', '0010_', '0011_', '0012_', '0013_');
       expect(await state()).toEqual(withSameGame);
-      await seedHistory();
+      await seedHistory({ ledgerKinds: false });
       await purgeRows(['ncaab', 'nba']);
       const withMlb = await state();
       await rerun('0009_', '0010_', '0011_', '0012_', '0013_');
@@ -498,7 +519,7 @@ describe('migration 0013 (basketball league CHECK rebuild) — M13c', () => {
 
     it('an older rebuild NOT composed forward refuses basketball — which is why it must be', async () => {
       await purgeRows(['ncaab', 'nba']);
-      await seedHistory();
+      await seedHistory({ ledgerKinds: false });
       await purgeRows(['ncaab', 'nba']);
       const before = await state();
       const cbbGame = () =>
@@ -962,7 +983,7 @@ describe('migration 0013 (basketball league CHECK rebuild) — M13c', () => {
   describe('apply-day write cost (the §24.9 gate)', () => {
     const SIZE = { games: 10_000, lines: 8_000, bets: 400, legsPerBet: 2, targets: 30 } as const;
 
-    it('applying 0013 to a production-sized D1 writes under 60,000 rows', async () => {
+    it("pins the per-row apply cost (7/3/6/7/7/4) and the formula within 1% — the 60k gate itself is the OWNER's, on live counts", async () => {
       const { userId } = await seedHistory();
       const { id: bk } = await mainBankroll(userId);
       const seq = (n: number) =>
