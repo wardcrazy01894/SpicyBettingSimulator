@@ -1337,6 +1337,10 @@ Both halves are now fixed:
 
 2. **Manual reset.** `POST /api/admin/bets/:id/retry-settlement` (§11.6) zeroes
    the counter, for the case where the game row itself needed fixing.
+3. **Admin void (F1).** `POST /api/admin/games/:id/void` (§11.6) sets the game
+   `canceled` with `updated_at = now` in one guarded UPDATE, so the reset sweep
+   above re-selects every parked bet on it and the same run voids the leg —
+   the remedy when the game, not the bet, is the problem (§24.11).
 
 A _partially_ final parlay never enters this path at all: it fails the
 `NOT EXISTS`, is never selected, and never touches `settle_attempts`. It is the
@@ -1588,6 +1592,7 @@ the full per-bet detail is recorded alongside the one-line message.
 | `deferred`                 | selected but graded `pending`; `settle_attempts` incremented                                                                                                                                                              |
 | `reset`                    | deferred bets handed a fresh budget by the opening sweep (`meta.changes`)                                                                                                                                                 |
 | `stuck[]`                  | ids parked at `MAX_SETTLE_ATTEMPTS`, capped at 50 — an alarm, not a work queue                                                                                                                                            |
+| `stuckGames[]`             | the games behind `stuck[]` that `gameAction` calls `undecidable` (a short basketball final, a NULL-period MLB final); read only when `stuck[]` is non-empty. The Jobs page puts "Void game…" beside each (F1)             |
 | `won`/`lost`/`push`/`void` | outcome counts among `settled`                                                                                                                                                                                            |
 | `paidCents`                | Σ payout among `settled`                                                                                                                                                                                                  |
 | `earlyLost`                | bets the §7.1b early-loss pass settled `lost` before all their games finished (already counted in `settled` and `lost`)                                                                                                   |
@@ -3015,6 +3020,7 @@ note says it in a sentence.
 | Method | Path                                   | Notes                                                                                                                                                                                                               |
 | ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | POST   | `/api/admin/games/:id/refresh`         | pulls the slate this game is on, now (§9.3) → `200 {run}`; `404 GAME_NOT_FOUND`, `400 VALIDATION` (slate retired: all final > 2 days), `409 JOB_LOCKED`                                                             |
+| POST   | `/api/admin/games/:id/void`            | `{reason?}` (≤ 200 chars) → `200 {id, status, statusDetail, affectedBets}`: ONE guarded UPDATE to `canceled` (§24.11). `400 VALIDATION` if already canceled, `404 GAME_NOT_FOUND`                                   |
 | POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                                                            |
 | GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                                                            |
 | GET    | `/api/admin/users`                     | list — `AdminUserView[]`, **including deleted accounts** (`isDeleted`, `deletedAt`). The only surface that still shows them.                                                                                        |
@@ -8993,7 +8999,14 @@ college below `BASKETBALL_REGULATION_PERIODS.ncaab` (2 halves), NBA below
 `.nba` (4 quarters) — can only be an abandoned game, so the arm returns
 `undecidable` and the bet stays pending in `stuck[]` for an admin, instead of
 being paid on a result some books void (college games below 35 played minutes,
-NBA below 43). ESPN does not give minutes played, so the period is the only
+NBA below 43). **An admin voids it in-app (F1):** "Void game…" on the final
+game's card, or beside the game in the settle run's `stats.stuckGames` on the
+Jobs page, calls `POST /api/admin/games/:id/void` (§11.6) — `status =
+'canceled'`, `status_detail = 'admin void: <reason>'`, `updated_at = now` in
+ONE guarded UPDATE — and the next settle run re-selects the parked bets
+(`RESET_DEFERRED_SQL`) and voids every leg on it. The hand-run SQL in
+docs/OPERATIONS.md stays as the fallback, and is still the only way to take the
+other branch (correct an under-reported `period` so the game grades). ESPN does not give minutes played, so the period is the only
 evidence; a game called early in its FINAL period still grades as final, which
 is the remaining, smaller residual. `gradeLeg`, `gradeBet` and `projectLeg` are
 untouched and league-unaware (rule 7, rule 8g(i)).
