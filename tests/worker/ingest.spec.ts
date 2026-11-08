@@ -409,7 +409,10 @@ describe('ESPN 403: one immediate retry (PLAN.md §14.8)', () => {
         espn.setResponder('20260913', status(code));
         await expect(fetchIt()).rejects.toMatchObject({ status: code, kind: 'http' });
         expect(espn.callCount - before, String(code)).toBe(1);
-        await expect(fetchIt()).rejects.not.toThrow('retry');
+        const err = (await fetchIt().catch((e: unknown) => e)) as Error;
+        expect(err.message, String(code)).toBe(
+          `espn: HTTP ${String(code)} for ${espn.urls[espn.urls.length - 1] ?? ''}`,
+        );
       }
     } finally {
       espn.restore();

@@ -132,6 +132,13 @@ export function truncationWarning(league: League, eventCount: number): ParseWarn
 }
 
 /**
+ * The ONE status `fetchScoreboard` retries once, immediately: ESPN's edge 403
+ * of the Worker's egress IP (see the call site). Exported so the spec can say
+ * why it sends it.
+ */
+export const ESPN_RETRY_STATUS = 403;
+
+/**
  * GET + JSON.parse, with an AbortSignal timeout. Throws ProviderError on
  * non-2xx / timeout / bad JSON. NEVER partially applies anything — the caller
  * gets a complete slate or an exception, so a bad upstream cannot corrupt rows.
@@ -155,6 +162,9 @@ export async function fetchScoreboard(
     // schedule backs the target off (§8.4). Nothing else is retried here: a
     // 429 says back off, and that is what the schedule does.
     retried = true;
+    // Release the 403's connection before opening the retry's: Workers cap
+    // simultaneous outbound connections, and an unread body holds one until GC.
+    await response.body?.cancel().catch(() => undefined);
     response = await requestScoreboard(url);
   }
 
@@ -197,13 +207,6 @@ export async function fetchScoreboard(
     retried,
   };
 }
-
-/**
- * The ONE status `fetchScoreboard` retries once, immediately: ESPN's edge 403
- * of the Worker's egress IP (see the call site). Exported so the spec can say
- * why it sends it.
- */
-export const ESPN_RETRY_STATUS = 403;
 
 /**
  * One GET, with the headers ESPN's edge requires and an AbortSignal timeout.

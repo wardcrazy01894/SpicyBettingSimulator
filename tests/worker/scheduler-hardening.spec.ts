@@ -572,11 +572,15 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
       fetchedAt: T0,
       season: 2026,
       week: 1,
+      // …fetched on the 403 retry. The FETCH recovered, so it stays a '200' and
+      // is still counted as recovered even though the target then fails in D1.
+      retried: true,
     };
     const provider: ScoreProvider = { name: 'broken', fetchSlate: () => Promise.resolve(broken) };
     const result = await ingestTarget(env, provider, await loadTarget(a), T0);
     expect(result.error).toMatch(/CHECK|constraint/i);
     expect(result.espn).toBe('200');
+    expect(result.espnRetried).toBe(true);
     const row = await guardRow(a);
     expect(row.incomplete_attempts).toBe(0);
     expect(row.attempt_started_at).toBeNull();
