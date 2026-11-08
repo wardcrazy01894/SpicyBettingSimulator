@@ -8970,12 +8970,17 @@ case 'nba':
   return FULL_ACTION;
 ```
 
-There is no `undecidable` row: a final with a NULL `period` is graded, since
-nothing about the verdict depends on it. `gradeLeg`, `gradeBet` and `projectLeg`
-are untouched and league-unaware (rule 7, rule 8g(i)). **Stated residual, not
-modelled:** a game called early (some books void college games below 35 played
-minutes, NBA games below 43) grades as final. ESPN does not give minutes played,
-and no such game has been observed.
+A final with a NULL `period` is graded, since nothing about the verdict depends
+on the clock label. **The one `undecidable` case is FAIL-CLOSED (owner decision,
+M13c review):** a final whose `period` is KNOWN and short of regulation —
+college below `BASKETBALL_REGULATION_PERIODS.ncaab` (2 halves), NBA below
+`.nba` (4 quarters) — can only be an abandoned game, so the arm returns
+`undecidable` and the bet stays pending in `stuck[]` for an admin, instead of
+being paid on a result some books void (college games below 35 played minutes,
+NBA below 43). ESPN does not give minutes played, so the period is the only
+evidence; a game called early in its FINAL period still grades as final, which
+is the remaining, smaller residual. `gradeLeg`, `gradeBet` and `projectLeg` are
+untouched and league-unaware (rule 7, rule 8g(i)).
 
 **Postponed and canceled.** `canceled` voids, as for every league. A
 `postponed` game reuses MLB's evidence rule (§23.7), generalised by league

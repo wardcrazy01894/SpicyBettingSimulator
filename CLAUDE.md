@@ -265,8 +265,9 @@ the one failure mode the whole checklist has.
    evaluated by settle and maintenance too, because a killed refresh cannot
    alert about itself (§24.6b). (iv) **`/api/health` stays DB-free and
    always 200** for the SPA; the monitor's endpoint is `/api/health/ingest`
-   (§24.5). (v) **Basketball shares ONE settlement arm** (a final has full action,
-   OT included), has no teasers and no secondary sweeps (`TEASABLE_LEAGUES` /
+   (§24.5). (v) **Basketball shares ONE settlement arm** (a final has full action, OT
+   included — EXCEPT a final short of regulation, NBA period < 4 or college
+   < 2, which is `undecidable` and waits in `stuck[]` for an admin, §24.11), has no teasers and no secondary sweeps (`TEASABLE_LEAGUES` /
    `SECONDARY_LEAGUES` stay football-only), and reuses MLB's next-day postponed
    void (§24.11) — `NEXT_DAY_VOID_LEAGUES` in `maintenance.ts` is the SQL's
    restatement of `postponedVoidConfirmAt`, and a spec holds the two equal.
