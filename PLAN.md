@@ -3235,7 +3235,9 @@ cursor, the 404 for disabled / deleted / unknown alike, and the 400s.
 React 19 + TypeScript + Vite, `react-router-dom` for routing, **no UI framework** —
 one `styles.css` with CSS custom properties plus a handful of co-located
 `*.module.css` files. Mobile-first: single column, 44px minimum tap targets, sticky
-bet slip bar at the bottom on small screens.
+bet slip bar at the bottom on small screens, and the header and nav tabs sticky
+TOGETHER at the top (one `.app-top` block — with the header alone sticky the tabs
+scrolled up behind it, issue #95, 2026-11-08).
 
 ### 12.1 Component tree
 

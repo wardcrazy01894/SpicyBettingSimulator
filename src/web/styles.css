@@ -168,10 +168,18 @@ button:disabled {
   padding: var(--gap);
 }
 
-.app-header {
+/* The header and the nav tabs stick TOGETHER (issue #95: a sticky header
+   alone hid the tabs behind it once the page scrolled). Below the slip bar
+   (z-index 4) and the sheets (5). The strip paints its own surface so, on wide
+   screens where header and tabs are centred, nothing scrolls past its sides. */
+.app-top {
   position: sticky;
   top: 0;
   z-index: 3;
+  background: var(--surface);
+}
+
+.app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
