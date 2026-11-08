@@ -1376,15 +1376,13 @@ export async function ingestTarget(
     };
   }
 
-  {
-    try {
-      // Fetch AND parse before anything touches the database: an outage or a
-      // schema change must leave existing rows exactly as they were (§14.8).
-      slate = await provider.fetchSlate(target.league, toSlateTarget(target));
-    } catch (err) {
-      fetchError = err;
-      error = errorText(err);
-    }
+  try {
+    // Fetch AND parse before anything touches the database: an outage or a
+    // schema change must leave existing rows exactly as they were (§14.8).
+    slate = await provider.fetchSlate(target.league, toSlateTarget(target));
+  } catch (err) {
+    fetchError = err;
+    error = errorText(err);
   }
 
   let games = 0;
@@ -1514,7 +1512,10 @@ export async function runRefresh(
         targetId: target.id,
         error: result.error,
         espn: result.espn,
-        consecutiveFailures: target.consecutiveFailures + 1,
+        // A skipped target (its stamp failed) wrote no reschedule, so its
+        // counter in the database did not move; report what is stored.
+        consecutiveFailures:
+          result.espn === 'skipped' ? target.consecutiveFailures : target.consecutiveFailures + 1,
       });
     }
   }
