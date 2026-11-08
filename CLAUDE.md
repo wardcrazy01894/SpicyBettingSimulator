@@ -16,7 +16,9 @@ college basketball (every Division I game) and the NBA are in `LEAGUES` as
 built; basketball betting OPEN since 2026-11-07** (M13d): the college board
 opens on a Top 25 filter with the 32 basketball conferences beside it
 (`BOARD_FILTERS` in `src/web/lib/board-filter.ts`), the NBA board has no
-filter, and `LEAGUE_BETTING_OPEN` is `true` for all five leagues. Rule 8i is
+conference filter, both basketball boards have a Today / Tomorrow / weekday-name
+day filter (`src/web/lib/day-filter.ts`, ET dates via `src/shared/time.ts`;
+follow-up F4), and `LEAGUE_BETTING_OPEN` is `true` for all five leagues. Rule 8i is
 what the code must keep.
 
 **Read `PLAN.md` before changing anything.** It is the architecture of record:

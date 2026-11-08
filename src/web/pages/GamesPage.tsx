@@ -1,5 +1,6 @@
 /**
- * The board. League tabs, week picker, the college filter, day groups.
+ * The board. League tabs, week picker, the college filter, the basketball
+ * day filter (All / Today / Tomorrow / <weekday>), day groups.
  *
  * Grouping: for football the primary group is ESPN's `week` (authoritative —
  * it spans Thu-Mon for the NFL, so we never compute week boundaries
@@ -20,10 +21,19 @@ import { LeagueTabs } from '../components/LeagueTabs.js';
 import { Spinner } from '../components/Spinner.js';
 import { WeekPicker } from '../components/WeekPicker.js';
 import { BoardFilterSelect } from '../components/BoardFilterSelect.js';
+import { Segmented } from '../components/Segmented.js';
 import { useGames } from '../hooks/useApi.js';
 import { useNow, usePoll } from '../hooks/useNow.js';
 import { BOARD_FILTERS, defaultBoardFilter, filterGames } from '../lib/board-filter.js';
 import type { BoardFilter } from '../lib/board-filter.js';
+import {
+  ALL_DAYS,
+  MIN_DAY_OPTIONS,
+  dayFilterOptions,
+  filterGamesByDay,
+  resolveDayFilter,
+} from '../lib/day-filter.js';
+import type { DayFilter } from '../lib/day-filter.js';
 import {
   BOARD_HAS_WEEKS,
   boardEmptyCopy,
@@ -53,6 +63,9 @@ export function GamesPage(): ReactElement {
   const [picked, setPicked] = useState<{ league: League; filter: BoardFilter } | null>(null);
   const filterSpec = BOARD_FILTERS[league];
   const filter = picked?.league === league ? picked.filter : defaultBoardFilter(league);
+  // The day pick, held with its league like the conference pick: a league
+  // change lands on All.
+  const [pickedDay, setPickedDay] = useState<{ league: League; day: DayFilter } | null>(null);
   const season = config.currentSeason[league];
   const board = useGames(league, season, week);
   const now = useNow();
@@ -60,9 +73,20 @@ export function GamesPage(): ReactElement {
   usePoll(board.refetch, BOARD_POLL_MS);
 
   const games = board.data?.games ?? [];
-  const shown = filterGames(league, games, filter);
+  // Basketball's day filter (DAY_FILTER_LEAGUES, PLAN.md §24.14): built from
+  // the UNFILTERED slate so a conference change never moves the day buttons,
+  // and from `now` so "Today" rolls over at ET midnight. A stale pick (the
+  // day left the window) resolves to All. Composes with the conference filter.
+  const dayOptions = dayFilterOptions(league, games, now);
+  const day = resolveDayFilter(pickedDay?.league === league ? pickedDay.day : null, dayOptions);
+  const shown = filterGamesByDay(filterGames(league, games, filter), day?.key ?? ALL_DAYS);
   const groups = groupBoardGames(league, shown);
-  const empty = boardEmptyCopy(league, games.length > 0 && shown.length === 0, filter);
+  const empty = boardEmptyCopy(
+    league,
+    games.length > 0 && shown.length === 0,
+    filter,
+    day?.phrase ?? null,
+  );
   // Weeks come from the UNFILTERED slate: a conference with no game this week
   // must not make the week disappear from the picker.
   const weeks = weeksFromGames(games, board.data?.week ?? null, week);
@@ -76,6 +100,7 @@ export function GamesPage(): ReactElement {
           onChange={(next) => {
             setWeek(null);
             setPicked(null);
+            setPickedDay(null);
             slip.setBoardLeague(next);
           }}
         />
@@ -88,6 +113,18 @@ export function GamesPage(): ReactElement {
             filter={filter}
             onChange={(next) => {
               setPicked({ league, filter: next });
+            }}
+          />
+        )}
+        {/* Hidden unless there are at least two DAYS to choose between (`MIN_DAY_OPTIONS`);
+            `resolveDayFilter` applies All below that, so hidden never means filtered. */}
+        {dayOptions !== null && dayOptions.length >= MIN_DAY_OPTIONS && day !== null && (
+          <Segmented
+            label="Day"
+            value={day.key}
+            options={dayOptions.map((o) => ({ value: o.key, label: o.label }))}
+            onChange={(next) => {
+              setPickedDay({ league, day: next });
             }}
           />
         )}

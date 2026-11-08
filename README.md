@@ -38,7 +38,8 @@ a badge goes beside your name — 💀 the first time, 🍤 the second, a photo 
   (today and the next two days) and every NBA game (today and tomorrow, when the lines are
   already up), with DraftKings' spread, total and moneyline. The college board opens on the
   **Top 25** (a Saturday is ~155 games); the **Show** menu switches to All games, one of the 32
-  conferences, or Other. The NBA board has no filter. A final counts overtime on every market, a
+  conferences, or Other. Both boards have a **Day** row — All, Today, Tomorrow and, on the college
+  board, the day after by name (e.g. Monday) — that works alongside the Show menu. A final counts overtime on every market, a
   postponed game is voided the next morning, and basketball legs can't go in a teaser (PLAN.md §24).
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 25 legs (as at
