@@ -15,13 +15,14 @@ import { Hono } from 'hono';
 import type {
   AdminInviteResponse,
   AdminUsersResponse,
+  AdminVoidGameResponse,
   JobRunResponse,
   JobRunsResponse,
   ReconcileResponse,
 } from '../../shared/api-types.js';
 import { JOB_NAMES, MAX_PAYOUT_CENTS, REFILL_DEFAULT_CENTS } from '../../shared/constants.js';
 import { AppError } from '../../shared/errors.js';
-import { validateDerivedKeyHex } from '../../shared/validate.js';
+import { adminVoidDetail, validateDerivedKeyHex, validateVoidGame } from '../../shared/validate.js';
 import { deleteUser, listUsers, setDisabled, setPassword } from '../auth.js';
 import { listBugReports } from '../bugs.js';
 import { bumpTargetForGame } from '../ingest.js';
@@ -30,6 +31,7 @@ import { retrySettlement } from '../settle.js';
 import { adminAdjust, adminRefill } from '../bankroll.js';
 import { isOverdraftError } from '../db.js';
 import { recentRuns, runJob } from '../jobs.js';
+import { adminVoidGame } from '../maintenance.js';
 import type { JobName } from '../jobs.js';
 import { requireAdmin, requireAuth } from '../middleware.js';
 import type { AppContext } from '../middleware.js';
@@ -264,6 +266,47 @@ export function adminRoutes(): Hono<AppContext> {
       throw new AppError('JOB_LOCKED', 'The refresh job is already running.', { job: 'refresh' });
     }
     const body: JobRunResponse = { run };
+    return c.json(body, 200);
+  });
+
+  // F1 (PLAN.md §11.6 / §24.11): VOID one game — the in-app remedy for a bet
+  // parked in `stuck[]` on an abandoned game. ONE guarded UPDATE to
+  // `canceled` (maintenance.ts `adminVoidGame`); the next settle run does the
+  // rest through its own atomic batch, because `updated_at = now` re-selects
+  // the parked bet (`RESET_DEFERRED_SQL`). The body is optional: no body at
+  // all is "no reason"; a body, when sent, is JSON like every other route.
+  // An already-canceled game is `400 VALIDATION`, the same refusal shape as the
+  // retired-slate refresh above — a request this game's state makes
+  // meaningless, not a conflict to retry — so no new error code is needed.
+  app.post('/games/:id/void', async (c) => {
+    const gameId = c.req.param('id');
+    const hasBody = (c.req.header('content-type') ?? '') !== '';
+    const parsed = validateVoidGame(hasBody ? await readJson(c) : undefined);
+    if (!parsed.ok) throw validationError(parsed);
+    const outcome = await adminVoidGame(
+      c.env,
+      gameId,
+      adminVoidDetail(parsed.value.reason),
+      c.var.now,
+    );
+    if (outcome.kind === 'not-found') {
+      throw new AppError('GAME_NOT_FOUND', `No game ${gameId}.`, { gameId });
+    }
+    if (outcome.kind === 'not-voidable') {
+      throw new AppError(
+        'VALIDATION',
+        outcome.status === 'canceled'
+          ? 'That game is already canceled; its bets void on the next settle run.'
+          : `A game in status '${outcome.status}' cannot be voided.`,
+        { gameId, status: outcome.status },
+      );
+    }
+    const body: AdminVoidGameResponse = {
+      id: outcome.id,
+      status: 'canceled',
+      statusDetail: outcome.statusDetail,
+      affectedBets: outcome.affectedBets,
+    };
     return c.json(body, 200);
   });
 

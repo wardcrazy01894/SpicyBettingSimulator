@@ -23,6 +23,7 @@ import {
   postAdminUserPassword,
 } from '../api/client.js';
 import { AdminRefillForm } from '../components/AdminRefillForm.js';
+import { AdminVoidGame } from '../components/AdminVoidGame.js';
 import { BustBadges } from '../components/BustBadges.js';
 import { deriveKey } from '../api/kdf.js';
 import {
@@ -35,6 +36,7 @@ import { invalidate } from '../hooks/useResource.js';
 import { ADMIN_TABS, parseAdminTab } from '../lib/admin-tabs.js';
 import { ingestBanner } from '../lib/ingest-health.js';
 import { inviteLink } from '../lib/invite.js';
+import { voidableGameIds } from '../lib/void-game.js';
 import type { AdminTab } from '../lib/admin-tabs.js';
 import { formatDateTime } from '../lib/datetime.js';
 import { useSession } from '../state/session.js';
@@ -88,7 +90,8 @@ function StatsCell(props: { readonly run: JobRunView }): ReactElement {
     <ul className="stats-list">
       {entries.map(([key, value]) => (
         <li key={key}>
-          <span className="stats-key">{key}</span> <StatsValue name={key} value={value} />
+          <span className="stats-key">{key}</span>{' '}
+          <StatsValue job={props.run.job} name={key} value={value} />
         </li>
       ))}
     </ul>
@@ -100,9 +103,28 @@ function StatsCell(props: { readonly run: JobRunView }): ReactElement {
  * an empty one as a dash; anything else is shown as its JSON, which is what the
  * job wrote.
  */
-function StatsValue(props: { readonly name: string; readonly value: unknown }): ReactElement {
-  const { name, value } = props;
+function StatsValue(props: {
+  readonly job: string;
+  readonly name: string;
+  readonly value: unknown;
+}): ReactElement {
+  const { job, name, value } = props;
   if (typeof value === 'string') return <span className="stats-value">{value}</span>;
+  // A SETTLE run's `stuckGames` (the undecidable games behind `stuck[]`) — each
+  // with the in-app void, F1 / PLAN.md §24.11. Maintenance's `stuckGames` are
+  // games stuck live and get no button (a void cannot be undone).
+  const voidable = voidableGameIds(job, name, value);
+  if (voidable !== null) {
+    return (
+      <ul className="stats-lines">
+        {voidable.map((gameId) => (
+          <li key={`${name}-${gameId}`} className="stats-value">
+            {gameId} <AdminVoidGame gameId={gameId} label={gameId} />
+          </li>
+        ))}
+      </ul>
+    );
+  }
   if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
     if (value.length === 0) return <span className="muted">—</span>;
     return (
