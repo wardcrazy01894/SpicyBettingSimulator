@@ -12,9 +12,11 @@ SHIPPED**: refresh every 3 minutes (`*/3`, settle `1-59/3`), live slates on
 every tick, cadences counted in ticks from the tick's scheduled instant, and a
 per-run weight budget so a big slate runs alone. **M13c is SHIPPED**: men's
 college basketball (every Division I game) and the NBA are in `LEAGUES` as
-`'ncaab'` / `'nba'`, with migration 0013, ingest and settlement — the boards
-show both leagues, **betting on them is CLOSED** (`LEAGUE_BETTING_OPEN` false)
-until **M13d (PLANNED)** adds the college board filter and opens it. Rule 8i is
+`'ncaab'` / `'nba'`, with migration 0013, ingest and settlement. **M13 is
+built; basketball betting OPEN since 2026-11-07** (M13d): the college board
+opens on a Top 25 filter with the 32 basketball conferences beside it
+(`BOARD_FILTERS` in `src/web/lib/board-filter.ts`), the NBA board has no
+filter, and `LEAGUE_BETTING_OPEN` is `true` for all five leagues. Rule 8i is
 what the code must keep.
 
 **Read `PLAN.md` before changing anything.** It is the architecture of record:
@@ -243,7 +245,7 @@ the one failure mode the whole checklist has.
    `GET /api/users/:id/busts`, shown on `/players/:userId`.
    8i. **Scheduler hardening and basketball (M13, PLAN.md §24).** (0), (iii)
    and (iv) are IN THE CODE since M13a (2026-11-07), (i) and (ii) since M13b,
-   (v) since M13c (M13d must keep it when it opens betting). (0) **A CPU kill is not an exception.** Each target's
+   (v) since M13c, kept by M13d, which opened basketball betting. (0) **A CPU kill is not an exception.** Each target's
    `ingest_targets.incomplete_attempts` is stamped immediately before THAT
    target's own fetch, never for the whole claim at once, so a kill blames only
    the target in flight. BOTH reschedule paths reset it. The ONE other sanctioned

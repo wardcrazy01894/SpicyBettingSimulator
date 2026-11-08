@@ -34,11 +34,12 @@ money?" prompt will refill you $1,000, but the loss stays on the board and a
   run line is void, and a total counts only if it was already decided; before
   5 innings everything is void. A rainout is voided the next morning and your
   stake comes back. MLB legs can't go in a teaser (PLAN.md §23).
-- **College basketball and the NBA**, on the board since M13c: every Division I men's game
+- **College basketball and the NBA**, all bettable: every Division I men's game
   (today and the next two days) and every NBA game (today and tomorrow, when the lines are
-  already up), with DraftKings' spread, total and moneyline. **Betting on them opens in M13d**;
-  until then the boards are look-only. A final counts overtime on every market, a postponed game
-  is voided the next morning, and basketball legs can't go in a teaser (PLAN.md §24).
+  already up), with DraftKings' spread, total and moneyline. The college board opens on the
+  **Top 25** (a Saturday is ~155 games); the **Show** menu switches to All games, one of the 32
+  conferences, or Other. The NBA board has no filter. A final counts overtime on every market, a
+  postponed game is voided the next morning, and basketball legs can't go in a teaser (PLAN.md §24).
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 25 legs (as at
   DraftKings), and the legs can mix Saturday and Sunday. Teasers stop at 10

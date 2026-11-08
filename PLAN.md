@@ -2757,8 +2757,9 @@ GameCard = {
 `rank` is `curatedRank.current` kept only for 1..25 (`null` otherwise, and always
 `null` for the NFL); it is in the card because on a CFB board the rank is the
 most visible thing about a matchup. `conferenceId` is ESPN's `team.conferenceId`
-(`null` for the NFL); the CFB board's Top 25 / conference filter (§12.1) is
-computed CLIENT-SIDE from these two fields over the week's slate — there is no
+(`null` for the NFL); the CFB board's Top 25 / conference filter (§12.1) — and
+since M13d college basketball's, with its own ids (§24.14) — is
+computed CLIENT-SIDE from these two fields over the slate — there is no
 `?conference=` or `?ranked=` query, because it is a board narrowing, not a money
 slice, and the whole week is already in hand. `period`/`displayClock` render a live game's
 "Q3 07:12".
@@ -3243,11 +3244,14 @@ main.tsx
     │           │   ├── route "/"           <GamesPage>
     │           │   │   ├── <LeagueTabs>    moves the BOARD only — never the slip
     │           │   │   ├── <WeekPicker>    football only — hidden for MLB (BOARD_HAS_WEEKS, §23.12)
-    │           │   │   ├── <BoardFilterSelect>   CFB only: All / Top 25 / conference / Other
-    │           │   │   │                          → filterGames() in lib/board-filter.ts, client-side;
-    │           │   │   │                            a game matches when EITHER team does; reset on league change
+    │           │   │   ├── <BoardFilterSelect spec>   the college boards (BOARD_FILTERS, §24.14):
+    │           │   │   │                          All / Top 25 / conference / Other; CFB defaults to All,
+    │           │   │   │                          college basketball to Top 25; none for NFL, MLB, NBA
+    │           │   │   │                          → filterGames(league) in lib/board-filter.ts, client-side;
+    │           │   │   │                            a game matches when EITHER team does; the pick is held
+    │           │   │   │                            with its league, so a league change lands on its default
     │           │   │   └── groupBoardGames(league)   football: groupGamesByLocalDate() (viewer's LOCAL tz);
-    │           │   │       │                          MLB: the ET calendar date (§23.12)
+    │           │   │       │                          MLB and basketball: the ET calendar date (§23.12, §24.14)
     │           │   │       └── <GameCard game now>
     │           │   │           ├── <TeamRow team score rank>
     │           │   │           └── <MarketButton market side line price selected>   ×6
@@ -3964,7 +3968,7 @@ Live at https://spicybetting.wardcrazy01894.workers.dev, first deployed
 | M10 player bet history                        | **DONE** — 2026-09-21 (§11.8)                                       |
 | M11 same-game parlays                         | **DONE** — 2026-09-21 (§5.2c)                                       |
 | M12 MLB as a third league                     | **DONE** — 2026-09-24; M12a, M12b, M12c (§23.15)                    |
-| M13 scheduler hardening + college basketball  | **M13a, M13b, M13c DONE** 2026-11-07; M13d **PLANNED** (§24.17)     |
+| M13 scheduler hardening + college basketball  | **DONE** 2026-11-07 — M13a–M13d; basketball betting OPEN (§24.17)   |
 
 Two things follow from the deploy having happened:
 
@@ -4373,7 +4377,7 @@ the shortened-game rows was planned and folded back into M12b on 2026-09-24:
 betting opens before the regular season ends, so a rain-shortened game is
 reachable, and nothing in the admin tools could close a bet held pending.)
 
-### M13 — Scheduler hardening, then basketball (college + NBA) — **M13a, M13b, M13c SHIPPED** 2026-11-07; M13d **PLANNED** _(plan 2026-11-07)_
+### M13 — Scheduler hardening, then basketball (college + NBA) — **M13a, M13b, M13c, M13d SHIPPED** 2026-11-07; basketball betting OPEN _(plan 2026-11-07)_
 
 "Every Division I and every NBA game, after making a CPU-killed refresh
 survivable and loud." **§24 is the specification**; §24.17 is the shipping order:
@@ -4384,7 +4388,7 @@ survivable and loud." **§24 is the specification**; §24.17 is the shipping ord
 | **M13a**     | **DONE 2026-11-07** (branch `m13a`; 0012 applies on merge) — `0012_ingest_guard.sql`, the poison-target guard, `GET /api/health/ingest` + the uptime monitor, ESPN status counters, in-app alerts as GitHub issues | plan               |
 | **M13b**     | **DONE 2026-11-07** (branch `m13b`) — refresh `*/3` + settle `1-59/3`, leases 2.5 min, tick-relative cadences with live slates every tick, the per-run weight budget, the discovery tick                           | M13a **merged**    |
 | **M13c**     | **DONE 2026-11-07** (branch `m13c`; 0013 applies on merge, GATED §24.9) — `0013_basketball_leagues.sql`, `'ncaab'` and `'nba'` in `LEAGUES`, ingest + settlement — boards visible, **betting CLOSED**              | M13a + M13b merged |
-| **M13d**     | per-league board filter (`top25` default for college) — **betting OPENS** for both                                                                                                                                 | M13c verified      |
+| **M13d**     | **DONE 2026-11-07** (branch `m13d`) — per-league board filter (`top25` default for college), basketball empty copy — **betting OPEN** for both                                                                     | M13c verified      |
 
 The order is the design. With the poison target unguarded, a 155-game slate
 that is killed for CPU would freeze every league (§24.3). So the guard and the
@@ -7771,7 +7775,11 @@ real test, and "M13b as built" closes §24.7. **M13c SHIPPED 2026-11-07**
 every `Record` filled, the two URLs, pull counting, the shared settlement arm,
 the postponed rule by league, the dormant `NCAAB_TARGET_SHAPE` switch, the three
 captures): **boards visible, betting CLOSED**; every M13c `it.todo` is a real
-test and "M13c as built" closes §24.11. M13d is **PLANNED**. The implementation choices §24.4–§24.6b left open are recorded
+test and "M13c as built" closes §24.11. **M13d SHIPPED 2026-11-07**: the
+board filter keyed by league (`BOARD_FILTERS` in `src/web/lib/board-filter.ts`,
+`top25` by default for `ncaab`, none for the NBA), the basketball empty copy,
+and **betting OPEN** for both leagues (`LEAGUE_BETTING_OPEN.ncaab` / `.nba`
+`true`, the only server change); every M13d `it.todo` is a real test. The implementation choices §24.4–§24.6b left open are recorded
 in "M13a as built" at the end of §24.6b.
 
 ### 24.1 Goal, and what is deliberately not in it
@@ -9023,9 +9031,10 @@ strings are unchanged.
 - **Same-game and cross-sport parlays**: rule 8f is league-blind and matches
   DraftKings' basketball same-game rule (spread OR moneyline, plus the total). A
   CBB + NBA parlay, or NBA + NFL, is `'mixed'` (M5b). No change.
-- **Kill switch**: `LEAGUE_BETTING_OPEN` gains `ncaab: false, nba: false` in M13c
-  (boards read-only, placement `409 GAME_NOT_BETTABLE`), and both flip to `true`
-  in M13d.
+- **Kill switch**: `LEAGUE_BETTING_OPEN` gained `ncaab: false, nba: false` in M13c
+  (boards read-only, placement `409 GAME_NOT_BETTABLE`), and both flipped to
+  `true` in M13d (2026-11-07): **basketball betting is OPEN**. Setting either
+  back to `false` is still the one-line kill switch.
 
 ### 24.13 Write budget, requests, statements — at the 3-minute tick
 
@@ -9141,7 +9150,7 @@ reads `wrangler tail` for a D1 error, and S2's exit is now "the largest slate's
 statement count, observed OK". A packed run of small slates (weight ≤ 40 games, so
 ≈ 80 game statements plus their line rows) stays under the CFB figure by construction.
 
-### 24.14 UI (M13d, with the `Record` fills in M13c)
+### 24.14 UI (M13d, with the `Record` fills in M13c) — **SHIPPED 2026-11-07**
 
 | Where                                                                                  | Change                                                                                                                                                                                                                                                                                  | In   |
 | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
@@ -9274,7 +9283,7 @@ and the rhythm and cadences change (§24.7).
 | **M13a**     | **DONE 2026-11-07** — 0012 (guard columns + `alerts`), the poison guard (stamp, reset, park, probation, admin un-park), `/api/health/ingest`, ESPN status counters, the reaper, GitHub-issue alerts; the monitor set up            | plan                     |
 | **M13b**     | **DONE 2026-11-07** — `*/3` refresh and `1-59/3` settle, leases 2.5 min, tick-relative cadences, live every tick, the weight budget, the discovery tick, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600                                 | **M13a merged**          |
 | **M13c**     | **DONE 2026-11-07** — 0013, `'ncaab'` and `'nba'` in `LEAGUES`, every `Record`, URLs, windows, pull counting, the shared settlement arm, the postponed rule, the dormant shard switch, samples: **boards visible, betting CLOSED** | **M13a and M13b merged** |
-| **M13d**     | the per-league board filter with the `top25` default, empty copy, payload check: **betting OPENS** for both                                                                                                                        | M13c merged and verified |
+| **M13d**     | **DONE 2026-11-07** — the per-league board filter with the `top25` default, empty copy: **betting OPEN** for both (the payload check is the first big Saturday's, below)                                                           | M13c merged and verified |
 
 ```
 M13-plan ──► M13a ──► M13b ──► M13c ──► M13d
