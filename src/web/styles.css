@@ -4,9 +4,10 @@
  * Dark is the default palette; `prefers-color-scheme: light` swaps the tokens
  * and nothing else, so every rule below is written once against the token names.
  * Tap targets are >= 44px and every text input is >= 16px (below that iOS zooms
- * the viewport on focus). Nothing may scroll horizontally at 390px: the only
- * `overflow-x` in the file is on `.table-scroll`, which wraps the two real
- * tables.
+ * the viewport on focus). Nothing may scroll horizontally at 390px: `body`
+ * hides x-overflow as the backstop, and the only elements that scroll
+ * sideways on purpose are `.table-scroll` (the real tables) and the row
+ * controls that overflow with `scrollbar-width: none` (`.nav-tabs`, the tabs).
  */
 
 :root {
@@ -67,6 +68,13 @@ body {
   font-size: 16px;
   -webkit-text-size-adjust: 100%;
   overflow-x: hidden;
+}
+
+/* Keyboard focus and find-in-page scroll the target clear of the sticky
+   header-plus-tabs band (`.app-top`, ~115px: header ~59 + tabs ~57), so a
+   control is never revealed underneath it (WCAG 2.4.11). */
+html {
+  scroll-padding-top: 120px;
 }
 
 h1,
@@ -177,6 +185,8 @@ button:disabled {
   top: 0;
   z-index: 3;
   background: var(--surface);
+  /* The strip's lower edge runs full width (the tabs are centred on wide screens). */
+  border-bottom: 1px solid var(--border);
 }
 
 .app-header {
@@ -185,7 +195,6 @@ button:disabled {
   justify-content: space-between;
   gap: var(--gap);
   padding: 10px max(12px, env(safe-area-inset-left)) 10px max(12px, env(safe-area-inset-right));
-  background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
@@ -229,8 +238,6 @@ button:disabled {
   display: flex;
   gap: 2px;
   padding: 6px 8px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
   overflow-x: auto;
   scrollbar-width: none;
 }
