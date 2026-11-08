@@ -104,6 +104,13 @@ export interface SettleStats {
   readonly reset: number;
   /** Parked at MAX_SETTLE_ATTEMPTS and reported for a human. */
   readonly stuck: readonly string[];
+  /**
+   * The games BEHIND `stuck[]` that grading cannot decide — a basketball final
+   * short of regulation, an MLB final with no period (`gameAction` says
+   * `undecidable`). The admin Jobs page puts a "Void game…" button beside each
+   * (F1, PLAN.md §11.6). Empty, at zero extra cost, whenever `stuck[]` is.
+   */
+  readonly stuckGames: readonly string[];
   readonly won: number;
   readonly lost: number;
   readonly push: number;
@@ -312,6 +319,20 @@ export const LEG_FOLLOW_UP_LIMIT = 40;
  */
 export const LEG_FOLLOW_UP_WINDOW_MS = 14 * 86_400_000;
 
+/**
+ * The not-canceled games under the parked bets, for `stats.stuckGames`. The
+ * `undecidable` filter is `gameAction` itself, applied in code — SQL does not
+ * replicate grading. Read only when `stuck[]` is non-empty.
+ */
+export const SELECT_STUCK_GAMES_SQL = `
+SELECT DISTINCT g.id, g.league, g.status, g.period
+  FROM bet_legs l JOIN games g ON g.id = l.game_id
+ WHERE l.bet_id IN (SELECT b.id FROM bets b
+                     WHERE b.status = 'pending' AND b.settle_attempts >= ?1)
+   AND g.status <> 'canceled'
+ ORDER BY g.id
+ LIMIT ?2`;
+
 /** Bets past the attempt budget. They stay `pending`; money is never forfeited. */
 export const SELECT_STUCK_SQL = `
 SELECT b.id FROM bets b
@@ -464,6 +485,22 @@ export async function selectStuckBetIds(
 ): Promise<readonly string[]> {
   const res = await env.DB.prepare(SELECT_STUCK_SQL).bind(maxAttempts, limit).all<{ id: string }>();
   return res.results.map((row) => row.id);
+}
+
+/** `stats.stuckGames`: see `SELECT_STUCK_GAMES_SQL`. */
+export async function selectStuckGameIds(
+  env: Env,
+  maxAttempts: number,
+  limit = STUCK_REPORT_LIMIT,
+): Promise<readonly string[]> {
+  const res = await env.DB.prepare(SELECT_STUCK_GAMES_SQL)
+    .bind(maxAttempts, limit)
+    .all<{ id: string; league: League; status: GameStatus; period: number | null }>();
+  return res.results
+    .filter(
+      (g) => gameAction(g.league, { status: g.status, period: g.period }).kind === 'undecidable',
+    )
+    .map((g) => g.id);
 }
 
 /**
@@ -812,7 +849,7 @@ export class SettleRunError extends Error {
  * Entry point for the `settle` job. Chunked at `SETTLE_CHUNK` bets per run.
  *
  * Call shape per run: 4 fixed D1 calls (reset + select + stuck report + leg
- * load) plus one per selected bet — one batch, or one deferral UPDATE, or (for a
+ * load; a 5th, the stuck-games read, only while `stuck[]` is non-empty) plus one per selected bet — one batch, or one deferral UPDATE, or (for a
  * bet whose batch threw) a failed batch followed by one deferral UPDATE. At the
  * chunk of 20 that is **24** calls in the ordinary case and at most 44 if every
  * bet in the chunk fails. The §7.1b passes add at most 2 reads + one batch per
@@ -827,6 +864,7 @@ export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<
   const resetSweep = await resetDeferredBets(env);
   const bets = await selectSettleableBets(env, chunk, MAX_SETTLE_ATTEMPTS);
   const stuck = await selectStuckBetIds(env, MAX_SETTLE_ATTEMPTS);
+  const stuckGames = stuck.length === 0 ? [] : await selectStuckGameIds(env, MAX_SETTLE_ATTEMPTS);
 
   const legsByBet = groupByBet(
     await loadLegsForBets(
@@ -962,6 +1000,7 @@ export async function runSettle(env: Env, now: EpochMs, chunk: number): Promise<
     deferred,
     reset: resetSweep.reset,
     stuck,
+    stuckGames,
     won,
     lost,
     push,
