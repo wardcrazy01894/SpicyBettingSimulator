@@ -244,7 +244,10 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   their summed game counts stay ≤ 40 (`REFRESH_WEIGHT_BUDGET`): a CFB Saturday or a slate never
   fetched before always runs ALONE; an NFL date and an MLB day share. Every fifth tick (:00 :15 :30
   :45) serves a non-live slate first, so next week's lines are discovered behind any live load.
-  With two or three big live slates at once they take turns, each every 2nd or 3rd tick.
+  With two or three big live slates at once they take turns, each every 2nd or 3rd tick. The one
+  exception is the Sunday rollover burst: the seven or eight NEW dates are the oldest due rows and
+  drain on consecutive ticks AHEAD of the live slates, so for ~24 minutes after 00:00 ET and after
+  20:00 ET on a Sunday no live slate is refreshed (PLAN §24.7).
 - Per-run work is capped by two `wrangler.jsonc` vars: `REFRESH_TARGETS_PER_RUN` (5: a COUNT cap
   under the weight budget above) and `SETTLE_CHUNK` (20 bets per settle). Do not raise
   `SETTLE_CHUNK` before PLAN Spike S2 is measured — see below.
@@ -274,8 +277,10 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   backs off) but is only discovered by looking — check `failures[]` and `dayRowsWritten` weekly.
 
 - Budget: `GET /api/admin/jobs` → newest run's `stats.dayRowsWritten` is the rolling 24 h rows-written
-  total against D1's hard 100,000/day. Modelled ≈ 8–15k on a college Saturday at the 3-minute tick
-  (PLAN §24.13); 60,000 is the retreat line above.
+  total against D1's hard 100,000/day. Measured ≈ 8k for the CFB soak, modelled ≈ 17k with the
+  fixed streams on a college Saturday at the 3-minute tick (PLAN §24.13). The gauge EXCLUDES the
+  job bookkeeping's own ≈ 5.8k/day (deferred, §24.13), so read the 60,000 retreat line as
+  ≈ 54,000 on the gauge.
 - **Board coverage:** ESPN carries exactly ONE book (DraftKings), so there is no in-feed fallback
   when a market is missing. Each refresh run records `stats.upcomingGames` (scheduled, not yet
   kicked off, in the slates it fetched), `stats.lineGaps` (how many of those have no line or are

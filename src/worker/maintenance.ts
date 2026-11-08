@@ -292,8 +292,9 @@ export async function pruneAuthThrottle(env: Env, now: EpochMs): Promise<SweepRe
 
 /**
  * Keeps the newest `keepPerJob` rows PER JOB. Without this `job_runs` grows
- * without bound: three crons write ~4 runs every 15 minutes plus every admin
- * trigger, i.e. ~380 rows/day forever, each carrying a JSON `stats` blob.
+ * without bound: refresh and settle each run every 3 minutes plus maintenance
+ * and every admin trigger, i.e. ~960 rows/day forever, each carrying a JSON
+ * `stats` blob (M13b; ~380/day before it).
  *
  * `ROW_NUMBER() OVER (PARTITION BY job ...)` rather than a per-job
  * `OFFSET`-subquery loop, so one statement covers every job — including a job
