@@ -1159,6 +1159,37 @@ describe('M13a: in-app alerts as GitHub issues (PLAN.md §24.6b)', () => {
     expect(creates(gh)).toHaveLength(1);
   });
 
+  it('a bookkeeping failure AFTER a successful post keeps the claim: no duplicate issue', async () => {
+    await recordAlertConditions(env, T0, [PARKED_COND]);
+    // Fail the write that records the new issue number, twice (the call and its
+    // one retry); the GitHub create itself succeeds.
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    let blips = 0;
+    (env.DB as { prepare: typeof env.DB.prepare }).prepare = (sql: string) => {
+      if (sql.includes('SET issue_number')) {
+        blips += 1;
+        throw new Error('d1 blip');
+      }
+      return realPrepare(sql);
+    };
+    try {
+      const first = await processAlerts(env, T0);
+      expect(blips).toBe(2);
+      expect(first.failed).toBe(0);
+      expect(creates(gh)).toHaveLength(1);
+      // The claim stands (last_notified_at = T0), so a run inside the throttle
+      // window does not post again — the old code released it and the next
+      // run opened a second issue (and sent a second email).
+      await processAlerts(env, T0 + 60_000);
+      expect(creates(gh)).toHaveLength(1);
+      expect(await alertRow(`${PARKED_COND.kind}:${PARKED_COND.key}`)).toMatchObject({
+        last_notified_at: T0,
+      });
+    } finally {
+      delete (env.DB as { prepare?: unknown }).prepare;
+    }
+  });
+
   it('a GitHub failure is logged and counted, never fails the job, and releases the claim', async () => {
     gh.respond = () => new Response('nope', { status: 500 });
     const run = await withJobRun(env, 'maintenance', 'cron', T0, () => Promise.resolve({}));

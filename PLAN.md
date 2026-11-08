@@ -1904,16 +1904,15 @@ Each run:
 
    **What changes in M13 (§24).** M13a (SHIPPED 2026-11-07) stamps a target
    before its fetch and PARKS one that keeps being killed (§24.4), so a CPU kill
-   can no longer pin the head of the queue; a blamed target (`incomplete_attempts
-
-   > 0`) is claimed only into slot 1 and runs alone. The rest is planned, and
-the slot table above is current until M13b.
-M13b moves refresh to a 3-minute tick (`*/3`, 480 runs a day). The slot table
-above gives way to a per-run WEIGHT BUDGET (a big slate runs alone, small
-ones share, `REFRESH_WEIGHT_BUDGET`), and discovery's reservation moves from
-slot 2 to every fifth tick (`REFRESH_DISCOVERY_EVERY_NTH_TICK`, §24.7). M13c
-   > adds college basketball's three ET dates and the NBA's two, so in-window
-   > targets reach **24** (9 + 9 + 1 + 3 + 2).
+   can no longer pin the head of the queue; a blamed target (one whose
+   `incomplete_attempts` is above zero) is claimed only into slot 1 and runs
+   alone. The rest is planned, and the slot table above is current until M13b.
+   M13b moves refresh to a 3-minute tick (`*/3`, 480 runs a day). The slot table
+   above gives way to a per-run WEIGHT BUDGET (a big slate runs alone, small
+   ones share, `REFRESH_WEIGHT_BUDGET`), and discovery's reservation moves from
+   slot 2 to every fifth tick (`REFRESH_DISCOVERY_EVERY_NTH_TICK`, §24.7). M13c
+   adds college basketball's three ET dates and the NBA's two, so in-window
+   targets reach **24** (9 + 9 + 1 + 3 + 2).
 
    The reserved-slot query excludes the id slot 1 already claimed
    (`AND id <> :slot1Id`) — on a run with no live target slot 1's pick would

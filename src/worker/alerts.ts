@@ -348,6 +348,10 @@ async function act(
   const row = await readRow(env, fingerprint);
   if (row === null) return 'lost';
   const sent = row.pending;
+  // Set once the GitHub call(s) have landed: the bookkeeping write that follows
+  // a successful post. Subtracts what the post reported rather than zeroing, so
+  // occurrences that arrived during the call still count toward the next comment.
+  let record: () => Promise<unknown>;
   try {
     if (action === 'create') {
       const issue = await createIssue(
@@ -359,51 +363,68 @@ async function act(
         },
         ALERT_GITHUB_TIMEOUT_MS,
       );
-      // Subtract what the post reported rather than zeroing, so occurrences that
-      // arrived during the call still count toward the next comment.
-      await env.DB.prepare(
-        `UPDATE alerts SET issue_number = ?2, resolved_at = NULL, pending = MAX(pending - ?3, 0)
-          WHERE fingerprint = ?1`,
-      )
-        .bind(fingerprint, issue.number, sent)
-        .run();
-      return 'done';
+      record = () =>
+        env.DB.prepare(
+          `UPDATE alerts SET issue_number = ?2, resolved_at = NULL, pending = MAX(pending - ?3, 0)
+            WHERE fingerprint = ?1`,
+        )
+          .bind(fingerprint, issue.number, sent)
+          .run();
+    } else {
+      const number = row.issue_number;
+      if (number === null) throw new Error('claimed an alert with no issue');
+      if (action === 'reopen') {
+        await setIssueState(github, number, 'open', ALERT_GITHUB_TIMEOUT_MS);
+        await commentOnIssue(
+          github,
+          number,
+          occurrenceComment(row, login, 'Reopened: the condition came back. '),
+          ALERT_GITHUB_TIMEOUT_MS,
+        );
+        record = () =>
+          env.DB.prepare(
+            `UPDATE alerts SET resolved_at = NULL, pending = MAX(pending - ?2, 0) WHERE fingerprint = ?1`,
+          )
+            .bind(fingerprint, sent)
+            .run();
+      } else {
+        await commentOnIssue(
+          github,
+          number,
+          occurrenceComment(row, login, ''),
+          ALERT_GITHUB_TIMEOUT_MS,
+        );
+        record = () =>
+          env.DB.prepare(
+            `UPDATE alerts SET pending = MAX(pending - ?2, 0), comments = comments + 1
+              WHERE fingerprint = ?1`,
+          )
+            .bind(fingerprint, sent)
+            .run();
+      }
     }
-    const number = row.issue_number;
-    if (number === null) throw new Error('claimed an alert with no issue');
-    if (action === 'reopen') {
-      await setIssueState(github, number, 'open', ALERT_GITHUB_TIMEOUT_MS);
-      await commentOnIssue(
-        github,
-        number,
-        occurrenceComment(row, login, 'Reopened: the condition came back. '),
-        ALERT_GITHUB_TIMEOUT_MS,
-      );
-      await env.DB.prepare(
-        `UPDATE alerts SET resolved_at = NULL, pending = MAX(pending - ?2, 0) WHERE fingerprint = ?1`,
-      )
-        .bind(fingerprint, sent)
-        .run();
-      return 'done';
-    }
-    await commentOnIssue(
-      github,
-      number,
-      occurrenceComment(row, login, ''),
-      ALERT_GITHUB_TIMEOUT_MS,
-    );
-    await env.DB.prepare(
-      `UPDATE alerts SET pending = MAX(pending - ?2, 0), comments = comments + 1
-        WHERE fingerprint = ?1`,
-    )
-      .bind(fingerprint, sent)
-      .run();
-    return 'done';
   } catch (err) {
+    // ONLY a failed GitHub call releases the claim: the post did not land, so a
+    // retry cannot duplicate it.
     logFailure(fingerprint, action, err);
     await env.DB.prepare(RELEASE_SQL).bind(now, fingerprint).run();
     return 'failed';
   }
+  // The post landed. A failed bookkeeping write must NOT release the claim —
+  // releasing it is the duplicate-issue/-email window — so it is retried once
+  // and otherwise logged with the claim left standing: the throttle holds the
+  // fingerprint until the next successful write catches up.
+  try {
+    await record();
+  } catch (err) {
+    logFailure(fingerprint, action, err);
+    try {
+      await record();
+    } catch (again) {
+      logFailure(fingerprint, action, again);
+    }
+  }
+  return 'done';
 }
 
 function logFailure(fingerprint: string, action: Action, err: unknown): void {
