@@ -2197,15 +2197,15 @@ the one that used to be a guess; it is now the output of
 kickoff waves (scheduled → in_progress for 3.5 h → final), moving the clock on
 **every** refresh, and sums `meta.rows_written`:
 
-| Stream                              | Arithmetic                                               | Rows                          |
-| ----------------------------------- | -------------------------------------------------------- | ----------------------------- |
-| CFB Saturday `games` + `game_lines` | **measured**: 86 games × 96 refreshes, A/B split         | **2,979**                     |
-| NFL Sunday `games` + `game_lines`   | 13/86 of the above                                       | ~450                          |
-| Other 8 date targets (quiet days)   | mostly 0 rows; L3 touches at 1 row each                  | ~500                          |
-| `ingest_targets` reschedules        | 96 runs × 2 targets × 2 (row + `idx_ingest_targets_due`) | 384                           |
-| bets / legs / ledger (10 users)     | —                                                        | < 500                         |
-| sessions / throttle / job_runs      | —                                                        | < 300                         |
-| **Total**                           |                                                          | **≈ 5,100 / day — 5% of cap** |
+| Stream                              | Arithmetic                                                        | Rows                          |
+| ----------------------------------- | ----------------------------------------------------------------- | ----------------------------- |
+| CFB Saturday `games` + `game_lines` | **measured**: 86 games × 96 refreshes, A/B split                  | **2,979**                     |
+| NFL Sunday `games` + `game_lines`   | 13/86 of the above                                                | ~450                          |
+| Other 8 date targets (quiet days)   | mostly 0 rows; L3 touches at 1 row each                           | ~500                          |
+| `ingest_targets` reschedules        | 96 runs × 2 targets × 2 (row + `idx_ingest_targets_due`)          | 384                           |
+| bets / legs / ledger (10 users)     | —                                                                 | < 500                         |
+| sessions / throttle / job_runs      | pre-M13b; ≈ 5,800/day from M13b, NOT in `dayRowsWritten` (§24.13) | < 300                         |
+| **Total**                           |                                                                   | **≈ 5,100 / day — 5% of cap** |
 
 **MLB (since M12a) adds ≈ 900 rows/day, measured** — two figures, which are
 not a contradiction: the pre-measurement **ESTIMATE** was ≈ 1,050 rows/day
@@ -6466,10 +6466,11 @@ The two effects to expect, stated for the runbook:
    "big" and runs ALONE, and `ORDER BY priority ASC, next_run_at ASC` serves the
    OLDEST overdue target first — the new rows are the least overdue thing in the
    queue. At one tick every 3 minutes on an otherwise idle queue that is about
-   25 minutes to pull all eight (seven CFB dates and MLB's); behind a live
-   Saturday they take the discovery-first ticks, one per 15 minutes, so ~2 h.
-   (Before M13b: two slots per 15-minute run, about an hour idle and ~4 h behind
-   a live Saturday.) So at 00:15 ET on a Sunday a CFB board can legitimately be a
+   25 minutes to pull all eight (seven CFB dates and MLB's) — and the same
+   ~24 minutes behind a live Saturday, because the new rows are the OLDEST due
+   rows and win the general ticks ahead of the live slates, which wait (§24.7).
+   (Before M13b: two slots per 15-minute run, about an hour idle and ~60 min of
+   live starvation behind a live Saturday.) So at 00:15 ET on a Sunday a CFB board can legitimately be a
    handful of games with no lines yet, filling as the runs go by. Nothing is
    broken and nothing needs kicking; `GET /api/admin/jobs` shows the targets
    being taken. (An operator in a hurry can force it with the per-game Refresh
@@ -8604,9 +8605,16 @@ still claims what it bumped (§9.3).
 - _No discovery starvation._ A discovery-first tick serves the most overdue
   non-live target if one is due, and live slates cannot take that tick. So a due
   non-live target with k others ahead of it waits at most `15·(k + 1)` minutes.
-  The worst rollover burst (8 new dates) fills in ≤ 2 h behind any live load.
-- _Live slates degrade explicitly._ Live slates are perpetually due, so the four
-  general ticks in every five serve them round-robin (`next_run_at ASC`). With L
+  A rollover burst is the exception, AS BUILT: the planner stamps new dates
+  `next_run_at = now`, which makes them the oldest due rows, so the eight new
+  dates drain on consecutive GENERAL ticks ahead of every live slate in ~24
+  minutes, during which no live slate is refreshed (before M13b the same burst
+  starved live slates for ~60 min; bet locks are kickoff-based, so no money
+  moves). OPEN for the owner: stamp planner-created dates at the next
+  discovery tick instead, so a burst fills in ≤ 2 h strictly behind live load.
+- _Live slates degrade explicitly._ Between bursts live slates are perpetually
+  due, so the four general ticks in every five serve them round-robin
+  (`next_run_at ASC`; a non-live target whose tier expires takes one tick). With L
   BIG live slates, each is refreshed every L general ticks, i.e. every
   `≈ L × 3.75` minutes of wall clock. **On a Saturday with CFB and CBB live, each
   gets roughly every 2nd tick (~7.5 min). Add a December NFL Saturday slate and
@@ -9023,8 +9031,10 @@ once, is ≈ 57,000.
   15 minutes. Nothing else moves.
 - The `job_runs` line is ESTIMATED from statement shapes, and it also puts §8.6's
   "< 300" for sessions, throttle and `job_runs` under review: at 96 + 96 runs a
-  day today it is already nearer 1,100. M13b records the job bookkeeping's own
-  `meta.rows_written` and corrects §8.6 either way.
+  day today it is already nearer 1,100, and ≈ 5,800/day from M13b (960 runs).
+  Recording the bookkeeping's own `meta.rows_written` is DEFERRED (the finalize
+  write cannot count itself), so **`dayRowsWritten` under-reads by that ≈ 5,800
+  a day** and the 60k retreat line is read with that blind spot (OPERATIONS).
 
 **Regression bounds moved with the cadence (M13b), re-derived, NOT raised to
 fit.** `tests/worker/ingest.spec.ts`'s CFB soak (96 refreshes, < 5,000) became
@@ -9032,12 +9042,16 @@ fit.** `tests/worker/ingest.spec.ts`'s CFB soak (96 refreshes, < 5,000) became
 **MEASURED at M13b: 7,922 rows** (6,385 changed games, 593 line rows) against
 the model's ≈ 7,800, so the model holds. The bound is 7,922 × 1.68 (the headroom
 5,000 had over 2,979) ≈ **< 13,300**. `tests/worker/mlb.spec.ts` re-ran at 480
-ticks with the score and inning moving on the 15-minute wall-clock grid:
-**741 rows** against 684 at 96 refreshes. Five times the refreshes added 57
-rows, consistent with the 45-minute L3 line touch firing on the first tick past
-it (~every 48 min instead of every 60); the live stream follows the score, not
-the refresh count, as §23.11 says. It stays under §23.11's < 1,000, so that
-bound did not move. M13c's
+ticks with the score and inning moving on the 15-minute wall-clock grid (12
+changes per game — a REALISTIC case, not the worst: a real game changes state
+~18 or more times): **741 rows** against 684 at 96 refreshes. Five times the
+refreshes added only 57 rows because the fixture's changes are pinned to that
+grid, so the figure measures the fixture's design as much as the cadence; the
+extra rows are consistent with the 45-minute L3 line touch firing on the first
+tick past it (~every 48 min instead of every 60). The live stream follows the
+score, not the refresh count, as §23.11 says. It stays under §23.11's < 1,000
+with ~1.35× headroom, so that bound did not move; a worst-case fixture (~20
+changes per game) is worth adding if that headroom is ever questioned. M13c's
 `tests/worker/basketball.spec.ts` drives 155 synthesised CBB games through 480
 ticks in six tip-off waves (12:00, 14:00, 16:00, 18:00, 19:00, 21:00 ET), each
 live 40 ticks with the clock moving every tick, plus a 15-game NBA night (19:00

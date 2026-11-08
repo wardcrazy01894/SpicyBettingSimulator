@@ -318,7 +318,7 @@ export function targetId(league: League, key: string): string {
  * the most due for slot 1 there too), and the admin's run then refreshes the
  * next most due slate — the game IS refreshed, by the cron, but the admin's
  * `job_runs` row describes a different slate. Closing it would need the bump
- * inside the lease; at one cron tick per 15 min the window is not worth that.
+ * inside the lease; at one cron tick per 3 min the window is not worth that.
  */
 export async function bumpTargetForGame(
   env: Env,
@@ -418,7 +418,9 @@ export async function planTargets(env: Env, now: EpochMs): Promise<number> {
           day.startAt,
           day.endAt,
           // Due immediately: a brand new date has no lines at all, and the
-          // reserved discovery slot is what actually paces it afterwards.
+          // its own tier (§24.7) is what actually paces it afterwards.
+          // NOTE this makes a burst of new dates the OLDEST due rows: see
+          // the ROLLOVER BURST note on planTargets.
           now,
           now,
           now,
@@ -624,10 +626,13 @@ export function packCount(
  * Budget (computed, PLAN.md §8.4/§22/§23.11): at most 19 in-window targets
  * plus two or three past MLB dates on the +24 h tier; ≈ 70 discovery
  * refreshes a day against 96 discovery-first ticks. ROLLOVER BURST: the
- * Sunday rollover adds seven or eight never-fetched dates at once; each weighs
- * big and runs alone, so they drain one a tick — about 25 minutes on an idle
- * queue, and on the discovery-first ticks (one per 15 minutes) behind a live
- * Saturday (§22.6).
+ * Sunday rollover adds seven or eight never-fetched dates at once, stamped
+ * `next_run_at = now`. Each weighs big and runs alone, and because they are
+ * then the OLDEST due rows they drain on consecutive GENERAL ticks ahead of
+ * every live slate — about 24 minutes during which no live slate is refreshed
+ * (before M13b the same burst starved live slates for ~60 min). Bet locks are
+ * kickoff-based, so no money moves; whether the planner should stamp new dates
+ * at the next discovery tick instead is an owner question (PLAN.md §24.7).
  *
  * NOTE this reads but does not write: the lease (PLAN.md §9.2) is what makes two
  * runs non-overlapping, so "claiming" needs no marker row and costs no writes.
@@ -1110,10 +1115,10 @@ export async function upsertSlate(
  * ------------------------------------------------------------------ */
 
 /**
- * Tiered reschedule (PLAN.md §8.4):
- *   live or kickoff < 3h  -> +15 min
- *   kickoff < 48h         -> +60 min
- *   otherwise             -> +6 h
+ * Tiered reschedule (PLAN.md §8.4, §24.7), in ticks from the tick's nominal instant:
+ *   live or kickoff < 3h  -> +REFRESH_LIVE_TICKS      (1 tick = 3 min)
+ *   kickoff < 48h         -> +REFRESH_SOON_TICKS      (20 ticks = 60 min)
+ *   otherwise             -> +REFRESH_DISCOVERY_TICKS (120 ticks = 6 h)
  *   all games final       -> +24 h
  * On failure: `min(15min * 2^consecutiveFailures, 6h)`.
  * MLB only: a target holding an unfinished game is capped at
@@ -1314,7 +1319,7 @@ export function provisionalNextRunAt(
  * flight, is left blamed. Both reschedule paths in `ingestTarget` undo it; a
  * kill, which no `catch` can see, is the only way it survives. The provisional
  * `next_run_at` drops a killed target BEHIND the other due ones instead of
- * letting it win slot 1 on the very next tick. Never move this after the
+ * letting it win the head of the queue on the very next tick. Never move this after the
  * fetch (CLAUDE.md rule 8i). Returns D1's `rows_written` (2: the row and
  * `idx_ingest_targets_due`).
  */
