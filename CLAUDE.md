@@ -5,11 +5,12 @@ M12) for Alex and a few friends. Real lines, real odds, real payouts, **no real
 money**. MLB is in `LEAGUES` since M12a and its betting is OPEN since M12b
 (both 2026-09-24): the board shows today's ET date only, and
 `LEAGUE_BETTING_OPEN` in `src/worker/bets.ts` is the per-league kill switch
-(PLAN.md §23). **M13 is PLANNED, not built** (PLAN.md §24, 2026-11-07): first
-scheduler hardening and in-app alerts (M13a), then a 3-minute refresh tick
-(M13b), then men's college basketball and the NBA as `'ncaab'` / `'nba'` (M13c,
-M13d). Neither is in `LEAGUES` yet; rule 8i is what the code must keep once they
-are.
+(PLAN.md §23). **M13 (PLAN.md §24, 2026-11-07): M13a is SHIPPED** —
+scheduler hardening (the poison-target guard, `GET /api/health/ingest`, ESPN
+status counters, the reaper) and in-app alerts as GitHub issues. **M13b–d are
+PLANNED**: a 3-minute refresh tick (M13b), then men's college basketball and the
+NBA as `'ncaab'` / `'nba'` (M13c, M13d). Neither is in `LEAGUES` yet; rule 8i is
+what the code must keep.
 
 **Read `PLAN.md` before changing anything.** It is the architecture of record:
 data model, odds math, settlement algorithm, ingestion design, milestones and the
@@ -235,9 +236,9 @@ the one failure mode the whole checklist has.
    equity and deposited together and `netCents` does not move (since
    2026-10-20). The history — every refill, and when its badge went — is
    `GET /api/users/:id/busts`, shown on `/players/:userId`.
-   8i. **Scheduler hardening and basketball (M13, PLAN.md §24; PLANNED, so
-   nothing below is in the code yet).** What the code must keep once each
-   milestone lands. (0) **A CPU kill is not an exception.** Each target's
+   8i. **Scheduler hardening and basketball (M13, PLAN.md §24).** (0), (iii)
+   and (iv) are IN THE CODE since M13a (2026-11-07); (i), (ii) and (v) are what
+   M13b–d must keep when they land. (0) **A CPU kill is not an exception.** Each target's
    `ingest_targets.incomplete_attempts` is stamped immediately before THAT
    target's own fetch, never for the whole claim at once, so a kill blames only
    the target in flight. BOTH reschedule paths reset it. The ONE other sanctioned
@@ -299,10 +300,14 @@ the one failure mode the whole checklist has.
      `0011_ledger_refill_buyout.sql` rebuilds `ledger` ALONE (a leaf, 0008's
      pattern) to admit kinds `deposit_refill` and `bust_buyout` — bust
      refills and badge buyouts, rule 8h and PLAN.md §4.5.
+     `0012_ingest_guard.sql` (M13a, 2026-11-07, §24.4 verbatim) is four plain
+     `ADD COLUMN`s on `ingest_targets` (`attempt_started_at`,
+     `incomplete_attempts`, `last_ok_at`, `conference_id`) plus the `alerts`
+     table, no rebuild (§24.4/§24.6b). Because 0009 rebuilds `ingest_targets`
+     from its own text, `migration-0009.spec.ts` re-adds 0012's columns after
+     re-running 0009 (composing forward).
      **PLANNED, not written** (the M13 plan PR shipped no migration, PLAN.md
-     §24): `0012_ingest_guard.sql` (M13a: four `ADD COLUMN`s on
-     `ingest_targets` plus the `alerts` table, no rebuild, §24.4/§24.6b) and
-     `0013_basketball_leagues.sql` (M13c: 0009's six-table children-first
+     §24): `0013_basketball_leagues.sql` (M13c: 0009's six-table children-first
      rebuild admitting `'ncaab'` and `'nba'`, each table recreated from its LAST
      definer (0010 for `bets`/`bet_legs`, 0011 for `ledger`), and GATED on a
      measured write estimate under 60,000 rows, §24.9).
@@ -331,8 +336,9 @@ the one failure mode the whole checklist has.
      rejects that prefix at signup so nobody can squat one. PLAN.md §10.5.
 10. Never commit `.dev.vars`. The only secrets are `INVITE_CODE`, `IP_HASH_SALT`,
     `GITHUB_TOKEN` (a fine-grained PAT with Issues: read+write on this ONE
-    repo, for the in-app bug report form — optional; the feature is off without
-    it) and `ODDS_API_KEY` (The Odds API free tier, for the SECONDARY odds
+    repo, for the in-app bug report form AND, since M13a, the in-app alerts
+    (PLAN.md §24.6b) — optional; both features are off without it, and the
+    alerts @mention the `ALERT_MENTION_LOGIN` var, which is not a secret) and `ODDS_API_KEY` (The Odds API free tier, for the SECONDARY odds
     provider, PLAN.md §21; also optional, and without it the board is
     primary-only and `job_runs.stats.secondary.enabled` is `false`). Never call
     the API outside `src/worker/secondary.ts`'s sweep, and never bypass its
@@ -429,7 +435,9 @@ src/shared/   pure domain: types, odds, grading, espn parser, validation, time,
               action (which markets of a final game have action — MLB's
               shortened-game rule, PLAN.md §23.6)
 src/worker/   Hono API + cron jobs + D1 access; secondary.ts owns the Odds API
-              sweep and its credit budget, and never edits ingest.ts's SQL
+              sweep and its credit budget, and never edits ingest.ts's SQL;
+              alerts.ts owns the GitHub-issue alerts (PLAN.md §24.6b) and
+              reaches GitHub only through bugs.ts's client
 src/worker/routes/  one file per API area; index.ts holds the route table.
               users.ts is GET /api/users/:id/bets — another player's bets,
               read-only (players.ts forces cancellable:false), visible under
@@ -450,9 +458,10 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               for same-game parlays (PLAN.md §5.2c), 0009 rebuilds six tables
               to admit league 'mlb' (PLAN.md §23.3), 0010 rebuilds bets for
               25-leg parlays (teasers stay at 10; PLAN.md §16.2), 0011 rebuilds
-              ledger alone for the deposit_refill / bust_buyout kinds (PLAN.md §4.5);
-              0012 (guard columns + alerts) and 0013 (basketball) are PLANNED,
-              not written (PLAN.md §24)
+              ledger alone for the deposit_refill / bust_buyout kinds (PLAN.md §4.5),
+              0012 adds the poison-guard columns to ingest_targets and the
+              alerts table (PLAN.md §24.4/§24.6b); 0013 (basketball) is
+              PLANNED, not written (PLAN.md §24)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ @cloudflare/vitest-plugin tests with a real D1; fixtures.ts SYNTHESISES
@@ -531,6 +540,11 @@ filed through "Report a bug", including reports GitHub refused, each with the
 browser's diagnostics log. `wrangler tail` shows one `[api]` line per failed or
 slow request and one `[client-error]` line per browser crash — the "Logs"
 section of `docs/OPERATIONS.md` is the key to the prefixes.
+Since M13a, `GET /api/health/ingest` answers 503 with its `reasons[]` when
+refresh is stale, a target is PARKED, or every fetched target errors (the
+external uptime monitor polls it), and failures arrive as `[alert]` GitHub
+issues labelled `ops-alert` that @mention `ALERT_MENTION_LOGIN` (PLAN.md §24.5,
+§24.6b; OPERATIONS "Parked target" and "Alerts").
 
 ## Git identity
 

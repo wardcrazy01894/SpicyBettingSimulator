@@ -1902,15 +1902,18 @@ Each run:
    45-minute cadence — which the sentence above already accepts; §23.11 has the
    arithmetic and why Spike S1 gates a third slot.
 
-   **What changes in M13 (§24, planned; the code above is current until
-   then).** M13a stamps a target before its fetch and PARKS one that keeps
-   being killed (§24.4), so a CPU kill can no longer pin the head of the queue.
-   M13b moves refresh to a 3-minute tick (`*/3`, 480 runs a day). The slot table
-   above gives way to a per-run WEIGHT BUDGET (a big slate runs alone, small
-   ones share, `REFRESH_WEIGHT_BUDGET`), and discovery's reservation moves from
-   slot 2 to every fifth tick (`REFRESH_DISCOVERY_EVERY_NTH_TICK`, §24.7). M13c
-   adds college basketball's three ET dates and the NBA's two, so in-window
-   targets reach **24** (9 + 9 + 1 + 3 + 2).
+   **What changes in M13 (§24).** M13a (SHIPPED 2026-11-07) stamps a target
+   before its fetch and PARKS one that keeps being killed (§24.4), so a CPU kill
+   can no longer pin the head of the queue; a blamed target (`incomplete_attempts
+
+   > 0`) is claimed only into slot 1 and runs alone. The rest is planned, and
+the slot table above is current until M13b.
+M13b moves refresh to a 3-minute tick (`*/3`, 480 runs a day). The slot table
+above gives way to a per-run WEIGHT BUDGET (a big slate runs alone, small
+ones share, `REFRESH_WEIGHT_BUDGET`), and discovery's reservation moves from
+slot 2 to every fifth tick (`REFRESH_DISCOVERY_EVERY_NTH_TICK`, §24.7). M13c
+   > adds college basketball's three ET dates and the NBA's two, so in-window
+   > targets reach **24** (9 + 9 + 1 + 3 + 2).
 
    The reserved-slot query excludes the id slot 1 already claimed
    (`AND id <> :slot1Id`) — on a run with no live target slot 1's pick would
@@ -2226,6 +2229,14 @@ CFB-Saturday figures below are unchanged.
 | the `mlb:date` target's reschedules | ≤ 96 runs × 2 (row + `idx_ingest_targets_due`) | ≤ 192     |
 | **MLB total (measured)**            | vs the ≈ 1,050 ESTIMATE above                  | **≈ 900** |
 
+**Since M13a every target-refresh also writes the poison guard's stamp**
+before its fetch (§24.4): `next_run_at` is indexed, so it costs 2 rows (row +
+`idx_ingest_targets_due`) like the reschedule — measured in
+`tests/worker/ingest.spec.ts`, where one target's ingest went from 10 to 12
+rows and a quiet two-target run from 4 to 8. Every "reschedules" line in this
+section therefore doubles (≤ 384 for an MLB day at 96 refreshes); §24.13
+carries the same "stamp 2 + reschedule 2" at the 3-minute tick.
+
 For reference, the same fixture run through the **single-statement** upsert this
 replaces writes **6,978** rows; and the theoretical worst case of all 86 games
 live for all 96 refreshes is **8,686** with the A/B split against **33,196**
@@ -2311,13 +2322,17 @@ always expires before the next scheduled run. **M13b** (§24.7) moves `refresh` 
 shorter.
 
 **A run killed for CPU is a crash that leaves no trace in its own job.** Its
-lease expires on the TTL, so the next tick runs normally. Until M13a, though, its
-`job_runs` row stays `running` forever and its target keeps the oldest
-`next_run_at` and is re-claimed first on every later run: the poison target of
-§24.3. M13a stamps the target before the fetch and parks it after three
-incomplete attempts (§24.4). `withJobRun` reaps the job's `running` rows older
-than its lease TTL to `error`, and `GET /api/health/ingest` makes the condition
-visible to an outside monitor (§24.5).
+lease expires on the TTL, so the next tick runs normally. Before M13a its
+`job_runs` row stayed `running` forever and its target kept the oldest
+`next_run_at` and was re-claimed first on every later run: the poison target of
+§24.3. Since M13a (shipped 2026-11-07) the target is stamped immediately before
+its own fetch and parked after three incomplete attempts (§24.4). `withJobRun`
+REAPS the job's `running` rows that started more than `JOB_REAP_AFTER_MS`
+(15 min, Cloudflare's wall-clock ceiling for a cron) ago to `error` — "no
+finish recorded: killed (CPU or wall limit) or crashed", `finished_at =
+started_at` — deliberately NOT at the lease TTL, because a slow live run can
+outlast its lease. `GET /api/health/ingest` makes the condition visible to an
+outside monitor (§24.5), and the reaped row raises a `job-error` alert (§24.6b).
 
 Release on the way out sets `lease_until = 0`. That is a _separate statement_ from
 the one finalizing `job_runs` — they are different tables — but both go in the
@@ -2687,7 +2702,7 @@ and never removed, only added.
 | GET    | `/api/health`        | `200 {ok, version, now, inviteRequired, bugReportsEnabled}` — no DB access; `bugReportsEnabled` is whether `GITHUB_TOKEN` is set (§11.7)                                                                                                                                                                                                                                          |
 | GET    | `/api/config`        | `200 {leagues, currentSeason:{nfl,ncaaf}, minStakeCents, maxParlayLegs, cutoffBufferMs, initialBankrollCents, maxPayoutCents, teaserPoints, teaserPayouts}` — these field names match `ConfigResponse` in `src/shared/api-types.ts` exactly; `maxPayoutCents` exists because the bet slip calls `exceedsPayoutCap()` for pre-flight (§5.2b) and must not disagree with the server |
 | GET    | `/api/auth/kdf`      | `200 {version, algorithm, hash, iterations, keyLengthBytes, saltPrefix}`                                                                                                                                                                                                                                                                                                          |
-| GET    | `/api/health/ingest` | **Planned, M13a — not yet live** (§24.5). `200` or `503 {ok, now, lastRefreshOkAt, parkedTargets, reasons[]}`, one read statement, for an external uptime monitor. `/api/health` above is unchanged                                                                                                                                                                               |
+| GET    | `/api/health/ingest` | **Live since M13a** (§24.5). `200` or `503 {ok, now, lastRefreshOkAt, parkedTargets, reasons[]}`, one read statement, for an external uptime monitor. `/api/health` above is unchanged                                                                                                                                                                                            |
 
 ### 11.2 Auth
 
@@ -3949,7 +3964,7 @@ Live at https://spicybetting.wardcrazy01894.workers.dev, first deployed
 | M10 player bet history                        | **DONE** — 2026-09-21 (§11.8)                                       |
 | M11 same-game parlays                         | **DONE** — 2026-09-21 (§5.2c)                                       |
 | M12 MLB as a third league                     | **DONE** — 2026-09-24; M12a, M12b, M12c (§23.15)                    |
-| M13 scheduler hardening + college basketball  | **PLANNED** — 2026-11-07; M13a → M13b → M13c → M13d (§24.17)        |
+| M13 scheduler hardening + college basketball  | **M13a DONE** 2026-11-07; M13b → M13c → M13d **PLANNED** (§24.17)   |
 
 Two things follow from the deploy having happened:
 
@@ -4358,18 +4373,18 @@ the shortened-game rows was planned and folded back into M12b on 2026-09-24:
 betting opens before the regular season ends, so a rain-shortened game is
 reachable, and nothing in the admin tools could close a bet held pending.)
 
-### M13 — Scheduler hardening, then basketball (college + NBA) — **PLANNED** _(plan 2026-11-07)_
+### M13 — Scheduler hardening, then basketball (college + NBA) — **M13a SHIPPED** 2026-11-07; M13b–d **PLANNED** _(plan 2026-11-07)_
 
 "Every Division I and every NBA game, after making a CPU-killed refresh
 survivable and loud." **§24 is the specification**; §24.17 is the shipping order:
 
-| PR           | What lands                                                                                                                                            | Depends on         |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
-| **M13-plan** | §24, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two `it.todo` contract files — no migration, no behaviour        | —                  |
-| **M13a**     | `0012_ingest_guard.sql`, the poison-target guard, `GET /api/health/ingest` + the uptime monitor, ESPN status counters, in-app alerts as GitHub issues | plan               |
-| **M13b**     | refresh `*/3` + settle `1-59/3`, leases 2.5 min, tick-relative cadences with live slates every tick, the per-run weight budget, the discovery tick    | M13a **merged**    |
-| **M13c**     | `0013_basketball_leagues.sql`, `'ncaab'` and `'nba'` in `LEAGUES`, ingest + settlement — boards visible, **betting CLOSED**                           | M13a + M13b merged |
-| **M13d**     | per-league board filter (`top25` default for college) — **betting OPENS** for both                                                                    | M13c verified      |
+| PR           | What lands                                                                                                                                                                                                         | Depends on         |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| **M13-plan** | §24, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two `it.todo` contract files — no migration, no behaviour                                                                     | —                  |
+| **M13a**     | **DONE 2026-11-07** (branch `m13a`; 0012 applies on merge) — `0012_ingest_guard.sql`, the poison-target guard, `GET /api/health/ingest` + the uptime monitor, ESPN status counters, in-app alerts as GitHub issues | plan               |
+| **M13b**     | refresh `*/3` + settle `1-59/3`, leases 2.5 min, tick-relative cadences with live slates every tick, the per-run weight budget, the discovery tick                                                                 | M13a **merged**    |
+| **M13c**     | `0013_basketball_leagues.sql`, `'ncaab'` and `'nba'` in `LEAGUES`, ingest + settlement — boards visible, **betting CLOSED**                                                                                        | M13a + M13b merged |
+| **M13d**     | per-league board filter (`top25` default for college) — **betting OPENS** for both                                                                                                                                 | M13c verified      |
 
 The order is the design. With the poison target unguarded, a 155-game slate
 that is killed for CPU would freeze every league (§24.3). So the guard and the
@@ -7737,6 +7752,15 @@ ships with M13a's code, 0013 with M13c's, and the crons and
 has to leave a current value standing, the text gives it together with "what
 ships in M13x".
 
+**STATUS: M13a SHIPPED 2026-11-07** (`migrations/0012_ingest_guard.sql`, the
+poison-target guard, `GET /api/health/ingest`, ESPN status counters, the
+reaper, GitHub-issue alerts; `wrangler.jsonc` gained only
+`ALERT_MENTION_LOGIN`). Every M13a `it.todo` in
+`tests/worker/scheduler-hardening.spec.ts` is a real test. The crons are still
+`*/15` / `5-59/15` and `REFRESH_TARGETS_PER_RUN` is still 2: M13b, M13c and M13d
+are **PLANNED**. The implementation choices §24.4–§24.6b left open are recorded
+in "M13a as built" at the end of §24.6b.
+
 ### 24.1 Goal, and what is deliberately not in it
 
 **Goal.** Two new `League`s: `'ncaab'` (men's college basketball, every Division
@@ -8437,6 +8461,38 @@ false`;
 - a GitHub 500 / timeout: logged, `failed` counted, the job's status untouched,
   and the claim released (`last_notified_at = 0`) so the next run retries.
 
+**M13a as built (2026-11-07).** Where the text above left a detail open, the
+code chose:
+
+- _Where `stats.alerts` lands._ Not in the NEXT run: there is no durable place
+  for it without a write or isolate state. `withJobRun` folds it into the SAME,
+  already-final row with one `json_set` UPDATE of `stats` (never `status`), and
+  only when the evaluation recorded or did something, so a healthy run still
+  writes zero alert rows. The returned `JobRun` (the admin trigger's response)
+  carries it too, and the `[alert]` log line is unchanged.
+- _Timestamps in issue text_ are ISO-8601 UTC, like the bug-report issue body,
+  because CLAUDE.md rule 3 keeps time zones out of the server; "ET time" above
+  reads as UTC.
+- _The closing comment does not @mention_ (§24.6b's email list is one per open,
+  per comment interval and per reopen); the issue body, every throttled comment
+  and every reopen comment do.
+- _A reopen_ PATCHes `state: open`, posts its comment, and subtracts the
+  reported `pending`; it does not advance the comment backoff.
+- _A failed close_ (comment or PATCH) undoes the resolve (`state = 'firing',
+resolved_at = NULL`, guarded on the resolve's own `resolved_at`) so the next
+  run retries.
+- _A silent resolve_ — a quiet alert whose create never succeeded, or whose
+  reopen never landed — is one statement run by every evaluation, token or
+  not; it makes no call.
+- _Call budget._ A create or comment costs 1 of `ALERT_MAX_GITHUB_CALLS_PER_RUN`,
+  a reopen or resolve 2; due actions past the budget wait for the next run.
+- _ESPN outcome of a failure before the fetch_ (a stamp that could not be
+  written, or a non-`ProviderError`) counts as `network`; an `unsupported`
+  target kind counts as `4xx`.
+- _The admin Jobs page_ shows the newest refresh run's `stats.parked` as an
+  error banner and the rolling `dayEspnStatus` as one line under it
+  (`src/web/lib/ingest-health.ts`).
+
 ### 24.7 M13b — a three-minute tick, live slates every tick, a weight budget per run
 
 **The owner's decision** (2026-11-07, superseding this chapter's first draft of
@@ -9097,13 +9153,13 @@ Each PR is green on the gate and leaves football and MLB behaviour byte-identica
 except where this chapter says otherwise: pull notes leave `warnings` (§24.10),
 and the rhythm and cadences change (§24.7).
 
-| PR           | What lands                                                                                                                                                                                                   | Depends on               |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
-| **M13-plan** | this chapter, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two contract files                                                                                             | —                        |
-| **M13a**     | 0012 (guard columns + `alerts`), the poison guard (stamp, reset, park, probation, admin un-park), `/api/health/ingest`, ESPN status counters, the reaper, GitHub-issue alerts; the monitor set up            | plan                     |
-| **M13b**     | `*/3` refresh and `1-59/3` settle, leases 2.5 min, tick-relative cadences, live every tick, the weight budget, the discovery tick, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600                                 | **M13a merged**          |
-| **M13c**     | 0013, `'ncaab'` and `'nba'` in `LEAGUES`, every `Record`, URLs, windows, pull counting, the shared settlement arm, the postponed rule, the dormant shard switch, samples: **boards visible, betting CLOSED** | **M13a and M13b merged** |
-| **M13d**     | the per-league board filter with the `top25` default, empty copy, payload check: **betting OPENS** for both                                                                                                  | M13c merged and verified |
+| PR           | What lands                                                                                                                                                                                                              | Depends on               |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| **M13-plan** | this chapter, nineteen constants + `ALERT_GITHUB_LABEL` + `CBB_CONFERENCES`, docs assertions, two contract files                                                                                                        | —                        |
+| **M13a**     | **DONE 2026-11-07** — 0012 (guard columns + `alerts`), the poison guard (stamp, reset, park, probation, admin un-park), `/api/health/ingest`, ESPN status counters, the reaper, GitHub-issue alerts; the monitor set up | plan                     |
+| **M13b**     | `*/3` refresh and `1-59/3` settle, leases 2.5 min, tick-relative cadences, live every tick, the weight budget, the discovery tick, `MAX_SETTLE_ATTEMPTS` 480, `job_runs` 600                                            | **M13a merged**          |
+| **M13c**     | 0013, `'ncaab'` and `'nba'` in `LEAGUES`, every `Record`, URLs, windows, pull counting, the shared settlement arm, the postponed rule, the dormant shard switch, samples: **boards visible, betting CLOSED**            | **M13a and M13b merged** |
+| **M13d**     | the per-league board filter with the `top25` default, empty copy, payload check: **betting OPENS** for both                                                                                                             | M13c merged and verified |
 
 ```
 M13-plan ──► M13a ──► M13b ──► M13c ──► M13d

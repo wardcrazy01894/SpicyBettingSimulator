@@ -164,8 +164,15 @@ secrets are set once by hand:
 ```bash
 npx wrangler secret put INVITE_CODE
 npx wrangler secret put IP_HASH_SALT
-npx wrangler secret put GITHUB_TOKEN   # optional: turns on in-app bug reports
+npx wrangler secret put GITHUB_TOKEN   # optional: turns on in-app bug reports and ops alerts
 ```
+
+When something breaks in the background (a refresh killed for CPU, a stuck
+bet, ESPN refusing requests) the app opens an `[alert]` GitHub issue labelled
+`ops-alert` that @mentions the `ALERT_MENTION_LOGIN` account — deduplicated,
+throttled, and closed on its own once the problem has been quiet for 6 hours.
+An external uptime monitor polls `/api/health/ingest`, which answers 503 with
+its reasons when refresh is stale or a slate is parked.
 
 Everything else, from the schema-change policy to what the logs mean, is in
 `docs/OPERATIONS.md`.
