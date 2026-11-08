@@ -363,13 +363,21 @@ async function act(
         },
         ALERT_GITHUB_TIMEOUT_MS,
       );
-      record = () =>
-        env.DB.prepare(
-          `UPDATE alerts SET issue_number = ?2, resolved_at = NULL, pending = MAX(pending - ?3, 0)
-            WHERE fingerprint = ?1`,
-        )
-          .bind(fingerprint, issue.number, sent)
-          .run();
+      record = async () => {
+        try {
+          await env.DB.prepare(
+            `UPDATE alerts SET issue_number = ?2, resolved_at = NULL, pending = MAX(pending - ?3, 0)
+              WHERE fingerprint = ?1`,
+          )
+            .bind(fingerprint, issue.number, sent)
+            .run();
+        } catch (err) {
+          // The operator's handle on the orphan: the issue exists on GitHub
+          // under this number but the row does not know it.
+          console.error('[alert] issue created but not recorded', fingerprint, issue.number);
+          throw err;
+        }
+      };
     } else {
       const number = row.issue_number;
       if (number === null) throw new Error('claimed an alert with no issue');
@@ -411,9 +419,12 @@ async function act(
     return 'failed';
   }
   // The post landed. A failed bookkeeping write must NOT release the claim —
-  // releasing it is the duplicate-issue/-email window — so it is retried once
-  // and otherwise logged with the claim left standing: the throttle holds the
-  // fingerprint until the next successful write catches up.
+  // releasing it is the immediate duplicate-issue/-email window — so it is
+  // retried once and otherwise logged with the claim left standing. No later
+  // write recovers what was lost (a create's issue number, a comment's
+  // pending/comments step), so the residual is a duplicate one
+  // ALERT_COMMENT_INTERVAL_MS later, behind two consecutive D1 failures:
+  // narrowed, not closed (PLAN.md §24.6b "as built").
   try {
     await record();
   } catch (err) {

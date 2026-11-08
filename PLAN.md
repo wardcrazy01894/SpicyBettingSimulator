@@ -8261,9 +8261,11 @@ reading `failures[]` strings.
   `response.json()` failure is bad-json.
 - `IngestTargetResult` gains `espn: string`, one of `'200'`, `'403'`, `'429'`,
   `'5xx'` (any 500–599), `'4xx'` (any other 400–499), `'timeout'`, `'network'`,
-  `'bad-json'`. That is a fixed vocabulary, so the totals are summable.
+  `'bad-json'`, plus `'skipped'` for a target whose guard stamp could not be
+  written and which was therefore never fetched (no alert streak counts it).
+  That is a fixed vocabulary, so the totals are summable.
 - Each refresh run records `stats.espnStatus: Record<string, number>`, one count
-  per target fetched. `recentRuns` (`jobs.ts`) folds a rolling-24h
+  per target claimed. `recentRuns` (`jobs.ts`) folds a rolling-24h
   `dayEspnStatus` into every run's `stats` the way it folds `dayRowsWritten`
   (§8.6). It reads `CASE WHEN json_valid(stats) THEN json_extract(stats,
 '$.espnStatus') END` for refresh runs in the window (≤ 480 tiny JSON strings,
@@ -8485,9 +8487,18 @@ resolved_at = NULL`, guarded on the resolve's own `resolved_at`) so the next
   not; it makes no call.
 - _Call budget._ A create or comment costs 1 of `ALERT_MAX_GITHUB_CALLS_PER_RUN`,
   a reopen or resolve 2; due actions past the budget wait for the next run.
-- _ESPN outcome of a failure before the fetch_ (a stamp that could not be
-  written, or a non-`ProviderError`) counts as `network`; an `unsupported`
-  target kind counts as `4xx`.
+- _A failed guard stamp_ (D1 could not write it) reports the ESPN outcome
+  `'skipped'` and writes NOTHING more: no reschedule, so no earlier strike is
+  erased and `consecutive_failures` does not move; no streak alert counts it;
+  the target is simply still due at the next tick. A non-`ProviderError` fetch
+  failure still counts as `network`, and an `unsupported` target kind as `4xx`.
+- _Only a failed GitHub call releases a claim._ A bookkeeping write that fails
+  AFTER the post landed is retried once and otherwise logged with the claim
+  left standing. No later write recovers what was lost (a create's issue
+  number, a comment's `pending`/`comments` step), so the residual is a
+  duplicate create — or a repeated comment or reopen — one
+  `ALERT_COMMENT_INTERVAL_MS` later, behind two consecutive D1 failures: a
+  narrowed window, not a closed one.
 - _The admin Jobs page_ shows the newest refresh run's `stats.parked` as an
   error banner and the rolling `dayEspnStatus` as one line under it
   (`src/web/lib/ingest-health.ts`).

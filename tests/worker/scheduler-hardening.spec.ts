@@ -405,6 +405,48 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
     expect(await guardRow(b)).toEqual(before);
   });
 
+  it('a stamp that cannot be written fetches nothing, reschedules nothing, and reports skipped', async () => {
+    const a = await insertTarget({ day: 0, nextRunAt: T0 - HOUR });
+    await env.DB.prepare(
+      'UPDATE ingest_targets SET consecutive_failures = 2, incomplete_attempts = 1 WHERE id = ?1',
+    )
+      .bind(a)
+      .run();
+    const before = await env.DB.prepare(
+      'SELECT next_run_at, incomplete_attempts, attempt_started_at, consecutive_failures, last_status FROM ingest_targets WHERE id = ?1',
+    )
+      .bind(a)
+      .first();
+    let fetched = 0;
+    espn.setResponder(keyOf(0), () => {
+      fetched += 1;
+      return Promise.resolve(emptyBoard());
+    });
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    (env.DB as { prepare: typeof env.DB.prepare }).prepare = (sql: string) => {
+      if (sql.includes('incomplete_attempts = incomplete_attempts + 1'))
+        throw new Error('d1 stamp blip');
+      return realPrepare(sql);
+    };
+    try {
+      const result = await ingestTarget(env, new EspnProvider(env, T0), await loadTarget(a), T0);
+      expect(result.espn).toBe('skipped');
+      expect(result.error).toContain('d1 stamp blip');
+      expect(result.rowsWritten).toBe(0);
+    } finally {
+      delete (env.DB as { prepare?: unknown }).prepare;
+    }
+    // Never fetched, and NOTHING written: no reschedule, so the earlier strike
+    // and the failure streak are exactly as they were and the target is still due.
+    expect(fetched).toBe(0);
+    const after = await env.DB.prepare(
+      'SELECT next_run_at, incomplete_attempts, attempt_started_at, consecutive_failures, last_status FROM ingest_targets WHERE id = ?1',
+    )
+      .bind(a)
+      .first();
+    expect(after).toEqual(before);
+  });
+
   it('the provisional backoff doubles per incomplete attempt: 15, 30, then 60 min', async () => {
     const a = await insertTarget({ day: 0 });
     for (const [attempt, minutes] of [

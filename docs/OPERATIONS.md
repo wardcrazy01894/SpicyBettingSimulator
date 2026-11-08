@@ -446,8 +446,9 @@ Two complementary alarms. The code is live from the M13a deploy; the monitor and
 operator steps, done once, the day M13a merges.
 
 **Expect one-time alerts on the first runs after the M13a deploy, and do not read them as a
-regression.** The first refresh reaps every historical `running` row (runs killed before M13a
-existed) into ONE `job-error` issue; an existing `stats.stuck[]` or an exhausted secondary budget
+regression.** Each job's first run reaps its own historical `running` rows (runs killed before
+M13a existed) into one `job-error` issue for that job — up to three issues, `refresh`, `settle`
+and `maintenance`; an existing `stats.stuck[]` or an exhausted secondary budget
 opens its issue on the first settle or refresh. Read them, confirm the @mention email arrived and
 that the `ops-alert` label is on the issue, and close them — that is the recipient check happening
 by itself.
