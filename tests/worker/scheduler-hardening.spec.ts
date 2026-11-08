@@ -7,9 +7,14 @@
 import { describe, it } from 'vitest';
 
 describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
+  it.todo('each target is stamped immediately before ITS OWN fetch, never all at claim time');
   it.todo(
-    'the claim stamps attempt_started_at, incomplete_attempts + 1 and a provisional next_run_at BEFORE the fetch',
+    'a run killed during target 1 leaves target 2 untouched: no increment, no provisional backoff',
   );
+  it.todo(
+    'a target with incomplete_attempts > 0 is never packed behind another target: it runs alone',
+  );
+  it.todo('the success path sets last_ok_at; a target with last_ok_at NULL weighs as big');
   it.todo('the success reschedule resets incomplete_attempts to 0 and attempt_started_at to NULL');
   it.todo(
     'the failure reschedule (ESPN 5xx, timeout, bad JSON, D1 error in upsertSlate) resets them too',
@@ -23,7 +28,7 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
   );
   it.todo('stats.parked lists every parked target');
   it.todo(
-    "withJobRun reaps the job's running rows older than its lease TTL to error, and touches nothing live",
+    'withJobRun reaps running rows older than JOB_REAP_AFTER_MS; a slow live run past its lease is NOT reaped',
   );
   it.todo(
     'NO_LIVE_GAME and the retire rule select exactly what they did before for a NULL conference_id',
@@ -56,6 +61,9 @@ describe('M13a: in-app alerts as GitHub issues (PLAN.md §24.6b)', () => {
   it.todo(
     'two occurrences within ALERT_COMMENT_INTERVAL_MS produce one comment; pending carries over',
   );
+  it.todo('a failed GitHub post loses neither pending nor the comment backoff step');
+  it.todo('settle-stuck is ONE fingerprint for any number of stuck bets');
+  it.todo('d1-rows-near-cap is evaluated on every refresh run in M13a');
   it.todo('the comment interval doubles per comment and caps at ALERT_COMMENT_MAX_INTERVAL_MS');
   it.todo('quiet for ALERT_RESOLVE_AFTER_MS: a closing comment and the issue closed');
   it.todo('a recurrence within ALERT_REOPEN_WINDOW_MS of resolve reopens the SAME issue');

@@ -727,10 +727,11 @@ export const REFRESH_DISCOVERY_EVERY_NTH_TICK = 5;
 
 /**
  * The WEIGHT BUDGET of one refresh run (PLAN.md §24.7, M13b). A target weighs
- * its `ingest_targets.games_seen` from its last completed fetch (an empty slate
- * weighs 1; a never-fetched one weighs this + 1, i.e. "big"). A run always
- * takes its first, most-due target, then adds the next ones in claim order
- * while the summed weight stays at or under this and the count under
+ * its `ingest_targets.games_seen` from its last SUCCESSFUL fetch (an empty
+ * slate weighs 1; one that has never succeeded, `last_ok_at IS NULL`, weighs
+ * this + 1, i.e. "big"). A run always takes its first, most-due target, then
+ * adds the next ones in claim order while the TOTAL weight, the first
+ * target's included, stays at or under this and the count under
  * `REFRESH_TARGETS_PER_RUN`, stopping at the first that does not fit. So an
  * NFL date, an MLB day and an NBA night (each ≤ 16 games) share invocations; a
  * CFB Saturday or a D-I basketball slate always runs alone; and the dormant
@@ -747,6 +748,15 @@ export const REFRESH_WEIGHT_BUDGET = 40;
  * claims ZERO targets still records `ok`, so a quiet 4 AM is not an outage.
  */
 export const HEALTH_STALE_TICKS = 5;
+
+/**
+ * `withJobRun` reaps a job's `running` rows that started longer ago than this
+ * to `error` ("no finish recorded: killed or crashed", PLAN.md §24.4, M13a).
+ * 15 min is Cloudflare's wall-clock ceiling for a cron invocation, so no live
+ * run can be that old. It is deliberately NOT the lease TTL: a slow live run can
+ * outlast its lease, and reaping it would send a false "killed" alert.
+ */
+export const JOB_REAP_AFTER_MS = 15 * 60 * 1000;
 
 /* ---- In-app alerts as GitHub issues (PLAN.md §24.6b, M13a) ---- */
 

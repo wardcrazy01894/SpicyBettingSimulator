@@ -237,11 +237,15 @@ the one failure mode the whole checklist has.
    `GET /api/users/:id/busts`, shown on `/players/:userId`.
    8i. **Scheduler hardening and basketball (M13, PLAN.md §24; PLANNED, so
    nothing below is in the code yet).** What the code must keep once each
-   milestone lands. (0) **A CPU kill is not an exception.** The refresh claim
-   stamps `ingest_targets.incomplete_attempts` BEFORE the fetch, and BOTH
-   reschedule paths reset it. Never move the stamp after the fetch, and never
-   reset the counter anywhere else, or a slate that kills its invocation pins
-   the head of the queue and freezes every league again (§24.3–§24.4). (i)
+   milestone lands. (0) **A CPU kill is not an exception.** Each target's
+   `ingest_targets.incomplete_attempts` is stamped immediately before THAT
+   target's own fetch, never for the whole claim at once, so a kill blames only
+   the target in flight. BOTH reschedule paths reset it. The ONE other sanctioned
+   reset is the admin un-park in `bumpTargetForGame` (§9.3). A target with
+   `incomplete_attempts > 0` runs alone, so a light target cannot be parked for
+   a heavy neighbour's CPU. Never move the stamp after the fetch, and never add
+   another reset, or a slate that kills its invocation pins the head of the
+   queue and freezes every league again (§24.3–§24.4). (i)
    **Every refresh cadence is a whole number of `REFRESH_TICK_MS` ticks from the
    tick's NOMINAL instant** (`scheduledTime`), never `now + N minutes`: the
    alignment trap makes a live slate wait a whole extra tick (§24.7). The
@@ -296,7 +300,7 @@ the one failure mode the whole checklist has.
      pattern) to admit kinds `deposit_refill` and `bust_buyout` — bust
      refills and badge buyouts, rule 8h and PLAN.md §4.5.
      **PLANNED, not written** (the M13 plan PR shipped no migration, PLAN.md
-     §24): `0012_ingest_guard.sql` (M13a: three `ADD COLUMN`s on
+     §24): `0012_ingest_guard.sql` (M13a: four `ADD COLUMN`s on
      `ingest_targets` plus the `alerts` table, no rebuild, §24.4/§24.6b) and
      `0013_basketball_leagues.sql` (M13c: 0009's six-table children-first
      rebuild admitting `'ncaab'` and `'nba'`, each table recreated from its LAST

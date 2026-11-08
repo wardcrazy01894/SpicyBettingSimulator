@@ -181,57 +181,58 @@ section explains the _why_.
   reasons about them, and `tests/unit/docs.spec.ts` fails if the two ever disagree.
   Change the constant and this table in the same PR.
 
-| Constant                              | Value           | Meaning                                                                                                                                                                                              |
-| ------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                                        |
-| `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                                    |
-| `REFILL_DEFAULT_CENTS`                | `100_000`       | what the admin's Refill button proposes for a BUSTED account (any positive amount up to `MAX_PAYOUT_CENTS` may be typed) and the ONLY amount the player's own "Run out of money?" button pays (§4.5) |
-| `BUST_BUYOUT_CENTS`                   | `100_000`       | the price of removing ONE bust badge, paid from the player's own balance, which must be STRICTLY above it (§4.5)                                                                                     |
-| `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                                 |
-| `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                               |
-| `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5)                |
-| `SESSION_TTL_MS`                      | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                                 |
-| `MAX_SETTLE_ATTEMPTS`                 | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                                                                                                                                      |
-| `VOID_AFTER_MS`                       | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                                              |
-| `MAX_PARLAY_LEGS`                     | `25`            | DraftKings' parlay limit; also `CHECK(leg_count BETWEEN 1 AND 25)` on `bets` (10 until migration 0010, §16.2)                                                                                        |
-| `MIN_TEASER_LEGS`                     | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                                        |
-| `MAX_TEASER_LEGS`                     | `10`            | the teaser card's width (§5.8), below `MAX_PARLAY_LEGS`; also `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` on `bets` (0010)                                                                     |
-| `NFL_WEEK_ROLLOVER_ET_HOUR`           | `20`            | Sunday 20:00 ET: the NFL board rolls over to next week's Monday (§22)                                                                                                                                |
-| `NCAAF_WEEK_ROLLOVER_ET_HOUR`         | `0`             | Sunday 00:00 ET: the CFB board rolls over to next week's Monday (§22)                                                                                                                                |
-| `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` | `300`           | 30.0 pt: past this a missing moneyline is normal, not a gap — the UI hint and the sweep rule (§21.2)                                                                                                 |
-| `SECONDARY_RETRY_MS`                  | `14_400_000`    | 4 h before the secondary re-attempts a game it could not fill (§21.5)                                                                                                                                |
-| `SECONDARY_RESWEEP_MARGIN_MS`         | `2_700_000`     | re-confirm a secondary fill this long before its staleness window closes (§21.5)                                                                                                                     |
-| `SECONDARY_MIN_SWEEP_INTERVAL_MS`     | `7_200_000`     | floor between two sweeps of the SAME league; the blast-radius limiter (§21.5)                                                                                                                        |
-| `SECONDARY_MATCH_WINDOW_MS`           | `5_400_000`     | kickoff tolerance of the mascot fallback matcher (§21.7)                                                                                                                                             |
-| `ODDS_API_MONTHLY_CREDITS`            | `500`           | the free tier's monthly allowance; also the literal 0007 seeds (§21.3)                                                                                                                               |
-| `ODDS_API_COST_PER_SWEEP`             | `3`             | credits one league sweep costs: markets (3) × regions (1), MEASURED (§21.5)                                                                                                                          |
-| `ODDS_API_CREDIT_RESERVE`             | `25`            | sweeping stops below this — a cushion for debit drift, not for the probe, which is FREE (§21.5)                                                                                                      |
-| `ODDS_API_BUDGET_PROBE_MS`            | `86_400_000`    | while the reserve blocks, one FREE `GET /v4/sports` a day to notice the monthly reset (§21.5)                                                                                                        |
-| `ODDS_API_COOLDOWN_MS`                | `3_600_000`     | first cooldown after a 429 or a transport failure (§21.9)                                                                                                                                            |
-| `ODDS_API_COOLDOWN_MAX_MS`            | `28_800_000`    | ceiling on the doubling of that cooldown across consecutive failures (§21.9)                                                                                                                         |
-| `ODDS_API_TIMEOUT_MS`                 | `8_000`         | request timeout, same as ESPN's; a slow provider must not eat the CPU budget (§21.6)                                                                                                                 |
-| `MLB_OFFICIAL_INNINGS`                | `5`             | a FINAL MLB game shorter than this was never official: EVERY market void, totals included (§23.6) — read from M12b                                                                                   |
-| `MLB_REGULATION_INNINGS`              | `9`             | a FINAL MLB game this long (extras included) grades every market; shorter, only the moneyline and a decided total have action (§23.6) — read from M12b                                               |
-| `MLB_POSTPONED_CONFIRM_MS`            | `10_800_000`    | 3 h after its ET day ends, a fetch still saying "postponed" is the evidence that voids an MLB game (§23.7) — read from M12b                                                                          |
-| `INGEST_MAX_INCOMPLETE_ATTEMPTS`      | `3`             | consecutive refresh attempts that never reached a reschedule (a CPU kill) before a target is PARKED (§24.4) — read from M13a                                                                         |
-| `INGEST_PARKED_RETRY_MS`              | `21_600_000`    | 6 h: a parked target gets ONE probation attempt after this long; killed again, it re-parks at once (§24.4) — read from M13a                                                                          |
-| `HEALTH_STALE_TICKS`                  | `5`             | refresh periods without a refresh run recorded `ok` before `GET /api/health/ingest` answers 503: 15 min at the 3-min tick (§24.5) — read from M13a                                                   |
-| `REFRESH_TICK_MS`                     | `180_000`       | the refresh tick FROM M13b (`*/3`, 480 runs a day); every cadence is a multiple of it, measured from the tick's NOMINAL instant (§24.7). The deployed cron is `*/15` until then — read from M13b     |
-| `REFRESH_LIVE_TICKS`                  | `1`             | a slate with a game live (or within 3 h) is due at the NEXT tick, every league; the write budget's retreat lever (§24.7, §24.13) — read from M13b                                                    |
-| `REFRESH_SOON_TICKS`                  | `20`            | 60 min: a slate with a kickoff within 48 h (§24.7) — read from M13b                                                                                                                                  |
-| `REFRESH_DISCOVERY_TICKS`             | `120`           | 6 h: line discovery (§24.7) — read from M13b                                                                                                                                                         |
-| `REFRESH_BACKOFF_BASE_TICKS`          | `5`             | 15 min: failure backoff base (doubling, capped at 6 h) and the poison guard's provisional reschedule (§24.4) — read from M13a/M13b                                                                   |
-| `REFRESH_DISCOVERY_EVERY_NTH_TICK`    | `5`             | every fifth tick (:00 :15 :30 :45, 96 a day) claims a non-live target first: discovery's reservation in time (§24.7) — read from M13b                                                                |
-| `REFRESH_WEIGHT_BUDGET`               | `40`            | games one refresh run may carry beyond its first target: NFL, MLB and NBA slates share a run, a CFB or D-I basketball slate runs alone (§24.7) — read from M13b                                      |
-| `NCAAB_BOARD_ET_DAYS`                 | `3`             | college basketball's board and ingest window: today and the next two ET dates, so games are seen while ESPN still sends their conference (§24.2) — read from M13c                                    |
-| `NBA_BOARD_ET_DAYS`                   | `2`             | the NBA's board and ingest window: today and tomorrow, because NBA lines are posted a day ahead (§24.2) — read from M13c                                                                             |
-| `ALERT_COMMENT_INTERVAL_MS`           | `3_600_000`     | 1 h: the FIRST interval between comments on an open alert issue; it doubles per comment (§24.6b) — read from M13a                                                                                    |
-| `ALERT_COMMENT_MAX_INTERVAL_MS`       | `86_400_000`    | 24 h: the ceiling of that doubling, so at most one comment email a day per alert (§24.6b) — read from M13a                                                                                           |
-| `ALERT_RESOLVE_AFTER_MS`              | `21_600_000`    | 6 h without the condition firing → closing comment, issue closed (§24.6b) — read from M13a                                                                                                           |
-| `ALERT_REOPEN_WINDOW_MS`              | `86_400_000`    | 24 h: a recurrence after resolve within this REOPENS the same issue; later, a new one (§24.6b) — read from M13a                                                                                      |
-| `ALERT_D1_ROWS_NEAR_CAP`              | `60_000`        | rolling-24h `dayRowsWritten` that fires `d1-rows-near-cap`, the write-budget retreat trigger (§24.13) — read from M13a                                                                               |
-| `ALERT_MAX_GITHUB_CALLS_PER_RUN`      | `2`             | GitHub subrequests one job run may spend on alerts (§24.6b) — read from M13a                                                                                                                         |
-| `ALERT_GITHUB_TIMEOUT_MS`             | `10_000`        | per alert call; a failure is logged and never fails the job (§24.6b) — read from M13a                                                                                                                |
+| Constant                              | Value           | Meaning                                                                                                                                                                                                                                                                                      |
+| ------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INITIAL_BANKROLL_CENTS`              | `100_000`       | $1,000, deposited once per ACCOUNT in the signup batch (§4.4)                                                                                                                                                                                                                                |
+| `MIN_STAKE_CENTS`                     | `100`           | $1.00; also `CHECK(stake_cents >= 100)` on `bets`                                                                                                                                                                                                                                            |
+| `REFILL_DEFAULT_CENTS`                | `100_000`       | what the admin's Refill button proposes for a BUSTED account (any positive amount up to `MAX_PAYOUT_CENTS` may be typed) and the ONLY amount the player's own "Run out of money?" button pays (§4.5)                                                                                         |
+| `BUST_BUYOUT_CENTS`                   | `100_000`       | the price of removing ONE bust badge, paid from the player's own balance, which must be STRICTLY above it (§4.5)                                                                                                                                                                             |
+| `MAX_PAYOUT_CENTS`                    | `100_000_000`   | $1,000,000 payout cap; also the float-proof on money columns (§5.2b)                                                                                                                                                                                                                         |
+| `BET_CUTOFF_BUFFER_MS`                | `60_000`        | betting closes 1 min before the stored kickoff (§14.1)                                                                                                                                                                                                                                       |
+| `LINE_STALE_MS`                       | `10_800_000`    | FLOOR of the staleness window: 3 h since `game_lines.seen_at` → not bettable; the window is `max(this, 3 × the game's refresh cadence)`, so 18 h for a game more than 48 h out (§8.5)                                                                                                        |
+| `SESSION_TTL_MS`                      | `2_592_000_000` | 30 d cookie/session lifetime (§10.5)                                                                                                                                                                                                                                                         |
+| `MAX_SETTLE_ATTEMPTS`                 | `96`            | 24 h at the 15-min settle cadence before a bet is parked (§7.1)                                                                                                                                                                                                                              |
+| `VOID_AFTER_MS`                       | `604_800_000`   | 7 d past ORIGINAL kickoff → a postponed/vanished game auto-voids (§7.5)                                                                                                                                                                                                                      |
+| `MAX_PARLAY_LEGS`                     | `25`            | DraftKings' parlay limit; also `CHECK(leg_count BETWEEN 1 AND 25)` on `bets` (10 until migration 0010, §16.2)                                                                                                                                                                                |
+| `MIN_TEASER_LEGS`                     | `2`             | a teaser is a parlay shape — one leg is never a teaser (§5.8)                                                                                                                                                                                                                                |
+| `MAX_TEASER_LEGS`                     | `10`            | the teaser card's width (§5.8), below `MAX_PARLAY_LEGS`; also `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` on `bets` (0010)                                                                                                                                                             |
+| `NFL_WEEK_ROLLOVER_ET_HOUR`           | `20`            | Sunday 20:00 ET: the NFL board rolls over to next week's Monday (§22)                                                                                                                                                                                                                        |
+| `NCAAF_WEEK_ROLLOVER_ET_HOUR`         | `0`             | Sunday 00:00 ET: the CFB board rolls over to next week's Monday (§22)                                                                                                                                                                                                                        |
+| `MONEYLINE_NOT_OFFERED_SPREAD_TENTHS` | `300`           | 30.0 pt: past this a missing moneyline is normal, not a gap — the UI hint and the sweep rule (§21.2)                                                                                                                                                                                         |
+| `SECONDARY_RETRY_MS`                  | `14_400_000`    | 4 h before the secondary re-attempts a game it could not fill (§21.5)                                                                                                                                                                                                                        |
+| `SECONDARY_RESWEEP_MARGIN_MS`         | `2_700_000`     | re-confirm a secondary fill this long before its staleness window closes (§21.5)                                                                                                                                                                                                             |
+| `SECONDARY_MIN_SWEEP_INTERVAL_MS`     | `7_200_000`     | floor between two sweeps of the SAME league; the blast-radius limiter (§21.5)                                                                                                                                                                                                                |
+| `SECONDARY_MATCH_WINDOW_MS`           | `5_400_000`     | kickoff tolerance of the mascot fallback matcher (§21.7)                                                                                                                                                                                                                                     |
+| `ODDS_API_MONTHLY_CREDITS`            | `500`           | the free tier's monthly allowance; also the literal 0007 seeds (§21.3)                                                                                                                                                                                                                       |
+| `ODDS_API_COST_PER_SWEEP`             | `3`             | credits one league sweep costs: markets (3) × regions (1), MEASURED (§21.5)                                                                                                                                                                                                                  |
+| `ODDS_API_CREDIT_RESERVE`             | `25`            | sweeping stops below this — a cushion for debit drift, not for the probe, which is FREE (§21.5)                                                                                                                                                                                              |
+| `ODDS_API_BUDGET_PROBE_MS`            | `86_400_000`    | while the reserve blocks, one FREE `GET /v4/sports` a day to notice the monthly reset (§21.5)                                                                                                                                                                                                |
+| `ODDS_API_COOLDOWN_MS`                | `3_600_000`     | first cooldown after a 429 or a transport failure (§21.9)                                                                                                                                                                                                                                    |
+| `ODDS_API_COOLDOWN_MAX_MS`            | `28_800_000`    | ceiling on the doubling of that cooldown across consecutive failures (§21.9)                                                                                                                                                                                                                 |
+| `ODDS_API_TIMEOUT_MS`                 | `8_000`         | request timeout, same as ESPN's; a slow provider must not eat the CPU budget (§21.6)                                                                                                                                                                                                         |
+| `MLB_OFFICIAL_INNINGS`                | `5`             | a FINAL MLB game shorter than this was never official: EVERY market void, totals included (§23.6) — read from M12b                                                                                                                                                                           |
+| `MLB_REGULATION_INNINGS`              | `9`             | a FINAL MLB game this long (extras included) grades every market; shorter, only the moneyline and a decided total have action (§23.6) — read from M12b                                                                                                                                       |
+| `MLB_POSTPONED_CONFIRM_MS`            | `10_800_000`    | 3 h after its ET day ends, a fetch still saying "postponed" is the evidence that voids an MLB game (§23.7) — read from M12b                                                                                                                                                                  |
+| `INGEST_MAX_INCOMPLETE_ATTEMPTS`      | `3`             | consecutive refresh attempts that never reached a reschedule (a CPU kill) before a target is PARKED (§24.4) — read from M13a                                                                                                                                                                 |
+| `INGEST_PARKED_RETRY_MS`              | `21_600_000`    | 6 h: a parked target gets ONE probation attempt after this long; killed again, it re-parks at once (§24.4) — read from M13a                                                                                                                                                                  |
+| `HEALTH_STALE_TICKS`                  | `5`             | refresh periods without a refresh run recorded `ok` before `GET /api/health/ingest` answers 503: 15 min at the 3-min tick (§24.5) — read from M13a                                                                                                                                           |
+| `REFRESH_TICK_MS`                     | `180_000`       | the refresh tick FROM M13b (`*/3`, 480 runs a day); every cadence is a multiple of it, measured from the tick's NOMINAL instant (§24.7). The deployed cron is `*/15` until then — read from M13b                                                                                             |
+| `REFRESH_LIVE_TICKS`                  | `1`             | a slate with a game live (or within 3 h) is due at the NEXT tick, every league; the write budget's retreat lever (§24.7, §24.13) — read from M13b                                                                                                                                            |
+| `REFRESH_SOON_TICKS`                  | `20`            | 60 min: a slate with a kickoff within 48 h (§24.7) — read from M13b                                                                                                                                                                                                                          |
+| `REFRESH_DISCOVERY_TICKS`             | `120`           | 6 h: line discovery (§24.7) — read from M13b                                                                                                                                                                                                                                                 |
+| `REFRESH_BACKOFF_BASE_TICKS`          | `5`             | 15 min: failure backoff base (doubling, capped at 6 h) and the poison guard's provisional reschedule (§24.4) — read from M13a/M13b                                                                                                                                                           |
+| `REFRESH_DISCOVERY_EVERY_NTH_TICK`    | `5`             | every fifth tick (:00 :15 :30 :45, 96 a day) claims a non-live target first: discovery's reservation in time (§24.7) — read from M13b                                                                                                                                                        |
+| `REFRESH_WEIGHT_BUDGET`               | `40`            | the most games one refresh run may carry IN TOTAL, the first target's weight included. The first target always runs, even if it alone exceeds this, and then nothing joins it. So NFL, MLB and NBA slates share a run, and a CFB or D-I basketball slate runs alone (§24.7) — read from M13b |
+| `NCAAB_BOARD_ET_DAYS`                 | `3`             | college basketball's board and ingest window: today and the next two ET dates, so games are seen while ESPN still sends their conference (§24.2) — read from M13c                                                                                                                            |
+| `NBA_BOARD_ET_DAYS`                   | `2`             | the NBA's board and ingest window: today and tomorrow, because NBA lines are posted a day ahead (§24.2) — read from M13c                                                                                                                                                                     |
+| `JOB_REAP_AFTER_MS`                   | `900_000`       | 15 min, Cloudflare's cron wall-clock ceiling: a `running` `job_runs` row older than this is reaped to `error` as killed. Deliberately NOT the lease TTL, which a slow live run may outlast (§24.4) — read from M13a                                                                          |
+| `ALERT_COMMENT_INTERVAL_MS`           | `3_600_000`     | 1 h: the FIRST interval between comments on an open alert issue; it doubles per comment (§24.6b) — read from M13a                                                                                                                                                                            |
+| `ALERT_COMMENT_MAX_INTERVAL_MS`       | `86_400_000`    | 24 h: the ceiling of that doubling, so at most one comment email a day per alert (§24.6b) — read from M13a                                                                                                                                                                                   |
+| `ALERT_RESOLVE_AFTER_MS`              | `21_600_000`    | 6 h without the condition firing → closing comment, issue closed (§24.6b) — read from M13a                                                                                                                                                                                                   |
+| `ALERT_REOPEN_WINDOW_MS`              | `86_400_000`    | 24 h: a recurrence after resolve within this REOPENS the same issue; later, a new one (§24.6b) — read from M13a                                                                                                                                                                              |
+| `ALERT_D1_ROWS_NEAR_CAP`              | `60_000`        | rolling-24h `dayRowsWritten` that fires `d1-rows-near-cap`, the write-budget retreat trigger (§24.13) — read from M13a                                                                                                                                                                       |
+| `ALERT_MAX_GITHUB_CALLS_PER_RUN`      | `2`             | GitHub subrequests one job run may spend on alerts (§24.6b) — read from M13a                                                                                                                                                                                                                 |
+| `ALERT_GITHUB_TIMEOUT_MS`             | `10_000`        | per alert call; a failure is logged and never fails the job (§24.6b) — read from M13a                                                                                                                                                                                                        |
 
 `TEASER_POINTS_TENTHS = [30, 40, 50, 60, 65, 70, 80, 90, 100, 110, 120, 130, 140]`
 — the 3-to-14-point tiers (plus 6.5), in TENTHS, matching every other line
@@ -2165,8 +2166,9 @@ more when small slates share a run under the weight budget (≤ 5 per
 invocation). §24.13 re-derives the rows-written budget for a live-every-tick
 cadence plus a 155-game college basketball Saturday and the NBA: **≈ 40–45k
 rows on the worst day, ≈ 45% of the hard cap**, against ≈ 5,100 today, with
-`REFRESH_LIVE_TICKS` as the one-line retreat. That is **≤ 2 external subrequests per invocation** against a limit of 50,
-and well under the "< 20 calls/run" goal.
+`REFRESH_LIVE_TICKS` as the one-line retreat. Today that is **≤ 2 external
+subrequests per invocation** (≤ 5 from M13b, plus ≤ 2 alert calls, §24.6b) against
+a limit of 50, and well under the "< 20 calls/run" goal.
 
 **Rows written.** This is the one that can actually break the app, so it is
 budgeted from the worst real day rather than an average, and an earlier draft's
@@ -3958,9 +3960,11 @@ Two things follow from the deploy having happened:
   three must move together.
 - **Spike S1 is MEASURED (2026-11-07); S2 is still UNMEASURED, not blocked**
   (§18). S1 read 30–34 ms of CPU on refresh runs that finished `ok`, against a
-  documented 10 ms. The cliff is somewhere above that and unknown, which is
-  what M13a's guard is for (§24.3). `REFRESH_TARGETS_PER_RUN` stays at 2 until
-  M13b lowers it to 1 (§24.7), and `SETTLE_CHUNK` stays at 20 until S2 is read.
+  documented 10 ms. The cliff is not at 10 ms and its location is unknown (two
+  passing runs do not prove every 34 ms run passes), which is what M13a's guard
+  is for (§24.3). `REFRESH_TARGETS_PER_RUN` stays at 2 until M13b turns it into
+  a COUNT cap of 5 under the per-run weight budget (§24.7), and `SETTLE_CHUNK`
+  stays at 20 until S2 is read.
   S3 and S4(a)/(b) are resolved. The one item still genuinely blocked on the
   calendar is **S4(c)**, the January postseason reachability check, which is
   also a `docs/OPERATIONS.md` runbook item.
@@ -4683,21 +4687,21 @@ ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
 
 ## 17. Risks and mitigations
 
-| #   | Risk                                                                                                            | Likelihood    | Impact                                                                                                                                                                | Mitigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| --- | --------------------------------------------------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| R1  | CPU limit exceeded on a large slate (an 86-game CFB Saturday; from M13c a 155-game college basketball Saturday) | **Medium**    | **Before M13a: one killed slate freezes EVERY league** (the poison target, §24.3). After M13a: that slate is parked and alerted, and every other league keeps flowing | **Superseded premise**: "10 ms blown = ingest fails" was wrong both ways. S1 MEASURED 30–34 ms on refresh runs that finished `ok` (§18), so the cliff is somewhere above that and UNKNOWN. Mitigation is to make a kill survivable and visible rather than to stay under an unknown line: M13a's stamp + park + probation guard (§24.4), `/api/health/ingest` + an external monitor (§24.5) and GitHub-issue alerts (§24.6b), and M13b's weight budget, under which a big slate always runs alone (§24.7). **Ladder, if a slate keeps parking**: (1) in-memory compare-skip, i.e. read the slate's current rows and bind statements only for changed games (the SQL guards stay, so this is an optimisation, not a read-then-write guard); (2) **flip the pre-sized per-conference switch for `ncaab`** (§24.8): exit criterion is a parked D-I target or an `exceededCpu` outcome, each conference is then refreshed every ~4 ticks (~12 min) instead of every tick, ESPN requests rise to ~1,750 on a big Saturday and reschedule rows by ~5,600; (3) drop `display_clock` from the compare tuple; (4) Workers Paid, which needs Alex's sign-off (§19 Q1). |
-| R2  | ESPN changes the payload shape or rate-limits us                                                                | Medium        | Stale lines/scores                                                                                                                                                    | Total parser, warnings surfaced, backoff, existing rows never corrupted. Provider adapter means a swap to The Odds API is a new file, not a rewrite.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| R3  | D1 "queries per invocation" is really 50 and a batch counts per-statement                                       | Medium        | Settlement throws mid-run                                                                                                                                             | Chunk at 20 bets; the job is safely resumable so a throw just defers work 15 min. Spike S2 confirms before raising.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| R4  | ESPN never posts a line for a CFB game users want to bet                                                        | High (normal) | UX confusion                                                                                                                                                          | `lines: null` is a first-class rendered state ("line not posted"), not an error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| R5  | A friend finds a way to bet after kickoff                                                                       | Low           | Game integrity                                                                                                                                                        | The guard is a DB-level `WHERE` inside the insert batch, plus a 60 s buffer, plus `status='scheduled'`. Tested.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| R6  | Client-side KDF feels slow / breaks on an old phone                                                             | Low           | Login friction                                                                                                                                                        | 210k iterations ≈ 300 ms on a modern phone; `CLIENT_KDF.iterations` is a versioned constant and §10.4 describes the migration path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| R7  | Free-tier D1 **write** budget exceeded on a big Saturday                                                        | **Medium**    | **D1 returns errors for the rest of the UTC day — this blocks BET PLACEMENT and SETTLEMENT, not just the board.** Hard-enforced since 2026-09-01.                     | Naive design measured ≈ **48,500 rows/day** on a CFB Saturday (49% of cap, with Sunday still to come). Levers are **v1 requirements**, not future work (§8.5): L1 compare-and-skip, **L1b the A/B split** — without which L1 buys NOTHING for a live game, because `display_clock` moves every refresh (measured: 33,196 rows for 86 games × 96 refreshes even WITH L1) — L2 no line writes for non-scheduled games (0 of 84 started games carry odds), L3 touch intervals. **Measured** after the split: **2,979 rows** for that Saturday's ingest, ≈ 5,100/day all in (5% of cap). `job_runs.stats.rowsWritten` is recorded per run, `GET /api/admin/jobs` surfaces a rolling-24h `dayRowsWritten`, and `ingest.spec.ts` asserts < 5,000 rows for 96 refreshes of the sample Saturday with the clock moving every time. Next knob if tight: drop `display_clock` from the compare tuple (~1,200 rows).                                                                                                                                                                                                                                                     |
-| R11 | A money or price value silently becomes a float in D1                                                           | Low (now)     | Unauditable cents; violates the project's first rule                                                                                                                  | SQLite `INTEGER` coerces >i64 to `REAL` (verified) and `bind()` truncates past 2^53. Mitigated structurally: **no rational is persisted** (§5.2), every money column is `CHECK`-bounded to `MAX_PAYOUT_CENTS`, leg prices are `CHECK abs(...) BETWEEN 100 AND 100000`, and eslint bans `Math.round/floor/ceil/trunc` and `parseFloat` in `src/shared` and `src/worker`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| R12 | Settlement queue starved by undecidable bets                                                                    | Low           | Nothing settles at all                                                                                                                                                | `bets.settle_attempts` + `ORDER BY settle_attempts ASC` + `MAX_SETTLE_ATTEMPTS` (§7.1). Columns added before the schema freeze.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| R13 | An `INSERT OR IGNORE` into `ledger` silently breaks `SUM(ledger) = balance`                                     | Low           | Unrepairable drift in an append-only table                                                                                                                            | the two `ledger_bi_*` `BEFORE INSERT` triggers — `RAISE(ABORT)` is not suppressible by `OR IGNORE` (verified both ways), and they raise distinct messages so an orphan-bankroll bug is not misreported to the user as insufficient funds. Plus a CLAUDE.md house rule and four named tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| R8  | Someone deletes/rewrites `migrations/0001_init.sql` after deploy                                                | Low           | Divergent prod schema                                                                                                                                                 | Frozen-after-M1 rule (§16) + `wrangler d1 migrations` tracking table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| R9  | ESPN rate limits / blocks the Worker IP range                                                                   | Low           | Total ingest outage                                                                                                                                                   | Backoff + admin visibility; manual `refresh` trigger; documented fallback to The Odds API free tier (500 req/mo is enough at our cadence).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| R10 | Bet slip localStorage holds a stale line and the user is surprised                                              | Medium        | Trust                                                                                                                                                                 | `expected` + `409 LINE_CHANGED` + explicit "accept line change" confirm (§11.4).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| #   | Risk                                                                                                            | Likelihood    | Impact                                                                                                                                                                | Mitigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --- | --------------------------------------------------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  | CPU limit exceeded on a large slate (an 86-game CFB Saturday; from M13c a 155-game college basketball Saturday) | **Medium**    | **Before M13a: one killed slate freezes EVERY league** (the poison target, §24.3). After M13a: that slate is parked and alerted, and every other league keeps flowing | **Superseded premise**: "10 ms blown = ingest fails" was wrong both ways. S1 MEASURED 30–34 ms on refresh runs that finished `ok` (§18), so the cliff is not at 10 ms and its location is UNKNOWN (two passing runs do not prove every such run passes). Mitigation is to make a kill survivable and visible rather than to stay under an unknown line: M13a's stamp + park + probation guard (§24.4), `/api/health/ingest` + an external monitor (§24.5) and GitHub-issue alerts (§24.6b), and M13b's weight budget, under which a big slate always runs alone (§24.7). **Ladder, if a slate keeps parking**: (1) in-memory compare-skip, i.e. read the slate's current rows and bind statements only for changed games (the SQL guards stay, so this is an optimisation, not a read-then-write guard); (2) **flip the pre-sized per-conference switch for `ncaab`** (§24.8): exit criterion is a parked D-I target or an `exceededCpu` outcome, each conference is then refreshed every ~4 ticks (~12 min) instead of every tick, ESPN requests rise to ~1,750 on a big Saturday and reschedule rows by ~5,600; (3) drop `display_clock` from the compare tuple; (4) Workers Paid, which needs Alex's sign-off (§19 Q1). |
+| R2  | ESPN changes the payload shape or rate-limits us                                                                | Medium        | Stale lines/scores                                                                                                                                                    | Total parser, warnings surfaced, backoff, existing rows never corrupted. Provider adapter means a swap to The Odds API is a new file, not a rewrite.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| R3  | D1 "queries per invocation" is really 50 and a batch counts per-statement                                       | Medium        | Settlement throws mid-run                                                                                                                                             | Chunk at 20 bets; the job is safely resumable so a throw just defers work 15 min. Spike S2 confirms before raising.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| R4  | ESPN never posts a line for a CFB game users want to bet                                                        | High (normal) | UX confusion                                                                                                                                                          | `lines: null` is a first-class rendered state ("line not posted"), not an error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| R5  | A friend finds a way to bet after kickoff                                                                       | Low           | Game integrity                                                                                                                                                        | The guard is a DB-level `WHERE` inside the insert batch, plus a 60 s buffer, plus `status='scheduled'`. Tested.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| R6  | Client-side KDF feels slow / breaks on an old phone                                                             | Low           | Login friction                                                                                                                                                        | 210k iterations ≈ 300 ms on a modern phone; `CLIENT_KDF.iterations` is a versioned constant and §10.4 describes the migration path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| R7  | Free-tier D1 **write** budget exceeded on a big Saturday                                                        | **Medium**    | **D1 returns errors for the rest of the UTC day — this blocks BET PLACEMENT and SETTLEMENT, not just the board.** Hard-enforced since 2026-09-01.                     | Naive design measured ≈ **48,500 rows/day** on a CFB Saturday (49% of cap, with Sunday still to come). Levers are **v1 requirements**, not future work (§8.5): L1 compare-and-skip, **L1b the A/B split** — without which L1 buys NOTHING for a live game, because `display_clock` moves every refresh (measured: 33,196 rows for 86 games × 96 refreshes even WITH L1) — L2 no line writes for non-scheduled games (0 of 84 started games carry odds), L3 touch intervals. **Measured** after the split: **2,979 rows** for that Saturday's ingest, ≈ 5,100/day all in (5% of cap). `job_runs.stats.rowsWritten` is recorded per run, `GET /api/admin/jobs` surfaces a rolling-24h `dayRowsWritten`, and `ingest.spec.ts` asserts < 5,000 rows for 96 refreshes of the sample Saturday with the clock moving every time. Next knob if tight: drop `display_clock` from the compare tuple (~1,200 rows).                                                                                                                                                                                                                                                                                                                   |
+| R11 | A money or price value silently becomes a float in D1                                                           | Low (now)     | Unauditable cents; violates the project's first rule                                                                                                                  | SQLite `INTEGER` coerces >i64 to `REAL` (verified) and `bind()` truncates past 2^53. Mitigated structurally: **no rational is persisted** (§5.2), every money column is `CHECK`-bounded to `MAX_PAYOUT_CENTS`, leg prices are `CHECK abs(...) BETWEEN 100 AND 100000`, and eslint bans `Math.round/floor/ceil/trunc` and `parseFloat` in `src/shared` and `src/worker`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| R12 | Settlement queue starved by undecidable bets                                                                    | Low           | Nothing settles at all                                                                                                                                                | `bets.settle_attempts` + `ORDER BY settle_attempts ASC` + `MAX_SETTLE_ATTEMPTS` (§7.1). Columns added before the schema freeze.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| R13 | An `INSERT OR IGNORE` into `ledger` silently breaks `SUM(ledger) = balance`                                     | Low           | Unrepairable drift in an append-only table                                                                                                                            | the two `ledger_bi_*` `BEFORE INSERT` triggers — `RAISE(ABORT)` is not suppressible by `OR IGNORE` (verified both ways), and they raise distinct messages so an orphan-bankroll bug is not misreported to the user as insufficient funds. Plus a CLAUDE.md house rule and four named tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| R8  | Someone deletes/rewrites `migrations/0001_init.sql` after deploy                                                | Low           | Divergent prod schema                                                                                                                                                 | Frozen-after-M1 rule (§16) + `wrangler d1 migrations` tracking table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| R9  | ESPN rate limits / blocks the Worker IP range                                                                   | Low           | Total ingest outage                                                                                                                                                   | Backoff + admin visibility; manual `refresh` trigger; documented fallback to The Odds API free tier (500 req/mo is enough at our cadence).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| R10 | Bet slip localStorage holds a stale line and the user is surprised                                              | Medium        | Trust                                                                                                                                                                 | `expected` + `409 LINE_CHANGED` + explicit "accept line change" confirm (§11.4).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ---
 
@@ -7906,9 +7910,11 @@ NBA captures are listed in §24.10. College:
 
 - `espn-ncaab-scoreboard-2026-11-07.json`: 61 events, 48 priced, including the
   `"OFF"` moneyline and every team's `conferenceId` (a morning capture);
-- `espn-ncaab-scoreboard-2026-11-07-evening.json`: the same date live and
-  final, with no `conferenceId` anywhere. This is the game-day fact as a
-  fixture.
+- the evening capture of the same date (live and final, no `conferenceId`
+  anywhere, ~980 KB) is **not committed** either, by the owner's decision
+  (2026-11-07): the 1 MB opening-day capture is THE committed college sample.
+  The game-day fact is tested by stripping `conferenceId` from that capture in
+  the test itself, which is what the evening payload amounts to for the parser.
 - The 155-event Saturday (`dates=20260207`, 2.83 MB) is **not committed**. It
   would raise the committed samples from ~4.5 MB to ~7.3 MB to prove one number
   (the 155-event parse cost, already recorded in §24.3). M13c's write-budget test
@@ -7987,17 +7993,25 @@ file also creates §24.6b's `alerts` table):
 -- and the alerts table (PLAN.md §24.6b; its CREATE TABLE follows these ALTERs)
 -- D1 (SQLite). A new file, never an edit to 0001 (CLAUDE.md rule 9, PLAN.md §16.1).
 --
--- attempt_started_at / incomplete_attempts: stamped BEFORE the fetch, reset by
--- BOTH reschedule paths, so only a run killed in between leaves them raised.
--- PLAN.md §24.4. conference_id: NULL for every target the planner emits today;
--- the scoping SQL that reads it is PLAN.md §24.8.
+-- attempt_started_at / incomplete_attempts: stamped immediately before THAT
+-- target's own fetch, reset by BOTH reschedule paths, so only the target in
+-- flight when a run is killed is left raised. PLAN.md §24.4.
+-- last_ok_at: written by the success path only; NULL = size unknown (§24.7).
+-- conference_id: NULL for every target the planner emits today; the scoping SQL
+-- that reads it is PLAN.md §24.8.
 ALTER TABLE ingest_targets ADD COLUMN attempt_started_at  INTEGER;
 ALTER TABLE ingest_targets ADD COLUMN incomplete_attempts INTEGER NOT NULL DEFAULT 0
   CHECK (incomplete_attempts >= 0);
+ALTER TABLE ingest_targets ADD COLUMN last_ok_at          INTEGER;
 ALTER TABLE ingest_targets ADD COLUMN conference_id       TEXT;
 ```
 
-**The stamp**: one `UPDATE`, issued right after the claim and before the fetch,
+**The stamp**: one `UPDATE` per target, issued **immediately before THAT
+target's own fetch**, never for the whole claim at once. A run processes its
+targets sequentially, so when an invocation dies, exactly one target is in
+flight, and only that one is blamed. A target later in the run that never
+started is untouched: no increment and no provisional backoff. So innocent
+targets cannot be parked in lock-step with the poisonous one. All of it happens
 under the refresh lease, which is what makes claim-then-stamp race-free (§9.2):
 
 ```sql
@@ -8011,9 +8025,11 @@ UPDATE ingest_targets
 
 `:provisionalNext` is `base + min(REFRESH_BACKOFF_BASE_TICKS × 2^incomplete_attempts,
 REFRESH_DISCOVERY_TICKS) × REFRESH_TICK_MS`, computed in code from the claimed
-row and measured from the tick's nominal instant (§24.7): 15, 30, then 60 min.
-M13a, which ships before the tick changes, uses the same formula with its 15-min
-period. It is a provisional reschedule. A completed run overwrites it, so it
+row and measured from the tick's nominal instant (§24.7): **15, 30, then 60 min**,
+in M13a as in M13b. The formula reads constants, not the cron: `REFRESH_BACKOFF_BASE_TICKS
+× REFRESH_TICK_MS` is 15 min whatever cron is deployed. Under M13a's `*/15` cron
+the base is the 15-minute tick's `scheduledTime`, so the values land exactly on
+15-minute ticks. It is a provisional reschedule. A completed run overwrites it, so it
 changes nothing for a healthy target. A killed one falls BEHIND the other due
 targets instead of winning the very next tick, so three kills take at least
 45 minutes and do not take three consecutive ticks from everyone else.
@@ -8021,8 +8037,18 @@ targets instead of winning the very next tick, so three kills take at least
 written (§24.13).
 
 **Both reschedule paths** gain `incomplete_attempts = 0, attempt_started_at =
-NULL` in their existing `SET` lists. Neither column is indexed, so this costs no
-extra row.
+NULL` in their existing `SET` lists, and the success path also sets
+`last_ok_at = :now`. None of these columns is indexed, so this costs no extra row.
+
+**A blamed target runs alone next time.** CPU accumulates across one
+invocation, so a light target can be killed by the budget a heavy target
+before it consumed. Therefore a target with `incomplete_attempts > 0` is never
+packed BEHIND another target. In M13a (2 slots) it is claimed only into slot 1,
+with no slot 2. Under M13b's weight budget (§24.7) the packing loop stops at it,
+or adds nothing after it when it is first. A wrongly blamed light target then
+runs alone, completes, and resets. Of the three strikes that park a target, at
+least the last two were taken alone. That is evidence the slate itself is too
+heavy, not its neighbour.
 
 **Parked**: `incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS` (3). Both
 claim queries (general and discovery, §24.7) gain:
@@ -8067,11 +8093,29 @@ table; `stats` is `Record<string, unknown>`, so this is no change to the frozen
 
 **Killed runs become visible rows.** A killed run leaves its `job_runs` row in
 `running` forever. `withJobRun` (`jobs.ts`) gains one statement after it takes
-the lease. It sets that job's `running` rows older than the job's
-`JOB_LEASE_TTL_MS` to `status = 'error'`,
+the lease. It sets that job's `running` rows that STARTED more than
+`JOB_REAP_AFTER_MS` (15 min) ago to `status = 'error'`,
 `error = 'no finish recorded: killed (CPU or wall limit) or crashed'`, and
-`finished_at = started_at`. Holding the lease proves the old run's lease
-expired, so nothing live is touched. It writes zero rows on a normal run.
+`finished_at = started_at`. It writes zero rows on a normal run.
+
+**Why 15 minutes and not the lease TTL.** An expired lease does NOT prove the
+old run is dead. A slow but live run can outlast its 2.5-minute lease, and
+reaping it would fire a false `job-error` "killed" email before its own
+finalize overwrote the status. Two bounds make the reaper safe instead:
+
+- _Worst-case wall time of a live refresh run_: 5 targets × 8 s ESPN timeout
+  (40 s) + one Odds API call at 8 s + D1 batches (~11 for the 155-game slate,
+  well under 1 s each) ≈ **50–60 s**. The alert evaluation runs AFTER the
+  finalize-and-release batch (2 × 10 s GitHub), so it never holds the lease.
+  That is under the 2.5-minute TTL with ~90 s to spare, so the lease itself is
+  not overrun in practice.
+- _The reaper's bound is the platform's_: 15 minutes is Cloudflare's wall-clock
+  ceiling for a cron invocation. A `running` row older than that cannot belong
+  to a live invocation, whatever happened to the lease.
+
+The cost is that a kill shows up as a `job-error` up to 15 minutes later. The
+`refresh-stale` alert and health (5 ticks, §24.5) fire on the same timescale
+anyway.
 That turns a kill from "a row that never ends" into an error on the Jobs page.
 
 **Guard and lease, together.** A killed run never releases its lease, so the
@@ -8080,7 +8124,10 @@ min from M13b, in both cases shorter than the cron period (15 and 3 min). So
 **the next cron tick is NOT skipped** by a kill. It acquires normally, reaps the
 dead row, and claims the next target (not the killed one, thanks to the
 provisional `next_run_at`). Only an admin trigger that lands inside those 2.5–5
-minutes gets `409 JOB_LOCKED`.
+minutes gets `409 JOB_LOCKED`. The 2.5-minute lease leaves 30 s of margin
+before the next 3-minute tick. A cron that fires more than 30 s late after a
+kill finds the lease still held and records one `skipped` run. That is
+harmless: the next tick runs normally.
 
 **False positives, enumerated.**
 
@@ -8093,6 +8140,13 @@ minutes gets `409 JOB_LOCKED`.
 - _A deploy that lands mid-run._ At most one increment. The next completed run
   resets it.
 - _An ESPN timeout or 5xx._ Not incomplete. The failure path writes (above).
+- _A light target killed after a heavy one finished in the same run._ The heavy
+  one completed and reset. The light one takes ONE strike, then runs alone
+  (above) and clears it. It cannot reach three. Meanwhile the heavy slate keeps
+  flowing. If it is genuinely the CPU hog, it is killed in its own turn (under
+  M13b it always runs alone anyway).
+- _Targets later in a killed run._ Never stamped, never blamed (the stamp is per
+  target, immediately before its fetch).
 
 ### 24.5 M13a — `GET /api/health/ingest` and the uptime monitor
 
@@ -8140,11 +8194,11 @@ SELECT
    AND NOT EXISTS (SELECT 1 FROM ingest_targets WHERE last_status = 'ok')) AS all_failing;
 ```
 
-| Reason             | Condition                                                                                                                        | What it catches                                                         |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `refresh-stale`    | `last_ok` NULL or older than `HEALTH_STALE_TICKS` (5) refresh periods: 15 min at the 3-min tick, 75 min under M13a's 15-min cron | crons not firing, every run killed, the lease wedged, D1 unreachable    |
-| `targets-parked`   | `parked > 0`                                                                                                                     | a poison slate (§24.4), probation runs included until one completes     |
-| `espn-all-failing` | some target errored AND none is `ok`                                                                                             | an ESPN-wide 403/429 regime once every target has been retried (≤ ~6 h) |
+| Reason             | Condition                                                                                                                        | What it catches                                                                                                                                                                                                       |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refresh-stale`    | `last_ok` NULL or older than `HEALTH_STALE_TICKS` (5) refresh periods: 15 min at the 3-min tick, 75 min under M13a's 15-min cron | crons not firing, every run killed, the lease wedged, D1 unreachable                                                                                                                                                  |
+| `targets-parked`   | `parked > 0`                                                                                                                     | a poison slate (§24.4), probation runs included until one completes                                                                                                                                                   |
+| `espn-all-failing` | some target errored AND none is `ok`                                                                                             | an ESPN-wide failure once every target has been retried: ≤ 24 h, because an all-final target sits on the 24 h tier still saying `ok`. The first-403/429 `espn-status` alert (§24.6b) covers that gap within one fetch |
 
 **Quiet periods are not outages.** `runRefresh` with zero due targets still
 completes. `planTargets` runs, `claimDueTargets` returns `[]`, `runSecondary`
@@ -8212,17 +8266,17 @@ and the issue carries the fixed label `ALERT_GITHUB_LABEL` (`ops-alert`), so if
 the table is ever lost the state is recoverable from GitHub (open issues with the
 label, keyed by title). The kinds M13a ships with, and who evaluates each:
 
-| Kind                         | Key                                        | Fires when                                                                                       | Evaluated by                                                     |
-| ---------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
-| `refresh-stale`              | `-`                                        | §24.5's predicate: no `ok` refresh run within `HEALTH_STALE_TICKS` periods                       | **settle and maintenance** (and refresh, for completeness)       |
-| `target-parked`              | the target id                              | `incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS` (§24.4)                                  | refresh and settle                                               |
-| `job-error`                  | the job name                               | a run recorded `error`, including one the reaper turns from `running` to `error` (§24.4, a kill) | every job, for itself                                            |
-| `espn-status`                | `403` / `429`                              | a target fetch got that status (a regime signal, so it fires on the first)                       | refresh                                                          |
-| `espn-status`                | `5xx` / `timeout` / `network` / `bad-json` | a target reached `consecutive_failures >= 3` with that outcome (a blip is not an email)          | refresh                                                          |
-| `espn-all-failing`           | `-`                                        | §24.5's predicate                                                                                | refresh and settle                                               |
-| `settle-stuck`               | the bet id                                 | the bet is in the settle run's `stats.stuck[]` (past `MAX_SETTLE_ATTEMPTS`, §7.1)                | settle                                                           |
-| `secondary-budget-exhausted` | `-`                                        | a sweep was skipped for budget (`stats.secondary.budgetSkipped > 0`, §21.5)                      | refresh                                                          |
-| `d1-rows-near-cap`           | `-`                                        | rolling-24h `dayRowsWritten >= ALERT_D1_ROWS_NEAR_CAP` (60,000, §24.13's retreat trigger)        | maintenance, and refresh on discovery-first ticks (every 15 min) |
+| Kind                         | Key                                        | Fires when                                                                                                                                                                                        | Evaluated by                                                                                                                                                    |
+| ---------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refresh-stale`              | `-`                                        | §24.5's predicate: no `ok` refresh run within `HEALTH_STALE_TICKS` periods                                                                                                                        | **settle and maintenance** (and refresh, for completeness)                                                                                                      |
+| `target-parked`              | the target id                              | `incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS` (§24.4)                                                                                                                                   | refresh and settle                                                                                                                                              |
+| `job-error`                  | the job name                               | a run recorded `error`, including one the reaper turns from `running` to `error` (§24.4, a kill)                                                                                                  | every job, for itself                                                                                                                                           |
+| `espn-status`                | `403` / `429`                              | a target fetch got that status (a regime signal, so it fires on the first)                                                                                                                        | refresh                                                                                                                                                         |
+| `espn-status`                | `5xx` / `timeout` / `network` / `bad-json` | a target reached `consecutive_failures >= 3` with that outcome (a blip is not an email)                                                                                                           | refresh                                                                                                                                                         |
+| `espn-all-failing`           | `-`                                        | §24.5's predicate                                                                                                                                                                                 | refresh and settle                                                                                                                                              |
+| `settle-stuck`               | `-` (one fingerprint)                      | the settle run's `stats.stuck[]` is non-empty (past `MAX_SETTLE_ATTEMPTS`, §7.1); the detail lists the stuck bet ids and their games. One `period`-NULL final with ten bets is ONE issue, not ten | settle                                                                                                                                                          |
+| `secondary-budget-exhausted` | `-`                                        | a sweep was skipped for budget (`stats.secondary.budgetSkipped > 0`, §21.5)                                                                                                                       | refresh                                                                                                                                                         |
+| `d1-rows-near-cap`           | `-`                                        | rolling-24h `dayRowsWritten >= ALERT_D1_ROWS_NEAR_CAP` (60,000, §24.13's retreat trigger)                                                                                                         | **every refresh run in M13a** (96 a day; maintenance alone would be a day late), and from M13b refresh on discovery-first ticks (every 15 min) plus maintenance |
 
 Every condition that is a STATE (stale, parked, all-failing, stuck, budget, rows)
 is re-recorded on every evaluating run while it holds. That is what keeps it
@@ -8266,18 +8320,25 @@ occurrences = occurrences + 1, pending = pending + 1, last_detail = :detail,
      `issue_number = NULL`, `resolved_at = NULL`, `occurrences = 1`,
      `comments = 0`, `opened_at = :now`, `last_notified_at = 0`.
 2. **Create** (rule 1, "no open issue → one email"): `UPDATE alerts SET
-last_notified_at = :now, pending = 0 WHERE fingerprint = ? AND state =
-'firing' AND issue_number IS NULL AND last_notified_at <= :now -
-ALERT_COMMENT_INTERVAL_MS`. On `changes = 1`, POST the issue, then `UPDATE …
-SET issue_number = ?`. If GitHub fails, `SET last_notified_at = 0`, so the next
-   run retries instead of waiting an hour.
+last_notified_at = :now WHERE fingerprint = ? AND state = 'firing' AND
+issue_number IS NULL AND last_notified_at <= :now - ALERT_COMMENT_INTERVAL_MS`.
+   **The claim changes `last_notified_at` ONLY.** On `changes = 1`, read the
+   row (safe: the claim is held), POST the issue, then on success `UPDATE … SET
+issue_number = ?, pending = pending - :sentPending`, where `:sentPending` is
+   the count the post reported. Subtracting it, instead of zeroing, keeps
+   occurrences that arrived during the call. If GitHub fails, the only write is
+   `SET last_notified_at = 0`. Nothing else was touched, so nothing is lost, and
+   the next run retries instead of waiting an hour.
 3. **Reopen** (a recurrence inside 24 h → the SAME issue, one email): the same
    claim with `resolved_at IS NOT NULL AND issue_number IS NOT NULL`. On success,
    PATCH `state: open` plus a comment, and `SET resolved_at = NULL`.
 4. **Comment** (rule 2, while open): `… WHERE state = 'firing' AND resolved_at
 IS NULL AND issue_number IS NOT NULL AND pending > 0 AND last_notified_at <=
 :now - MIN(ALERT_COMMENT_INTERVAL_MS × 2^comments, ALERT_COMMENT_MAX_INTERVAL_MS)`,
-   which sets `pending = 0, comments = comments + 1`. The comment says
+   a claim that again sets `last_notified_at` only. Success then writes
+   `pending = pending - :sentPending, comments = comments + 1`, and failure
+   writes `last_notified_at = 0` and nothing else (the create's pattern), so a
+   failed post loses neither the pending count nor the backoff step. The comment says
    "N occurrences since the last comment, the last at <ET time>: <last_detail>".
 5. **Resolve** (rule 3): `UPDATE alerts SET state = 'resolved', resolved_at =
 :now WHERE state = 'firing' AND issue_number IS NOT NULL AND last_seen_at <=
@@ -8325,7 +8386,10 @@ each with a 10 s timeout (`ALERT_GITHUB_TIMEOUT_MS`), against 50 subrequests.
 Further due actions wait for the next run, at most 3 minutes later. Row writes:
 zero in a healthy run (no condition holds, so no occurrence and no claim). In an
 incident, one upsert per firing condition per evaluating run plus one claim per
-call, a few hundred rows a day at worst, which is noise in §24.13. GitHub's REST
+call. A STATE alert evaluated by refresh and settle on every tick is ≈ 960
+upserts a day (1–2 rows each, since `alerts` has only its primary key). So a bad
+day with three state alerts firing all day is ≈ 3,000–6,000 rows. That is real,
+but inside §24.13's margin, and it lasts only as long as the incident. GitHub's REST
 limit is 5,000 requests an hour per token, and even 2 calls on every one of ~960
 runs a day could not approach it. The secondary limit on content creation
 (roughly 80 a minute) is out of reach at one create per fingerprint.
@@ -8415,9 +8479,11 @@ instant and stays one. M13b's test drives a run that starts 5 s late and asserts
 that a live slate is claimed on the very next tick.
 
 **The weight budget: who shares an invocation.** Each target has a WEIGHT, its
-`games_seen` from its last completed fetch. A target never fetched
-(`last_run_at IS NULL`) weighs `REFRESH_WEIGHT_BUDGET + 1`, i.e. "big", because
-its size is unknown. An empty slate weighs 1. A run:
+`games_seen` from its last SUCCESSFUL fetch. A target that has never succeeded
+(`last_ok_at IS NULL`, 0012's column, written only by the success path) weighs
+`REFRESH_WEIGHT_BUDGET + 1`, i.e. "big", because its size is unknown. A failed
+first fetch sets `last_run_at` but leaves `games_seen = 0`, and must not make a
+155-game date look empty. An empty slate that DID succeed weighs 1. A run:
 
 1. reads the due candidates in claim order, at most `REFRESH_TARGETS_PER_RUN`
    (`"5"` from M13b, an existing var bounded 1–10 by `env.ts`) plus one;
@@ -8446,8 +8512,10 @@ SELECT id, …, games_seen, last_run_at FROM ingest_targets AS t
 
 The packing is done in code on those rows (pure, unit-tested). On a
 discovery-first tick, if the `NO_LIVE_GAME` read returns nothing, the run falls
-back to the plain read, so no tick is wasted. Each claimed target is stamped
-(§24.4) before ANY fetch, because a kill takes the whole invocation.
+back to the plain read, so no tick is wasted. Each target is stamped (§24.4)
+immediately before its own fetch, not all at claim time, so a kill blames only
+the target in flight. A candidate with `incomplete_attempts > 0` ends the
+packing: nothing is added after it, and if it is first it runs alone.
 
 **Discovery: the reservation moves from space to time.** At one slot per big
 run there is no slot 2 to reserve. A tick is _discovery-first_ when
@@ -8476,9 +8544,11 @@ still claims what it bumped (§9.3).
   and NFL often share one). So the day is deliberately
   oversubscribed while the slates overlap, and the round-robin above is what
   happens. Non-live demand is unchanged by the tick (its tiers are the same
-  wall-clock intervals): ≈ 79 slate-refreshes (the §8.4 tiers over 7 non-live
-  targets), under the 96 discovery-first ticks, and many of them pack into one
-  run because their slates are small or empty.
+  wall-clock intervals): ≈ 90 slate-refreshes (the §8.4 tiers over the non-live
+  targets; NFL Sunday, CBB +1 and NBA +1 are each 24 on the 60-minute tier).
+  That is still under the 96 discovery-first ticks, so the correction changes no
+  conclusion, and many of them pack into one run because their slates are small
+  or empty.
 
 **The settle cron.** Settle now runs one minute after every refresh tick, so it
 reads scores the refresh just wrote, and it moves to its own 3-minute cadence
@@ -8594,7 +8664,7 @@ first only if it can ship the same day.
 
 ### 24.9 Data model — `migrations/0013_basketball_leagues.sql` (M13c)
 
-**Two migrations, by ship order.** 0012 (§24.4) is three `ADD COLUMN`s: no
+**Two migrations, by ship order.** 0012 (§24.4) is four `ADD COLUMN`s and one new table: no
 rebuild, no money table touched, safe to apply on any day. It ships with
 M13a, which must go first. 0013 is a children-first rebuild of six tables, the
 ledger among them. It ships with the code that writes basketball rows (M13c), and is
@@ -8622,14 +8692,14 @@ balance doubles); drop the copies. No PRAGMA, no `OR IGNORE`.
 diffs 0013 against 0009 alone will miss this, and an implementer who copies
 0009 will silently revert two later migrations:
 
-| Table            | Recreated from                                                                                                       |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `games`          | 0009 (incl. 0004's and 0007's columns in physical order)                                                             |
-| `game_lines`     | 0009 (incl. 0007's `*_book` columns)                                                                                 |
-| `bets`           | **0010** (`leg_count BETWEEN 1 AND 25`, the teaser ≤ 10 CHECK)                                                       |
-| `bet_legs`       | **0010** (and its `bet_legs_bi_one_side_per_game` trigger, as 0010 recreated it)                                     |
-| `ledger`         | **0011** (kinds `deposit_refill` / `bust_buyout`; the five ledger triggers as 0011 recreated them)                   |
-| `ingest_targets` | 0009 **plus 0012's three columns**, appended after `updated_at` in 0012's order, so `pragma_table_info` is unchanged |
+| Table            | Recreated from                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `games`          | 0009 (incl. 0004's and 0007's columns in physical order)                                                            |
+| `game_lines`     | 0009 (incl. 0007's `*_book` columns)                                                                                |
+| `bets`           | **0010** (`leg_count BETWEEN 1 AND 25`, the teaser ≤ 10 CHECK)                                                      |
+| `bet_legs`       | **0010** (and its `bet_legs_bi_one_side_per_game` trigger, as 0010 recreated it)                                    |
+| `ledger`         | **0011** (kinds `deposit_refill` / `bust_buyout`; the five ledger triggers as 0011 recreated them)                  |
+| `ingest_targets` | 0009 **plus 0012's four columns**, appended after `updated_at` in 0012's order, so `pragma_table_info` is unchanged |
 
 **Write cost: count first, and it is a GATE.** A rebuild writes every row twice
 (the copy and the copy back) plus every index entry on the way back (`games`
@@ -8641,8 +8711,12 @@ made. A rough guess at M13c time is ~10,000 rows held across the six tables,
 which is ~45,000 rows written. M13c's PR states the measured figure:
 `Σ rows × (2 + index entries per row)`, from the OPERATIONS row-count query and
 `sqlite_master`. **Apply only if that estimate is under 60,000, and only on a
-Tuesday or Wednesday**, whose own traffic is a few thousand rows. Never on a
-football or basketball Saturday (§8.6). **Above 60,000, stop and ask the
+Tuesday or Wednesday.** That day's own traffic is NOT a few thousand rows any
+more. After M13b, job bookkeeping is ≈ 5,800, target stamps and reschedules
+≈ 2,900, and M13c starts basketball ingest in the same deploy (a weekday CBB
+slate of ~50–70 games plus the NBA, ≈ 3,000–6,000 at the every-tick cadence).
+So the baseline is **≈ 10–20k**, and 60,000 + 20,000 = 80,000 stays under the
+100,000 cap with 20k to spare. Never on a football or basketball Saturday (§8.6). **Above 60,000, stop and ask the
 owner**: the remedies (pruning old `games` rows, which §20 lists as future
 work, or paid D1) are not this milestone's to choose. The D1 dashboard's
 rows-written for that day goes in the PR afterwards.
@@ -8657,7 +8731,7 @@ left; `'ncaab'` and `'nba'` accepted by all four CHECKs, `'nhl'` refused, and
 `'mixed'` still bets-only. Plus `tests/unit/migration-0013-ddl.spec.ts`, which
 textually compares each recreated table, index and trigger against its last
 definer from the table above (the 0010/0011 DDL-spec pattern), so that the only
-permitted differences are the four CHECK lists and `ingest_targets`' three
+permitted differences are the four CHECK lists and `ingest_targets`' four
 appended columns.
 
 **Deploy order and rollback.** As for 0009: applied by the Deploy workflow
@@ -8723,11 +8797,11 @@ canceled. Out of season the slates are empty and sit on the discovery tier. Ther
 is still no league calendar.
 
 **Samples and dev.** M13c commits three captures under `docs/samples/`:
-`espn-ncaab-scoreboard-2026-11-07.json` and `…-2026-11-07-evening.json` (§24.2),
-and `espn-nba-scoreboard-2026-11-07.json` (7 events, 6 priced, one in progress
+`espn-ncaab-scoreboard-2026-11-07.json` (the one college sample, §24.2),
+`espn-nba-scoreboard-2026-11-07.json` (7 events, 6 priced, one in progress
 at `period 4`; scratchpad `nba-20261107.json`). The +1 capture
 (`nba-20261108.json`, 6 of 7 priced) is the "lines a day ahead" fixture, and
-M13c commits it too, as `…-2026-11-08.json` (131 KB). `scripts/capture-espn-range.mjs`
+M13c commits it too, as `espn-nba-scoreboard-2026-11-08.json` (131 KB). `scripts/capture-espn-range.mjs`
 gains `ncaab` and `nba` entries taking dates from argv (MLB's pattern), and
 `scripts/fixture-server.mjs` serves both scoreboard paths.
 
@@ -8807,13 +8881,13 @@ live part at the new count. **Ceiling**: every stream × 5, which is what the
 measurement would read if everything scaled with refreshes. Budget on the
 ceiling.
 
-| Slate (one day, uncontended, live every tick) | Model                                                                                         | Ceiling (× 5) |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------- |
-| CFB Saturday, 86 games, live 3.5 h            | 1,775 + 86 × 70 = **≈ 7,800**                                                                 | 14,900        |
-| CBB Saturday, 155 games, live ~2 h (40 ticks) | 3,200 + 155 × 40 = **≈ 9,400**                                                                | 26,850        |
-| NBA night, 15 games, live ~2.5 h (50 ticks)   | 310 + 15 × 50 = **≈ 1,060**                                                                   | ≈ 1,550       |
-| NFL Sunday, 13 games                          | 270 + 13 × 70 = **≈ 1,180**                                                                   | ≈ 2,250       |
-| MLB day, 15 games                             | ≈ 900 measured; writes on run/inning change, not clock (§23.11), so more refreshes add little | ≈ 1,500       |
+| Slate (one day, uncontended, live every tick) | Model                                                                                         | Ceiling (× 5)                           |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------- |
+| CFB Saturday, 86 games, live 3.5 h            | 1,775 + 86 × 70 = **≈ 7,800**                                                                 | 14,900                                  |
+| CBB Saturday, 155 games, live ~2 h (40 ticks) | 3,200 + 155 × 40 = **≈ 9,400**                                                                | 26,850                                  |
+| NBA night, 15 games, live ~2.5 h (50 ticks)   | 310 + 15 × 50 = **≈ 1,060**                                                                   | ≈ 2,600 (CFB's 34.6 rows/game × 5 × 15) |
+| NFL Sunday, 13 games                          | 270 + 13 × 70 = **≈ 1,180**                                                                   | ≈ 2,250                                 |
+| MLB day, 15 games                             | ≈ 900 measured; writes on run/inning change, not clock (§23.11), so more refreshes add little | ≈ 1,500                                 |
 
 **Worst day.** Live refreshes cannot exceed the ticks (§24.7), so two big slates
 live together each get about half of them. The worst day is therefore a
@@ -8823,17 +8897,17 @@ NBA:
 | Stream                                | Arithmetic                                                                                                                 | Rows/day                                        |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | CBB Saturday (ceiling)                | above                                                                                                                      | 26,850                                          |
-| NBA tonight + tomorrow (ceiling)      | above, plus tomorrow's line rows                                                                                           | ≈ 1,800                                         |
+| NBA tonight + tomorrow (ceiling)      | above, plus tomorrow's line rows                                                                                           | ≈ 2,800                                         |
 | CBB +1 / +2 targets                   | first inserts 6 × ≤ 155, L3 touches 4 × ≤ 175 (the Thursday before is worse for this line, but has no 155-game live slate) | ≈ 1,600                                         |
 | `ingest_targets` stamps + reschedules | ≈ 480 runs × ~1.5 targets × 4 rows (stamp 2, reschedule 2, both rewriting `idx_ingest_targets_due`)                        | ≈ 2,900                                         |
 | `job_runs` / `job_locks`              | ≈ 960 runs × ~6 (run INSERT 3 incl. PK and `idx_job_runs_recent`, finalize 1, lease 2). ESTIMATED                          | ≈ 5,800                                         |
 | bets / legs / ledger, sessions        | §8.6                                                                                                                       | < 800                                           |
-| **Total**                             |                                                                                                                            | **≈ 39,800 → call it 40–45k, ≈ 45% of the cap** |
+| **Total**                             |                                                                                                                            | **≈ 40,750 → call it 41–45k, ≈ 45% of the cap** |
 
 A **November or December Saturday** with CFB, CBB and NFL live comes to about
 the same total: each big slate gets ~half or a third of the ticks (CFB ceiling
 × ½ ≈ 7,500, CBB × ½ ≈ 13,400), and NFL, NBA and a larger fixed part make up
-the rest, ≈ 34,000. The impossible bound, with every big slate uncontended at
+the rest, ≈ 36,000. The impossible bound, with every big slate uncontended at
 once, is ≈ 57,000.
 
 **Say it plainly.**
@@ -8893,7 +8967,7 @@ statement count, observed OK". A packed run of small slates (weight ≤ 40, so
 
 | Where                                                                                  | Change                                                                                                                                                                                                                                                                                  | In   |
 | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| `labels.ts` `LEAGUE_LABEL` / `LEAGUE_BADGE` / `BET_LEAGUE_LABEL` / `MARKET_HEAD_LABEL` | `ncaab`: `'NCAAB'` / `'CBB'` (the CFB pattern) / `'NCAAB'` / football's heads. `nba`: `'NBA'` / `'NBA'` / `'NBA'` / football's heads. The `Record` types force all eight entries                                                                                                        | M13c |
+| `labels.ts` `LEAGUE_LABEL` / `LEAGUE_BADGE` / `BET_LEAGUE_LABEL` / `MARKET_HEAD_LABEL` | `ncaab`: `'NCAAB'` / `'NCAAB'` (the owner's choice, 2026-11-07; not a `CBB` badge) / `'NCAAB'` / football's heads. `nba`: `'NBA'` / `'NBA'` / `'NBA'` / football's heads. The `Record` types force all eight entries                                                                    | M13c |
 | `labels.ts` `CLOCK_STYLE`, `gameClockLabel`                                            | `nba: 'quarters'` (exists: "Q3 · 4:12"). `ncaab` gets a NEW style `'halves'`: `"1st · 12:34"`, `"2nd · 4:12"`, `"OT · 1:05"`, `"2OT · 0:44"`, from `period` + `displayClock`; halftime and finals use ESPN's `statusDetail`. Football and MLB pinned byte-identical in `labels.spec.ts` | M13c |
 | `grouping.ts` `BOARD_HAS_WEEKS`                                                        | both `false`: no week picker, and `groupBoardGames` groups by ET date (the MLB path, §23.12) across each window                                                                                                                                                                         | M13c |
 | `routes/meta.ts` `currentSeason`                                                       | two more keys (ESPN's season year for each)                                                                                                                                                                                                                                             | M13c |
@@ -8936,7 +9010,7 @@ specs (§24.9). Each `describe` names its milestone.
 | `tests/worker/ingest.spec.ts`                                             | claim: parked targets skipped, probation after 6 h, stamp and reset on both paths; `NO_LIVE_GAME` / retire unchanged for NULL `conference_id`                                                                                                                                      | M13a |
 | `tests/worker/jobs.spec.ts`                                               | the reaper; a zero-target run records `ok`; `dayEspnStatus`                                                                                                                                                                                                                        | M13a |
 | `tests/worker/routes.spec.ts`                                             | `/api/health` byte-identical; `/api/health/ingest` 200 / 503 per reason                                                                                                                                                                                                            | M13a |
-| `tests/worker/schema.spec.ts`                                             | 0012's three columns and the `incomplete_attempts` CHECK                                                                                                                                                                                                                           | M13a |
+| `tests/worker/schema.spec.ts`                                             | 0012's four columns, the `incomplete_attempts` CHECK and the `alerts` table                                                                                                                                                                                                        | M13a |
 | `tests/worker/ingest.spec.ts`                                             | tick-relative reschedule (a run 5 s late still claims a live slate on the next tick); weight packing (NFL + MLB pair, CFB alone, a fresh target alone, stop at the first misfit); discovery tick; admin always general; the CFB soak re-run at 480 ticks with its re-derived bound | M13b |
 | `tests/unit/time.spec.ts`                                                 | the four tiers as tick multiples; `lineStaleAfterMs` unchanged (3 h floor)                                                                                                                                                                                                         | M13b |
 | `tests/worker/mlb.spec.ts`                                                | the MLB soak re-run at 480 ticks                                                                                                                                                                                                                                                   | M13b |
@@ -9005,7 +9079,7 @@ is a checklist, not a hunt:
 | `src/web/lib/labels.ts`, `grouping.ts`                                  | —                                                                                                                | —                                                                   | the five tables, halves clock, `BOARD_HAS_WEEKS`                       | —                                  |
 | `src/web/pages/AdminPage.tsx`                                           | parked banner, ESPN status tally                                                                                 | —                                                                   | —                                                                      | —                                  |
 | `src/web/lib/board-filter.ts`, `BoardFilterSelect.tsx`, `GamesPage.tsx` | —                                                                                                                | —                                                                   | —                                                                      | per-league filter, `top25` default |
-| samples, `capture-espn-range.mjs`, `fixture-server.mjs`                 | —                                                                                                                | —                                                                   | four captures, argv entries, two routes                                | —                                  |
+| samples, `capture-espn-range.mjs`, `fixture-server.mjs`                 | —                                                                                                                | —                                                                   | three captures, argv entries, two routes                               | —                                  |
 | docs (`PLAN`, `CLAUDE`, `README`, `OPERATIONS`)                         | §11.1 row live, §9.2 reaper, OPERATIONS monitor                                                                  | §7.1 / §7.5 / §8.4 / §8.6 / §9.1 / §9.2 values, crons in OPERATIONS | §3.2 enums, §8.1 / §8.2 live, the 0013 row                             | README, §12 notes                  |
 
 ### 24.17 Milestones and the parallel-execution map
@@ -9068,23 +9142,25 @@ in §24.16's last row moved in the same PR (rule 11).
 
 **For the owner:**
 
-1. **The health URL** (§24.5): a new `/api/health/ingest` for the monitor
-   (recommended), or `/api/health` itself returning 503 as first briefed, at the
-   cost of the bug-report button and DB reads on every page load during an
-   outage.
-2. **Postponed basketball games** (§24.11): void the next morning on evidence
-   (the MLB rule, recommended, a refund), or hold to §7.5's 7-day rule in case
-   the replay keeps its id.
-3. **Labels**: `NCAAB` for headings and `CBB` for the slip badge (matching
-   `NCAAF` / `CFB`), and `NBA` for both?
-4. **The 155-game Saturday sample** stays uncommitted (§24.2), so its parse
-   figure lives in this chapter rather than in CI. Commit it (+2.8 MB) if you
-   want CI to re-measure it.
-5. **The write budget at every-tick live cadence is ≈ 45% of the hard cap on the
-   worst day** (§24.13), and the retreat (`REFRESH_LIVE_TICKS` → 2) is ready.
-   Confirm a `dayRowsWritten` of 60,000 as the retreat trigger.
-6. **0013's write cost is gated** (§24.9). If the measured estimate exceeds
-   60,000 rows, the next step (pruning old `games` rows or paid D1) is yours.
+**ANSWERED by the owner, 2026-11-07.** These are decisions now, recorded where
+the chapter relies on them:
+
+1. **Health URL: `/api/health/ingest`, kept.** `/api/health` stays DB-free and
+   always 200 for the SPA (§24.5).
+2. **Postponed basketball: the next-morning evidence void (the MLB rule),
+   kept** (§24.11).
+3. **Labels: `NCAAB` and `NBA`**, in every label table including the slip badge.
+   There is no `CBB` badge (§24.14). `CBB_CONFERENCES` stays the constant's name.
+4. **The 155-game Saturday sample is NOT committed.** The 1 MB opening-day
+   capture is the one committed college sample. The evening capture is not
+   committed either, and its fact is tested by stripping `conferenceId` (§24.2).
+5. **Retreat trigger CONFIRMED**: `dayRowsWritten` at 60,000 → set
+   `REFRESH_LIVE_TICKS` to 2 (§24.13; it is also the `d1-rows-near-cap` alert,
+   §24.6b).
+6. **0013 above 60,000 rows written: stop and ask the owner**, as written
+   (§24.9).
+
+The comment-interval doubling of §24.6b (1 h → 24 h) is also agreed.
 
 **Spikes:**
 

@@ -20,7 +20,9 @@ describe('M13c: ESPN URLs and parser (PLAN.md §24.2, §24.10)', () => {
   it.todo('the nba URL is dates=…&limit=100');
   it.todo('the four existing URLs are byte-identical');
   it.todo('the 11-07 college capture parses 61 games with conference ids and 48 line rows');
-  it.todo('the evening capture parses with NULL conference ids');
+  it.todo(
+    'the 11-07 capture with conferenceId stripped (the game-day shape) parses with NULL conference ids',
+  );
   it.todo('the "OFF" moneyline is counted as pulled, not warned, and still withdraws the market');
   it.todo('the 11-07 NBA capture parses 7 games, 6 priced; the top-level spread is the home line');
   it.todo('a payload of exactly `limit` events adds the truncation warning');
