@@ -273,8 +273,16 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   ```
 
   If 403s reappear in `GET /api/admin/jobs` → `stats.failures[]`, re-run the probe with candidate
-  strings, change the constant, `npm run deploy`. A 403 degrades gracefully (rows untouched, target
-  backs off) but is only discovered by looking — check `failures[]` and `dayRowsWritten` weekly.
+  strings, change the constant, `npm run deploy`. A 403 degrades gracefully (rows untouched) but is
+  only discovered by looking — check `failures[]` and `dayRowsWritten` weekly.
+
+- **Failure backoff (since F5, PLAN §8.4 / §14.8).** A slate whose fetch fails (403, 429, 5xx,
+  timeout, bad JSON) retries on the **next tick**; only from the second consecutive failure does it
+  back off — 15 min, 30, 60, 120, 240, then every 6 h — so a sustained outage costs at most 4
+  fetches an hour per slate. ESPN's edge intermittently 403s the Worker's shared egress IP (2 of 13
+  fetches on 2026-11-08, the same URLs 200 from a laptop); one such answer now costs a live slate
+  one tick, not 15 minutes. A single 403 still opens the `espn-status: 403` alert (below); a
+  `consecutive_failures` above 1 on the Jobs page is a real outage, not a blip.
 
 - Budget: `GET /api/admin/jobs` → newest run's `stats.dayRowsWritten` is the rolling 24 h rows-written
   total against D1's hard 100,000/day. Measured ≈ 8k for the CFB soak, modelled ≈ 17k with the
