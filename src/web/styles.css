@@ -1566,3 +1566,9 @@ select:focus-visible,
   font-size: 13px;
   margin: 0;
 }
+
+/* The bust history's per-row picture: inline with the text, same 14-px photo. */
+.bust-history-glyph {
+  display: inline-flex;
+  vertical-align: middle;
+}

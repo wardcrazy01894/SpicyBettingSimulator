@@ -43,7 +43,7 @@ import { betsEmptyTitle, scopeLeague } from '../lib/scope.js';
 import type { Scope } from '../lib/scope.js';
 import { AdminRefillForm } from '../components/AdminRefillForm.js';
 import { BustBadges } from '../components/BustBadges.js';
-import { BOUGHT_IN_HELP, NET_HELP, NET_HINT, bustSummary } from '../lib/labels.js';
+import { BOUGHT_IN_HELP, NET_HELP, NET_HINT, bustBadgeGlyph, bustSummary } from '../lib/labels.js';
 
 import { useSession } from '../state/session.js';
 import { formatCents, formatSignedCents } from '../../shared/validate.js';
@@ -127,7 +127,7 @@ function PlayerStats(props: {
 }
 
 /**
- * The history behind the skulls (PLAN.md §4.5): one line per bust — when the
+ * The history behind the badges (PLAN.md §4.5): one line per bust — when the
  * house refilled the account and for how much, and when the badge was bought
  * off, or that it is still on the name. Renders nothing for a player who has
  * never busted; the stat cell above already says "—".
@@ -136,26 +136,37 @@ function BustHistory(props: { readonly busts: readonly BustView[] }): ReactEleme
   if (props.busts.length === 0) return null;
   return (
     <ul className="ledger bust-history" aria-label="Bust history">
-      {props.busts.map((bust, i) => (
-        <li className="ledger-row" key={bust.refillId}>
-          <div className="ledger-main">
-            <span className="ledger-kind">
-              💀 Bust #{String(i + 1)} — refilled {formatCents(bust.amountCents)}
-            </span>
-          </div>
-          {/* Dates and the price live in the muted line: the `.num` column is
+      {props.busts.map((bust, i) => {
+        // The same picture the badge on the name shows for this position.
+        const glyph = bustBadgeGlyph(i);
+        return (
+          <li className="ledger-row" key={bust.refillId}>
+            <div className="ledger-main">
+              <span className="ledger-kind">
+                <span className="bust-history-glyph" aria-hidden="true">
+                  {glyph.kind === 'emoji' ? (
+                    glyph.text
+                  ) : (
+                    <img className="bust-badge-img" src={glyph.src} alt="" />
+                  )}
+                </span>{' '}
+                Bust #{String(i + 1)} — refilled {formatCents(bust.amountCents)}
+              </span>
+            </div>
+            {/* Dates and the price live in the muted line: the `.num` column is
               auto-width and bold, sized for an amount, not a sentence. */}
-          <span className="muted">
-            {formatDateTime(bust.refilledAt)}
-            {bust.boughtOutAt !== null &&
-              ` · bought off ${formatDateTime(bust.boughtOutAt)}` +
-                (bust.priceCents === null ? '' : ` for ${formatCents(bust.priceCents)}`)}
-          </span>
-          <span className={bust.boughtOutAt === null ? 'num tone-loss' : 'num tone-win'}>
-            {bust.boughtOutAt === null ? 'badge on' : 'bought off'}
-          </span>
-        </li>
-      ))}
+            <span className="muted">
+              {formatDateTime(bust.refilledAt)}
+              {bust.boughtOutAt !== null &&
+                ` · bought off ${formatDateTime(bust.boughtOutAt)}` +
+                  (bust.priceCents === null ? '' : ` for ${formatCents(bust.priceCents)}`)}
+            </span>
+            <span className={bust.boughtOutAt === null ? 'num tone-loss' : 'num tone-win'}>
+              {bust.boughtOutAt === null ? 'badge on' : 'bought off'}
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }
