@@ -803,13 +803,14 @@ export function packCount(
  * stamps them one per DISCOVERY tick, starting at the next one: each is that
  * tick's discovery pick and none is ever the oldest due row on a general
  * tick, so a burst of k dates fills within k discovery ticks (≤ 15·k min) and
- * the live slates never wait. When a new date's fetch FAILS, F5 sends a
- * never-fetched target's first retry back to the discovery grid rather than
- * the next general tick — but inside a burst that grid slot already belongs to
- * the next burst date (stamped 1 ms earlier), so the retry spills to the
- * following general tick and costs the live slates AT MOST ONE tick per failed
- * burst date. Accepted residual, PLAN.md §24.7 (c); the fix if it ever matters
- * is to re-stamp a failed never-fetched date at the END of the F2 chain.
+ * the live slates never wait. When a new date's fetch FAILS, F5 snaps every
+ * retry of a never-fetched target onto the discovery grid rather than a
+ * general tick — but inside a burst that grid slot may already belong to the
+ * next burst date (stamped 1 ms earlier), so the retry spills to a general
+ * tick shortly after it and costs the live slates ONE tick per failed retry
+ * that collides with the burst, none after the burst drains. Accepted
+ * residual, PLAN.md §24.7 (c); the fix if it ever matters is to re-stamp a
+ * failed never-fetched date at the END of the F2 chain.
  * (Stamped `now`, as before F2, the burst drained on consecutive general ticks
  * ahead of every live slate for ~24-30 min.)
  *
@@ -1344,17 +1345,25 @@ export function computeNextRunAt(
     // transient ESPN 403 must not freeze a live slate, F5); the doubling from
     // the second keeps a real outage off ESPN's back.
     const streak = Math.max(target.consecutiveFailures, 0) + 1;
+    const step = failureBackoffTicks(streak) * REFRESH_TICK_MS;
     // A NEVER-fetched target weighs big and runs alone (§24.7). Retrying it on
-    // the next GENERAL tick would take that tick from the live slates — the
-    // very cost F2 removed — so its first retry goes back to the discovery
-    // grid; every later step is a multiple of REFRESH_BACKOFF_BASE_TICKS (= a
-    // discovery period), so it stays there until a success. A target that HAS
-    // fetched before carries its own weight and pays only its own tick.
-    // Known residual (§24.7 (c)): inside a rollover burst the next grid slot
-    // is already the next burst date's, so this retry spills to the general
-    // tick after it — at most one live tick per failed burst date.
-    if (streak === 1 && target.lastOkAt === null) return nextDiscoveryTick(base);
-    return base + failureBackoffTicks(streak) * REFRESH_TICK_MS;
+    // a GENERAL tick would take that tick from the live slates — the very cost
+    // F2 removed — so EVERY failure of one is snapped onto the discovery grid:
+    // the first discovery tick at or after the schedule's step (the step
+    // itself when `base` is a grid tick, since each step is a whole number of
+    // discovery periods; at most one period later when it is not). The snap
+    // is unconditional, not first-failure-only: once a retry has spilled onto
+    // a general tick (below), `base` is that general tick, and a plain
+    // `base + step` would keep every later retry off the grid too (round 3).
+    // A target that HAS fetched before carries its own weight and pays only
+    // its own tick.
+    // Known residual (§24.7 (c)): inside a rollover burst the grid slot the
+    // retry lands on may already be the next burst date's (stamped 1 ms
+    // earlier), so the retry spills to a general tick shortly after it — one
+    // live tick per failed retry that collides with the burst, none once the
+    // burst has drained.
+    if (target.lastOkAt === null) return nextDiscoveryTick(base + step - REFRESH_TICK_MS);
+    return base + step;
   }
 
   const games = slate?.games ?? [];

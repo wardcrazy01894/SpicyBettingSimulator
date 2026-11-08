@@ -1982,14 +1982,33 @@ describe('computeNextRunAt', () => {
 
   it('failure on a NEVER-fetched target -> the next DISCOVERY tick, not the next general one (F5 as built)', () => {
     // It weighs big and runs alone (§24.7); a general-tick retry would take
-    // that tick from the live slates. Later steps are discovery-period
-    // multiples, so it stays on the grid until a success.
+    // that tick from the live slates. Every step is snapped onto the grid.
     const fresh = { ...target, lastOkAt: null, consecutiveFailures: 0 };
+    expect(T0 % (5 * REFRESH_TICK_MS)).toBe(0); // T0 is itself a discovery tick
     expect(computeNextRunAt(fresh, null, true, T0)).toBe(nextDiscoveryTick(T0));
     expect(computeNextRunAt(fresh, null, true, T0)).not.toBe(T0 + LIVE_MS);
-    // From the second failure the shared schedule applies to it too.
+    // From a GRID tick the later steps are the shared schedule itself (each is
+    // a whole number of discovery periods).
     expect(computeNextRunAt({ ...fresh, consecutiveFailures: 1 }, null, true, T0)).toBe(
       T0 + 5 * REFRESH_TICK_MS,
+    );
+    expect(computeNextRunAt({ ...fresh, consecutiveFailures: 2 }, null, true, T0)).toBe(
+      T0 + 10 * REFRESH_TICK_MS,
+    );
+    // From a GENERAL tick (a retry that spilled off the grid inside a burst,
+    // §24.7 (c)) every step snaps UP to the grid — never `base + step`, which
+    // would keep each later retry on a general tick (round-3 finding).
+    const general = T0 + REFRESH_TICK_MS;
+    expect(computeNextRunAt(fresh, null, true, general)).toBe(T0 + 5 * REFRESH_TICK_MS);
+    expect(computeNextRunAt({ ...fresh, consecutiveFailures: 1 }, null, true, general)).toBe(
+      T0 + 10 * REFRESH_TICK_MS,
+    );
+    expect(computeNextRunAt({ ...fresh, consecutiveFailures: 1 }, null, true, general)).not.toBe(
+      general + 5 * REFRESH_TICK_MS,
+    );
+    // A target that HAS fetched keeps the plain schedule from any tick.
+    expect(computeNextRunAt({ ...target, consecutiveFailures: 1 }, null, true, general)).toBe(
+      general + 5 * REFRESH_TICK_MS,
     );
   });
 

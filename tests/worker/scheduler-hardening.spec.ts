@@ -1497,6 +1497,72 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
     expect((await guardRow(date1)).last_status).toBe('ok'); // and the retry succeeded
   });
 
+  it('(F5) a burst date that KEEPS failing spills once, then stays on the discovery grid (round-3 bound)', async () => {
+    // The same burst, but date1 403s on EVERY call. Its spilled retry lands on
+    // a general tick; with `base + step` from there every later retry would
+    // also be a general tick (5, 10, 20 ticks on) and the live slate would
+    // lose one tick per backoff step for hours. The snap puts the second
+    // failure's step on the grid: due at d4 (the first grid tick ≥ spill + 5
+    // ticks), then d6 (step 10 from a grid tick), and no general tick again.
+    const d1 = nextDiscoveryTick(GENERAL);
+    const d2 = nextDiscoveryTick(d1);
+    const live = await insertTarget({
+      day: 0,
+      nextRunAt: d1 - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 10,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5-persist');
+    espn.set(keyOf(0), [event('nfl', 'in', T0 - HOUR)]);
+    const date1 = await insertTarget({ day: 2, nextRunAt: d1 - 1 });
+    const date2 = await insertTarget({ day: 3, nextRunAt: d2 - 1 });
+    espn.setResponder(keyOf(2), () => new Response('forbidden', { status: 403 }));
+    espn.setResponder(keyOf(3), () => emptyBoard());
+    // Left alone, the planner would stamp the other leagues' dates one per
+    // discovery tick behind date2 — a burst of its own that keeps colliding
+    // with the retry for the whole test. Create them now, fetched and far
+    // from due, so the burst under test is date1 + date2 and then DRAINS.
+    await planTargets(env, d1 - HOUR);
+    await env.DB.prepare(
+      'UPDATE ingest_targets SET last_ok_at = ?1, games_seen = 1, next_run_at = ?2 WHERE id NOT IN (?3, ?4, ?5)',
+    )
+      .bind(T0 - DAY, d2 + DAY, live, date1, date2)
+      .run();
+
+    const processed = async (tick: number): Promise<string[]> => {
+      const run = await runJob(env, 'refresh', 'cron', tick + 5_000, { scheduledTime: tick });
+      expect(run.status).toBe('ok');
+      return (run.stats as { coverage: { targetId: string }[] }).coverage.map((c) => c.targetId);
+    };
+
+    expect(await processed(d1)).toEqual([date1]); // 403 #1 → the grid (d2)
+    for (let k = 1; k < 5; k += 1) expect(await processed(d1 + k * TICK)).toEqual([live]);
+    expect(await processed(d2)).toEqual([date2]); // date2 owns that slot
+
+    // The next 20 ticks: four discovery periods, d3 … d6 among them.
+    const generalWithDate1: number[] = [];
+    const discoveryWithDate1: number[] = [];
+    for (let k = 1; k <= 20; k += 1) {
+      const tick = d2 + k * TICK;
+      const got = await processed(tick);
+      const discovery = k % 5 === 0;
+      if (got.includes(date1)) (discovery ? discoveryWithDate1 : generalWithDate1).push(k);
+      // Every general tick date1 does not take serves the live slate (the
+      // planner's own today-targets for the other leagues, fetched once on a
+      // grid tick, may pack beside it — light, so no cost to the live slate).
+      if (!discovery && !got.includes(date1)) expect(got, `tick +${String(k)}`).toContain(live);
+    }
+    expect(generalWithDate1).toHaveLength(1); // the one spill (403 #2)…
+    expect(generalWithDate1[0]).toBeLessThan(5); // …right after d2
+    // 403 #2 from a general tick snaps to d4 (k = 10), 403 #3 from d4 steps 10
+    // ticks to d6 (k = 20): on the grid, never a general tick again.
+    expect(discoveryWithDate1).toEqual([10, 20]);
+    const row = await guardRow(date1);
+    expect(row.consecutive_failures).toBe(4);
+    expect(row.next_run_at).toBe(d2 + 40 * TICK); // 403 #4 at d6: step 20 → d6 + 20 ticks
+    expect(row.next_run_at % (5 * TICK)).toBe(0); // still on the grid
+  });
+
   it('(F5) a live slate that 403s ONCE is due at the very next tick, and a 200 there puts it back on every tick', async () => {
     // Measured 2026-11-08 04:24 UTC: one transient 403 on the live CFB slate
     // backed it off 15 min. Now the first failure costs exactly one tick.

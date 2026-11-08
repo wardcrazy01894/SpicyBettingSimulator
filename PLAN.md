@@ -1944,7 +1944,10 @@ consecutive failure on, `min(5 ticks (15 min) × 2^(n−2), 120 ticks (6 h))` �
 15 min, 30, 60, 120, 240, then the 6 h ceiling from the 7th consecutive failure
 — every failure reported in `job_runs.stats.failures[]`. The first step is one
 tick because ESPN's edge 403s the Worker intermittently (§14.8): one bad answer
-must not freeze a live slate for 15 min. A sustained outage costs at most **4
+must not freeze a live slate for 15 min. The one exception is a target that has
+NEVER fetched (`last_ok_at IS NULL`): it weighs big and runs alone, so each of
+its steps is snapped onto the discovery grid instead of a general tick
+(§24.7 (c)). A sustained outage costs at most **4
 fetches in any hour** per target (at ticks 0, 1, 6, 16; then 36, 76, …), against
 3 before F5 and nowhere near the 20 a one-tick retry would cost. **A
 failed fetch or a parse error writes nothing to `games`/`game_lines`** — parse first,
@@ -8690,20 +8693,27 @@ still claims what it bumped (§9.3).
   is older than the T − 1 ms stamp and wins. The burst test uses `in_progress`
   slates only, so it cannot see (b); it is bounded to one tick per slip. (c)
   Fetch FAILURES interact with the grid (F5): a never-fetched date whose fetch
-  fails retries at the NEXT discovery tick, not the next general one —
-  `computeNextRunAt` sends a `last_ok_at IS NULL` target back to the grid, and
-  every later backoff step is a whole number of discovery periods. Alone, that
-  costs no general tick (tested). INSIDE A BURST it is not enough: the next
-  grid slot already belongs to the next burst date, stamped 1 ms earlier, which
-  wins the discovery pick; the failed date is then the oldest due row on the
-  general tick after it and runs alone there — **at most ONE live tick per
-  failed burst date**, accepted and tested as a bound (two of ~22 fetches
-  403'd on the first night, so a 10-date burst expects about one such tick).
-  The F2 chain anchor excludes failed rows, so the chain does not step around
-  the retry; the fix, if this ever matters, is to re-stamp a failed
-  never-fetched date at the END of the chain in the reschedule itself. A
-  target that has fetched before retries on the very next tick and pays with
-  its own slot. Before F2 the planner
+  fails retries on the DISCOVERY grid, never a general tick — for a
+  `last_ok_at IS NULL` target `computeNextRunAt` snaps EVERY failure's step to
+  the first discovery tick at or after it (the step itself from a grid tick,
+  since each step is a whole number of discovery periods; at most one period
+  later from a general tick). The snap is unconditional because a retry that
+  has spilled onto a general tick (next sentence) would otherwise anchor every
+  later step off the grid too. Alone — outside a burst — a never-fetched date
+  therefore costs no general tick however many times it fails (tested, with a
+  date that 403s on every call). INSIDE A BURST the grid slot the retry lands
+  on may already belong to the next burst date, stamped 1 ms earlier, which
+  wins the discovery pick; the failed date is then the oldest due row on a
+  general tick shortly after it (the first such tick a live slate was not
+  already due on) and runs alone there — **one live tick per failed retry
+  that collides with the burst, none once the burst has drained**, accepted
+  and tested as a bound (two of ~22 fetches 403'd on the first night, so a
+  10-date burst expects about one such tick; two failures in a row on one
+  date, about one burst in ten). The F2 chain anchor excludes failed rows, so
+  the chain does not step around the retry; the fix, if this ever matters, is
+  to re-stamp a failed never-fetched date at the END of the chain in the
+  reschedule itself. A target that has fetched before retries on the very
+  next tick and pays with its own slot. Before F2 the planner
   stamped `next_run_at = now`, and the burst drained on consecutive general
   ticks ahead of every live slate for ~24–30 minutes (~60 before M13b); bet
   locks are kickoff-based, so no money ever moved.
