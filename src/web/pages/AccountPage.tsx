@@ -33,7 +33,7 @@ import type { BankrollView, LedgerEntry } from '../../shared/api-types.js';
 
 /**
  * "Remove a bust badge" — the player pays BUST_BUYOUT_CENTS from this balance
- * to retire one 💀 (PLAN.md §4.5). Shown only on the MAIN balance, only while
+ * to retire one bust badge (PLAN.md §4.5). Shown only on the MAIN balance, only while
  * a badge exists and the balance is STRICTLY above the price — the server
  * enforces the same two conditions inside the ledger INSERT, so the button is
  * a courtesy, not the guard.
@@ -76,9 +76,9 @@ function BustBuyout(props: { readonly balance: BankrollView }): ReactElement | n
         <>
           <p className="muted">
             This deducts <strong>{price}</strong> from your balance ({formatCents(b.balanceCents)} →{' '}
-            {after}) and removes one 💀 from your name on the leaderboard. It is not refundable. The
-            money goes back to the house as the refill repaid, so your net profit and your rank do
-            not change — only your balance does.
+            {after}) and removes one bust badge from your name on the leaderboard. It is not
+            refundable. The money goes back to the house as the refill repaid, so your net profit
+            and your rank do not change — only your balance does.
           </p>
           <div className="row-actions">
             <button

@@ -6,7 +6,7 @@
  * /account. It appears only while the account is busted — `isBusted`, the
  * same rule the server applies inside the ledger INSERT — and offers exactly
  * one thing: `REFILL_DEFAULT_CENTS`, one click, no confirm step. The copy says
- * what the click costs (a 💀, and the loss staying on the board) because that
+ * what the click costs (a bust badge, and the loss staying on the board) because that
  * IS the confirm.
  *
  * It cannot be hit twice. The button disables on the first click and a ref
@@ -27,7 +27,7 @@ import { formatCents, isBusted } from '../../shared/validate.js';
 import type { BankrollView } from '../../shared/api-types.js';
 
 export const REFILL_TITLE = 'Run out of money?';
-export const REFILL_RECEIPT = `Refilled ${formatCents(REFILL_DEFAULT_CENTS)}. One 💀 added beside your name.`;
+export const REFILL_RECEIPT = `Refilled ${formatCents(REFILL_DEFAULT_CENTS)}. One bust badge added beside your name.`;
 
 export function RefillPrompt(props: {
   readonly balance: BankrollView | undefined;
@@ -100,8 +100,8 @@ export function RefillPrompt(props: {
         <p className="refill-title">{REFILL_TITLE}</p>
         <p className="refill-text">
           You are at {formatCents(balance.equityCents)} with nothing open. Take a{' '}
-          <strong>{amount}</strong> refill: it adds a 💀 beside your name on the leaderboard and
-          joins what you have bought in, so what you lost stays on the board.
+          <strong>{amount}</strong> refill: it adds a bust badge beside your name on the leaderboard
+          and joins what you have bought in, so what you lost stays on the board.
         </p>
       </div>
       <button type="button" className="btn btn-primary" disabled={busy} onClick={refill}>

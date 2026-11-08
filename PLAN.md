@@ -824,7 +824,9 @@ deposit_refill + Σ bust_buyout` on the MAIN balance — what the house has
    `netCents` and `bustCount` (§11.5), and `AdminUserView` carries
    `balanceCents` and `bustCount` so the Users tab shows who is busted.
 
-3. **Each refill is one bust badge (💀) beside the name, and a player can
+3. **Each refill is one bust badge beside the name (💀 for the first, 🍤 for the
+   second, a photo — `public/bust-3.png` — for the third; past three the count
+   chip keeps the 💀; `bustBadgeGlyph`, since 2026-11-08), and a player can
    BUY one off for `BUST_BUYOUT_CENTS` ($1,000)**: `POST /api/bankroll/buyout`
    writes one `bust_buyout` row, `-BUST_BUYOUT_CENTS`, whose `ref_id` is the
    id of the OLDEST `deposit_refill` not yet retired — so `UNIQUE (bankroll_id,
@@ -855,7 +857,7 @@ buyouts` is never negative. The guard — a badge exists and `balance_cents`
    buyout's `ref_id` — when (and for how much) its badge was bought off, or
    `null` while it is still on the name. `bustCount` is the number of entries
    still `null`. `/players/:userId` shows the count as "1 bust, 1 bought
-   off" beside the skulls and the dated list under the stats, so a bought-off
+   off" beside the badges and the dated list under the stats, so a bought-off
    bust stays visible as history rather than vanishing with its badge.
 
 `migrations/0011_ledger_refill_buyout.sql` is the leaf rebuild of `ledger`
