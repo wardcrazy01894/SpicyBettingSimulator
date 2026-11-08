@@ -77,7 +77,12 @@ export function buildScoreboardUrl(baseUrl: string, league: League, target: Slat
   if (target.kind !== 'date') {
     // v1 never constructs a week target (PLAN.md §8.2); the union member only
     // exists so a later optimisation needs no schema migration.
-    throw new ProviderError(`week targets are not supported in v1 (league ${league})`, false, null);
+    throw new ProviderError(
+      `week targets are not supported in v1 (league ${league})`,
+      false,
+      null,
+      'unsupported',
+    );
   }
   const base = baseUrl.replace(/\/+$/, '');
   const route = ESPN_SCOREBOARD[league];
@@ -118,8 +123,11 @@ export async function fetchScoreboard(
     });
   } catch (err) {
     // An abort, a DNS failure and a TLS failure are all retryable: none of them
-    // says anything about the shape of the data.
-    throw new ProviderError(`espn: request failed (${describe(err)})`, true, null);
+    // says anything about the shape of the data. `AbortSignal.timeout` rejects
+    // with a `TimeoutError`; anything else is the network (PLAN.md §24.6).
+    const name = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : null;
+    const kind = name === 'TimeoutError' ? 'timeout' : 'network';
+    throw new ProviderError(`espn: request failed (${describe(err)})`, true, null, kind);
   }
 
   if (!response.ok) {
@@ -129,6 +137,7 @@ export async function fetchScoreboard(
       `espn: HTTP ${String(response.status)} for ${url}`,
       response.status >= 500 || response.status === 429,
       response.status,
+      'http',
     );
   }
 
@@ -136,7 +145,12 @@ export async function fetchScoreboard(
   try {
     payload = await response.json();
   } catch (err) {
-    throw new ProviderError(`espn: response was not JSON (${describe(err)})`, true, 200);
+    throw new ProviderError(
+      `espn: response was not JSON (${describe(err)})`,
+      true,
+      200,
+      'bad-json',
+    );
   }
 
   // Parse FULLY into memory before anyone writes a row. The parser is total: it

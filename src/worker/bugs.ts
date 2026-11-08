@@ -10,8 +10,10 @@
  *      KEPT, which is the whole point of writing it first. An admin can read it
  *      off `GET /api/admin/bugs` and file it by hand.
  *
- * The GitHub call is the ONLY outbound request this module makes, and the token
- * never leaves this file: it is read from config and put in one header.
+ * The GitHub calls are the ONLY outbound requests this module makes, and the
+ * token never leaves this file: it is read from config and put in one header.
+ * `createIssue` / `commentOnIssue` / `setIssueState` are also the transport of
+ * the in-app alerts (`alerts.ts`, PLAN.md §24.6b) — extended here, not forked.
  */
 
 import type {
@@ -127,14 +129,21 @@ export async function createBugReport(
   return { id, issueNumber: filed.number, issueUrl: filed.url };
 }
 
-/** One POST to the Issues API. Throws on non-2xx, timeout, or a bodyless 201. */
-async function fileIssue(
+/**
+ * THE GitHub client — the one place a GitHub request is built, shared by bug
+ * reports and by the in-app alerts (`alerts.ts`, PLAN.md §24.6b). The token
+ * is put in one header and never logged. Throws on a non-2xx or a timeout;
+ * returns the parsed JSON body (or null when there is none).
+ */
+async function githubRequest(
   github: GitHubConfig,
-  issue: { title: string; body: string; labels: readonly string[] },
-): Promise<{ number: number; url: string }> {
-  const url = `${github.apiBaseUrl}/repos/${github.repo}/issues`;
-  const response = await fetch(url, {
-    method: 'POST',
+  method: 'POST' | 'PATCH',
+  path: string,
+  body: unknown,
+  timeoutMs: number,
+): Promise<unknown> {
+  const response = await fetch(`${github.apiBaseUrl}/repos/${github.repo}${path}`, {
+    method,
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${github.token}`,
@@ -142,15 +151,34 @@ async function fileIssue(
       'User-Agent': GITHUB_USER_AGENT,
       'X-GitHub-Api-Version': '2022-11-28',
     },
-    body: JSON.stringify({ title: issue.title, body: issue.body, labels: [...issue.labels] }),
-    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
     // Never log the body: GitHub echoes request fields on 422 and that is the
     // reporter's text, not something the log needs.
     throw new Error(`GitHub responded ${String(response.status)}`);
   }
-  const parsed: unknown = await response.json();
+  try {
+    return (await response.json()) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** Create an issue. Throws on non-2xx, timeout, or a 201 without an issue number. */
+export async function createIssue(
+  github: GitHubConfig,
+  issue: { title: string; body: string; labels: readonly string[] },
+  timeoutMs: number = GITHUB_TIMEOUT_MS,
+): Promise<{ number: number; url: string }> {
+  const parsed = await githubRequest(
+    github,
+    'POST',
+    '/issues',
+    { title: issue.title, body: issue.body, labels: [...issue.labels] },
+    timeoutMs,
+  );
   if (
     typeof parsed !== 'object' ||
     parsed === null ||
@@ -166,6 +194,40 @@ async function fileIssue(
     throw new Error('GitHub responded with a non-https issue URL');
   }
   return { number: body.number, url: body.html_url };
+}
+
+/** Comment on an issue. Throws on non-2xx or timeout. */
+export async function commentOnIssue(
+  github: GitHubConfig,
+  issueNumber: number,
+  body: string,
+  timeoutMs: number = GITHUB_TIMEOUT_MS,
+): Promise<void> {
+  await githubRequest(
+    github,
+    'POST',
+    `/issues/${String(issueNumber)}/comments`,
+    { body },
+    timeoutMs,
+  );
+}
+
+/** Open or close an issue. Throws on non-2xx or timeout. */
+export async function setIssueState(
+  github: GitHubConfig,
+  issueNumber: number,
+  state: 'open' | 'closed',
+  timeoutMs: number = GITHUB_TIMEOUT_MS,
+): Promise<void> {
+  await githubRequest(github, 'PATCH', `/issues/${String(issueNumber)}`, { state }, timeoutMs);
+}
+
+/** One POST to the Issues API, for a bug report. */
+function fileIssue(
+  github: GitHubConfig,
+  issue: { title: string; body: string; labels: readonly string[] },
+): Promise<{ number: number; url: string }> {
+  return createIssue(github, issue, GITHUB_TIMEOUT_MS);
 }
 
 interface BugReportRow {

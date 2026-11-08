@@ -9,10 +9,23 @@
  * Crash safety: every durable effect a job has is either an idempotent upsert or
  * a single atomic per-bet batch, so "died halfway" is always recoverable by
  * running again. The lease expires on its own; no cleanup is needed.
+ *
+ * A KILLED run (CPU or wall limit — not an exception, so nothing here sees it)
+ * leaves its `job_runs` row in `running`. The next run of the same job REAPS
+ * such rows once they are older than `JOB_REAP_AFTER_MS`, turning them into
+ * `error` rows the Jobs page and the `job-error` alert can see (PLAN.md §24.4).
+ *
+ * After the run is final and its lease released, `evaluateAlerts` (alerts.ts,
+ * PLAN.md §24.6b) records what is wrong and spends at most two GitHub calls on
+ * it. It never throws and never re-statuses the run.
  */
 
-import { JOB_LEASE_TTL_MS } from '../shared/constants.js';
+/** The error text a reaped row carries (PLAN.md §24.4). */
+export const REAPED_ERROR = 'no finish recorded: killed (CPU or wall limit) or crashed';
+
+import { JOB_LEASE_TTL_MS, JOB_REAP_AFTER_MS } from '../shared/constants.js';
 import type { EpochMs } from '../shared/types.js';
+import { alertActivity, evaluateAlerts } from './alerts.js';
 import type { Env } from './env.js';
 import { newId } from './db.js';
 import { refreshTargetsPerRun, runRefresh } from './ingest.js';
@@ -209,6 +222,25 @@ export async function withJobRun(
     return skipped;
   }
 
+  // THE REAPER (PLAN.md §24.4): this job's `running` rows that STARTED more
+  // than JOB_REAP_AFTER_MS ago cannot belong to a live invocation (15 min is
+  // Cloudflare's wall-clock ceiling for a cron), so they were killed. It is
+  // deliberately NOT the lease TTL: a slow live run can outlast its lease, and
+  // reaping it would fire a false "killed" alert. Writes zero rows normally.
+  let reaped = 0;
+  try {
+    const res = await env.DB.prepare(
+      `UPDATE job_runs SET status = 'error', error = ?1, finished_at = started_at
+        WHERE job = ?2 AND status = 'running' AND started_at < ?3`,
+    )
+      .bind(REAPED_ERROR, job, now - JOB_REAP_AFTER_MS)
+      .run();
+    const changes = (res.meta as { changes?: unknown }).changes;
+    reaped = typeof changes === 'number' ? changes : 0;
+  } catch (err) {
+    console.error('[jobs] failed to reap killed runs', job, err);
+  }
+
   // `insertRun` goes inside a try for the same reason the finalize batch below
   // does: this function's contract is "always resolves", and an uncaught D1
   // error here would reject into `scheduled()` and take the whole cron
@@ -270,7 +302,35 @@ export async function withJobRun(
     console.error('[jobs] failed to finalize run', job, runId, err);
   }
 
-  return finished;
+  // ALERTS, strictly after the finalize-and-release batch: a GitHub call never
+  // holds the lease, and nothing below can change `finished.status`
+  // (PLAN.md §24.6b). `evaluateAlerts` never throws; the guard here covers the
+  // two reads that feed it.
+  let dayRows: number | null = null;
+  if (job === 'refresh') {
+    try {
+      dayRows = await dayRowsWritten(env, now);
+    } catch (err) {
+      console.error('[jobs] failed to read dayRowsWritten for alerts', err);
+    }
+  }
+  const alerts = await evaluateAlerts(env, now, finished, { reaped, dayRowsWritten: dayRows });
+  if (!alertActivity(alerts)) return finished;
+
+  // Something was recorded or sent: fold it into THIS run's stats, one guarded
+  // UPDATE of the already-final row (never its status). A healthy run records
+  // nothing and so writes nothing here.
+  try {
+    await env.DB.prepare(
+      `UPDATE job_runs SET stats = json_set(COALESCE(stats, '{}'), '$.alerts', json(?1))
+        WHERE id = ?2 AND (stats IS NULL OR json_valid(stats))`,
+    )
+      .bind(JSON.stringify(alerts), runId)
+      .run();
+  } catch (err) {
+    console.error('[jobs] failed to record alert stats', job, runId, err);
+  }
+  return { ...finished, stats: { ...(finished.stats ?? {}), alerts } };
 }
 
 async function insertRun(env: Env, run: JobRun): Promise<void> {
@@ -365,7 +425,7 @@ const ROWS_WRITTEN_WINDOW_MS = 24 * 60 * 60 * 1000;
  * already wrong. `json_valid(NULL)` is NULL, so a missing `stats` is skipped by
  * the same clause, and `SUM` ignores the NULLs either way.
  */
-async function dayRowsWritten(env: Env, now: EpochMs): Promise<number> {
+export async function dayRowsWritten(env: Env, now: EpochMs): Promise<number> {
   const row = await env.DB.prepare(
     `SELECT COALESCE(SUM(
               CASE WHEN json_valid(stats) THEN json_extract(stats, '$.rowsWritten') END
@@ -379,8 +439,42 @@ async function dayRowsWritten(env: Env, now: EpochMs): Promise<number> {
 }
 
 /**
+ * Rolling-24h sum of refresh runs' `stats.espnStatus` (PLAN.md §24.6): one
+ * count per target fetched, in the fixed vocabulary, so the Jobs page can show
+ * a 403/429 regime as a number. Reads ONLY the `espnStatus` sub-object of each
+ * refresh run in the window (≤ 480 tiny JSON strings), never the whole blob,
+ * and sums in code. The `json_valid` guard is load-bearing for the reason
+ * `dayRowsWritten` gives: `json_extract` raises on malformed JSON.
+ */
+async function dayEspnStatus(env: Env, now: EpochMs): Promise<Record<string, number>> {
+  const res = await env.DB.prepare(
+    `SELECT CASE WHEN json_valid(stats) THEN json_extract(stats, '$.espnStatus') END AS s
+       FROM job_runs
+      WHERE job = 'refresh' AND started_at >= ?`,
+  )
+    .bind(now - ROWS_WRITTEN_WINDOW_MS)
+    .all<{ s: string | null }>();
+  const total: Record<string, number> = {};
+  for (const row of res.results) {
+    if (typeof row.s !== 'string') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.s);
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue;
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === 'number' && Number.isFinite(value))
+        total[key] = (total[key] ?? 0) + value;
+    }
+  }
+  return total;
+}
+
+/**
  * The last `limit` runs, newest first, each with a rolling-24h `dayRowsWritten`
- * folded INTO its `stats`.
+ * (and, since M13a, `dayEspnStatus`) folded INTO its `stats`.
  *
  * Why inside `stats` rather than beside it: `api-types.ts` is frozen after M2d
  * (CLAUDE.md "Merge-conflict etiquette"), `JobRunsResponse` has no room for an
@@ -402,8 +496,12 @@ export async function recentRuns(
     .all<JobRunDbRow>();
 
   const total = await dayRowsWritten(env, now);
+  const espn = await dayEspnStatus(env, now);
   return res.results.map((row) => {
     const run = toJobRun(row);
-    return { ...run, stats: { ...(run.stats ?? {}), dayRowsWritten: total } };
+    return {
+      ...run,
+      stats: { ...(run.stats ?? {}), dayRowsWritten: total, dayEspnStatus: espn },
+    };
   });
 }

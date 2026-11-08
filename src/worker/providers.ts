@@ -61,15 +61,25 @@ export interface OddsProvider {
   }>;
 }
 
+/**
+ * What went wrong, in a vocabulary the ESPN status counters can sum (PLAN.md
+ * §24.6): a non-2xx (`status` says which), an `AbortSignal.timeout` firing,
+ * any other `fetch` rejection, a body that is not JSON, or a target shape the
+ * provider does not serve.
+ */
+export type ProviderErrorKind = 'http' | 'timeout' | 'network' | 'bad-json' | 'unsupported';
+
 /** Thrown by a provider on a non-2xx, a timeout, or unparseable JSON. */
 export class ProviderError extends Error {
   readonly retryable: boolean;
   readonly status: number | null;
+  readonly kind: ProviderErrorKind;
 
-  constructor(message: string, retryable: boolean, status: number | null) {
+  constructor(message: string, retryable: boolean, status: number | null, kind: ProviderErrorKind) {
     super(message);
     this.name = 'ProviderError';
     this.retryable = retryable;
     this.status = status;
+    this.kind = kind;
   }
 }

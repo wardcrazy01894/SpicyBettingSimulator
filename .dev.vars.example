@@ -21,6 +21,11 @@ IP_HASH_SALT="local-dev-ip-salt-change-me"
 # ONE repo) to exercise it against a scratch repo — never the real one from dev.
 # GITHUB_TOKEN="github_pat_..."
 # GITHUB_REPO="you/scratch-repo"
+# The same token turns on the in-app ALERTS (PLAN.md §24.6b): job failures,
+# parked targets and stale refreshes become deduplicated GitHub issues that
+# @mention ALERT_MENTION_LOGIN. Blank it locally so a scratch repo does not
+# ping the real account.
+# ALERT_MENTION_LOGIN=""
 
 # The secondary odds provider (The Odds API, PLAN.md §21). Leave ODDS_API_KEY
 # unset and the feature is OFF. Locally the fixture server also serves the
