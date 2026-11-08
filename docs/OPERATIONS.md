@@ -396,24 +396,34 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   has action on every market, overtime included — EXCEPT a final short of regulation (NBA
   `period` < 4, college < 2: an abandoned game), which is held `undecidable`: the bet stays
   `pending`, reaches `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`, and the `settle-stuck` alert
-  emails you (PLAN §24.11). **Procedure for a stuck short final** — there is no in-app void yet
-  (an admin "void game" action is the follow-up; `retry-settlement` would regrade the same final):
-  decide from the box score, then either VOID it, so the next settle refunds every leg on it:
+  opens a GitHub issue (PLAN §24.11). **Procedure for a stuck short final** — there is no in-app
+  void yet (an admin "void game" action is the follow-up; `retry-settlement` would regrade the same
+  final): decide from the box score, then either VOID it, so the next settle voids every leg on
+  that game (a straight bet is refunded; a parlay drops the leg and grades the rest at the reduced
+  price):
 
   ```bash
-  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET status = 'canceled', status_detail = 'admin: abandoned game, voided' WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
+  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET status = 'canceled', status_detail = 'admin: abandoned game, voided', updated_at = unixepoch() * 1000 WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
   ```
 
   or, if ESPN under-reported the period and the game WAS complete, correct it so it grades
   (`period = 4` for the NBA):
 
   ```bash
-  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET period = 2 WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
+  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET period = 2, updated_at = unixepoch() * 1000 WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
   ```
 
-  Either write changes the game row, which resets the bet's `settle_attempts` (`RESET_DEFERRED_SQL`),
-  so the next settle tick finishes it; confirm with `npm run db:reconcile -- --remote`. (If
-  `wrangler d1 execute --remote` answers 7403, `npx wrangler login` first — the token is stale.)
+  **`updated_at` is the part that matters**: the settle job re-selects a bet past
+  `MAX_SETTLE_ATTEMPTS` only when the game row's `updated_at` is newer than its last attempt
+  (`RESET_DEFERRED_SQL`), and nothing bumps that column but an explicit SET — without it the bet
+  stays in `stuck[]` for good. (`unixepoch() * 1000` on D1 = `1794110373000`, verified against the
+  local D1 on 2026-11-08; `CAST(strftime('%s','now') AS INTEGER) * 1000` is the same.) Then the next
+  settle tick finishes it; confirm with `npm run db:reconcile -- --remote`. The void branch is the
+  safe default: `canceled` is terminal in the ingest upsert, so ESPN cannot flip it back. The
+  period-correction branch is only reliable once ESPN itself shows the corrected period or the
+  date target has left the window — until then the next refresh writes the short period back and
+  the bet returns to `undecidable`. (If `wrangler d1 execute --remote` answers 7403, `npx wrangler
+login` first — the token is stale.)
   A postponed game is voided the next morning on the
   MLB evidence rule (`auto-void: NCAAB postponed, …` / `auto-void: NBA postponed, …`). A college
   game first seen on its own ET day has no conference ids (ESPN drops `conferenceId` on game day) —
