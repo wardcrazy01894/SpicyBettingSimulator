@@ -230,6 +230,25 @@ export function bustSummary(total: number, boughtOff: number): string {
   return boughtOff <= 0 ? busts : `${busts}, ${String(boughtOff)} bought off`;
 }
 
+/**
+ * What the i-th bust badge (0-based) shows (PLAN.md §4.5, owner decision
+ * 2026-11-08): a skull for the first bust, a shrimp for the second, and a
+ * photo for the third. Past three the count chip keeps the skull. Pure, so
+ * the sequence is testable without the DOM; the image lives at
+ * `public/bust-3.png` and is served as a static asset.
+ */
+export type BustBadgeGlyph =
+  | { readonly kind: 'emoji'; readonly text: string }
+  | { readonly kind: 'image'; readonly src: string };
+
+export const BUST_BADGE_IMAGE_SRC = '/bust-3.png';
+
+export function bustBadgeGlyph(index: number): BustBadgeGlyph {
+  if (index <= 0) return { kind: 'emoji', text: '💀' };
+  if (index === 1) return { kind: 'emoji', text: '🍤' };
+  return { kind: 'image', src: BUST_BADGE_IMAGE_SRC };
+}
+
 export function bustBadgeTitle(count: number): string {
   if (count <= 0) return '';
   const times = count === 1 ? 'once' : count === 2 ? 'twice' : `${String(count)} times`;

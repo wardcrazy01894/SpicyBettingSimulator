@@ -11,7 +11,7 @@ games at the prices the books are posting. Games go final, bets grade
 themselves, the money moves, and a leaderboard settles the argument. There is
 no top-up button, so bet like it's real: lose the lot and a "Run out of
 money?" prompt will refill you $1,000, but the loss stays on the board and a
-💀 goes beside your name.
+a badge goes beside your name — 💀 the first time, 🍤 the second, a photo the third.
 
 ---
 

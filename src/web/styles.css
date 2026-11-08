@@ -684,6 +684,14 @@ abbr.help {
   text-transform: none;
   letter-spacing: 0;
 }
+/* The third badge is a photo: sized to the emoji line, round, never stretched. */
+.bust-badge-img {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  object-fit: cover;
+}
 .bust-buyout,
 .admin-refill-details,
 .bust-history {
