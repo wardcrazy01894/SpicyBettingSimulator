@@ -121,6 +121,11 @@ describe('unteasableReason (M12c)', () => {
     expect(unteasableReason('mlb', 'moneyline')).toBe('MLB lines cannot be teased');
   });
 
+  it('greys every basketball cell, naming the league (M13c)', () => {
+    expect(unteasableReason('ncaab', 'spread')).toBe('NCAAB lines cannot be teased');
+    expect(unteasableReason('nba', 'total')).toBe('NBA lines cannot be teased');
+  });
+
   it('leaves football spreads and totals teasable', () => {
     for (const league of ['nfl', 'ncaaf'] as const) {
       expect(unteasableReason(league, 'spread')).toBeNull();

@@ -27,12 +27,27 @@ export type SlateTarget =
       readonly seasonType: number;
       readonly week: number;
     }
-  | { readonly kind: 'date'; readonly dateKey: string };
+  | {
+      readonly kind: 'date';
+      readonly dateKey: string;
+      /**
+       * A per-conference SEGMENT of an `ncaab` date (PLAN.md §24.8, dormant):
+       * the ESPN `groups` id, from `ingest_targets.conference_id`. Absent or
+       * null for every target the planner emits while `NCAAB_TARGET_SHAPE`
+       * is `'full'`, and ignored by every other league's route.
+       */
+      readonly conferenceId?: string | null;
+    };
 
 export interface ProviderSlate {
   readonly games: readonly Game[];
   readonly lines: readonly GameLines[];
   readonly warnings: readonly ParseWarning[];
+  /**
+   * Markets the book pulled ("OFF"), counted rather than warned (PLAN.md
+   * §24.10). Optional so a hand-built test slate need not name it; absent = 0.
+   */
+  readonly pulled?: number;
   readonly fetchedAt: number;
   readonly season: number | null;
   readonly week: number | null;

@@ -25,6 +25,10 @@ export const BOARD_HAS_WEEKS: Readonly<Record<League, boolean>> = {
   nfl: true,
   ncaaf: true,
   mlb: false,
+  // Basketball has no weeks either (PLAN.md §24.14): both boards group by ET
+  // date across their windows (today + 2 for college, today + 1 for the NBA).
+  ncaab: false,
+  nba: false,
 };
 
 export interface DayGroup {

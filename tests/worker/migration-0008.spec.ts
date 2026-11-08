@@ -88,7 +88,16 @@ function migration0008(): readonly string[] {
     if (m === undefined) throw new Error(`${prefix} not in TEST_MIGRATIONS`);
     return m.queries;
   };
-  return [...pick('0008_'), ...pick('0009_'), ...pick('0010_'), ...pick('0011_')];
+  // 0009 rebuilt ingest_targets without 0012's guard columns; they go back
+  // before 0013 (basketball), whose copy-back names them (PLAN.md §24.9).
+  return [
+    ...pick('0008_'),
+    ...pick('0009_'),
+    ...pick('0010_'),
+    ...pick('0011_'),
+    ...pick('0012_').filter((q) => q.includes('ALTER TABLE ingest_targets')),
+    ...pick('0013_'),
+  ];
 }
 
 async function schemaNames(type: 'trigger' | 'index' | 'table'): Promise<string[]> {

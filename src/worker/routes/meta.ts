@@ -67,14 +67,19 @@ export function metaRoutes(): Hono<AppContext> {
   });
 
   app.get('/config', async (c) => {
-    const [nfl, ncaaf, mlb] = await Promise.all([
+    const [nfl, ncaaf, mlb, ncaab, nba] = await Promise.all([
       currentSeasonFor(c.env, 'nfl', c.var.now),
       currentSeasonFor(c.env, 'ncaaf', c.var.now),
       currentSeasonFor(c.env, 'mlb', c.var.now),
+      // ESPN's season year for basketball is the year the season ENDS
+      // (2027 for a November 2026 game, PLAN.md §24.2); it is whatever the
+      // stored games say, like every other league.
+      currentSeasonFor(c.env, 'ncaab', c.var.now),
+      currentSeasonFor(c.env, 'nba', c.var.now),
     ]);
     const body: ConfigResponse = {
       leagues: LEAGUES,
-      currentSeason: { nfl, ncaaf, mlb },
+      currentSeason: { nfl, ncaaf, mlb, ncaab, nba },
       minStakeCents: MIN_STAKE_CENTS,
       maxParlayLegs: MAX_PARLAY_LEGS,
       cutoffBufferMs: BET_CUTOFF_BUFFER_MS,

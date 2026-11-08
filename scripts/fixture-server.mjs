@@ -14,6 +14,8 @@
  *   /apis/site/v2/sports/football/nfl/scoreboard?dates=YYYYMMDD
  *   /apis/site/v2/sports/football/college-football/scoreboard?groups=80&dates=YYYYMMDD
  *   /apis/site/v2/sports/baseball/mlb/scoreboard?dates=YYYYMMDD   (PLAN.md §23.4)
+ *   /apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=50&dates=…
+ *   /apis/site/v2/sports/basketball/nba/scoreboard?dates=YYYYMMDD  (PLAN.md §24.10)
  *   /v4/sports                                          The Odds API's FREE probe
  *   /v4/sports/americanfootball_{nfl|ncaaf}/odds        The Odds API's odds (PLAN.md §21)
  *
@@ -39,6 +41,12 @@
  * the one committed slate (docs/samples/espn-mlb-scoreboard-2026-09-24.json)
  * is moved onto the CURRENT ET date, and its in-progress games are rewound to
  * scheduled with a synthetic run line (±1.5), total and moneyline.
+ *
+ * Basketball (M13c) is shifted by whole DAYS the same way: the college capture
+ * (2026-11-07, 61 games) onto today's ET date, and the two NBA captures (11-07
+ * and its "lines a day ahead" 11-08 twin) onto today and tomorrow. `groups=`
+ * is still ignored, so a dormant conference-segment request (§24.8) is served
+ * the whole slate.
  */
 
 import { createServer } from 'node:http';
@@ -58,7 +66,12 @@ const FILES = {
   nfl: 'espn-nfl-scoreboard-2026-09-17..28.json',
   'college-football': 'espn-cfb-scoreboard-2026-09-17..26.json',
   mlb: 'espn-mlb-scoreboard-2026-09-24.json',
+  ncaab: 'espn-ncaab-scoreboard-2026-11-07.json',
+  nba: 'espn-nba-scoreboard-2026-11-07.json',
+  nba2: 'espn-nba-scoreboard-2026-11-08.json',
 };
+/** The basketball captures' first ET date (both 2026-11-07), as a UTC calendar date. */
+const BASKETBALL_SAMPLE_DATE_UTC = Date.UTC(2026, 10, 7);
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** The MLB capture's ET date, as a UTC calendar date for whole-day arithmetic. */
 const MLB_SAMPLE_DATE_UTC = Date.UTC(2026, 8, 24);
@@ -88,14 +101,34 @@ function loadSample(league) {
  * on date KEYS, not on elapsed milliseconds, so it lands on today's date even
  * across a DST change (a first pitch may drift by an hour; the date does not).
  */
-function daysToShiftMlb(now) {
+function daysToShiftMlb(now, sampleDateUtc = MLB_SAMPLE_DATE_UTC) {
   const key = etDateKey(now);
   const today = Date.UTC(
     Number(key.slice(0, 4)),
     Number(key.slice(4, 6)) - 1,
     Number(key.slice(6, 8)),
   );
-  return Math.max(0, Math.round((today - MLB_SAMPLE_DATE_UTC) / DAY_MS));
+  return Math.max(0, Math.round((today - sampleDateUtc) / DAY_MS));
+}
+
+/** A synthetic DraftKings block for a basketball game rewound to scheduled. */
+function syntheticBasketballOdds(competition) {
+  const odds = syntheticOdds(competition);
+  const home = competition.competitors.find((c) => c.homeAway === 'home');
+  return {
+    ...odds,
+    details: `${home.team.abbreviation} -5.5`,
+    overUnder: 221.5,
+    spread: -5.5,
+    pointSpread: {
+      home: { close: { line: '-5.5', odds: '-110' }, open: { line: '-5.5', odds: '-110' } },
+      away: { close: { line: '+5.5', odds: '-110' }, open: { line: '+5.5', odds: '-110' } },
+    },
+    total: {
+      over: { close: { line: 'o221.5', odds: '-110' }, open: { line: 'o221.5', odds: '-110' } },
+      under: { close: { line: 'u221.5', odds: '-110' }, open: { line: 'u221.5', odds: '-110' } },
+    },
+  };
 }
 
 /** Whole weeks needed to move the sample week into the week containing `now`. */
@@ -267,6 +300,14 @@ function handle(req, res) {
     serveMlb(url, res);
     return;
   }
+  const b =
+    /^\/apis\/site\/v2\/sports\/basketball\/(mens-college-basketball|nba)\/scoreboard$/.exec(
+      url.pathname,
+    );
+  if (!m && b) {
+    serveBasketball(b[1] === 'nba' ? 'nba' : 'ncaab', url, res);
+    return;
+  }
   if (!m) {
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'fixture-server: unknown path', path: url.pathname }));
@@ -315,6 +356,39 @@ function serveMlb(url, res) {
   res.end(json);
   console.log(
     `[fixtures] mlb dates=${dateKey ?? '-'} shift=${days}d -> ${body.events.length} events (${json.length} bytes)`,
+  );
+}
+
+/** Basketball: the 11-07 captures moved onto today's ET date (whole days), then filtered. */
+function serveBasketball(league, url, res) {
+  const days =
+    url.searchParams.get('shift') === '0'
+      ? 0
+      : daysToShiftMlb(Date.now(), BASKETBALL_SAMPLE_DATE_UTC);
+  const dateKey = url.searchParams.get('dates');
+  let body;
+  try {
+    const sample = loadSample(league);
+    // The NBA's two captures are consecutive dates: serve them as one slate so
+    // tomorrow's target finds tomorrow's (already priced) games.
+    const merged =
+      league === 'nba'
+        ? { ...sample, events: [...sample.events, ...loadSample('nba2').events] }
+        : sample;
+    body = filterByDate(
+      shiftPayload(merged, days, days * DAY_MS, syntheticBasketballOdds),
+      dateKey,
+    );
+  } catch (err) {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: String(err) }));
+    return;
+  }
+  const json = JSON.stringify(body);
+  res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(json);
+  console.log(
+    `[fixtures] ${league} dates=${dateKey ?? '-'} shift=${days}d -> ${body.events.length} events (${json.length} bytes)`,
   );
 }
 

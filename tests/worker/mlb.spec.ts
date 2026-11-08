@@ -232,20 +232,20 @@ describe('M12a — ingest and the board', () => {
   });
 
   it(
-    'planTargets on a Tuesday creates 7 + 7 + 1 = 15; on a Sunday night 9 + 9 + 1 = 19 ' +
+    'planTargets on a Tuesday creates 7 + 7 + 1 (+ 3 + 2 basketball, M13c) = 20; on a Sunday night 9 + 9 + 1 (+ 5) = 24 ' +
       '(counts computed by the test from boardWindowEnd, asserted against these literals)',
     async () => {
       const planned = (now: number): number =>
-        (['nfl', 'ncaaf', 'mlb'] as const)
+        (['nfl', 'ncaaf', 'mlb', 'ncaab', 'nba'] as const)
           .map((l) => etDateKeyRange(now, boardWindowEnd(l, now)).length)
           .reduce((a, b) => a + b, 0);
       const tue = Date.parse('2026-09-15T16:00:00Z'); // Tue 12:00 ET
-      expect(planned(tue)).toBe(15);
-      expect(await planTargets(env, tue)).toBe(15);
+      expect(planned(tue)).toBe(20);
+      expect(await planTargets(env, tue)).toBe(20);
       await env.DB.prepare('DELETE FROM ingest_targets').run();
       const sunNight = Date.parse('2026-09-21T01:00:00Z'); // Sun 21:00 ET
-      expect(planned(sunNight)).toBe(19);
-      expect(await planTargets(env, sunNight)).toBe(19);
+      expect(planned(sunNight)).toBe(24);
+      expect(await planTargets(env, sunNight)).toBe(24);
     },
   );
 
@@ -467,12 +467,13 @@ describe('M12a — ingest and the board', () => {
     expect(legs?.n).toBe(0);
   }
 
-  it('GET /api/config: leagues ends with mlb and currentSeason has an mlb key', async () => {
+  it('GET /api/config: leagues holds mlb and currentSeason has an mlb key', async () => {
     const res = await get('/api/config');
     expect(res.status).toBe(200);
     const body = await res.json<ConfigResponse>();
-    expect(body.leagues.at(-1)).toBe('mlb');
-    expect(Object.keys(body.currentSeason).sort()).toEqual(['mlb', 'ncaaf', 'nfl']);
+    // Basketball follows MLB since M13c (PLAN.md §24.16).
+    expect(body.leagues).toEqual(['nfl', 'ncaaf', 'mlb', 'ncaab', 'nba']);
+    expect(Object.keys(body.currentSeason).sort()).toEqual(['mlb', 'nba', 'ncaab', 'ncaaf', 'nfl']);
     await seedGame(env.DB, {
       id: `mlb:c${String(seq)}`,
       league: 'mlb',

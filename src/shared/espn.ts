@@ -56,6 +56,15 @@ export interface ParsedScoreboard {
   /** One entry per game that actually had a usable odds block. */
   readonly lines: readonly GameLines[];
   readonly warnings: readonly ParseWarning[];
+  /**
+   * How many MARKETS the book had taken off the board ("OFF", §8.3's
+   * `pulled()`), summed over the slate. Not a warning (PLAN.md §24.10): a pull
+   * is a book decision, not schema drift, and on a 155-game college slate full
+   * of 30-point favourites it would bury real drift under the warning cap. The
+   * refresh run records it as `stats.offTheBoard`; the market still counts as
+   * a gap in `lineGaps`, and the pull is still an all-null WRITE.
+   */
+  readonly pulled: number;
   /** From the payload root, useful for planning the next ingest target. */
   readonly season: number | null;
   readonly week: number | null;
@@ -340,12 +349,20 @@ type Side = ReturnType<typeof sideSnapshot>;
  * bettable for the rest of its staleness window.
  */
 interface MarketDiagnostics {
+  /** Malformed-value notes: these become a `ParseWarning`. */
   readonly notes: string[];
+  /** Markets the book PULLED: counted, never warned (PLAN.md §24.10). */
+  readonly pulledMarkets: string[];
   pulled: boolean;
 }
 
+/** A mutable tally `parseScoreboard` threads through to count pulled markets. */
+export interface PullCounter {
+  count: number;
+}
+
 /**
- * True, with the note recorded, when the book has pulled `market`: any side
+ * True, with the market recorded, when the book has pulled `market`: any side
  * that exists carries "OFF" in its line or price. Called BEFORE a market parser
  * reads a single leaf, and before the spread's top-level `spread` fallback,
  * because that number can lag the pull and a bet must never snapshot a line
@@ -354,7 +371,9 @@ interface MarketDiagnostics {
 function pulled(market: string, diag: MarketDiagnostics, ...sides: readonly Side[]): boolean {
   const off = sides.some((s) => s !== null && (isOffBoard(s.line) || isOffBoard(s.odds)));
   if (off) {
-    diag.notes.push(`${market}: off the board`);
+    // Recorded as a PULL, not a note: it is counted (`ParsedScoreboard.pulled`)
+    // and never becomes a warning (PLAN.md §24.10, M13c).
+    diag.pulledMarkets.push(market);
     diag.pulled = true;
   }
   return off;
@@ -391,8 +410,8 @@ function parseSpreadMarket(entry: unknown, diag: MarketDiagnostics): SpreadMarke
   const pointSpread = prop(entry, 'pointSpread');
   const home = sideSnapshot(prop(pointSpread, 'home'));
   const away = sideSnapshot(prop(pointSpread, 'away'));
-  // A pulled market is a book decision, not a parse failure, and it is named as
-  // such so the operator does not chase a feed regression.
+  // A pulled market is a book decision, not a parse failure: it is counted, not
+  // warned, so the operator does not chase a feed regression.
   if (pulled('spread', diag, home, away)) return null;
   if (home === null || away === null) return null;
 
@@ -519,6 +538,7 @@ export function parseEvent(
   league: Game['league'],
   fetchedAt: number,
   warnings?: ParseWarning[],
+  pulls?: PullCounter,
 ): { readonly game: Game; readonly lines: GameLines | null } | null {
   const eventId = asIdString(prop(event, 'id'));
   const warn = (reason: string): null => {
@@ -588,7 +608,15 @@ export function parseEvent(
 
   return {
     game,
-    lines: parseLines(game.id, competition['odds'], fetchedAt, eventId, game.shortName, warnings),
+    lines: parseLines(
+      game.id,
+      competition['odds'],
+      fetchedAt,
+      eventId,
+      game.shortName,
+      warnings,
+      pulls,
+    ),
   };
 }
 
@@ -611,6 +639,7 @@ function parseLines(
   eventId: string | null,
   label: string | null,
   warnings?: ParseWarning[],
+  pulls?: PullCounter,
 ): GameLines | null {
   const entry = selectOddsEntry(odds);
   if (entry === null) return null;
@@ -624,18 +653,25 @@ function parseLines(
     providerId === ESPN_DRAFTKINGS_PROVIDER_ID
       ? LINE_PROVIDER_PRIMARY
       : (asString(prop(prop(entry, 'provider'), 'name')) ?? 'unknown');
-  const diag: MarketDiagnostics = { notes: [], pulled: false };
+  const diag: MarketDiagnostics = { notes: [], pulledMarkets: [], pulled: false };
   const spread = parseSpreadMarket(entry, diag);
   const total = parseTotalMarket(entry, diag);
   const moneyline = parseMoneylineMarket(entry, diag);
-  const { notes } = diag;
+  const { notes, pulledMarkets } = diag;
+  if (pulls !== undefined) pulls.count += pulledMarkets.length;
 
   // Present-but-unusable markets warn with the parser's diagnostic; a market
-  // whose container node is simply absent is silent (normal for ESPN).
+  // whose container node is simply absent is silent (normal for ESPN), and so
+  // is a PULLED one — it is counted above, never warned (PLAN.md §24.10).
   const generic: string[] = [];
-  if (spread === null && isObject(prop(entry, 'pointSpread'))) generic.push('spread');
-  if (total === null && isObject(prop(entry, 'total'))) generic.push('total');
-  if (moneyline === null && isObject(prop(entry, 'moneyline'))) generic.push('moneyline');
+  const dropped = (market: string, value: unknown, node: string): void => {
+    if (value === null && isObject(prop(entry, node)) && !pulledMarkets.includes(market)) {
+      generic.push(market);
+    }
+  };
+  dropped('spread', spread, 'pointSpread');
+  dropped('total', total, 'total');
+  dropped('moneyline', moneyline, 'moneyline');
   if (notes.length > 0 || generic.length > 0) {
     // Both lists: a market dropped at the "one side missing" early return pushes
     // no note, and must not be hidden by another market's diagnostic.
@@ -669,6 +705,7 @@ export function parseScoreboard(
   // cap governs what is recorded in job_runs.stats, never which events are
   // skipped — a 300-event CFB payload must parse identically either way.
   const collected: ParseWarning[] = [];
+  const pulls: PullCounter = { count: 0 };
   const capped = (): readonly ParseWarning[] => collected.slice(0, ESPN_MAX_WARNINGS_RECORDED);
 
   const season = asIntegerNumber(prop(prop(payload, 'season'), 'year'));
@@ -677,15 +714,15 @@ export function parseScoreboard(
   const events = asArray(prop(payload, 'events'));
   if (events === null) {
     collected.push({ eventId: null, label: null, reason: 'payload has no events[] array' });
-    return { games, lines, warnings: capped(), season, week };
+    return { games, lines, warnings: capped(), pulled: 0, season, week };
   }
 
   for (const event of events) {
-    const parsed = parseEvent(event, league, fetchedAt, collected);
+    const parsed = parseEvent(event, league, fetchedAt, collected, pulls);
     if (parsed === null) continue;
     games.push(parsed.game);
     if (parsed.lines !== null) lines.push(parsed.lines);
   }
 
-  return { games, lines, warnings: capped(), season, week };
+  return { games, lines, warnings: capped(), pulled: pulls.count, season, week };
 }

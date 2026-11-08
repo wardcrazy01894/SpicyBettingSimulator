@@ -12,6 +12,8 @@
  *   node scripts/capture-espn-range.mjs            # both football leagues
  *   node scripts/capture-espn-range.mjs nfl        # one league
  *   node scripts/capture-espn-range.mjs mlb 20260922 [20260924 …]
+ *   node scripts/capture-espn-range.mjs ncaab 20261107        (M13c, PLAN.md §24.10)
+ *   node scripts/capture-espn-range.mjs nba 20261107 20261108
  *
  * MLB has no Odds API sample (the secondary never sweeps it, PLAN.md §23.10),
  * so its dates come from argv, and each date is written to its OWN file,
@@ -69,27 +71,40 @@ const LEAGUES = {
 
 const iso = (k) => `${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}`;
 
-/** `mlb` + explicit YYYYMMDD dates from argv: one file per date, unmerged. */
-async function captureMlb(keys) {
-  if (keys.length === 0) throw new Error('mlb needs at least one YYYYMMDD date');
+/**
+ * The daily leagues, captured one file per date from explicit YYYYMMDD dates
+ * on argv (MLB since M12a, basketball since M13c — PLAN.md §24.10). The URLs
+ * are src/worker/espn.ts's, parameter order included.
+ */
+const DAILY = {
+  mlb: (key) =>
+    `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates=${key}&limit=100`,
+  ncaab: (key) =>
+    `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=50&limit=500&dates=${key}`,
+  nba: (key) =>
+    `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${key}&limit=100`,
+};
+
+/** `mlb` | `ncaab` | `nba` + explicit YYYYMMDD dates from argv: one file per date, unmerged. */
+async function captureDaily(league, keys) {
+  if (keys.length === 0) throw new Error(`${league} needs at least one YYYYMMDD date`);
   for (const key of keys) {
-    if (!/^\d{8}$/.test(key)) throw new Error(`mlb: ${key} is not YYYYMMDD`);
-    const url = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates=${key}&limit=100`;
-    const res = await fetch(url, {
+    if (!/^\d{8}$/.test(key)) throw new Error(`${league}: ${key} is not YYYYMMDD`);
+    const res = await fetch(DAILY[league](key), {
       headers: { accept: 'application/json', 'user-agent': USER_AGENT },
     });
-    if (!res.ok) throw new Error(`mlb ${key}: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`${league} ${key}: HTTP ${res.status}`);
     const body = await res.json();
-    if (!Array.isArray(body.events)) throw new Error(`mlb ${key}: no events[]`);
-    const out = `docs/samples/espn-mlb-scoreboard-${iso(key)}.json`;
+    if (!Array.isArray(body.events)) throw new Error(`${league} ${key}: no events[]`);
+    const out = `docs/samples/espn-${league}-scoreboard-${iso(key)}.json`;
     writeFileSync(new URL(out, ROOT), JSON.stringify(body));
-    console.log(`mlb ${key}: wrote ${out} (${body.events.length} events)`);
+    console.log(`${league} ${key}: wrote ${out} (${body.events.length} events)`);
   }
 }
 
 const wanted = process.argv.slice(2);
-if (wanted[0] === 'mlb') {
-  await captureMlb(wanted.slice(1));
+if (wanted[0] !== undefined && wanted[0] in DAILY) {
+  await captureDaily(wanted[0], wanted.slice(1));
   process.exit(0);
 }
 for (const [league, cfg] of Object.entries(LEAGUES)) {

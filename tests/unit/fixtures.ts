@@ -115,6 +115,12 @@ const SAMPLE_FILES = {
   mlb0924: new URL('../../docs/samples/espn-mlb-scoreboard-2026-09-24.json', import.meta.url),
   /** One MLB DATE slate, no odds: 15 finals (one Final/12) and one postponement. */
   mlb0922: new URL('../../docs/samples/espn-mlb-scoreboard-2026-09-22.json', import.meta.url),
+  /** Opening day of college basketball: 61 D-I events, 48 priced, one "OFF" moneyline (PLAN.md §24.2). */
+  ncaab1107: new URL('../../docs/samples/espn-ncaab-scoreboard-2026-11-07.json', import.meta.url),
+  /** An NBA night: 7 events, 6 priced, one in progress at period 4. */
+  nba1107: new URL('../../docs/samples/espn-nba-scoreboard-2026-11-07.json', import.meta.url),
+  /** The NBA a day AHEAD (captured on 11-07): 7 events, 6 already priced. */
+  nba1108: new URL('../../docs/samples/espn-nba-scoreboard-2026-11-08.json', import.meta.url),
 } as const;
 
 export type SampleName = keyof typeof SAMPLE_FILES;
@@ -150,6 +156,16 @@ export function cfbScoreboard(): unknown {
  */
 export function mlbScoreboard(date: '2026-09-24' | '2026-09-22'): unknown {
   return cloneSample(date === '2026-09-24' ? 'mlb0924' : 'mlb0922');
+}
+
+/** Raw parsed JSON of docs/samples/espn-ncaab-scoreboard-2026-11-07.json (PLAN.md §24.10). */
+export function ncaabScoreboard(): unknown {
+  return cloneSample('ncaab1107');
+}
+
+/** Raw parsed JSON of an NBA date slate: `'2026-11-07'` or `'2026-11-08'` (PLAN.md §24.10). */
+export function nbaScoreboard(date: '2026-11-07' | '2026-11-08'): unknown {
+  return cloneSample(date === '2026-11-07' ? 'nba1107' : 'nba1108');
 }
 
 /**

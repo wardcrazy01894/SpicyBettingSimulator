@@ -67,6 +67,16 @@ export const FULL_ACTION: GameAction = {
   markets: { moneyline: 'action', spread: 'action', total: 'action' },
 };
 
+/**
+ * Regulation length in `games.period` units for the basketball leagues: halves
+ * for college, quarters for the NBA (PLAN.md §24.11). A FINAL with a known
+ * period below this is an abandoned game and is `undecidable`, never graded.
+ */
+export const BASKETBALL_REGULATION_PERIODS: Readonly<Record<'ncaab' | 'nba', number>> = {
+  ncaab: 2,
+  nba: 4,
+};
+
 /** The two `games` columns the verdict depends on, beside the league. */
 export interface ActionFacts {
   readonly status: GameStatus;
@@ -75,8 +85,8 @@ export interface ActionFacts {
 }
 
 /**
- * The league dispatcher: `FULL_ACTION` for `nfl` / `ncaaf`, `mlbGameAction`
- * for `mlb`. Written as an exhaustive `switch` over `League` with a `never`
+ * The league dispatcher: `FULL_ACTION` for `nfl` / `ncaaf` / `ncaab` / `nba`,
+ * `mlbGameAction` for `mlb`. Written as an exhaustive `switch` over `League` with a `never`
  * default, so a fourth league is a COMPILE error here rather than silently
  * inheriting football's "every final is complete" assumption.
  *
@@ -91,6 +101,25 @@ export function gameAction(league: League, game: ActionFacts): GameAction {
     case 'nfl':
     case 'ncaaf':
       return FULL_ACTION;
+    // BASKETBALL (M13c, PLAN.md §24.11): ONE arm for both leagues. A final has
+    // action on every market, overtime included — DraftKings' basketball
+    // default — and a final with a NULL period is graded too, because nothing
+    // about the verdict depends on the clock label. The ONE exception is
+    // FAIL-CLOSED: a final whose period is KNOWN and short of regulation
+    // (college < 2 halves, NBA < 4 quarters) can only be an abandoned game, so
+    // it is `undecidable` — the bet stays pending and surfaces in `stuck[]` for
+    // an admin — rather than paid on a result some books would void.
+    case 'ncaab':
+    case 'nba': {
+      const regulation = BASKETBALL_REGULATION_PERIODS[league];
+      if (game.status === 'final' && game.period !== null && game.period < regulation) {
+        return {
+          kind: 'undecidable',
+          reason: `final after period ${String(game.period)} of ${String(regulation)} (abandoned game): an admin decides`,
+        };
+      }
+      return FULL_ACTION;
+    }
     case 'mlb':
       return mlbGameAction(game);
     default: {
@@ -172,11 +201,12 @@ export function totalDecided(
  * The earliest instant at which a successful ingest of a postponed game's ET
  * date counts as EVIDENCE that it will not be played that day, or `null` when
  * the league has no next-day void rule (football keeps §7.5's 7-day rule only).
+ * MLB, NCAAB and the NBA share the rule (PLAN.md §23.7, §24.11).
  *
  * `windowEndAt` is the date target's `ingest_targets.window_end_at` — the
  * EXCLUSIVE end of that ET day, computed by `etDayBounds`, so the 23 h and
  * 25 h DST days are already right and nothing here adds `MS_PER_DAY`. The
- * result for `mlb` is `windowEndAt + MLB_POSTPONED_CONFIRM_MS` (03:00 ET the
+ * result for `mlb`, `ncaab` and `nba` is `windowEndAt + MLB_POSTPONED_CONFIRM_MS` (03:00 ET the
  * next morning; 02:00 EST on the fall-back night, which is immaterial).
  *
  * Two readers, one constant (PLAN.md §23.7):
@@ -198,7 +228,13 @@ export function postponedVoidConfirmAt(league: League, windowEndAt: EpochMs): Ep
     case 'nfl':
     case 'ncaaf':
       return null;
+    // Basketball reuses MLB's evidence rule, generalised by league rather than
+    // copied (PLAN.md §24.11): the same constant and the same instant. A
+    // delayed tip (or STATUS_DELAYED, mapped to `postponed`) is the rain
+    // delay's twin, and the rule is correct for it unchanged.
     case 'mlb':
+    case 'ncaab':
+    case 'nba':
       return windowEndAt + MLB_POSTPONED_CONFIRM_MS;
     default: {
       const unreachable: never = league;

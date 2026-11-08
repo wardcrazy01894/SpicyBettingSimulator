@@ -88,21 +88,21 @@ that window is closed. Same rule in CLAUDE.md rule 9, PLAN §16.1 and the file's
 
 Applied migrations, newest last:
 
-| File                               | What                                                                                                                                                                                                                                                      | Applied remotely                                                                                                                                                                       |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `0001_init.sql`                    | the whole schema                                                                                                                                                                                                                                          | 2026-09-14                                                                                                                                                                             |
-| `0002_users_deleted_at.sql`        | `users.deleted_at INTEGER NULL` — account soft delete                                                                                                                                                                                                     | on merge to `main`, by the Deploy workflow                                                                                                                                             |
-| `0003_bug_reports.sql`             | `bug_reports` table + 2 indexes — in-app bug reports                                                                                                                                                                                                      | on merge to `main`, by the Deploy workflow                                                                                                                                             |
-| `0004_games_conference.sql`        | `games.home/away_conference_id TEXT NULL` — CFB board filter                                                                                                                                                                                              | on merge to `main`, by the Deploy workflow                                                                                                                                             |
-| `0005_bets_teaser_tiers.sql`       | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied) to widen the teaser CHECK to 3–14 pt                                                                                                                                                                | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
-| `0006_bug_reports_diagnostics.sql` | `bug_reports.diagnostics TEXT NULL` — the browser log a report attaches                                                                                                                                                                                   | on merge to `main`, by the Deploy workflow                                                                                                                                             |
-| `0007_secondary_odds.sql`          | `game_lines.{spread,total,ml}_book TEXT NULL`, `games.secondary_tried_at INTEGER NULL`, and the single-row `secondary_budget` table seeded at 500 credits (PLAN §21.3)                                                                                    | on merge to `main`, by the Deploy workflow                                                                                                                                             |
-| `0008_bet_legs_same_game.sql`      | REBUILDS `bet_legs` (rows copied; `bets` and `ledger` untouched) so `UNIQUE (bet_id, game_id)` becomes `UNIQUE (bet_id, game_id, market)`, plus the `bet_legs_bi_one_side_per_game` trigger — same-game parlays (PLAN §5.2c)                              | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
-| `0009_mlb_league.sql`              | **Ships in the M12a PR** (with the code that writes `'mlb'`). REBUILDS `games`, `game_lines`, `bets`, `bet_legs`, `ledger` and `ingest_targets` (rows copied, ledger triggers recreated after the copy) to add `'mlb'` to four league CHECKs (PLAN §23.3) | on merge of M12a, by the Deploy workflow — count the rows first (below) and run `npm run db:reconcile -- --remote` afterwards                                                          |
-| `0010_parlay_25_legs.sql`          | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied, triggers recreated after the copy) so `bets.leg_count` allows 1–25 (parlays up to 25 legs) and a new CHECK holds a teaser to 10 legs (PLAN §16.2)                                                   | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
-| `0011_ledger_refill_buyout.sql`    | REBUILDS `ledger` alone (rows copied, the five triggers recreated after the copy) so `ledger.kind` admits `deposit_refill` and `bust_buyout` — bust refills and badge buyouts (PLAN §4.5)                                                                 | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
-| `0012_ingest_guard.sql`            | Four plain `ADD COLUMN`s on `ingest_targets` (`attempt_started_at`, `incomplete_attempts`, `last_ok_at`, `conference_id`) and the `alerts` table, with no rebuild (PLAN §24.4, §24.6b) — the poison-target guard and the in-app alerts (M13a)             | on merge to `main`, by the Deploy workflow                                                                                                                                             |
-| `0013_basketball_leagues.sql`      | **PLANNED, not written: ships in the M13c PR.** REBUILDS the six tables 0009 did, so four league CHECKs admit `'ncaab'` and `'nba'` (PLAN §24.9)                                                                                                          | on merge of M13c, by the Deploy workflow, on a Tuesday or Wednesday only after the write estimate is under 60,000 rows (PLAN §24.9). Run `npm run db:reconcile -- --remote` afterwards |
+| File                               | What                                                                                                                                                                                                                                                      | Applied remotely                                                                                                                                                                                                                                                                 |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0001_init.sql`                    | the whole schema                                                                                                                                                                                                                                          | 2026-09-14                                                                                                                                                                                                                                                                       |
+| `0002_users_deleted_at.sql`        | `users.deleted_at INTEGER NULL` — account soft delete                                                                                                                                                                                                     | on merge to `main`, by the Deploy workflow                                                                                                                                                                                                                                       |
+| `0003_bug_reports.sql`             | `bug_reports` table + 2 indexes — in-app bug reports                                                                                                                                                                                                      | on merge to `main`, by the Deploy workflow                                                                                                                                                                                                                                       |
+| `0004_games_conference.sql`        | `games.home/away_conference_id TEXT NULL` — CFB board filter                                                                                                                                                                                              | on merge to `main`, by the Deploy workflow                                                                                                                                                                                                                                       |
+| `0005_bets_teaser_tiers.sql`       | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied) to widen the teaser CHECK to 3–14 pt                                                                                                                                                                | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                                                                                                                   |
+| `0006_bug_reports_diagnostics.sql` | `bug_reports.diagnostics TEXT NULL` — the browser log a report attaches                                                                                                                                                                                   | on merge to `main`, by the Deploy workflow                                                                                                                                                                                                                                       |
+| `0007_secondary_odds.sql`          | `game_lines.{spread,total,ml}_book TEXT NULL`, `games.secondary_tried_at INTEGER NULL`, and the single-row `secondary_budget` table seeded at 500 credits (PLAN §21.3)                                                                                    | on merge to `main`, by the Deploy workflow                                                                                                                                                                                                                                       |
+| `0008_bet_legs_same_game.sql`      | REBUILDS `bet_legs` (rows copied; `bets` and `ledger` untouched) so `UNIQUE (bet_id, game_id)` becomes `UNIQUE (bet_id, game_id, market)`, plus the `bet_legs_bi_one_side_per_game` trigger — same-game parlays (PLAN §5.2c)                              | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                                                                                                                   |
+| `0009_mlb_league.sql`              | **Ships in the M12a PR** (with the code that writes `'mlb'`). REBUILDS `games`, `game_lines`, `bets`, `bet_legs`, `ledger` and `ingest_targets` (rows copied, ledger triggers recreated after the copy) to add `'mlb'` to four league CHECKs (PLAN §23.3) | on merge of M12a, by the Deploy workflow — count the rows first (below) and run `npm run db:reconcile -- --remote` afterwards                                                                                                                                                    |
+| `0010_parlay_25_legs.sql`          | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied, triggers recreated after the copy) so `bets.leg_count` allows 1–25 (parlays up to 25 legs) and a new CHECK holds a teaser to 10 legs (PLAN §16.2)                                                   | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                                                                                                                   |
+| `0011_ledger_refill_buyout.sql`    | REBUILDS `ledger` alone (rows copied, the five triggers recreated after the copy) so `ledger.kind` admits `deposit_refill` and `bust_buyout` — bust refills and badge buyouts (PLAN §4.5)                                                                 | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                                                                                                                   |
+| `0012_ingest_guard.sql`            | Four plain `ADD COLUMN`s on `ingest_targets` (`attempt_started_at`, `incomplete_attempts`, `last_ok_at`, `conference_id`) and the `alerts` table, with no rebuild (PLAN §24.4, §24.6b) — the poison-target guard and the in-app alerts (M13a)             | on merge to `main`, by the Deploy workflow                                                                                                                                                                                                                                       |
+| `0013_basketball_leagues.sql`      | REBUILDS `games`, `game_lines`, `bets`, `bet_legs`, `ledger` and `ingest_targets` (rows copied, each table from its LAST definer, ledger triggers recreated after the copy) so four league CHECKs admit `'ncaab'` and `'nba'` (PLAN §24.9, M13c)          | on merge of M13c, by the Deploy workflow — **GATED**: only on a Tuesday or Wednesday, right after a refresh tick, and only after the write estimate below is under 60,000 rows (PLAN §24.9); above it, stop and ask the owner. Run `npm run db:reconcile -- --remote` afterwards |
 
 (0003, 0004, 0005 and 0006 were written on parallel branches and numbered by reservation; wrangler
 applies whatever is unapplied by name, so a gap or an out-of-order merge is not an error.)
@@ -278,9 +278,12 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
 
 - Budget: `GET /api/admin/jobs` → newest run's `stats.dayRowsWritten` is the rolling 24 h rows-written
   total against D1's hard 100,000/day. Measured ≈ 8k for the CFB soak, modelled ≈ 17k with the
-  fixed streams on a college Saturday at the 3-minute tick (PLAN §24.13). The gauge EXCLUDES the
-  job bookkeeping's own ≈ 5.8k/day (deferred, §24.13), so read the 60,000 retreat line as
-  ≈ 54,000 on the gauge.
+  fixed streams on a college Saturday at the 3-minute tick, ≈ 11k of it on the gauge (PLAN §24.13).
+  The gauge EXCLUDES the job bookkeeping's own ≈ 5.8k/day (deferred, §24.13) and the request-path
+  writes (bets, ledger, sessions: < 800/day), so read the 60,000 retreat line as ≈ 54,000 on the
+  gauge. Basketball (M13c) measured 12,032 rows for a synthetic 155-game CBB day and 1,295 for a
+  15-game NBA night (PLAN §24.13). A refresh run's `stats.offTheBoard` counts markets DraftKings
+  pulled ("OFF"); since M13c they are counted there, never in `warnings`.
 - **Board coverage:** ESPN carries exactly ONE book (DraftKings), so there is no in-feed fallback
   when a market is missing. Each refresh run records `stats.upcomingGames` (scheduled, not yet
   kicked off, in the slates it fetched), `stats.lineGaps` (how many of those have no line or are
@@ -382,6 +385,67 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   forces it.
 - **January (postseason):** verify a `dates=` target returns bowl / NFL playoff games (PLAN Spike S4(c)).
   If not, add the `seasontype=3` companion target described in PLAN §8.2.
+
+- **Basketball (since M13c, PLAN §24).** Two more leagues, `ncaab` (every Division I men's game,
+  `groups=50`) and `nba`, each one target per ET date: three `ncaab:date:*` (today + 2) and two
+  `nba:date:*` (today + 1) in `coverage[]`. **Betting is CLOSED until M13d**: the boards show both
+  leagues with lines, but `bettable` is false and placement answers `409 GAME_NOT_BETTABLE`
+  (`LEAGUE_BETTING_OPEN` in `src/worker/bets.ts`). No teasers and no secondary sweeps, ever. A final
+  has action on every market, overtime included — EXCEPT a final short of regulation (NBA
+  `period` < 4, college < 2: an abandoned game), which is held `undecidable`: the bet stays
+  `pending`, reaches `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`, and the `settle-stuck` alert
+  opens a GitHub issue (PLAN §24.11). **Procedure for a stuck short final** — there is no in-app
+  void yet (an admin "void game" action is the follow-up; `retry-settlement` would regrade the same
+  final): decide from the box score, then either VOID it, so the next settle voids every leg on
+  that game (a straight bet is refunded; a parlay drops the leg and grades the rest at the reduced
+  price):
+
+  ```bash
+  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET status = 'canceled', status_detail = 'admin: abandoned game, voided', updated_at = unixepoch() * 1000 WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
+  ```
+
+  or, if ESPN under-reported the period and the game WAS complete, correct it so it grades
+  (`period = 4` for the NBA):
+
+  ```bash
+  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET period = 2, updated_at = unixepoch() * 1000 WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
+  ```
+
+  **`updated_at` is the part that matters**: the settle job re-selects a bet past
+  `MAX_SETTLE_ATTEMPTS` only when the game row's `updated_at` is newer than its last attempt
+  (`RESET_DEFERRED_SQL`), and nothing bumps that column but an explicit SET — without it the bet
+  stays in `stuck[]` for good. (`unixepoch() * 1000` on D1 = `1794110373000`, verified against the
+  local D1 on 2026-11-08; `CAST(strftime('%s','now') AS INTEGER) * 1000` is the same.) Then the next
+  settle tick finishes it; confirm with `npm run db:reconcile -- --remote`. The void branch is the
+  safe default: `canceled` is terminal in the ingest upsert, so ESPN cannot flip it back. The
+  period-correction branch is only reliable once ESPN itself shows the corrected period or the
+  date target has left the window — until then the next refresh writes the short period back and
+  the bet returns to `undecidable`. (If `wrangler d1 execute --remote` answers 7403, `npx wrangler
+login` first — the token is stale.)
+  A postponed game is voided the next morning on the
+  MLB evidence rule (`auto-void: NCAAB postponed, …` / `auto-void: NBA postponed, …`). A college
+  game first seen on its own ET day has no conference ids (ESPN drops `conferenceId` on game day) —
+  expected, not a bug.
+
+  **Before merging M13c — the 0013 write gate.** Count the rows (the query above), then compute
+  `7·games + 3·lines + 6·bets + 7·legs + 7·ledger + 4·targets` — the per-row cost
+  `tests/worker/migration-0013.spec.ts` measured (D1's own counter agreed with the formula within
+  0.35% on a 10,078-game seed, which wrote 107,827 rows). **Under 60,000: merge on a Tuesday or
+  Wednesday, right after a refresh tick. Over 60,000: stop and ask the owner** (the remedies,
+  pruning old `games` or paid D1, are not the deploy's to choose). After the deploy:
+  `npm run db:reconcile -- --remote` must be clean, and the D1 dashboard's rows-written for the day
+  goes in the PR.
+
+  **The first basketball day after the deploy.** `npx wrangler tail` on the next refreshes must
+  show `ncaab:date:<today>` and `nba:date:<today>` fetched with no CHECK error, and a college slate
+  run ALONE (it weighs big). Record **Spike S7** for every basketball target over the first weekend:
+  `cpuTime` from `wrangler tail --format json` against the slate's game count in `coverage[]`.
+  **If a D-I target PARKS or any `ncaab` refresh reports `exceededCpu`, flip the per-conference
+  switch**: `NCAAB_TARGET_SHAPE = 'conference'` in `src/worker/ingest.ts`, a one-line reviewed PR,
+  no migration (PLAN §24.8). On the first big Saturday also read `wrangler tail` for a D1 error on
+  the ~430-statement college refresh (Spike S2's exit). `stats.offTheBoard` counts pulled ("OFF")
+  markets — on a college slate full of 30-point favourites it is routinely non-zero, and it is not
+  a parser failure.
 
 ## Checks
 

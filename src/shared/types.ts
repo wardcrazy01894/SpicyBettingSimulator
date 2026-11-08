@@ -6,9 +6,11 @@
  * sanctioned re-opening of that freeze** — see PLAN.md §16's contract-change
  * note; it added `'teaser'` and `BetLeague`, and nothing else. **M12a is the
  * second**: it added `'mlb'` to `LEAGUES` and nothing else (PLAN.md §23.14).
+ * **M13c is the third**: it added `'ncaab'` (men's college basketball, every
+ * Division I game) and `'nba'` to `LEAGUES` and nothing else (PLAN.md §24.16).
  */
 
-export const LEAGUES = ['nfl', 'ncaaf', 'mlb'] as const;
+export const LEAGUES = ['nfl', 'ncaaf', 'mlb', 'ncaab', 'nba'] as const;
 export type League = (typeof LEAGUES)[number];
 
 /**
