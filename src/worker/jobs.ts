@@ -354,9 +354,9 @@ async function insertRun(env: Env, run: JobRun): Promise<void> {
 /** Maps a cron expression from `ScheduledEvent.cron` to a job name. */
 export function jobForCron(cron: string): JobName | null {
   switch (cron.trim()) {
-    case '*/15 * * * *':
+    case '*/3 * * * *':
       return 'refresh';
-    case '5-59/15 * * * *':
+    case '1-59/3 * * * *':
       return 'settle';
     case '30 8 * * *':
       return 'maintenance';
@@ -372,6 +372,12 @@ export interface RunJobOptions {
    * secondary-sweep retry backoff is waived. Only the `refresh` job reads it.
    */
   readonly forceSecondaryGameId?: string;
+  /**
+   * The cron controller's `scheduledTime`: the tick's NOMINAL instant, which
+   * every refresh cadence is counted from (PLAN.md §24.7). Absent on an admin
+   * trigger, whose base is the floor fallback.
+   */
+  readonly scheduledTime?: EpochMs;
 }
 
 export function runJob(
@@ -386,6 +392,8 @@ export function runJob(
       case 'refresh': {
         const stats = await runRefresh(env, now, refreshTargetsPerRun(env, trigger), {
           forceSecondaryGameId: options.forceSecondaryGameId ?? null,
+          scheduledTime: options.scheduledTime ?? null,
+          trigger,
         });
         return { ...stats };
       }

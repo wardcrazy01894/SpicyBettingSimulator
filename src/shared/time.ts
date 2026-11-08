@@ -25,6 +25,10 @@ import {
   BET_CUTOFF_BUFFER_MS,
   LINE_STALE_MS,
   LINE_STALE_MULTIPLIER,
+  REFRESH_DISCOVERY_TICKS,
+  REFRESH_LIVE_TICKS,
+  REFRESH_SOON_TICKS,
+  REFRESH_TICK_MS,
   WEEK_ROLLOVER_ET_HOUR,
 } from './constants.js';
 import type { WeeklyLeague } from './constants.js';
@@ -260,14 +264,24 @@ export function lockAtFor(kickoffAt: EpochMs): EpochMs {
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 
-/** How often a target is refreshed while a game in it is live or about to be. */
-export const REFRESH_LIVE_MS = 15 * MINUTE_MS;
+/*
+ * Since M13b every tier is a WHOLE NUMBER of `REFRESH_TICK_MS` ticks (PLAN.md
+ * §24.7), and `computeNextRunAt` counts them from the tick's NOMINAL instant,
+ * never from `now`. Live is one tick (3 min); the other three keep their
+ * wall-clock values (60 min, 6 h, 24 h).
+ */
+
+/** All final: 480 ticks = 24 h. Not a shared constant: nothing tunes it. */
+export const REFRESH_DONE_TICKS = 480;
+
+/** How often a target is refreshed while a game in it is live or about to be: every tick. */
+export const REFRESH_LIVE_MS = REFRESH_LIVE_TICKS * REFRESH_TICK_MS;
 /** …while a game in it kicks off within `SOON_HORIZON_MS`. */
-export const REFRESH_SOON_MS = 60 * MINUTE_MS;
+export const REFRESH_SOON_MS = REFRESH_SOON_TICKS * REFRESH_TICK_MS;
 /** …otherwise (line discovery for games days away). */
-export const REFRESH_DISCOVERY_MS = 6 * HOUR_MS;
+export const REFRESH_DISCOVERY_MS = REFRESH_DISCOVERY_TICKS * REFRESH_TICK_MS;
 /** …once every game in it is final. */
-export const REFRESH_DONE_MS = 24 * HOUR_MS;
+export const REFRESH_DONE_MS = REFRESH_DONE_TICKS * REFRESH_TICK_MS;
 /** "kickoff within 3 h" / "within 48 h" — the two tier boundaries. */
 export const LIVE_HORIZON_MS = 3 * HOUR_MS;
 export const SOON_HORIZON_MS = 48 * HOUR_MS;

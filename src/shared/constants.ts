@@ -209,8 +209,14 @@ export const GAME_SEEN_TOUCH_MS = 6 * 60 * 60 * 1000;
 export const LINE_SEEN_TOUCH_MS = 45 * 60 * 1000;
 
 /**
- * Refresh slot allocation. `REFRESH_TARGETS_PER_RUN` is 2 (env var), and the two
- * slots are NOT interchangeable:
+ * SUPERSEDED BY M13b (PLAN.md §24.7) and read by no code since: the claim is a
+ * per-run WEIGHT BUDGET (`REFRESH_WEIGHT_BUDGET`) and discovery's reservation
+ * moved from slot 2 to every `REFRESH_DISCOVERY_EVERY_NTH_TICK`-th tick — the
+ * same 96 a day this slot supplied. Kept, value unchanged, because this file
+ * changes only by value outside a contract PR (PLAN §24.16). History below.
+ *
+ * Refresh slot allocation (pre-M13b). `REFRESH_TARGETS_PER_RUN` was 2 (env var), and the two
+ * slots were NOT interchangeable:
  *   slot 1  the most-due target overall — in practice a live one
  *   slot 2  RESERVED for the most-overdue target with no in-progress game
  *
@@ -343,27 +349,32 @@ export const PASSWORD_MIN_LENGTH = 10;
  * `bets.settle_attempts`; past this it is de-prioritised and reported, so it can
  * never block the head of the queue. See PLAN.md §7.1.
  *
- * 96 attempts at the 15-minute settle cadence = **24 hours** of patience before a
- * bet is parked for a human. An earlier value of 5 gave up after 1.25 h, which is
+ * 480 attempts at the 3-minute settle cadence (`1-59/3`, since M13b; it was 96
+ * at the old 15-minute one) = **24 hours** of patience before a bet is parked
+ * for a human — the constant MEANS 24 h, so it moves with the cron (§24.7). An earlier value of 5 gave up after 1.25 h, which is
  * well inside the window in which a transiently malformed ESPN score is
  * plausible — and there was no reset path, so a brief feed glitch could park a
  * bet permanently.
  *
- * There are now TWO ways out, so 96 is a ceiling rather than a death sentence:
+ * There are now TWO ways out, so 480 is a ceiling rather than a death sentence:
  *   1. The settle job's first statement each run zeroes `settle_attempts` for any
  *      deferred bet whose leg games have been updated since `settle_attempted_at`
  *      — i.e. the moment ESPN publishes a sane score, the bet gets a fresh 24 h.
  *   2. `POST /api/admin/bets/:id/retry-settlement` clears it manually.
  */
-export const MAX_SETTLE_ATTEMPTS = 96;
+export const MAX_SETTLE_ATTEMPTS = 480;
 
 /** Job names. Must match the `job_locks` rows seeded by migration 0001. */
 export const JOB_NAMES = ['refresh', 'settle', 'maintenance'] as const;
 
-/** Lease TTLs, all shorter than their cron period so a crash self-heals. */
+/**
+ * Lease TTLs, all shorter than their cron period so a crash self-heals. Since
+ * M13b refresh and settle run every 3 minutes (`REFRESH_TICK_MS`), so their
+ * leases are 2.5 min, strictly under the tick (PLAN.md §9.2, §24.7).
+ */
 export const JOB_LEASE_TTL_MS: Readonly<Record<(typeof JOB_NAMES)[number], number>> = {
-  refresh: 5 * 60 * 1000,
-  settle: 5 * 60 * 1000,
+  refresh: 150 * 1000,
+  settle: 150 * 1000,
   maintenance: 10 * 60 * 1000,
 };
 
@@ -681,10 +692,9 @@ export const INGEST_MAX_INCOMPLETE_ATTEMPTS = 3;
 export const INGEST_PARKED_RETRY_MS = 6 * 60 * 60 * 1000;
 
 /**
- * THE REFRESH TICK from M13b: the refresh cron becomes `*\/3 * * * *` (480
- * runs a day) and the settle cron `1-59/3` (PLAN.md §24.7). The deployed
- * crons stay `*\/15` / `5-59/15` until M13b changes wrangler.jsonc, PLAN §9.1
- * and docs/OPERATIONS.md together. Every refresh cadence below is a MULTIPLE
+ * THE REFRESH TICK (M13b): the refresh cron is `*\/3 * * * *` (480 runs a
+ * day) and the settle cron `1-59/3` (PLAN.md §24.7); `tests/unit/docs.spec.ts`
+ * pins the refresh cron to this value. Every refresh cadence below is a MULTIPLE
  * of this, and is measured from the tick's NOMINAL instant (`scheduledTime`),
  * never from `now`: a slate stamped `now + 15 min` at :00:05 is not due at
  * the :15 tick and waits for :18 — slower than today. That is the alignment
@@ -742,9 +752,8 @@ export const REFRESH_WEIGHT_BUDGET = 40;
 /**
  * `/api/health/ingest` answers 503 when the newest refresh run with
  * `status = 'ok'` started more than this many refresh periods ago (PLAN.md
- * §24.5, M13a): 5 × 3 min = 15 min from M13b. M13a ships before the tick
- * changes, so it multiplies by the period of the cron it deploys under (15 min
- * → 75 min) and M13b switches the factor to `REFRESH_TICK_MS`. A run that
+ * §24.5, M13a): 5 × `REFRESH_TICK_MS` = 15 min since M13b (M13a, under the
+ * 15-minute cron, multiplied by that period: 75 min). A run that
  * claims ZERO targets still records `ok`, so a quiet 4 AM is not an outage.
  */
 export const HEALTH_STALE_TICKS = 5;

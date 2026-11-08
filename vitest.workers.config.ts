@@ -25,7 +25,7 @@ export default defineProject({
           COOKIE_SECURE: 'false',
           INVITE_CODE: 'test-invite',
           IP_HASH_SALT: 'test-ip-salt',
-          REFRESH_TARGETS_PER_RUN: '2',
+          REFRESH_TARGETS_PER_RUN: '5',
           SETTLE_CHUNK: '20',
           APP_VERSION: 'test',
           // Fetches to this host are stubbed per spec file (tests/worker/bugs.spec.ts).

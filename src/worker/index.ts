@@ -86,8 +86,8 @@ const handler: ExportedHandler<Env> = {
 
   /**
    * Cron dispatch. `event.cron` selects the job (PLAN.md §9.1):
-   *   "*\/15 * * * *"    -> refresh
-   *   "5-59/15 * * * *"  -> settle
+   *   "*\/3 * * * *"     -> refresh (every 3 min, REFRESH_TICK_MS)
+   *   "1-59/3 * * * *"   -> settle  (a minute after each refresh tick)
    *   "30 8 * * *"       -> maintenance
    *
    * Each job takes a lease first (job_locks) so two runs can never overlap, and
@@ -101,7 +101,12 @@ const handler: ExportedHandler<Env> = {
       return;
     }
     try {
-      const run = await runJob(env, job, 'cron', nowMs());
+      // `scheduledTime` is the tick's NOMINAL instant: every refresh cadence
+      // counts from it, never from `now`, which is a few seconds later (the
+      // alignment trap, PLAN.md §24.7).
+      const run = await runJob(env, job, 'cron', nowMs(), {
+        scheduledTime: controller.scheduledTime,
+      });
       console.warn('[cron]', job, run.status, run.error ?? '');
     } catch (err) {
       // runJob is specified to record errors rather than throw (PLAN.md §9);

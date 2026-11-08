@@ -74,8 +74,13 @@ export interface MaintenanceStats {
   readonly rowsWritten: number;
 }
 
-/** PLAN.md §7.5: `job_runs` keeps the newest 200 rows PER JOB. */
-export const JOB_RUNS_KEPT_PER_JOB = 200;
+/**
+ * PLAN.md §7.5: `job_runs` keeps the newest 600 rows PER JOB. At the 3-minute
+ * tick (M13b) refresh and settle each record 480 runs a day, and
+ * `dayRowsWritten` sums the last 24 h — so it must keep a full day plus margin
+ * or it under-counts the write budget on exactly the busy days (§24.7).
+ */
+export const JOB_RUNS_KEPT_PER_JOB = 600;
 
 /**
  * How long a game may be absent from the feed before its disappearance counts as

@@ -1037,6 +1037,7 @@ describe('upstream failures leave the database untouched', () => {
 
   it('a failing target is reported in job_runs.stats, and the run itself stays ok', async () => {
     await planTargets(env, T0);
+    await markAllFetched();
     const key = etDateKey(T0);
     espn.setResponder(key, () => new Response('nope', { status: 500 }));
     const run = await runJob(env, 'refresh', 'cron', T0);
@@ -1047,6 +1048,7 @@ describe('upstream failures leave the database untouched', () => {
 
   it('parser warnings land in job_runs.stats, capped at ESPN_MAX_WARNINGS_RECORDED', async () => {
     await planTargets(env, T0);
+    await markAllFetched();
     const broken = Array.from({ length: 40 }, (_, i) => ({ id: `bad-${String(i)}` }));
     for (const key of etDateKeyRange(T0, T0 + INGEST_WINDOW_MS)) {
       espn.setResponder(
@@ -1177,6 +1179,8 @@ describe('line gaps', () => {
       spec({ eventId: `g${String(i)}`, homeAbbr: `H${String(i)}`, odds: undefined }),
     );
     espn.set(key, [BASE_SPEC, ...many]);
+    await planTargets(env, T0);
+    await markAllFetched();
     const stats = await runRefresh(env, T0, 2);
     // One row per target processed. Which two of the 22 equally-due targets are
     // claimed is decided by the deterministic `priority, next_run_at, id` order
@@ -1946,25 +1950,31 @@ describe('claim order, the weight budget and the discovery tick (PLAN.md §8.4, 
     const [live1, live2] = await makeTwoLive();
 
     // A full day of ticks from the Sunday-night plan. The two live targets
-    // stay perpetually due; every other target reschedules itself to +6 h
-    // after it is picked. Never-fetched targets weigh big, so every run takes
-    // ONE target: the discovery-first ticks alone must serve the 17 others.
+    // are due again at the NEXT tick each time they run (perpetually due);
+    // every other target reschedules itself to +6 h after it is picked.
+    // Never-fetched targets weigh big, so every run takes ONE target: the
+    // discovery-first ticks alone must serve the 17 others.
     const seen = new Set<string>();
+    const liveRuns = new Map<string, number>();
     for (let tick = 0; tick < DAY / REFRESH_TICK_MS; tick += 1) {
       const now = SUN_NIGHT + tick * REFRESH_TICK_MS;
-      await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id IN (?, ?)')
-        .bind(now, live1.id, live2.id)
-        .run();
       const picked = await claimDueTargets(env, now, 5, isDiscoveryTick(now));
-      expect(picked.length).toBeLessThanOrEqual(1);
+      expect(picked).toHaveLength(1);
       for (const t of picked) {
         seen.add(t.id);
-        if (t.id === live1.id || t.id === live2.id) continue;
+        const isLive = t.id === live1.id || t.id === live2.id;
+        if (isLive) liveRuns.set(t.id, (liveRuns.get(t.id) ?? 0) + 1);
         await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id = ?')
-          .bind(now + 6 * HOUR, t.id)
+          .bind(now + (isLive ? LIVE_MS : 6 * HOUR), t.id)
           .run();
       }
     }
+    // The two live slates share the general ticks round-robin, and the
+    // discovery-first ticks take only what non-live work is due.
+    const l1 = liveRuns.get(live1.id) ?? 0;
+    const l2 = liveRuns.get(live2.id) ?? 0;
+    expect(Math.abs(l1 - l2)).toBeLessThanOrEqual(1);
+    expect(l1 + l2).toBeGreaterThanOrEqual(384); // every general tick at least
     // Every one of the 19 targets (9 + 9 + MLB's 1, §8.4) was claimed during
     // the day — the count is read from the planner, not assumed.
     const planned = await env.DB.prepare('SELECT COUNT(*) AS n FROM ingest_targets').first<{

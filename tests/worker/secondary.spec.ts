@@ -18,7 +18,7 @@ import { mergeEffectiveLine } from '../../src/shared/lines.js';
 import type { LineRowView } from '../../src/shared/lines.js';
 import { boardWindowEnd, lineStaleAfterMs } from '../../src/shared/time.js';
 import type { Env } from '../../src/worker/env.js';
-import { runRefresh } from '../../src/worker/ingest.js';
+import { planTargets, runRefresh } from '../../src/worker/ingest.js';
 import { buildApp } from '../../src/worker/index.js';
 import { runJob } from '../../src/worker/jobs.js';
 import { sweepSecondary } from '../../src/worker/secondary.js';
@@ -226,7 +226,20 @@ async function resweepAt(gameId: string): Promise<number> {
 const oddsCalls = (): number => odds.urls.filter((u) => u.includes('/odds?')).length;
 const probeCalls = (): number => odds.urls.filter((u) => u.includes('/v4/sports?')).length;
 
+/**
+ * Plan the targets and mark every one as fetched OK before, so each weighs 1
+ * and the run packs two of them, as these tests were written against. A
+ * never-fetched target weighs big and runs alone (PLAN.md §24.7).
+ */
+async function planFetched(now: number, e: Env = env): Promise<void> {
+  await planTargets(e, now);
+  await e.DB.prepare('UPDATE ingest_targets SET last_ok_at = COALESCE(last_ok_at, ?1)')
+    .bind(now - 24 * HOUR)
+    .run();
+}
+
 async function refresh(now: number, force: string | null = null): ReturnType<typeof runRefresh> {
+  await planFetched(now);
   return runRefresh(env, now, 2, { forceSecondaryGameId: force });
 }
 
@@ -268,6 +281,7 @@ describe('secondary sweep — feature switch', () => {
     await game();
     const { ODDS_API_KEY: _unused, ...rest } = env;
     const off: Env = rest;
+    await planFetched(NOW, off);
     const stats = await runRefresh(off, NOW, 2, { forceSecondaryGameId: null });
     expect(stats.secondary).toEqual({
       enabled: false,
@@ -569,13 +583,16 @@ describe('secondary sweep — credits (PLAN.md §21.5)', () => {
   it('secondary_budget deleted → skipped: no-budget-row, run ok, the ESPN slate still landed, nothing throws', async () => {
     await game();
     await env.DB.prepare('DELETE FROM secondary_budget').run();
+    await planFetched(NOW);
     const run = await runJob(env, 'refresh', 'cron', NOW);
     expect(run.status).toBe('ok');
     const secondary = run.stats?.['secondary'] as
       { sweeps: { skipped: string | null }[] } | undefined;
     expect(secondary?.sweeps.every((s) => s.skipped === 'no-budget-row')).toBe(true);
     expect(oddsCalls()).toBe(0);
-    expect(run.stats?.['targetsProcessed']).toBe(2);
+    // The cron run's count cap (REFRESH_TARGETS_PER_RUN, 5 since M13b) over
+    // targets that each weigh 1.
+    expect(run.stats?.['targetsProcessed']).toBe(5);
     await env.DB.prepare(
       'INSERT INTO secondary_budget (id, remaining_credits) VALUES (1, 500)',
     ).run();
@@ -601,13 +618,14 @@ describe('secondary sweep — failures', () => {
   it('401 → no rows, last_status unauthorized, cooldown UNCHANGED, run still ok, ESPN slate landed', async () => {
     const id = await game();
     odds.setResponder(NFL, () => new Response('{"message":"bad key"}', { status: 401 }));
+    await planFetched(NOW);
     const run = await runJob(env, 'refresh', 'cron', NOW);
     expect(run.status).toBe('ok');
     expect(await secondaryRow(id)).toBeUndefined();
     const row = await budget();
     expect(row?.last_status).toBe('unauthorized');
     expect(row?.cooldown_until).toBe(0);
-    expect(run.stats?.['targetsProcessed']).toBe(2);
+    expect(run.stats?.['targetsProcessed']).toBe(5); // the cron count cap, M13b
     const secondary = run.stats?.['secondary'] as { sweeps: { error: string | null }[] };
     expect(secondary.sweeps[0]?.error).toBe('unauthorized');
   });

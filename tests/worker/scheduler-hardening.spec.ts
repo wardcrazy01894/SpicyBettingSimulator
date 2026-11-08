@@ -884,10 +884,10 @@ describe('M13a: ESPN response-status counters (PLAN.md §24.6)', () => {
     expect(espnOutcome(new ProviderError('x', true, 200, 'bad-json'))).toBe('bad-json');
     expect(espnOutcome(new Error('anything else'))).toBe('network');
 
-    await insertTarget({ day: 0, nextRunAt: T0 - 2 * HOUR });
-    await insertTarget({ day: 1, nextRunAt: T0 - HOUR });
+    await insertTarget({ day: 0, nextRunAt: T0 - 2 * HOUR, lastOkAt: T0 - DAY });
+    await insertTarget({ day: 1, nextRunAt: T0 - HOUR, lastOkAt: T0 - DAY });
     espn.setResponder(keyOf(1), () => new Response('slow down', { status: 429 }));
-    // Plan-created targets are due too, but only two are claimed.
+    // Plan-created targets are due too, but never-fetched (big): only two are claimed.
     const stats = await runRefresh(env, T0, 2);
     expect(stats.targetsProcessed).toBe(2);
     expect(stats.espnStatus).toEqual({ '200': 1, '429': 1 });
@@ -1244,7 +1244,7 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
   function event(league: League, status: EventSpec['status'], kickoffAt: number): EventSpec {
     return {
       eventId: `${league}-1`,
-      league: league as EventSpec['league'],
+      league,
       kickoffAt,
       status,
       homeAbbr: 'HOM',
