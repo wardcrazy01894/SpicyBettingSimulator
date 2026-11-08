@@ -171,9 +171,10 @@ function probeBatchRows(): { readonly rows: number; restore(): void } {
  */
 function closeMlb(): () => void {
   const gate = LEAGUE_BETTING_OPEN as Record<League, boolean>;
+  const before = gate.mlb; // restore what was there, never a hard-coded true
   gate.mlb = false;
   return () => {
-    gate.mlb = true;
+    gate.mlb = before;
   };
 }
 

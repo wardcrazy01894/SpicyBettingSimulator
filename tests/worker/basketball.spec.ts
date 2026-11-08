@@ -120,13 +120,17 @@ async function registerAccount(): Promise<{ cookie: string; id: string }> {
 /** Close basketball betting for ONE block (the kill switch, used); always restored. */
 async function withBasketballClosed<T>(fn: () => Promise<T>): Promise<T> {
   const gate = LEAGUE_BETTING_OPEN as Record<League, boolean>;
+  // Restore what was THERE, never a hard-coded true: a restore to `true` would
+  // re-open a gate the source had closed and let every later test in the file
+  // pass against a closed flag (found by mutation in the M13d review).
+  const before = { ncaab: gate.ncaab, nba: gate.nba };
   gate.ncaab = false;
   gate.nba = false;
   try {
     return await fn();
   } finally {
-    gate.ncaab = true;
-    gate.nba = true;
+    gate.ncaab = before.ncaab;
+    gate.nba = before.nba;
   }
 }
 
