@@ -76,7 +76,8 @@ describe('boardFilterOptions', () => {
 
   it('every option value round-trips through isBoardFilter (the <select> handler)', () => {
     for (const league of ['ncaaf', 'ncaab'] as const) {
-      for (const o of boardFilterOptions(specFor(league))) expect(isBoardFilter(o.value)).toBe(true);
+      for (const o of boardFilterOptions(specFor(league)))
+        expect(isBoardFilter(o.value)).toBe(true);
     }
     expect(isBoardFilter('bogus')).toBe(false);
   });

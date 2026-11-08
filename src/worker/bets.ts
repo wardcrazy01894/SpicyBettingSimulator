@@ -100,19 +100,17 @@ export interface PlaceBetResult {
  * guard in SQL.
  *
  * `mlb` opened in M12b, with the settlement rule for shortened and postponed
- * games (§23.6/§23.7). `ncaab` and `nba` land CLOSED in M13c and open in M13d
- * (§24.12). It stays as a one-line per-league kill switch: set a
+ * games (§23.6/§23.7). `ncaab` and `nba` landed CLOSED in M13c and opened in
+ * M13d (§24.12, §24.17). It stays as a one-line per-league kill switch: set a
  * league `false` and its board goes read-only and placement refuses it.
  */
 export const LEAGUE_BETTING_OPEN: Readonly<Record<League, boolean>> = {
   nfl: true,
   ncaaf: true,
   mlb: true,
-  // Basketball (M13c, PLAN.md §24.12): the boards are visible, betting is
-  // CLOSED until M13d flips both — placement refuses a leg with the existing
-  // `409 GAME_NOT_BETTABLE`.
-  ncaab: false,
-  nba: false,
+  // Basketball (PLAN.md §24.12): visible and closed in M13c, OPEN since M13d.
+  ncaab: true,
+  nba: true,
 };
 
 /** True when `league` is a known league whose betting is open. */

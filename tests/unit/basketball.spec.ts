@@ -247,7 +247,7 @@ describe('M13c: settlement (PLAN.md §24.11)', () => {
 });
 
 describe('M13d: the board filter (PLAN.md §24.14)', () => {
-  const captured = parseScoreboard(ncaabScoreboard, 'ncaab', FETCHED_AT).games;
+  const captured = parseScoreboard(ncaabScoreboard(), 'ncaab', FETCHED_AT).games;
 
   /** A board card for a parsed capture game (GameTeamView is GameTeam's shape). */
   function toCard(game: Game): GameCard {
@@ -295,18 +295,30 @@ describe('M13d: the board filter (PLAN.md §24.14)', () => {
     const noId = cbbCard('none', { conf: null }, { conf: null });
     const unlisted = cbbCard('indy', { conf: '999' }, { conf: '999' });
     const acc = cbbCard('acc', { conf: '2' }, { conf: '2' });
-    expect(filterGames('ncaab', [noId, unlisted, acc], OTHER_CONFERENCE).map((g) => g.id)).toEqual(
-      ['none', 'indy'],
-    );
-    // The real capture: games first seen on their own ET day carry no
-    // conference id (§24.2), and every one of them lands in "Other".
+    expect(filterGames('ncaab', [noId, unlisted, acc], OTHER_CONFERENCE).map((g) => g.id)).toEqual([
+      'none',
+      'indy',
+    ]);
+    // The real capture: the 13 D-I-vs-non-D-I games have one side with no id,
+    // and every one of them lands in "Other".
     const cards = captured.map(toCard);
     const unfiled = cards.filter(
       (g) => g.home.conferenceId === null || g.away.conferenceId === null,
     );
-    expect(unfiled.length).toBeGreaterThan(0);
+    expect(unfiled).toHaveLength(13);
     const other = filterGames('ncaab', cards, OTHER_CONFERENCE);
     for (const g of unfiled) expect(other).toContain(g);
+    // The game-day shape (§24.2): ESPN omits conferenceId on a game's own ET
+    // date, so a slate first seen that day is ALL "Other" — never dropped.
+    const payload = ncaabScoreboard() as {
+      events: { competitions: { competitors: { team: Record<string, unknown> }[] }[] }[];
+    };
+    for (const event of payload.events) {
+      for (const c of event.competitions[0]?.competitors ?? []) delete c.team['conferenceId'];
+    }
+    const gameDay = parseScoreboard(payload, 'ncaab', FETCHED_AT).games.map(toCard);
+    expect(filterGames('ncaab', gameDay, OTHER_CONFERENCE)).toEqual(gameDay);
+    expect(filterGames('ncaab', gameDay, 'conf:2')).toEqual([]);
   });
 
   it('nba, nfl and mlb have no filter; ncaaf keeps CFB_CONFERENCES with default all', () => {
