@@ -107,6 +107,12 @@ export interface IngestTargetRow {
   readonly nextRunAt: EpochMs;
   readonly consecutiveFailures: number;
   /**
+   * `ingest_targets.last_ok_at`: when a fetch last succeeded, NULL for a
+   * never-fetched target — which weighs big and runs alone (§24.7), so its
+   * failure retries stay on the discovery grid (`computeNextRunAt`, F5).
+   */
+  readonly lastOkAt: EpochMs | null;
+  /**
    * The poison-target guard's counter (PLAN.md §24.4): attempts stamped but
    * never rescheduled. > 0 means the target runs alone; at
    * `INGEST_MAX_INCOMPLETE_ATTEMPTS` it is PARKED.
@@ -599,12 +605,12 @@ interface TargetDbRow {
   readonly consecutive_failures: number;
   readonly incomplete_attempts: number;
   readonly conference_id: string | null;
+  readonly last_ok_at: number | null;
 }
 
 /** A claim candidate: the target plus what it WEIGHS (§24.7). */
 interface ClaimDbRow extends TargetDbRow {
   readonly games_seen: number;
-  readonly last_ok_at: number | null;
 }
 
 function toTargetRow(row: TargetDbRow): IngestTargetRow {
@@ -618,6 +624,7 @@ function toTargetRow(row: TargetDbRow): IngestTargetRow {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    lastOkAt: row.last_ok_at,
     incompleteAttempts: row.incomplete_attempts,
     conferenceId: row.conference_id,
   };
@@ -625,7 +632,7 @@ function toTargetRow(row: TargetDbRow): IngestTargetRow {
 
 const TARGET_COLUMNS = `id, league, kind, key, window_start_at, window_end_at,
                         priority, next_run_at, consecutive_failures, incomplete_attempts,
-                        conference_id`;
+                        conference_id, last_ok_at`;
 
 /**
  * The `NOT EXISTS` that makes a target "not live" — no in-progress game in it.
@@ -796,8 +803,11 @@ export function packCount(
  * stamps them one per DISCOVERY tick, starting at the next one: each is that
  * tick's discovery pick and none is ever the oldest due row on a general
  * tick, so a burst of k dates fills within k discovery ticks (≤ 15·k min) and
- * the live slates never wait. (Stamped `now`, as before F2, the burst drained
- * on consecutive general ticks ahead of every live slate for ~24-30 min.)
+ * the live slates never wait — including when a new date's fetch FAILS: F5's
+ * first-failure retry goes back to the discovery grid for a never-fetched
+ * target (`computeNextRunAt`), never onto a general tick. (Stamped `now`, as
+ * before F2, the burst drained on consecutive general ticks ahead of every
+ * live slate for ~24-30 min.)
  *
  * NOTE this reads but does not write: the lease (PLAN.md §9.2) is what makes two
  * runs non-overlapping, so "claiming" needs no marker row and costs no writes.
@@ -1330,6 +1340,13 @@ export function computeNextRunAt(
     // transient ESPN 403 must not freeze a live slate, F5); the doubling from
     // the second keeps a real outage off ESPN's back.
     const streak = Math.max(target.consecutiveFailures, 0) + 1;
+    // A NEVER-fetched target weighs big and runs alone (§24.7). Retrying it on
+    // the next GENERAL tick would take that tick from the live slates — the
+    // very cost F2 removed — so its first retry goes back to the discovery
+    // grid; every later step is a multiple of REFRESH_BACKOFF_BASE_TICKS (= a
+    // discovery period), so it stays there until a success. A target that HAS
+    // fetched before carries its own weight and pays only its own tick.
+    if (streak === 1 && target.lastOkAt === null) return nextDiscoveryTick(base);
     return base + failureBackoffTicks(streak) * REFRESH_TICK_MS;
   }
 

@@ -194,6 +194,7 @@ async function readTarget(id: string): Promise<IngestTargetRow> {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    lastOkAt: null,
     incompleteAttempts: row.incomplete_attempts,
     conferenceId: row.conference_id,
   };

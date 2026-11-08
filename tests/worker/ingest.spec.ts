@@ -23,8 +23,8 @@ import {
   claimDueTargets,
   computeNextRunAt,
   GAME_LIVE_SQL,
-  isDiscoveryTick,
   ingestTarget,
+  isDiscoveryTick,
   lineGapsOf,
   lineRowsWorthWriting,
   nextDiscoveryTick,
@@ -107,6 +107,7 @@ async function loadTarget(id: string): Promise<IngestTargetRow> {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    lastOkAt: null,
     incompleteAttempts: row.incomplete_attempts,
   };
 }
@@ -1185,8 +1186,11 @@ describe('upstream failures leave the database untouched', () => {
       const row = await targetDbRow(t.id);
       expect(row?.last_status).toBe('error');
       expect(row?.consecutive_failures).toBe(1);
-      // A FIRST failure retries on the next tick (F5), not 15 min later.
-      expect(row?.next_run_at).toBe(T0 + HOUR + LIVE_MS);
+      // A FIRST failure retries on the next tick (F5) for a target that has
+      // fetched before; THIS one never has (last_ok_at NULL — it weighs big and
+      // would run alone), so it goes back to the discovery grid instead of
+      // taking a general tick from the live slates (F5 as built, §24.7 (c)).
+      expect(row?.next_run_at).toBe(nextDiscoveryTick(T0 + HOUR));
     });
   }
 
@@ -1857,6 +1861,7 @@ describe('computeNextRunAt', () => {
     priority: 100,
     nextRunAt: T0,
     consecutiveFailures: 0,
+    lastOkAt: T0 - DAY, // a FETCHED target: the 1-tick first retry applies
     incompleteAttempts: 0,
   };
 
@@ -1969,6 +1974,19 @@ describe('computeNextRunAt', () => {
     // still the thing we most need fresh scores for.
     const slate = makeSlate([spec({ status: 'in', kickoffAt: T0 - 9 * HOUR })], 'nfl', T0);
     expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + LIVE_MS);
+  });
+
+  it('failure on a NEVER-fetched target -> the next DISCOVERY tick, not the next general one (F5 as built)', () => {
+    // It weighs big and runs alone (§24.7); a general-tick retry would take
+    // that tick from the live slates. Later steps are discovery-period
+    // multiples, so it stays on the grid until a success.
+    const fresh = { ...target, lastOkAt: null, consecutiveFailures: 0 };
+    expect(computeNextRunAt(fresh, null, true, T0)).toBe(nextDiscoveryTick(T0));
+    expect(computeNextRunAt(fresh, null, true, T0)).not.toBe(T0 + LIVE_MS);
+    // From the second failure the shared schedule applies to it too.
+    expect(computeNextRunAt({ ...fresh, consecutiveFailures: 1 }, null, true, T0)).toBe(
+      T0 + 5 * REFRESH_TICK_MS,
+    );
   });
 
   it('failure -> the next tick the first time, then exponential backoff capped at 6h (F5)', () => {

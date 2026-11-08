@@ -49,8 +49,8 @@ import {
   HEALTH_STALE_AFTER_MS,
   ingestTarget,
   isDiscoveryTick,
-  NO_LIVE_GAME,
   nextDiscoveryTick,
+  NO_LIVE_GAME,
   planTargets,
   refreshTickBase,
   RETIRE_PREDICATE,
@@ -197,6 +197,7 @@ async function loadTarget(id: string): Promise<IngestTargetRow> {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    lastOkAt: null,
     incompleteAttempts: row.incomplete_attempts,
   };
 }
@@ -1376,6 +1377,7 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
         priority: 100,
         nextRunAt: base,
         consecutiveFailures: 0,
+        lastOkAt: T0 - DAY, // a FETCHED slate: the 1-tick first retry applies
         incompleteAttempts: 0,
       };
       const at = (status: EventSpec['status'], kickoffAt: number): number =>
@@ -1414,6 +1416,40 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
     expect(REFRESH_SOON_TICKS * TICK).toBe(HOUR);
     expect(REFRESH_DISCOVERY_TICKS * TICK).toBe(6 * HOUR);
     expect(REFRESH_BACKOFF_BASE_TICKS * TICK).toBe(15 * MIN);
+  });
+
+  it('(F5) a NEVER-fetched date that 403s retries on the discovery grid, so the live slates keep every general tick', async () => {
+    // F2's promise, under failure: the new date sits 1 ms before a discovery
+    // tick; it fails there; a next-tick retry would make it the oldest due row
+    // on the next GENERAL tick, where it runs alone (never-fetched weighs big)
+    // and the live slate waits. Instead it goes back to the grid.
+    const disc = nextDiscoveryTick(GENERAL);
+    const live = await insertTarget({
+      day: 0,
+      nextRunAt: disc - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 10,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5-grid');
+    const fresh = await insertTarget({ day: 2, nextRunAt: disc - 1 });
+    espn.setResponder(keyOf(2), () => new Response('forbidden', { status: 403 }));
+
+    const run = await runJob(env, 'refresh', 'cron', disc + 5_000, { scheduledTime: disc });
+    expect(run.status).toBe('ok');
+    const row = await guardRow(fresh);
+    expect(row.consecutive_failures).toBe(1);
+    expect(row.next_run_at).toBe(nextDiscoveryTick(disc));
+    expect(row.next_run_at).not.toBe(disc + TICK);
+
+    // The four general ticks that follow are the live slate's, every one.
+    for (let k = 1; k < 5; k += 1) {
+      expect(
+        ids(await claimDueTargets(env, disc + k * TICK + 5_000, 5, false)),
+        `tick +${String(k)}`,
+      ).toEqual([live]);
+    }
+    // A target that HAS fetched before still pays only its own next tick (the
+    // sibling test above); this exception is for the never-fetched alone.
   });
 
   it('(F5) a live slate that 403s ONCE is due at the very next tick, and a 200 there puts it back on every tick', async () => {

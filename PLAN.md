@@ -8688,7 +8688,13 @@ still claims what it bumped (§9.3).
   date between 20:00 and 20:20 ET is one) counts as non-live for the discovery
   pick; if it missed the previous tick because big slates were taking turns, it
   is older than the T − 1 ms stamp and wins. The burst test uses `in_progress`
-  slates only, so it cannot see (b); it is bounded to one tick per slip. Before F2 the planner
+  slates only, so it cannot see (b); it is bounded to one tick per slip. (c)
+  Fetch FAILURES interact with the grid (F5): a never-fetched date whose fetch
+  fails on its discovery tick retries at the NEXT discovery tick, not the next
+  general one — `computeNextRunAt` sends a `last_ok_at IS NULL` target back to
+  the grid, and every later backoff step is a whole number of discovery periods
+  — so a 403 inside a burst costs no general tick; only a target that has
+  fetched before retries on the very next tick, and it pays with its own slot. Before F2 the planner
   stamped `next_run_at = now`, and the burst drained on consecutive general
   ticks ahead of every live slate for ~24–30 minutes (~60 before M13b); bet
   locks are kickoff-based, so no money ever moved.
