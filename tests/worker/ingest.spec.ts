@@ -1385,7 +1385,7 @@ describe('write budget levers (PLAN.md §8.6)', () => {
     expect(staleAt - (fresh?.seen_at ?? 0)).toBeLessThan(3 * HOUR);
   });
 
-  it('BUDGET: 480 three-minute ticks of an 86-game CFB Saturday write < 13,000 rows (PLAN.md §24.13)', async () => {
+  it('BUDGET: 480 three-minute ticks of an 86-game CFB Saturday write < 13,300 rows (PLAN.md §24.13)', async () => {
     // THE REGRESSION GUARD §8.6 PROMISES — and the one the round-2 review found
     // to be measuring the wrong thing. Three things it has to get right:
     //
@@ -1401,7 +1401,8 @@ describe('write budget levers (PLAN.md §8.6)', () => {
     //   3. The statuses transition the way a real Saturday does: four waves of
     //      kickoffs, each game scheduled -> in_progress (3.5 h) -> final.
     //
-    // MEASURED on this exact fixture (miniflare D1, summed `meta.rows_written`):
+    // MEASURED on this exact fixture at the pre-M13b 96 refreshes (miniflare
+    // D1, summed `meta.rows_written`):
     //     A/B split (this code)         2,979 rows   (1,569 changed games, 466 line rows)
     //     single-statement upsert       6,978 rows   ( 2,035 meta.changes)
     // and on the theoretical worst case of all 86 games live for all 96
@@ -1490,9 +1491,12 @@ describe('write budget levers (PLAN.md §8.6)', () => {
     // The independent witness and the production accounting must agree exactly.
     expect(rowsWritten).toBe(probe.rows);
 
-    console.log('M13B-MEASURE cfb', JSON.stringify({ rowsWritten, games, lines, REFRESHES }));
-    // THE GUARD.
-    expect(rowsWritten).toBeLessThan(13_000);
+    // THE GUARD. MEASURED at M13b's tick (2026-11-07, this fixture, 480
+    // refreshes): 7,922 rows (6,385 changed games, 593 line rows) — §24.13's
+    // model said ≈ 7,800. The bound is 7,922 × 1.68 (the 5,000 / 2,979 ratio
+    // the 96-refresh bound had) ≈ 13,300. Re-derive §24.13 if it fails; never
+    // raise it to fit.
+    expect(rowsWritten).toBeLessThan(13_300);
 
     // L2, stated as a measurement rather than prose.
     expect(lines).toBeGreaterThan(0);

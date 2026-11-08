@@ -19,8 +19,10 @@ money?" prompt will refill you $1,000, but the loss stays on the board and a
 
 - **Every NFL game and every FBS college game**, pulled from ESPN's scoreboard
   with DraftKings' prices (or the top book ESPN carries when DK isn't there).
-  The board refreshes on a 15-minute cycle, games nearest kickoff first; a game
-  that's still days away is re-checked every few hours. The board runs through
+  A slate with a game live or kicking off within three hours refreshes every
+  3 minutes (a little slower when several big slates are live at once); one a
+  day or two out, hourly; a game that's still days away is re-checked every
+  few hours. Finals are graded within a few minutes of ESPN calling them. The board runs through
   the Monday that closes the week: next week's college slate shows up Sunday
   morning, the NFL's on Sunday night after the late games, and both stay up
   through Monday night. When DraftKings is missing a spread, total or moneyline

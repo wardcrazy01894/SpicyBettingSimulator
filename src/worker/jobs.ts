@@ -28,7 +28,7 @@ import type { EpochMs } from '../shared/types.js';
 import { alertActivity, evaluateAlerts } from './alerts.js';
 import type { Env } from './env.js';
 import { newId } from './db.js';
-import { refreshTargetsPerRun, runRefresh } from './ingest.js';
+import { isDiscoveryTick, refreshTargetsPerRun, runRefresh } from './ingest.js';
 import { runMaintenance } from './maintenance.js';
 import { runSettle } from './settle.js';
 import { readConfig } from './env.js';
@@ -306,8 +306,12 @@ export async function withJobRun(
   // holds the lease, and nothing below can change `finished.status`
   // (PLAN.md §24.6b). `evaluateAlerts` never throws; the guard here covers the
   // two reads that feed it.
+  // `d1-rows-near-cap` reads the rolling 24 h sum (a scan of ~1,200 job_runs
+  // rows), so since M13b it is read on DISCOVERY-FIRST refresh ticks (every
+  // 15 minutes, 96 a day — the old refresh rate) and by maintenance, not on
+  // all 480 refresh ticks (PLAN.md §24.6b).
   let dayRows: number | null = null;
-  if (job === 'refresh') {
+  if (job === 'refresh' ? isDiscoveryTick(now) : job === 'maintenance') {
     try {
       dayRows = await dayRowsWritten(env, now);
     } catch (err) {

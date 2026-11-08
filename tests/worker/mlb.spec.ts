@@ -329,11 +329,13 @@ describe('M12a — ingest and the board', () => {
       // The model is what §24.13 says it is: every tick of ~3 h live, 60 per game.
       expect(liveRefreshes).toBe(GAMES * 60);
       expect(rowsWritten).toBe(probe.rows);
-      console.log('M13B-MEASURE mlb', JSON.stringify({ rowsWritten, liveRefreshes, REFRESHES }));
       // THE GUARD. Re-derive §23.11 if this fails; never raise it to fit.
-      // MEASURED on this exact fixture (miniflare D1, summed meta.rows_written,
-      // 2026-09-24): 684 rows — against §23.11's ≈ 850 estimate for the games
-      // stream, which assumed more line-price moves than this fixture makes.
+      // MEASURED on this exact fixture (miniflare D1, summed meta.rows_written):
+      // 684 rows at 96 refreshes (2026-09-24), 741 at M13b's 480 ticks
+      // (2026-11-07). The +57 is consistent with the 45-min L3 line touch
+      // firing on the first tick past it (~every 48 min, not every 60); the
+      // live stream follows the score, not the refresh count (§24.13). The
+      // bound stays §23.11's 1,000: the measurement fits, so it does not move.
       expect(rowsWritten).toBeLessThan(1_000);
       // ...and not trivially small: every live change landed.
       expect(rowsWritten).toBeGreaterThan(GAMES * 12);

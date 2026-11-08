@@ -1028,23 +1028,33 @@ describe('M13a: in-app alerts as GitHub issues (PLAN.md §24.6b)', () => {
     expect(creates(gh).map((c) => c.body['title'])).toEqual(['[alert] settle-stuck: -']);
   });
 
-  it('d1-rows-near-cap is evaluated on every refresh run in M13a', async () => {
+  it('d1-rows-near-cap is evaluated on discovery-first refresh ticks and by maintenance (M13b, §24.6b)', async () => {
     await insertRun(
       'settle',
       T0 - HOUR,
       'ok',
       JSON.stringify({ rowsWritten: ALERT_D1_ROWS_NEAR_CAP - 1 }),
     );
+    // T0 is a discovery-first tick: evaluated, and under the threshold.
     await withJobRun(env, 'refresh', 'cron', T0, () => Promise.resolve({ rowsWritten: 0 }));
     expect(await alertRow('d1-rows-near-cap:-')).toBeNull();
+    // Over the threshold now, but a GENERAL tick does not read the 24 h sum
+    // (480 runs a day would read it 480 times).
     await withJobRun(env, 'refresh', 'cron', T0 + 3 * MIN, () =>
       Promise.resolve({ rowsWritten: 1 }),
     );
-    expect(await alertRow('d1-rows-near-cap:-')).toMatchObject({ state: 'firing' });
-    // Settle does not evaluate it.
-    await env.DB.prepare('DELETE FROM alerts').run();
-    await withJobRun(env, 'settle', 'cron', T0 + 4 * MIN, () => Promise.resolve({}));
     expect(await alertRow('d1-rows-near-cap:-')).toBeNull();
+    // The next discovery-first tick, 15 minutes on, does.
+    await withJobRun(env, 'refresh', 'cron', T0 + 15 * MIN, () =>
+      Promise.resolve({ rowsWritten: 0 }),
+    );
+    expect(await alertRow('d1-rows-near-cap:-')).toMatchObject({ state: 'firing' });
+    // Settle does not evaluate it; maintenance does.
+    await env.DB.prepare('DELETE FROM alerts').run();
+    await withJobRun(env, 'settle', 'cron', T0 + 16 * MIN, () => Promise.resolve({}));
+    expect(await alertRow('d1-rows-near-cap:-')).toBeNull();
+    await withJobRun(env, 'maintenance', 'cron', T0 + 17 * MIN, () => Promise.resolve({}));
+    expect(await alertRow('d1-rows-near-cap:-')).toMatchObject({ state: 'firing' });
   });
 
   it('the comment interval doubles per comment and caps at ALERT_COMMENT_MAX_INTERVAL_MS', async () => {

@@ -39,14 +39,15 @@
  * Observability, not faith: every run reports `rowsWritten` (summed from D1's
  * `meta.rows_written`, which counts index entries) and `rowsSkipped` into
  * `job_runs.stats`, and `tests/worker/ingest.spec.ts` carries the CI regression
- * guard for 96 live refreshes of an 86-game Saturday.
+ * guard for an 86-game Saturday refreshed on all 480 three-minute ticks
+ * (M13b: 7,922 rows measured, < 13,300 asserted, PLAN.md §24.13).
  *
  * MLB (PLAN.md §23.11) is CHEAPER per live refresh than football: ESPN's MLB
  * `displayClock` is always "0:00", so (B) writes only when the score or the
  * inning (`period`) moves. ≈ 55 rows per game per day, ≈ 1,050/day for a
  * 15-game slate including its target's reschedules — about 1% of the cap.
- * `tests/worker/mlb.spec.ts` guards it at < 1,000 rows for 15 games over 96
- * refreshes, beside the CFB guard.
+ * `tests/worker/mlb.spec.ts` guards it at < 1,000 rows for 15 games over 480
+ * ticks (741 measured at M13b), beside the CFB guard.
  *
  * STATEMENT COUNT: two per game plus one per line, chunked through `runBatch` at
  * MAX_BATCH_STATEMENTS. An 86-game target is ~172 statements in one invocation,

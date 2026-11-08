@@ -7,8 +7,11 @@ money**. MLB is in `LEAGUES` since M12a and its betting is OPEN since M12b
 `LEAGUE_BETTING_OPEN` in `src/worker/bets.ts` is the per-league kill switch
 (PLAN.md §23). **M13 (PLAN.md §24, 2026-11-07): M13a is SHIPPED** —
 scheduler hardening (the poison-target guard, `GET /api/health/ingest`, ESPN
-status counters, the reaper) and in-app alerts as GitHub issues. **M13b–d are
-PLANNED**: a 3-minute refresh tick (M13b), then men's college basketball and the
+status counters, the reaper) and in-app alerts as GitHub issues. **M13b is
+SHIPPED**: refresh every 3 minutes (`*/3`, settle `1-59/3`), live slates on
+every tick, cadences counted in ticks from the tick's scheduled instant, and a
+per-run weight budget so a big slate runs alone. **M13c–d are PLANNED**: men's
+college basketball and the
 NBA as `'ncaab'` / `'nba'` (M13c, M13d). Neither is in `LEAGUES` yet; rule 8i is
 what the code must keep.
 
@@ -237,14 +240,14 @@ the one failure mode the whole checklist has.
    2026-10-20). The history — every refill, and when its badge went — is
    `GET /api/users/:id/busts`, shown on `/players/:userId`.
    8i. **Scheduler hardening and basketball (M13, PLAN.md §24).** (0), (iii)
-   and (iv) are IN THE CODE since M13a (2026-11-07); (i), (ii) and (v) are what
-   M13b–d must keep when they land. (0) **A CPU kill is not an exception.** Each target's
+   and (iv) are IN THE CODE since M13a (2026-11-07), (i) and (ii) since M13b;
+   (v) is what M13c–d must keep when they land. (0) **A CPU kill is not an exception.** Each target's
    `ingest_targets.incomplete_attempts` is stamped immediately before THAT
    target's own fetch, never for the whole claim at once, so a kill blames only
    the target in flight. BOTH reschedule paths reset it. The ONE other sanctioned
    reset is the admin un-park in `bumpTargetForGame` (§9.3). A target with
    `incomplete_attempts > 0` runs alone, so a light target cannot be parked for
-   a heavy neighbour's CPU. Never move the stamp after the fetch, and never add
+   a heavy neighbour's CPU, and one met later in the claim ends the packing. Never move the stamp after the fetch, and never add
    another reset, or a slate that kills its invocation pins the head of the
    queue and freezes every league again (§24.3–§24.4). (i)
    **Every refresh cadence is a whole number of `REFRESH_TICK_MS` ticks from the
@@ -419,7 +422,7 @@ the one failure mode the whole checklist has.
 | D1 bound params per statement       | 100                                                                                              | A 25-leg parlay inserts legs as 25 separate statements, not one.                                                                                                                                                                                                 |
 | D1 rows written per day (free)      | 100,000, **hard-enforced since 2026-09-01**                                                      | Past the cap D1 **errors**, which blocks bet placement and settlement. **Measured** ≈ 5.1k/day on a CFB Saturday with the §8.5 levers (L1 + the A/B split + L2 + L3); 33k for the `games` stream alone without the A/B split. Treat write budget as correctness. |
 | D1 `INTEGER` column                 | i64; larger values silently become `REAL`                                                        | Never store a parlay rational.                                                                                                                                                                                                                                   |
-| External subrequests per invocation | 50                                                                                               | We make ≤ 2 ESPN calls per cron run.                                                                                                                                                                                                                             |
+| External subrequests per invocation | 50                                                                                               | We make ≤ 5 ESPN calls per cron run (`REFRESH_TARGETS_PER_RUN`).                                                                                                                                                                                                 |
 | Cron triggers                       | min interval 1 min; docs say 5/account or 3/Worker                                               | We use exactly 3. Don't add a fourth without re-checking.                                                                                                                                                                                                        |
 
 D1 `batch()` is atomic: sequential execution, full rollback if any statement
