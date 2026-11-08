@@ -412,7 +412,9 @@ describe('persistence', () => {
         legs: [{ ...leg('g1'), league }],
       });
     expect(parseStoredSlip(withLeague(undefined))).toBeNull();
-    expect(parseStoredSlip(withLeague('nba'))).toBeNull();
+    expect(parseStoredSlip(withLeague('nhl'))).toBeNull();
+    // A real league since M13c.
+    expect(parseStoredSlip(withLeague('nba'))?.legs[0]?.league).toBe('nba');
     expect(parseStoredSlip(withLeague(7))).toBeNull();
     expect(parseStoredSlip(withLeague('nfl'))?.legs[0]?.league).toBe('nfl');
   });

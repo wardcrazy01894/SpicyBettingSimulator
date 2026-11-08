@@ -155,8 +155,14 @@ describe('groupBetsByWeek', () => {
 // ---------------------------------------------------------------------------
 
 describe('BOARD_HAS_WEEKS (M12c)', () => {
-  it('football has weeks; MLB does not', () => {
-    expect(BOARD_HAS_WEEKS).toEqual({ nfl: true, ncaaf: true, mlb: false });
+  it('football has weeks; MLB and basketball (M13c) do not', () => {
+    expect(BOARD_HAS_WEEKS).toEqual({
+      nfl: true,
+      ncaaf: true,
+      mlb: false,
+      ncaab: false,
+      nba: false,
+    });
   });
 });
 

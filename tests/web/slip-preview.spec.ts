@@ -403,4 +403,28 @@ describe('teaseText (M12c)', () => {
     expect(teaseText(leg('a', -110, 'total', 'over', 'mlb'), 60)).toBe("MLB can't be teased");
     expect(teaseText(leg('a', 150, 'moneyline', 'home', 'mlb'), 60)).toBe("MLB can't be teased");
   });
+
+  it('names the basketball league for an NCAAB or NBA leg (M13c)', () => {
+    expect(teaseText(leg('a', -110, 'spread', 'home', 'ncaab'), 60)).toBe("NCAAB can't be teased");
+    expect(teaseText(leg('a', -110, 'total', 'over', 'nba'), 60)).toBe("NBA can't be teased");
+  });
+
+  it('a basketball leg in a teaser slip is the football-only error, naming that league (M13c)', () => {
+    const preview = computePreview(
+      slip(
+        [
+          leg('nfl:pit', -110, 'spread', 'home', 'nfl'),
+          leg('nba:cle', -110, 'spread', 'home', 'nba'),
+        ],
+        1000,
+        'teaser',
+        60,
+      ),
+      100_000,
+      TEASER_PAYOUTS,
+    );
+    expect(preview.error).toBe(
+      'Teasers are football only — remove the NBA pick, or switch to a parlay.',
+    );
+  });
 });

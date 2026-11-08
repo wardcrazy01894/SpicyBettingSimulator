@@ -965,7 +965,8 @@ describe('migration 0013 (basketball league CHECK rebuild) — M13c', () => {
     it('applying 0013 to a production-sized D1 writes under 60,000 rows', async () => {
       const { userId } = await seedHistory();
       const { id: bk } = await mainBankroll(userId);
-      const seq = (n: number) => `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${String(n)})`;
+      const seq = (n: number) =>
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${String(n)})`;
       await env.DB.batch([
         env.DB.prepare(
           `INSERT INTO games (id, provider, provider_event_id, league, season, season_type, week,
@@ -1032,7 +1033,7 @@ describe('migration 0013 (basketball league CHECK rebuild) — M13c', () => {
 
       // Measured: D1's own rows_written over every statement of the file.
       const results = await env.DB.batch(migration('0013_').map((q) => env.DB.prepare(q)));
-      const measured = results.reduce((sum, r) => sum + (r.meta.rows_written ?? 0), 0);
+      const measured = results.reduce((sum, r) => sum + r.meta.rows_written, 0);
 
       // Estimated: Σ rows × (2 + index entries per row), from sqlite_master.
       const idx = await env.DB.prepare(
@@ -1058,9 +1059,14 @@ describe('migration 0013 (basketball league CHECK rebuild) — M13c', () => {
       expect(measured).toBeLessThanOrEqual(estimate);
       expect(estimate - measured).toBeLessThan(estimate / 100);
       // The per-row costs the OPERATIONS runbook multiplies by.
-      expect(Object.fromEntries(REBUILT_TABLES.map((t) => [t, 2 + (perRow.get(t) ?? 0)]))).toEqual(
-        { games: 7, game_lines: 3, bets: 6, bet_legs: 7, ledger: 7, ingest_targets: 4 },
-      );
+      expect(Object.fromEntries(REBUILT_TABLES.map((t) => [t, 2 + (perRow.get(t) ?? 0)]))).toEqual({
+        games: 7,
+        game_lines: 3,
+        bets: 6,
+        bet_legs: 7,
+        ledger: 7,
+        ingest_targets: 4,
+      });
     });
   });
 });

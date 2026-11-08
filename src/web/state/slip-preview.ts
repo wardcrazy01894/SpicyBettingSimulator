@@ -23,7 +23,7 @@ import {
 } from '../../shared/odds.js';
 import { formatLineTenths, isTeasableLeague, validatePlaceBet } from '../../shared/validate.js';
 import { messageForCode } from '../api/messages.js';
-import { pickLabel } from '../lib/labels.js';
+import { LEAGUE_LABEL, pickLabel } from '../lib/labels.js';
 import type { Slip, SlipLeg } from './slip-reducer.js';
 import type { LineChangedDetails, PlaceBetRequest } from '../../shared/api-types.js';
 import type { AmericanPrice, BetLeague, Cents, Price } from '../../shared/types.js';
@@ -60,12 +60,14 @@ export function slipLeague(legs: readonly SlipLeg[]): BetLeague {
  * that refusal said before the tap rather than after a 400. Slip legs carry
  * their own `league`, which is what makes the check possible here.
  */
-const TEASER_LEAGUE_ERROR =
-  'Teasers are football only — remove the MLB pick, or switch to a parlay.';
-
 function teaserLeagueError(slip: Slip): string | null {
   if (slip.mode !== 'teaser') return null;
-  return slip.legs.every((leg) => isTeasableLeague(leg.league)) ? null : TEASER_LEAGUE_ERROR;
+  // Names the first unteasable leg's league: "remove the MLB pick" exactly as
+  // since M12c, "remove the NBA pick" for basketball (§24.12).
+  const bad = slip.legs.find((leg) => !isTeasableLeague(leg.league));
+  return bad === undefined
+    ? null
+    : `Teasers are football only — remove the ${LEAGUE_LABEL[bad.league]} pick, or switch to a parlay.`;
 }
 
 /**
@@ -80,7 +82,7 @@ function teaserLeagueError(slip: Slip): string | null {
  * holds for every MLB leg.
  */
 export function teaseText(leg: SlipLeg, pointsTenths: number): string {
-  if (!isTeasableLeague(leg.league)) return "MLB can't be teased";
+  if (!isTeasableLeague(leg.league)) return `${LEAGUE_LABEL[leg.league]} can't be teased`;
   if (leg.market === 'moneyline' || leg.lineTenths === null) return 'no line to tease';
   const signed = leg.market === 'spread';
   const teased = teasedLineTenths(leg.market, leg.side, leg.lineTenths, pointsTenths);

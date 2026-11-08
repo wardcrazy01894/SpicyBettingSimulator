@@ -125,7 +125,9 @@ async function rerun(...prefixes: string[]): Promise<void> {
   const guard = prefixes.includes('0009_')
     ? migration('0012_').filter((q) => q.includes('ALTER TABLE ingest_targets'))
     : [];
-  const queries = prefixes.flatMap((p) => (p === '0013_' ? [...guard, ...migration(p)] : migration(p)));
+  const queries = prefixes.flatMap((p) =>
+    p === '0013_' ? [...guard, ...migration(p)] : migration(p),
+  );
   if (!prefixes.includes('0013_')) queries.push(...guard);
   await env.DB.batch(queries.map((q) => env.DB.prepare(q)));
 }

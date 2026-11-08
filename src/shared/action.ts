@@ -88,15 +88,16 @@ export interface ActionFacts {
  */
 export function gameAction(league: League, game: ActionFacts): GameAction {
   switch (league) {
+    // BASKETBALL (M13c, PLAN.md §24.11) shares football's arm: ONE arm for
+    // both leagues. A final has action on every market, overtime included —
+    // DraftKings' basketball default. `period` (halves for college, quarters
+    // for the NBA, overtimes beyond) is a clock label only and is NOT
+    // consulted, so a final with a NULL period is graded too: no
+    // `undecidable` row, unlike MLB, because nothing about the verdict
+    // depends on it. Stated residual, not modelled: a game called early
+    // grades as final (ESPN gives no minutes played).
     case 'nfl':
     case 'ncaaf':
-    // BASKETBALL (M13c, PLAN.md §24.11): ONE arm for both leagues. A final has
-    // action on every market, overtime included — DraftKings' basketball
-    // default. `period` (halves for college, quarters for the NBA, overtimes
-    // beyond) is a clock label only and is NOT consulted, so a final with a
-    // NULL period is graded too: no `undecidable` row, unlike MLB, because
-    // nothing about the verdict depends on it. Stated residual, not modelled:
-    // a game called early grades as final (ESPN gives no minutes played).
     case 'ncaab':
     case 'nba':
       return FULL_ACTION;

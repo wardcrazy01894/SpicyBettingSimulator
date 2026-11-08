@@ -153,6 +153,48 @@ describe('gameClockLabel — football is byte-identical (M12c)', () => {
   }
 });
 
+describe('basketball labels (M13c, PLAN.md §24.14)', () => {
+  it('NCAAB and NBA in every table — no "CBB" badge (the owner, 2026-11-07)', () => {
+    expect([LEAGUE_LABEL.ncaab, LEAGUE_BADGE.ncaab, BET_LEAGUE_LABEL.ncaab]).toEqual([
+      'NCAAB',
+      'NCAAB',
+      'NCAAB',
+    ]);
+    expect([LEAGUE_LABEL.nba, LEAGUE_BADGE.nba, BET_LEAGUE_LABEL.nba]).toEqual([
+      'NBA',
+      'NBA',
+      'NBA',
+    ]);
+    expect(MARKET_HEAD_LABEL.ncaab).toEqual(MARKET_HEAD_LABEL.nfl);
+    expect(MARKET_HEAD_LABEL.nba).toEqual(MARKET_HEAD_LABEL.nfl);
+  });
+});
+
+describe('gameClockLabel — basketball (M13c, PLAN.md §24.14)', () => {
+  it('ncaab plays halves: "1st · 12:34", "2nd · 4:12", "OT · 1:05", "2OT · 0:44"', () => {
+    expect(gameClockLabel('ncaab', 'in_progress', '1st Half', 1, '12:34')).toBe('1st · 12:34');
+    expect(gameClockLabel('ncaab', 'in_progress', '2nd Half', 2, '4:12')).toBe('2nd · 4:12');
+    expect(gameClockLabel('ncaab', 'in_progress', 'OT', 3, '1:05')).toBe('OT · 1:05');
+    expect(gameClockLabel('ncaab', 'in_progress', '2OT', 4, '0:44')).toBe('2OT · 0:44');
+    expect(gameClockLabel('ncaab', 'in_progress', '3OT', 5, '2:00')).toBe('3OT · 2:00');
+  });
+
+  it("ncaab halftime, an ended period and finals read ESPN's statusDetail", () => {
+    expect(gameClockLabel('ncaab', 'in_progress', 'Halftime', 1, '0:00')).toBe('Halftime');
+    expect(gameClockLabel('ncaab', 'in_progress', 'End of 2nd Half', 2, '0:00')).toBe(
+      'End of 2nd Half',
+    );
+    expect(gameClockLabel('ncaab', 'final', 'Final/OT', 3, '0:00')).toBe('Final/OT');
+    expect(gameClockLabel('ncaab', 'scheduled', null, 0, '0:00')).toBe('Scheduled');
+    expect(gameClockLabel('ncaab', 'in_progress', null, null, null)).toBe('Live');
+  });
+
+  it('nba plays quarters, exactly like football', () => {
+    expect(gameClockLabel('nba', 'in_progress', '4th Quarter', 4, '2:31')).toBe('Q4 · 2:31');
+    expect(gameClockLabel('nba', 'final', 'Final', 4, '0:00')).toBe('Final');
+  });
+});
+
 describe('MARKET_HEAD_LABEL (M12c)', () => {
   it('says "Run line" over an MLB spread and "Spread" over a football one', () => {
     expect(MARKET_HEAD_LABEL.mlb.spread).toBe('Run line');
