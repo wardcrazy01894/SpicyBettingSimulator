@@ -179,7 +179,9 @@ button:disabled {
 /* The header and the nav tabs stick TOGETHER (issue #95: a sticky header
    alone hid the tabs behind it once the page scrolled). Below the slip bar
    (z-index 4) and the sheets (5). The strip paints its own surface so, on wide
-   screens where header and tabs are centred, nothing scrolls past its sides. */
+   screens where header and tabs are centred, nothing scrolls past its sides.
+   Its height is what `html { scroll-padding-top }` above allows for — keep the
+   two in step if the header or the tabs grow. */
 .app-top {
   position: sticky;
   top: 0;
@@ -1156,7 +1158,8 @@ select:focus-visible,
 /* ----------------------------------------------------------------- tables */
 
 .table-scroll {
-  /* The ONLY horizontal scroll in the app: the two data tables. */
+  /* The only horizontal scroll among the CONTENT blocks: the two data tables
+     (the nav tabs and the admin tabs scroll sideways too, as row controls). */
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   border: 1px solid var(--border);
