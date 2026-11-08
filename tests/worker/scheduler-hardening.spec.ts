@@ -21,11 +21,20 @@ import {
   HEALTH_STALE_TICKS,
   INGEST_MAX_INCOMPLETE_ATTEMPTS,
   INGEST_PARKED_RETRY_MS,
+  JOB_LEASE_TTL_MS,
   JOB_REAP_AFTER_MS,
+  MAX_SETTLE_ATTEMPTS,
+  REFRESH_BACKOFF_BASE_TICKS,
+  REFRESH_DISCOVERY_EVERY_NTH_TICK,
+  REFRESH_DISCOVERY_TICKS,
+  REFRESH_LIVE_TICKS,
+  REFRESH_SOON_TICKS,
   REFRESH_TICK_MS,
+  REFRESH_WEIGHT_BUDGET,
 } from '../../src/shared/constants.js';
 import { parseScoreboard } from '../../src/shared/espn.js';
 import { etDateKey, etDayBounds } from '../../src/shared/time.js';
+import { LEAGUES } from '../../src/shared/types.js';
 import type { League } from '../../src/shared/types.js';
 import { processAlerts, recordAlertConditions, evaluateAlerts } from '../../src/worker/alerts.js';
 import type { AlertCondition, AlertStats } from '../../src/worker/alerts.js';
@@ -35,23 +44,28 @@ import { EspnProvider, fetchScoreboard } from '../../src/worker/espn.js';
 import {
   bumpTargetForGame,
   claimDueTargets,
+  computeNextRunAt,
   espnOutcome,
   HEALTH_STALE_AFTER_MS,
   ingestTarget,
+  isDiscoveryTick,
   NO_LIVE_GAME,
   planTargets,
+  refreshTickBase,
   RETIRE_PREDICATE,
   runRefresh,
   stampAttempt,
+  targetWeight,
 } from '../../src/worker/ingest.js';
 import type { IngestTargetRow } from '../../src/worker/ingest.js';
 import { buildApp } from '../../src/worker/index.js';
 import { recentRuns, runJob, withJobRun } from '../../src/worker/jobs.js';
 import type { JobRun } from '../../src/worker/jobs.js';
+import { JOB_RUNS_KEPT_PER_JOB } from '../../src/worker/maintenance.js';
 import { ProviderError } from '../../src/worker/providers.js';
 import type { ProviderSlate, ScoreProvider } from '../../src/worker/providers.js';
 import { buildScoreboard, stubEspn } from './fixtures.js';
-import type { EspnStub } from './fixtures.js';
+import type { EspnStub, EventSpec } from './fixtures.js';
 import { seedGame } from './seed.js';
 
 /** Sunday 2026-09-13, noon ET. */
@@ -59,7 +73,7 @@ const T0 = Date.parse('2026-09-13T16:00:00Z');
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
-/** The 15-minute provisional step under M13a's floor-fallback base (§24.4). */
+/** The 15-minute provisional step (5 ticks) from the tick's base (§24.4, §24.7). */
 const BACKOFF_STEP = 5 * REFRESH_TICK_MS;
 
 let espn: EspnStub;
@@ -95,6 +109,8 @@ interface TargetSpec {
   readonly lastOkAt?: number | null;
   readonly consecutiveFailures?: number;
   readonly conferenceId?: string | null;
+  /** The weight (§24.7): games seen by the last successful fetch. */
+  readonly gamesSeen?: number;
 }
 
 async function insertTarget(spec: TargetSpec = {}): Promise<string> {
@@ -111,7 +127,7 @@ async function insertTarget(spec: TargetSpec = {}): Promise<string> {
        (id, league, kind, key, window_start_at, window_end_at, priority, next_run_at,
         consecutive_failures, games_seen, created_at, updated_at,
         incomplete_attempts, attempt_started_at, last_status, last_ok_at, conference_id)
-     VALUES (?1, ?2, 'date', ?3, ?4, ?5, 100, ?6, ?7, 0, ?8, ?8, ?9, ?10, ?11, ?12, ?13)`,
+     VALUES (?1, ?2, 'date', ?3, ?4, ?5, 100, ?6, ?7, ?14, ?8, ?8, ?9, ?10, ?11, ?12, ?13)`,
   )
     .bind(
       id,
@@ -127,6 +143,7 @@ async function insertTarget(spec: TargetSpec = {}): Promise<string> {
       spec.lastStatus ?? null,
       spec.lastOkAt ?? null,
       spec.conferenceId ?? null,
+      spec.gamesSeen ?? 0,
     )
     .run();
   return id;
@@ -359,8 +376,9 @@ async function insertRun(
 
 describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
   it('each target is stamped immediately before ITS OWN fetch, never all at claim time', async () => {
-    const a = await insertTarget({ day: 0, nextRunAt: T0 - 2 * HOUR });
-    const b = await insertTarget({ day: 1, nextRunAt: T0 - HOUR });
+    // Both small (fetched OK before, empty) so the weight budget packs them (§24.7).
+    const a = await insertTarget({ day: 0, nextRunAt: T0 - 2 * HOUR, lastOkAt: T0 - DAY });
+    const b = await insertTarget({ day: 1, nextRunAt: T0 - HOUR, lastOkAt: T0 - DAY });
     const seen: Record<string, [number, number]> = {};
     const snapshot = (label: string) => async (): Promise<Response> => {
       seen[label] = [
@@ -372,7 +390,7 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
     espn.setResponder(keyOf(0), snapshot('a'));
     espn.setResponder(keyOf(1), snapshot('b'));
 
-    const claimed = await claimDueTargets(env, T0, 2, 1);
+    const claimed = await claimDueTargets(env, T0, 2, false);
     expect(claimed.map((t) => t.id)).toEqual([a, b]);
     // Claiming writes nothing: both counters are still 0 after the claim.
     expect((await guardRow(a)).incomplete_attempts).toBe(0);
@@ -388,10 +406,10 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
   });
 
   it('a run killed during target 1 leaves target 2 untouched: no increment, no provisional backoff', async () => {
-    const a = await insertTarget({ day: 0, nextRunAt: T0 - 2 * HOUR });
-    const b = await insertTarget({ day: 1, nextRunAt: T0 - HOUR });
+    const a = await insertTarget({ day: 0, nextRunAt: T0 - 2 * HOUR, lastOkAt: T0 - DAY });
+    const b = await insertTarget({ day: 1, nextRunAt: T0 - HOUR, lastOkAt: T0 - DAY });
     const before = await guardRow(b);
-    const claimed = await claimDueTargets(env, T0, 2, 1);
+    const claimed = await claimDueTargets(env, T0, 2, false);
     const first = claimed[0];
     if (first === undefined) throw new Error('nothing claimed');
     // The kill: the stamp ran, the reschedule never did.
@@ -422,36 +440,27 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
   });
 
   it('a target with incomplete_attempts > 0 is never packed behind another target: it runs alone', async () => {
-    const blamed = await insertTarget({ day: 0, nextRunAt: T0 - 2 * HOUR, incomplete: 1 });
-    await insertTarget({ day: 1, nextRunAt: T0 - HOUR });
-    const claimed = await claimDueTargets(env, T0, 2, 1);
+    const blamed = await insertTarget({
+      day: 0,
+      nextRunAt: T0 - 2 * HOUR,
+      incomplete: 1,
+      lastOkAt: T0 - DAY,
+    });
+    await insertTarget({ day: 1, nextRunAt: T0 - HOUR, lastOkAt: T0 - DAY });
+    const claimed = await claimDueTargets(env, T0, 2, false);
     expect(claimed.map((t) => t.id)).toEqual([blamed]);
-    // A wider run (3 slots) still adds nothing after a blamed slot 1.
-    expect((await claimDueTargets(env, T0, 3, 1)).map((t) => t.id)).toEqual([blamed]);
+    // A wider run (3 slots, both weigh 1) still adds nothing after a blamed first.
+    expect((await claimDueTargets(env, T0, 3, false)).map((t) => t.id)).toEqual([blamed]);
   });
 
-  it('(M13a) the reserved slot and its fall-through never claim a target with incomplete_attempts > 0', async () => {
-    const healthy = await insertTarget({ day: 0, nextRunAt: T0 - 3 * HOUR });
-    await insertTarget({ day: 1, nextRunAt: T0 - 2 * HOUR, incomplete: 2 });
-    // Only the healthy one and a blamed one are due: neither the reserved
-    // non-live query nor its general fall-through may take the blamed one.
-    expect((await claimDueTargets(env, T0, 2, 1)).map((t) => t.id)).toEqual([healthy]);
-
-    // Make the healthy slot-1 target LIVE so the reserved query has nothing
-    // non-live but the blamed one, then add a healthy LIVE third: the
-    // fall-through takes that, still never the blamed one.
-    await seedGame(env.DB, {
-      id: 'nfl:live1',
-      kickoffAt: etDayBounds(T0).startAt + HOUR,
-      status: 'in_progress',
-    });
-    const third = await insertTarget({ day: 2, nextRunAt: T0 - HOUR });
-    await seedGame(env.DB, {
-      id: 'nfl:live3',
-      kickoffAt: etDayBounds(T0 + 2 * DAY).startAt + HOUR,
-      status: 'in_progress',
-    });
-    expect((await claimDueTargets(env, T0, 2, 1)).map((t) => t.id)).toEqual([healthy, third]);
+  it('a candidate with incomplete_attempts > 0 ENDS the packing: nothing is claimed behind or after it (M13b form)', async () => {
+    // All three weigh 1, so only the blamed rule can stop the packing.
+    const healthy = await insertTarget({ day: 0, nextRunAt: T0 - 3 * HOUR, lastOkAt: T0 - DAY });
+    await insertTarget({ day: 1, nextRunAt: T0 - 2 * HOUR, incomplete: 2, lastOkAt: T0 - DAY });
+    await insertTarget({ day: 2, nextRunAt: T0 - HOUR, lastOkAt: T0 - DAY });
+    // M13a skipped the blamed one and packed the third; the budget form stops
+    // at it, so the blamed target is next in line, alone, on the next tick.
+    expect((await claimDueTargets(env, T0, 5, false)).map((t) => t.id)).toEqual([healthy]);
   });
 
   it('the success path sets last_ok_at', async () => {
@@ -537,7 +546,7 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
       attemptStartedAt: T0 - HOUR,
     });
     const other = await insertTarget({ day: 1, nextRunAt: T0 - HOUR });
-    expect((await claimDueTargets(env, T0, 2, 1)).map((t) => t.id)).toEqual([other]);
+    expect((await claimDueTargets(env, T0, 2, false)).map((t) => t.id)).toEqual([other]);
   });
 
   it('a parked target is claimable for ONE probation attempt INGEST_PARKED_RETRY_MS after its last attempt', async () => {
@@ -549,9 +558,9 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
     });
     await insertTarget({ day: 1, nextRunAt: T0 - HOUR });
     // One ms short of the probation: still parked.
-    expect((await claimDueTargets(env, T0, 2, 1)).map((t) => t.id)).not.toContain(parked);
+    expect((await claimDueTargets(env, T0, 2, false)).map((t) => t.id)).not.toContain(parked);
     // At the probation instant it is claimable — and, being blamed, alone.
-    const claimed = await claimDueTargets(env, T0 + 1, 2, 1);
+    const claimed = await claimDueTargets(env, T0 + 1, 2, false);
     expect(claimed.map((t) => t.id)).toEqual([parked]);
 
     // Killed again: the counter was not reset by waiting, so it re-parks at once.
@@ -559,7 +568,7 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
     if (target === undefined) throw new Error('nothing claimed');
     await stampAttempt(env, target, T0 + 1);
     expect((await guardRow(parked)).incomplete_attempts).toBe(INGEST_MAX_INCOMPLETE_ATTEMPTS + 1);
-    expect((await claimDueTargets(env, T0 + 2 * HOUR, 2, 1)).map((t) => t.id)).not.toContain(
+    expect((await claimDueTargets(env, T0 + 2 * HOUR, 2, false)).map((t) => t.id)).not.toContain(
       parked,
     );
   });
@@ -727,9 +736,9 @@ describe('M13a: GET /api/health/ingest (PLAN.md §24.5)', () => {
     reasons: string[];
   }
 
-  it('the stale threshold is HEALTH_STALE_TICKS periods of the deployed 15-minute cron (75 min)', () => {
-    expect(HEALTH_STALE_AFTER_MS).toBe(HEALTH_STALE_TICKS * 15 * MIN);
-    expect(HEALTH_STALE_AFTER_MS).toBe(75 * MIN);
+  it('the stale threshold is HEALTH_STALE_TICKS refresh ticks (M13b: 5 × 3 min = 15 min)', () => {
+    expect(HEALTH_STALE_AFTER_MS).toBe(HEALTH_STALE_TICKS * REFRESH_TICK_MS);
+    expect(HEALTH_STALE_AFTER_MS).toBe(15 * MIN);
   });
 
   it('200 with ok:true when a refresh run recorded ok within HEALTH_STALE_TICKS periods and nothing is parked', async () => {
@@ -1131,14 +1140,14 @@ describe('M13a: in-app alerts as GitHub issues (PLAN.md §24.6b)', () => {
   });
 
   it('a SETTLE run opens refresh-stale when no refresh run recorded ok for HEALTH_STALE_TICKS periods', async () => {
-    await insertRun('refresh', T0 - 6 * 15 * MIN, 'ok');
+    await insertRun('refresh', T0 - HEALTH_STALE_AFTER_MS - MIN, 'ok');
     const run = await withJobRun(env, 'settle', 'cron', T0, () => Promise.resolve({ stuck: [] }));
     expect(run.status).toBe('ok');
     expect(creates(gh).map((c) => c.body['title'])).toEqual(['[alert] refresh-stale: -']);
     // Within the threshold it stays quiet.
     await env.DB.prepare('DELETE FROM alerts').run();
     gh.calls.length = 0;
-    await insertRun('refresh', T0 + HOUR - 30 * MIN, 'ok');
+    await insertRun('refresh', T0 + HOUR - HEALTH_STALE_AFTER_MS + MIN, 'ok');
     await withJobRun(env, 'settle', 'cron', T0 + HOUR, () => Promise.resolve({ stuck: [] }));
     expect(gh.calls).toHaveLength(0);
   });
@@ -1184,20 +1193,304 @@ describe('M13a: in-app alerts as GitHub issues (PLAN.md §24.6b)', () => {
 });
 
 describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
-  it.todo(
-    'every cadence is a tick multiple from the NOMINAL instant: a run 5 s late still claims a live slate on the next tick',
-  );
-  it.todo('a live slate is due again after REFRESH_LIVE_TICKS ticks, in every league');
-  it.todo('a target with last_ok_at NULL weighs as big');
-  it.todo(
-    'weight packing: NFL + MLB share a run; a CFB slate runs alone; a never-fetched target runs alone',
-  );
-  it.todo('weight packing stops at the first candidate that does not fit (no skipping ahead)');
-  it.todo('the count cap REFRESH_TARGETS_PER_RUN bounds a run of empty slates');
-  it.todo(
-    'every REFRESH_DISCOVERY_EVERY_NTH_TICK-th tick claims a non-live target first, falling through when none is due',
-  );
-  it.todo('an admin run is always general');
-  it.todo('both leases are strictly shorter than REFRESH_TICK_MS');
-  it.todo('JOB_RUNS_KEPT_PER_JOB keeps a full day of refresh and settle runs');
+  const TICK = REFRESH_TICK_MS;
+  /** T0 (16:00Z) is on the 15-minute grid, so it is a DISCOVERY-FIRST tick; T0 + 1 tick is general. */
+  const GENERAL = T0 + TICK;
+
+  /** A parsed slate, the shape `computeNextRunAt` reads. */
+  function slateOf(league: League, events: readonly EventSpec[], at: number): ProviderSlate {
+    const parsed = parseScoreboard(buildScoreboard(events), league, at);
+    return {
+      games: parsed.games,
+      lines: parsed.lines,
+      warnings: parsed.warnings,
+      fetchedAt: at,
+      season: parsed.season,
+      week: parsed.week,
+    };
+  }
+
+  function event(league: League, status: EventSpec['status'], kickoffAt: number): EventSpec {
+    return {
+      eventId: `${league}-1`,
+      league: league as EventSpec['league'],
+      kickoffAt,
+      status,
+      homeAbbr: 'HOM',
+      awayAbbr: 'AWY',
+      season: 2026,
+      week: 1,
+    };
+  }
+
+  /** Make a target LIVE: an in-progress game inside its ET day. */
+  async function makeLive(league: League, day: number, id: string): Promise<void> {
+    await seedGame(env.DB, {
+      id,
+      league,
+      kickoffAt: etDayBounds(T0 + day * DAY).startAt + 13 * HOUR,
+      status: 'in_progress',
+    });
+  }
+
+  const ids = (rows: readonly IngestTargetRow[]): string[] => rows.map((t) => t.id);
+
+  it('every cadence is a tick multiple from the NOMINAL instant: a run 5 s late still claims a live slate on the next tick', async () => {
+    // THE ALIGNMENT TRAP. A live slate stamped `now + 1 tick` by a run that
+    // started 7 s after its tick would be 7 s short of due at the next tick and
+    // wait for the one after. Stamped from `scheduledTime`, it is due exactly
+    // at the next tick.
+    const id = await insertTarget({
+      day: 0,
+      nextRunAt: GENERAL - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 1,
+    });
+    espn.set(keyOf(0), [event('nfl', 'in', T0 - HOUR)]);
+
+    const late = GENERAL + 7_000;
+    const run = await runJob(env, 'refresh', 'cron', late, { scheduledTime: GENERAL });
+    expect(run.status).toBe('ok');
+    const next = (await guardRow(id)).next_run_at;
+    expect(next).toBe(GENERAL + REFRESH_LIVE_TICKS * TICK);
+    // `now + 1 tick` is exactly the stamp that would have missed it.
+    expect(late + TICK).toBeGreaterThan(GENERAL + TICK);
+
+    // The very next tick — itself 5 s late — claims it. (The run's planner
+    // added never-fetched dates, due at `late` and big; drop them so the claim
+    // shows this slate rather than queue order.)
+    await env.DB.prepare('DELETE FROM ingest_targets WHERE id <> ?1').bind(id).run();
+    expect(ids(await claimDueTargets(env, GENERAL + TICK + 5_000, 5, false))).toEqual([id]);
+    expect(ids(await claimDueTargets(env, GENERAL + TICK - 1, 5, false))).toEqual([]);
+
+    // An ADMIN run has no scheduledTime: its base is the tick at or before
+    // `now` (the floor fallback), never `now` itself.
+    await env.DB.prepare('UPDATE ingest_targets SET next_run_at = 0 WHERE id = ?1').bind(id).run();
+    const adminAt = GENERAL + 2 * TICK + 40_000;
+    expect((await runJob(env, 'refresh', 'admin', adminAt)).status).toBe('ok');
+    expect((await guardRow(id)).next_run_at).toBe(GENERAL + 3 * TICK);
+    expect(refreshTickBase(adminAt)).toBe(GENERAL + 2 * TICK);
+    expect(refreshTickBase(adminAt, GENERAL)).toBe(GENERAL);
+  });
+
+  it('a live slate is due again after REFRESH_LIVE_TICKS ticks, in every league', () => {
+    const base = GENERAL;
+    const now = base + 7_000;
+    for (const league of LEAGUES) {
+      const target: IngestTargetRow = {
+        id: `${league}:date:${keyOf(0)}`,
+        league,
+        kind: 'date',
+        key: keyOf(0),
+        windowStartAt: etDayBounds(T0).startAt,
+        windowEndAt: etDayBounds(T0).endAt,
+        priority: 100,
+        nextRunAt: base,
+        consecutiveFailures: 0,
+        incompleteAttempts: 0,
+      };
+      const at = (status: EventSpec['status'], kickoffAt: number): number =>
+        computeNextRunAt(
+          target,
+          slateOf(league, [event(league, status, kickoffAt)], now),
+          false,
+          now,
+          base,
+        );
+      // Live: in progress, or a kickoff within 3 h — the next tick.
+      expect(at('in', now - HOUR), league).toBe(base + REFRESH_LIVE_TICKS * TICK);
+      expect(at('pre', now + 2 * HOUR), league).toBe(base + REFRESH_LIVE_TICKS * TICK);
+      // The other tiers are tick multiples from the same base.
+      expect(at('pre', now + 30 * HOUR), league).toBe(base + REFRESH_SOON_TICKS * TICK);
+      expect(at('post', now - 5 * HOUR), league).toBe(base + 480 * TICK);
+      expect(computeNextRunAt(target, slateOf(league, [], now), false, now, base), league).toBe(
+        base + REFRESH_DISCOVERY_TICKS * TICK,
+      );
+      // Failure backoff: 5 ticks × 2^n from the base, capped at the discovery tier.
+      for (const [failures, ticks] of [
+        [0, REFRESH_BACKOFF_BASE_TICKS],
+        [1, 2 * REFRESH_BACKOFF_BASE_TICKS],
+        [9, REFRESH_DISCOVERY_TICKS],
+      ] as const) {
+        expect(
+          computeNextRunAt({ ...target, consecutiveFailures: failures }, null, true, now, base),
+          `${league} after ${String(failures)} failures`,
+        ).toBe(base + ticks * TICK);
+      }
+    }
+    // The values the tiers keep in wall-clock terms (§24.7's table).
+    expect(REFRESH_LIVE_TICKS * TICK).toBe(3 * MIN);
+    expect(REFRESH_SOON_TICKS * TICK).toBe(HOUR);
+    expect(REFRESH_DISCOVERY_TICKS * TICK).toBe(6 * HOUR);
+    expect(REFRESH_BACKOFF_BASE_TICKS * TICK).toBe(15 * MIN);
+  });
+
+  it('a target with last_ok_at NULL weighs as big', async () => {
+    expect(targetWeight(0, null)).toBe(REFRESH_WEIGHT_BUDGET + 1);
+    expect(targetWeight(155, null)).toBe(REFRESH_WEIGHT_BUDGET + 1);
+    // An empty slate that DID succeed weighs 1; otherwise its games.
+    expect(targetWeight(0, T0)).toBe(1);
+    expect(targetWeight(16, T0)).toBe(16);
+
+    // In the claim. A failed first fetch leaves games_seen 0 and last_ok_at
+    // NULL: its size is unknown, so it runs alone...
+    const fresh = await insertTarget({ day: 0, nextRunAt: T0 - 2 * HOUR, lastStatus: 'error' });
+    const small = await insertTarget({ day: 1, nextRunAt: T0 - HOUR, lastOkAt: T0 - DAY });
+    expect(ids(await claimDueTargets(env, GENERAL, 5, false))).toEqual([fresh]);
+    // ...and is never packed behind a small one.
+    await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?1 WHERE id = ?2')
+      .bind(T0 - 3 * HOUR, small)
+      .run();
+    expect(ids(await claimDueTargets(env, GENERAL, 5, false))).toEqual([small]);
+  });
+
+  it('weight packing: NFL + MLB share a run; a CFB slate runs alone; a never-fetched target runs alone', async () => {
+    const nfl = await insertTarget({
+      league: 'nfl',
+      day: 0,
+      nextRunAt: T0 - 3 * HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 14,
+    });
+    const mlb = await insertTarget({
+      league: 'mlb',
+      day: 0,
+      nextRunAt: T0 - 2 * HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 15,
+    });
+    expect(ids(await claimDueTargets(env, GENERAL, 5, false))).toEqual([nfl, mlb]);
+
+    // A CFB Saturday (86 games) first: alone, though both small ones are due.
+    const cfb = await insertTarget({
+      league: 'ncaaf',
+      day: 0,
+      nextRunAt: T0 - 4 * HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 86,
+    });
+    expect(ids(await claimDueTargets(env, GENERAL, 5, false))).toEqual([cfb]);
+
+    // A never-fetched target first: alone too.
+    await env.DB.prepare('DELETE FROM ingest_targets WHERE id = ?1').bind(cfb).run();
+    const fresh = await insertTarget({ league: 'ncaaf', day: 1, nextRunAt: T0 - 5 * HOUR });
+    expect(ids(await claimDueTargets(env, GENERAL, 5, false))).toEqual([fresh]);
+  });
+
+  it('weight packing stops at the first candidate that does not fit (no skipping ahead)', async () => {
+    const a = await insertTarget({ day: 0, nextRunAt: T0 - 3 * HOUR, lastOkAt: T0, gamesSeen: 30 });
+    // 30 + 20 > 40: does not fit, and the packing stops here...
+    const b = await insertTarget({ day: 1, nextRunAt: T0 - 2 * HOUR, lastOkAt: T0, gamesSeen: 20 });
+    // ...so this one, which WOULD fit (30 + 5), is not reached.
+    await insertTarget({ day: 2, nextRunAt: T0 - HOUR, lastOkAt: T0, gamesSeen: 5 });
+    expect(ids(await claimDueTargets(env, GENERAL, 5, false))).toEqual([a]);
+
+    // Exactly at the budget fits: 30 + 10 = 40, and then 5 more does not.
+    await env.DB.prepare('UPDATE ingest_targets SET games_seen = 10 WHERE id = ?1').bind(b).run();
+    expect(ids(await claimDueTargets(env, GENERAL, 5, false))).toEqual([a, b]);
+  });
+
+  it('the count cap REFRESH_TARGETS_PER_RUN bounds a run of empty slates', async () => {
+    const cap = readConfig(env).refreshTargetsPerRun;
+    expect(cap).toBe(5);
+    for (let day = 0; day < cap + 2; day += 1) {
+      await insertTarget({ day, nextRunAt: T0 - (10 - day) * HOUR, lastOkAt: T0 - DAY });
+    }
+    // Seven targets weighing 1 each fit the budget; the count stops at five.
+    const claimed = await claimDueTargets(env, GENERAL, cap, false);
+    expect(ids(claimed)).toEqual(Array.from({ length: cap }, (_, d) => `nfl:date:${keyOf(d)}`));
+  });
+
+  it('every REFRESH_DISCOVERY_EVERY_NTH_TICK-th tick claims a non-live target first, falling through when none is due', async () => {
+    // Which ticks: :00 :15 :30 :45 — 96 a day.
+    expect(isDiscoveryTick(T0)).toBe(true);
+    for (let k = 1; k < REFRESH_DISCOVERY_EVERY_NTH_TICK; k += 1) {
+      expect(isDiscoveryTick(T0 + k * TICK)).toBe(false);
+    }
+    expect(isDiscoveryTick(T0 + REFRESH_DISCOVERY_EVERY_NTH_TICK * TICK)).toBe(true);
+    let perDay = 0;
+    for (let t = T0; t < T0 + DAY; t += TICK) if (isDiscoveryTick(t)) perDay += 1;
+    expect(perDay).toBe(96);
+
+    // A live slate (most due) and a discovery date, each too heavy to share.
+    const live = await insertTarget({
+      day: 0,
+      nextRunAt: T0 - 2 * HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 30,
+    });
+    await makeLive('nfl', 0, 'nfl:live-1');
+    const quiet = await insertTarget({
+      day: 3,
+      nextRunAt: T0 - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 30,
+    });
+    expect(ids(await claimDueTargets(env, GENERAL, 5, false))).toEqual([live]);
+    expect(ids(await claimDueTargets(env, T0, 5, true))).toEqual([quiet]);
+
+    // The general order follows the discovery pick: a light live slate packs behind it.
+    await env.DB.prepare('UPDATE ingest_targets SET games_seen = 10 WHERE id = ?1')
+      .bind(live)
+      .run();
+    expect(ids(await claimDueTargets(env, T0, 5, true))).toEqual([quiet, live]);
+
+    // Nothing non-live is due: the tick falls through to the plain order.
+    await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?1 WHERE id = ?2')
+      .bind(T0 + DAY, quiet)
+      .run();
+    expect(ids(await claimDueTargets(env, T0, 5, true))).toEqual([live]);
+
+    // End to end: a cron run AT a discovery tick fetches the discovery date.
+    await env.DB.prepare(
+      'UPDATE ingest_targets SET next_run_at = ?1, games_seen = 30 WHERE id IN (?2, ?3)',
+    )
+      .bind(T0 - HOUR, quiet, live)
+      .run();
+    const run = await runJob(env, 'refresh', 'cron', T0 + 4_000, { scheduledTime: T0 });
+    expect(run.status).toBe('ok');
+    expect((await guardRow(quiet)).last_ok_at).toBe(T0 + 4_000);
+    expect((await guardRow(live)).last_ok_at).toBe(T0 - DAY);
+  });
+
+  it('an admin run is always general', async () => {
+    const live = await insertTarget({
+      day: 0,
+      nextRunAt: T0 - 2 * HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 30,
+    });
+    await makeLive('nfl', 0, 'nfl:live-1');
+    const quiet = await insertTarget({
+      day: 3,
+      nextRunAt: T0 - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 30,
+    });
+    // T0 IS a discovery tick, and the admin run still takes the most-due slate.
+    expect(isDiscoveryTick(T0)).toBe(true);
+    const run = await runJob(env, 'refresh', 'admin', T0);
+    expect(run.status).toBe('ok');
+    expect(run.stats?.['targetsProcessed']).toBe(1);
+    expect((await guardRow(live)).last_ok_at).toBe(T0);
+    expect((await guardRow(quiet)).last_ok_at).toBe(T0 - DAY);
+  });
+
+  it('both leases are strictly shorter than REFRESH_TICK_MS', () => {
+    expect(JOB_LEASE_TTL_MS.refresh).toBeLessThan(REFRESH_TICK_MS);
+    expect(JOB_LEASE_TTL_MS.settle).toBeLessThan(REFRESH_TICK_MS);
+    expect(JOB_LEASE_TTL_MS.refresh).toBe(2.5 * MIN);
+    expect(JOB_LEASE_TTL_MS.settle).toBe(2.5 * MIN);
+    // Maintenance is daily and keeps its 10 minutes.
+    expect(JOB_LEASE_TTL_MS.maintenance).toBe(10 * MIN);
+  });
+
+  it('JOB_RUNS_KEPT_PER_JOB keeps a full day of refresh and settle runs', () => {
+    const runsPerDay = DAY / REFRESH_TICK_MS;
+    expect(runsPerDay).toBe(480);
+    expect(JOB_RUNS_KEPT_PER_JOB).toBeGreaterThanOrEqual(runsPerDay);
+    expect(JOB_RUNS_KEPT_PER_JOB).toBe(600);
+    // MAX_SETTLE_ATTEMPTS keeps meaning "24 h of patience" at one settle per tick.
+    expect(MAX_SETTLE_ATTEMPTS * REFRESH_TICK_MS).toBe(DAY);
+  });
 });

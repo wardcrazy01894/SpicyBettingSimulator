@@ -5,7 +5,9 @@ import {
   GAME_SEEN_TOUCH_MS,
   INGEST_WINDOW_MS,
   LINE_SEEN_TOUCH_MS,
-  RESERVED_DISCOVERY_SLOTS,
+  REFRESH_DISCOVERY_EVERY_NTH_TICK,
+  REFRESH_LIVE_TICKS,
+  REFRESH_TICK_MS,
 } from '../../src/shared/constants.js';
 import { parseScoreboard } from '../../src/shared/espn.js';
 import { boardWindowEnd, etDateKey, etDateKeyRange } from '../../src/shared/time.js';
@@ -20,6 +22,7 @@ import {
   claimDueTargets,
   computeNextRunAt,
   GAME_LIVE_SQL,
+  isDiscoveryTick,
   ingestTarget,
   lineGapsOf,
   lineRowsWorthWriting,
@@ -163,6 +166,18 @@ function makeSlate(specs: readonly EventSpec[], league: League, fetchedAt: numbe
     season: parsed.season,
     week: parsed.week,
   };
+}
+
+/** The live tier since M13b: the next tick (PLAN.md §24.7). */
+const LIVE_MS = REFRESH_LIVE_TICKS * REFRESH_TICK_MS;
+
+/**
+ * Mark every target as fetched OK before (empty), so each weighs 1 and the
+ * per-run weight budget packs them up to the count cap (§24.7). A planned
+ * target that has never succeeded weighs "big" and runs alone.
+ */
+async function markAllFetched(at = T0 - DAY): Promise<void> {
+  await env.DB.prepare('UPDATE ingest_targets SET last_ok_at = ?1').bind(at).run();
 }
 
 /** Plan targets and hand back the NFL Sunday one, which every test drives. */
@@ -650,13 +665,20 @@ describe('request budget', () => {
 
   it('a refresh run makes at most REFRESH_TARGETS_PER_RUN upstream calls', async () => {
     await planTargets(env, T0);
-    // Every target is due immediately after planning.
-    await runRefresh(env, T0, 2);
-    expect(espn.callCount).toBe(2);
-    expect(new Set(espn.urls).size).toBe(2); // never the same URL twice
+    // Every target is due immediately after planning, and each weighs 1.
+    await markAllFetched();
+    await runRefresh(env, T0, 5);
+    expect(espn.callCount).toBe(5);
+    expect(new Set(espn.urls).size).toBe(5); // never the same URL twice
   });
 
-  it('at most 16 discovery targets at +6h need 64 slot-uses/day against a supply of 96 (PLAN.md §8.4/§22)', () => {
+  it('a run of never-fetched targets makes ONE upstream call: each weighs big (§24.7)', async () => {
+    await planTargets(env, T0);
+    await runRefresh(env, T0, 5);
+    expect(espn.callCount).toBe(1);
+  });
+
+  it('at most 16 discovery targets at +6h need 64 slot-uses/day against 96 discovery-first ticks (PLAN.md §8.4/§24.7)', () => {
     // The §8.4 budget check, as arithmetic rather than prose. The widest window
     // is 9 ET dates per league, on a Sunday after both rollovers.
     const sunNight = Date.parse('2026-09-14T01:00:00Z');
@@ -664,15 +686,16 @@ describe('request budget', () => {
       etDateKeyRange(sunNight, boardWindowEnd('nfl', sunNight)).length +
       etDateKeyRange(sunNight, boardWindowEnd('ncaaf', sunNight)).length;
     expect(targets).toBe(18);
-    const discovery = targets - 2; // worst case: two live targets hold slot 1
+    const discovery = targets - 2; // worst case: two live targets take every general tick
     const slotUsesPerDay = discovery * (DAY / (6 * HOUR));
-    const supply = (DAY / (15 * MIN)) * RESERVED_DISCOVERY_SLOTS;
+    // Since M13b the reservation is in TIME: every REFRESH_DISCOVERY_EVERY_NTH_TICK-th tick.
+    const supply = DAY / (REFRESH_TICK_MS * REFRESH_DISCOVERY_EVERY_NTH_TICK);
     expect(slotUsesPerDay).toBe(64);
     expect(supply).toBe(96);
     expect(slotUsesPerDay).toBeLessThan(supply);
   });
 
-  it('with MLB: 19 in-window targets, ≈ 70 discovery slot-uses/day against the reserved 96 (PLAN.md §23.11)', () => {
+  it('with MLB: 19 in-window targets, ≈ 70 discovery slot-uses/day against the 96 discovery-first ticks (PLAN.md §23.11)', () => {
     const sunNight = Date.parse('2026-09-14T01:00:00Z');
     const football =
       etDateKeyRange(sunNight, boardWindowEnd('nfl', sunNight)).length +
@@ -681,10 +704,10 @@ describe('request budget', () => {
     expect(mlb).toBe(1);
     expect(football + mlb).toBe(19);
     // §23.11: 17 non-live football targets at +6 h, plus ~2 lingering past MLB
-    // dates on the +24 h tier. The MLB day target is live, so it is slot 1's.
+    // dates on the +24 h tier. The MLB day target is live: a general tick's.
     const lingeringMlb = 2;
     const demand = (football - 1) * (DAY / (6 * HOUR)) + lingeringMlb * (DAY / (24 * HOUR));
-    const supply = (DAY / (15 * MIN)) * RESERVED_DISCOVERY_SLOTS;
+    const supply = DAY / (REFRESH_TICK_MS * REFRESH_DISCOVERY_EVERY_NTH_TICK);
     expect(demand).toBe(70);
     expect(demand).toBeLessThan(supply);
   });
@@ -712,20 +735,22 @@ describe('request budget', () => {
     // The deployed cap, read the way runJob reads it — not a literal that
     // would make the assertion below a tautology of the argument above.
     const perRun = Number(env.REFRESH_TARGETS_PER_RUN);
-    expect(perRun).toBe(2);
+    expect(perRun).toBe(5);
+    // Every target in the queue is NEVER-FETCHED (the 7 from Saturday night's
+    // plan as well as the 8 new ones), so each weighs big and runs ALONE: one
+    // a tick (§24.7). 00:00 ET is ALSO MLB's daily rollover (PLAN.md §23.5), so
+    // the burst holds eight new targets, not seven — 15 ticks, 45 minutes.
     let claimedSoFar = 0;
-    // 00:00 ET is ALSO MLB's daily rollover (PLAN.md §23.5), so the burst holds
-    // eight new targets, not seven: one more run to drain it.
-    for (let run = 1; run <= 8; run += 1) {
-      const now = sunEarly + run * 15 * MIN;
+    for (let run = 1; run <= 15; run += 1) {
+      const now = sunEarly + run * REFRESH_TICK_MS;
       const stats = await runRefresh(env, now, perRun);
-      expect(stats.targetsProcessed).toBeLessThanOrEqual(perRun);
+      expect(stats.targetsProcessed).toBe(1);
       const done = await env.DB.prepare(
         `SELECT COUNT(*) AS n FROM ingest_targets WHERE id IN (${newIds.map(() => '?').join(',')}) AND last_run_at IS NOT NULL`,
       )
         .bind(...newIds)
         .first<{ n: number }>();
-      expect((done?.n ?? 0) - claimedSoFar).toBeLessThanOrEqual(perRun);
+      expect((done?.n ?? 0) - claimedSoFar).toBeLessThanOrEqual(1);
       claimedSoFar = done?.n ?? 0;
     }
     expect(claimedSoFar).toBe(7);
@@ -1356,7 +1381,7 @@ describe('write budget levers (PLAN.md §8.6)', () => {
     expect(staleAt - (fresh?.seen_at ?? 0)).toBeLessThan(3 * HOUR);
   });
 
-  it('BUDGET: 96 refreshes of an 86-game CFB Saturday write < 5,000 rows', async () => {
+  it('BUDGET: 480 three-minute ticks of an 86-game CFB Saturday write < 13,000 rows (PLAN.md §24.13)', async () => {
     // THE REGRESSION GUARD §8.6 PROMISES — and the one the round-2 review found
     // to be measuring the wrong thing. Three things it has to get right:
     //
@@ -1381,8 +1406,14 @@ describe('write budget levers (PLAN.md §8.6)', () => {
     //     A/B split                     8,686 rows
     //     single-statement upsert      33,196 rows   ( 8,256 meta.changes)
     // 33,196 is §8.6's "without the levers" figure, reproduced.
+    //
+    // M13b (PLAN.md §24.13) re-ran it at the 3-minute tick: 480 refreshes, the
+    // slate refreshed on EVERY tick (live every tick, uncontended), the clock
+    // still moving on every one. The bound is re-derived from that measurement
+    // with the ~1.68× headroom the 96-refresh bound had (5,000 over 2,979) —
+    // never raised to fit a failure.
     const GAMES = 86;
-    const REFRESHES = 96;
+    const REFRESHES = DAY / REFRESH_TICK_MS;
     /** Four kickoff waves: noon, 3:30, 7:00, 10:30 — and 3.5 h of football. */
     const WAVE_MS = 3.5 * HOUR;
     const kickoffOf = (i: number): number => T0 + (i % 4) * WAVE_MS;
@@ -1407,7 +1438,7 @@ describe('write budget levers (PLAN.md §8.6)', () => {
      */
     const at = (run: number, i: number): EventSpec => {
       const e = base[i]!;
-      const elapsed = T0 + run * 15 * MIN - e.kickoffAt;
+      const elapsed = T0 + run * REFRESH_TICK_MS - e.kickoffAt;
       if (elapsed < 0) return e;
       if (elapsed >= WAVE_MS) {
         return {
@@ -1438,7 +1469,7 @@ describe('write budget levers (PLAN.md §8.6)', () => {
     let rowsWritten = 0;
     try {
       for (let run = 0; run < REFRESHES; run += 1) {
-        const now = T0 + run * 15 * MIN;
+        const now = T0 + run * REFRESH_TICK_MS;
         const specs = base.map((_, i) => at(run, i));
         const res = await upsertSlate(env, makeSlate(specs, 'ncaaf', now), now);
         games += res.games;
@@ -1455,8 +1486,9 @@ describe('write budget levers (PLAN.md §8.6)', () => {
     // The independent witness and the production accounting must agree exactly.
     expect(rowsWritten).toBe(probe.rows);
 
+    console.log('M13B-MEASURE cfb', JSON.stringify({ rowsWritten, games, lines, REFRESHES }));
     // THE GUARD.
-    expect(rowsWritten).toBeLessThan(5_000);
+    expect(rowsWritten).toBeLessThan(13_000);
 
     // L2, stated as a measurement rather than prose.
     expect(lines).toBeGreaterThan(0);
@@ -1663,12 +1695,26 @@ describe('computeNextRunAt', () => {
     incompleteAttempts: 0,
   };
 
-  it('live or < 3h out -> +15 min', () => {
+  it('live or < 3h out -> the next tick (M13b, PLAN.md §24.7)', () => {
     const live = makeSlate([spec({ status: 'in', kickoffAt: T0 - HOUR })], 'nfl', T0);
-    expect(computeNextRunAt(target, live, false, T0)).toBe(T0 + 15 * MIN);
+    expect(computeNextRunAt(target, live, false, T0)).toBe(T0 + LIVE_MS);
 
     const soon = makeSlate([spec({ status: 'pre', kickoffAt: T0 + 2 * HOUR })], 'nfl', T0);
-    expect(computeNextRunAt(target, soon, false, T0)).toBe(T0 + 15 * MIN);
+    expect(computeNextRunAt(target, soon, false, T0)).toBe(T0 + LIVE_MS);
+  });
+
+  it('every tier is counted from the tick, not from now: a run 40 s late lands on a tick', () => {
+    const late = T0 + 40_000;
+    const live = makeSlate([spec({ status: 'in', kickoffAt: T0 - HOUR })], 'nfl', late);
+    // Floor fallback (no scheduledTime): the tick at or before `now`.
+    expect(computeNextRunAt(target, live, false, late)).toBe(T0 + LIVE_MS);
+    // An explicit nominal instant wins.
+    expect(computeNextRunAt(target, live, false, late, T0)).toBe(T0 + LIVE_MS);
+    const far = makeSlate([spec({ status: 'pre', kickoffAt: T0 + 8 * DAY })], 'nfl', late);
+    expect(computeNextRunAt(target, far, false, late)).toBe(T0 + 6 * HOUR);
+    expect(computeNextRunAt({ ...target, consecutiveFailures: 1 }, null, true, late)).toBe(
+      T0 + 30 * MIN,
+    );
   });
 
   it('< 48h out -> +60 min', () => {
@@ -1706,13 +1752,13 @@ describe('computeNextRunAt', () => {
       'nfl',
       T0,
     );
-    expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + 15 * MIN);
+    expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + LIVE_MS);
   });
 
-  it('a POSTPONED game does NOT pin the target to the 15-minute live tier', () => {
+  it('a POSTPONED game does NOT pin the target to the live tier', () => {
     // `TERMINAL_STATUSES` is only {final, canceled}, so a postponed game stays
     // "unfinished" indefinitely. With a one-sided `kickoffAt - now <= 3h` test
-    // its nominal kickoff, five hours in the past, still read as "live" — 96
+    // its nominal kickoff, five hours in the past, still read as "live" — 480
     // pointless refreshes a day, forever. It belongs in the discovery tier.
     const slate = makeSlate([spec({ status: 'postponed', kickoffAt: T0 - 5 * HOUR })], 'nfl', T0);
     expect(slate.games[0]?.status).toBe('postponed');
@@ -1731,19 +1777,19 @@ describe('computeNextRunAt', () => {
 
   it('a postponed game whose NEW kickoff is 2h out is live again', () => {
     // The clamp is on the horizon, not on the status: once ESPN republishes a
-    // real upcoming kickoff the target goes back to the 15-minute tier.
+    // real upcoming kickoff the target goes back to the live tier.
     const slate = makeSlate([spec({ status: 'postponed', kickoffAt: T0 + 2 * HOUR })], 'nfl', T0);
-    expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + 15 * MIN);
+    expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + LIVE_MS);
   });
 
   it('a SCHEDULED game just past kickoff (ESPN slow to flip) stays live for a bounded grace', () => {
     // 20 minutes past kickoff, still 'pre' in the feed: must NOT fall to +6h or
     // settlement waits hours for a game that has genuinely started.
     const late = makeSlate([spec({ status: 'pre', kickoffAt: T0 - 20 * MIN })], 'nfl', T0);
-    expect(computeNextRunAt(target, late, false, T0)).toBe(T0 + 15 * MIN);
+    expect(computeNextRunAt(target, late, false, T0)).toBe(T0 + LIVE_MS);
     // Inside the 4h grace: still live.
     const edge = makeSlate([spec({ status: 'pre', kickoffAt: T0 - 4 * HOUR })], 'nfl', T0);
-    expect(computeNextRunAt(target, edge, false, T0)).toBe(T0 + 15 * MIN);
+    expect(computeNextRunAt(target, edge, false, T0)).toBe(T0 + LIVE_MS);
     // Past the grace: a silently-postponed game drops to discovery.
     const stale = makeSlate([spec({ status: 'pre', kickoffAt: T0 - 4 * HOUR - 1 })], 'nfl', T0);
     expect(computeNextRunAt(target, stale, false, T0)).toBe(T0 + 6 * HOUR);
@@ -1756,7 +1802,7 @@ describe('computeNextRunAt', () => {
     // The in_progress arm has no horizon at all — a game in a weather delay is
     // still the thing we most need fresh scores for.
     const slate = makeSlate([spec({ status: 'in', kickoffAt: T0 - 9 * HOUR })], 'nfl', T0);
-    expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + 15 * MIN);
+    expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + LIVE_MS);
   });
 
   it('failure -> exponential backoff capped at 6h', () => {
@@ -1802,8 +1848,20 @@ async function insertGame(
     .run();
 }
 
-describe('slot fairness (PLAN.md §8.4)', () => {
-  it('slot 1 takes the most-due target overall', async () => {
+describe('claim order, the weight budget and the discovery tick (PLAN.md §8.4, §24.7)', () => {
+  const ids = (rows: readonly IngestTargetRow[]): string[] => rows.map((t) => t.id);
+  /** T0 is on the 15-minute grid: a discovery-first tick. T0 + 1 tick is general. */
+  const GENERAL = T0 + REFRESH_TICK_MS;
+
+  async function makeTwoLive(): Promise<readonly [IngestTargetRow, IngestTargetRow]> {
+    const live1 = await loadTarget('nfl:date:20260913');
+    const live2 = await loadTarget('ncaaf:date:20260913');
+    await insertGame('nfl:live1', 'nfl', live1.windowStartAt + HOUR, 'in_progress');
+    await insertGame('ncaaf:live2', 'ncaaf', live2.windowStartAt + HOUR, 'in_progress');
+    return [live1, live2];
+  }
+
+  it('the first pick is the most-due target overall', async () => {
     await planTargets(env, SUN_NIGHT);
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?')
       .bind(T0 + DAY)
@@ -1811,20 +1869,17 @@ describe('slot fairness (PLAN.md §8.4)', () => {
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id = ?')
       .bind(T0 - HOUR, 'ncaaf:date:20260915')
       .run();
-    const picked = await claimDueTargets(env, T0, 2, RESERVED_DISCOVERY_SLOTS);
+    const picked = await claimDueTargets(env, GENERAL, 5, false);
     expect(picked[0]?.id).toBe('ncaaf:date:20260915');
   });
 
-  it('slot 2 is RESERVED for the most-overdue target with no in-progress game', async () => {
+  it('a discovery-first tick claims the most-overdue target with no in-progress game first', async () => {
     await planTargets(env, SUN_NIGHT);
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?')
       .bind(T0 + DAY)
       .run();
     // Two live targets are the most due; a quiet one is due but less overdue.
-    const live1 = await loadTarget('nfl:date:20260913');
-    const live2 = await loadTarget('ncaaf:date:20260913');
-    await insertGame('nfl:live1', 'nfl', live1.windowStartAt + HOUR, 'in_progress');
-    await insertGame('ncaaf:live2', 'ncaaf', live2.windowStartAt + HOUR, 'in_progress');
+    const [live1, live2] = await makeTwoLive();
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id IN (?, ?)')
       .bind(T0 - 2 * HOUR, live1.id, live2.id)
       .run();
@@ -1832,49 +1887,45 @@ describe('slot fairness (PLAN.md §8.4)', () => {
       .bind(T0 - MIN, 'nfl:date:20260918')
       .run();
 
-    const picked = await claimDueTargets(env, T0, 2, RESERVED_DISCOVERY_SLOTS);
-    expect(picked).toHaveLength(2);
-    // Slot 1: a live one. Slot 2: the discovery target, NOT the other live one.
-    expect([live1.id, live2.id]).toContain(picked[0]?.id);
-    expect(picked[1]?.id).toBe('nfl:date:20260918');
+    expect(isDiscoveryTick(T0)).toBe(true);
+    // Never-fetched, so each runs alone: the discovery date, NOT a live one.
+    expect(ids(await claimDueTargets(env, T0, 5, true))).toEqual(['nfl:date:20260918']);
+    // A general tick takes a live one.
+    expect([live1.id, live2.id]).toContain((await claimDueTargets(env, GENERAL, 5, false))[0]?.id);
   });
 
-  it('the reserved slot never re-picks slot 1s target (AND id <> :slot1Id)', async () => {
+  it('the discovery pick is never claimed twice in one run', async () => {
     await planTargets(env, SUN_NIGHT);
+    await markAllFetched();
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?')
       .bind(T0 + DAY)
       .run();
-    // Exactly ONE due target, and it is not live — so it satisfies BOTH queries.
+    // Exactly ONE due target, and it is not live — so it satisfies BOTH reads.
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id = ?')
       .bind(T0 - HOUR, 'nfl:date:20260916')
       .run();
-    const picked = await claimDueTargets(env, T0, 2, RESERVED_DISCOVERY_SLOTS);
-    expect(picked.map((t) => t.id)).toEqual(['nfl:date:20260916']);
+    expect(ids(await claimDueTargets(env, T0, 5, true))).toEqual(['nfl:date:20260916']);
   });
 
-  it('the reserved slot falls through to the general queue when no non-live target is due', async () => {
+  it('a discovery-first tick falls through to the general order when no non-live target is due', async () => {
     await planTargets(env, SUN_NIGHT);
+    await markAllFetched();
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?')
       .bind(T0 + DAY)
       .run();
-    const live1 = await loadTarget('nfl:date:20260913');
-    const live2 = await loadTarget('ncaaf:date:20260913');
-    await insertGame('nfl:live1', 'nfl', live1.windowStartAt + HOUR, 'in_progress');
-    await insertGame('ncaaf:live2', 'ncaaf', live2.windowStartAt + HOUR, 'in_progress');
+    const [live1, live2] = await makeTwoLive();
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id IN (?, ?)')
       .bind(T0 - HOUR, live1.id, live2.id)
       .run();
-
-    const picked = await claimDueTargets(env, T0, 2, RESERVED_DISCOVERY_SLOTS);
-    expect(picked).toHaveLength(2);
-    expect(new Set(picked.map((t) => t.id))).toEqual(new Set([live1.id, live2.id]));
+    const picked = await claimDueTargets(env, T0, 5, true);
+    expect(new Set(ids(picked))).toEqual(new Set([live1.id, live2.id]));
   });
 
-  it('SLOT 1 IS NEVER RESERVED: a one-slot run still takes the most-due target', async () => {
-    // `REFRESH_TARGETS_PER_RUN` is forced to 1 for an admin trigger (§9.3). If
-    // the reservation ate that single slot, a live Saturday target would sit
-    // unrefreshed for as long as any discovery target was due.
+  it('a one-target run (an admin trigger) takes the most-due target', async () => {
+    // `REFRESH_TARGETS_PER_RUN` is forced to 1 for an admin trigger (§9.3), and
+    // an admin run is always general.
     await planTargets(env, SUN_NIGHT);
+    await markAllFetched();
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?')
       .bind(T0 + DAY)
       .run();
@@ -1887,37 +1938,35 @@ describe('slot fairness (PLAN.md §8.4)', () => {
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id = ?')
       .bind(T0 - MIN, 'nfl:date:20260918')
       .run();
-
-    const picked = await claimDueTargets(env, T0, 1, RESERVED_DISCOVERY_SLOTS);
-    expect(picked.map((t) => t.id)).toEqual([live.id]);
+    expect(ids(await claimDueTargets(env, T0, 1, false))).toEqual([live.id]);
   });
 
-  it('with a live CFB AND a live NFL target, discovery targets are not starved', async () => {
+  it('with a live CFB AND a live NFL target, discovery targets are not starved (480 ticks)', async () => {
     await planTargets(env, SUN_NIGHT);
-    const live1 = await loadTarget('nfl:date:20260913');
-    const live2 = await loadTarget('ncaaf:date:20260913');
-    await insertGame('nfl:live1', 'nfl', live1.windowStartAt + HOUR, 'in_progress');
-    await insertGame('ncaaf:live2', 'ncaaf', live2.windowStartAt + HOUR, 'in_progress');
+    const [live1, live2] = await makeTwoLive();
 
-    // Simulate a full day of runs from the Sunday-night plan: the two live
-    // targets stay perpetually due, every other target reschedules itself to
-    // +6h after it is picked.
+    // A full day of ticks from the Sunday-night plan. The two live targets
+    // stay perpetually due; every other target reschedules itself to +6 h
+    // after it is picked. Never-fetched targets weigh big, so every run takes
+    // ONE target: the discovery-first ticks alone must serve the 17 others.
     const seen = new Set<string>();
-    for (let run = 0; run < 96; run += 1) {
-      const now = SUN_NIGHT + run * 15 * MIN;
+    for (let tick = 0; tick < DAY / REFRESH_TICK_MS; tick += 1) {
+      const now = SUN_NIGHT + tick * REFRESH_TICK_MS;
       await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id IN (?, ?)')
         .bind(now, live1.id, live2.id)
         .run();
-      const picked = await claimDueTargets(env, now, 2, RESERVED_DISCOVERY_SLOTS);
+      const picked = await claimDueTargets(env, now, 5, isDiscoveryTick(now));
+      expect(picked.length).toBeLessThanOrEqual(1);
       for (const t of picked) {
         seen.add(t.id);
+        if (t.id === live1.id || t.id === live2.id) continue;
         await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id = ?')
           .bind(now + 6 * HOUR, t.id)
           .run();
       }
     }
-    // Every one of the 19 targets (9 + 9 + MLB's 1, §8.4) got at least one slot
-    // during the day — the count is read from the planner, not assumed.
+    // Every one of the 19 targets (9 + 9 + MLB's 1, §8.4) was claimed during
+    // the day — the count is read from the planner, not assumed.
     const planned = await env.DB.prepare('SELECT COUNT(*) AS n FROM ingest_targets').first<{
       n: number;
     }>();
@@ -1925,34 +1974,34 @@ describe('slot fairness (PLAN.md §8.4)', () => {
     expect(seen.size).toBe(planned?.n);
   }, 120_000);
 
-  it('two simultaneously-live targets alternate in slot 1 (30-minute cadence each)', async () => {
+  it('two big live slates alternate on the general ticks (each every second tick)', async () => {
     await planTargets(env, SUN_NIGHT);
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?')
       .bind(T0 + DAY)
       .run();
-    const live1 = await loadTarget('nfl:date:20260913');
-    const live2 = await loadTarget('ncaaf:date:20260913');
-    await insertGame('nfl:live1', 'nfl', live1.windowStartAt + HOUR, 'in_progress');
-    await insertGame('ncaaf:live2', 'ncaaf', live2.windowStartAt + HOUR, 'in_progress');
+    const [live1, live2] = await makeTwoLive();
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id IN (?, ?)')
       .bind(T0, live1.id, live2.id)
       .run();
 
-    const slot1: string[] = [];
-    for (let run = 0; run < 4; run += 1) {
-      const now = T0 + run * 15 * MIN;
-      const picked = await claimDueTargets(env, now, 2, RESERVED_DISCOVERY_SLOTS);
-      const first = picked[0];
-      if (first === undefined) break;
-      slot1.push(first.id);
+    const first: string[] = [];
+    for (let k = 1; k <= 4; k += 1) {
+      const now = T0 + k * REFRESH_TICK_MS; // four general ticks
+      expect(isDiscoveryTick(now)).toBe(false);
+      const picked = await claimDueTargets(env, now, 5, false);
+      expect(picked).toHaveLength(1); // never-fetched: big, alone
+      const head = picked[0];
+      if (head === undefined) break;
+      first.push(head.id);
+      // The live tier: due again at the NEXT tick.
       await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ? WHERE id = ?')
-        .bind(now + 15 * MIN, first.id)
+        .bind(now + LIVE_MS, head.id)
         .run();
     }
-    // Each live target appears every other run => a 30-minute cadence each.
-    expect(new Set(slot1)).toEqual(new Set([live1.id, live2.id]));
-    expect(slot1[0]).toBe(slot1[2]);
-    expect(slot1[1]).toBe(slot1[3]);
+    // Each live slate appears every other tick (round-robin by next_run_at).
+    expect(new Set(first)).toEqual(new Set([live1.id, live2.id]));
+    expect(first[0]).toBe(first[2]);
+    expect(first[1]).toBe(first[3]);
   });
 });
 
@@ -1964,8 +2013,10 @@ describe('runRefresh', () => {
   it('plans, fetches and upserts in one pass and reports its stats', async () => {
     const key = etDateKey(T0);
     espn.set(key, [BASE_SPEC]);
-    const stats = await runRefresh(env, T0, 2);
-    expect(stats.targetsProcessed).toBe(2);
+    await planTargets(env, T0);
+    await markAllFetched();
+    const stats = await runRefresh(env, T0, 5);
+    expect(stats.targetsProcessed).toBe(5);
     expect(stats.failures).toEqual([]);
     expect(stats.gamesUpserted).toBeGreaterThanOrEqual(1);
     // Which of the 22 equally-due targets slot 1 draws is decided by the
@@ -1977,13 +2028,18 @@ describe('runRefresh', () => {
 
   it('honours REFRESH_TARGETS_PER_RUN', async () => {
     await planTargets(env, T0);
+    await markAllFetched();
     const stats = await runRefresh(env, T0, 1);
     expect(stats.targetsProcessed).toBe(1);
     expect(espn.callCount).toBe(1);
+    const three = await runRefresh(env, T0, 3);
+    expect(three.targetsProcessed).toBe(3);
+    expect(espn.callCount).toBe(4);
   });
 
   it('reschedules every processed target so the next run picks different ones', async () => {
     await planTargets(env, T0);
+    await markAllFetched();
     await runRefresh(env, T0, 2);
     const due = await env.DB.prepare(
       'SELECT COUNT(*) AS n FROM ingest_targets WHERE next_run_at <= ?',
@@ -1996,6 +2052,8 @@ describe('runRefresh', () => {
   it('the whole refresh is idempotent: a second identical run writes zero rows', async () => {
     const key = etDateKey(T0);
     espn.set(key, [BASE_SPEC]);
+    await planTargets(env, T0);
+    await markAllFetched();
     await runRefresh(env, T0, 2);
     // Force the same two targets to be due again, unchanged upstream.
     await env.DB.prepare('UPDATE ingest_targets SET next_run_at = ?')
@@ -2013,6 +2071,8 @@ describe('runRefresh', () => {
   it('reports rowsWritten, and job_runs.stats carries it (PLAN.md §8.6)', async () => {
     const key = etDateKey(T0);
     espn.set(key, [BASE_SPEC]);
+    await planTargets(env, T0);
+    await markAllFetched();
     const stats = await runRefresh(env, T0, 2);
     // 6 (game INSERT) + 2 (line INSERT) + 2 x 2 (target reschedules) + 2 x 2
     // (M13a's guard stamps, PLAN.md §24.4).

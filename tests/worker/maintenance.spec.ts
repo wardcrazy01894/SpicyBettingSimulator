@@ -276,10 +276,10 @@ describe('maintenance — pruning', () => {
     expect(keys.results.map((r) => r.key)).toEqual(['u:locked', 'u:recent']);
   });
 
-  it('prunes job_runs beyond the newest 200 per job, per job independently', async () => {
-    // 205 `refresh` runs and 3 `settle` runs, in one statement each.
+  it('prunes job_runs beyond the newest 600 per job, per job independently', async () => {
+    // 605 `refresh` runs and 3 `settle` runs, in one statement each.
     await env.DB.prepare(
-      `WITH RECURSIVE c(v) AS (SELECT 0 UNION ALL SELECT v + 1 FROM c WHERE v < 204)
+      `WITH RECURSIVE c(v) AS (SELECT 0 UNION ALL SELECT v + 1 FROM c WHERE v < 604)
        INSERT INTO job_runs (id, job, trigger, started_at, finished_at, status, stats, error)
        SELECT 'r-' || v, 'refresh', 'cron', ?1 + v, ?1 + v, 'ok', NULL, NULL FROM c`,
     )
@@ -293,14 +293,15 @@ describe('maintenance — pruning', () => {
       .bind(NOW - 500_000)
       .run();
 
-    expect(JOB_RUNS_KEPT_PER_JOB).toBe(200);
+    // 480 runs per job a day at the 3-minute tick (M13b, PLAN §24.7) + margin.
+    expect(JOB_RUNS_KEPT_PER_JOB).toBe(600);
     expect((await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB)).count).toBe(5);
 
     const counts = await env.DB.prepare(
       `SELECT job, COUNT(*) AS n FROM job_runs GROUP BY job ORDER BY job`,
     ).all<{ job: string; n: number }>();
     expect(counts.results).toEqual([
-      { job: 'refresh', n: 200 },
+      { job: 'refresh', n: 600 },
       { job: 'settle', n: 3 },
     ]);
 
@@ -310,7 +311,7 @@ describe('maintenance — pruning', () => {
     ).first<{ n: number }>();
     expect(oldest?.n).toBe(0);
     const newest = await env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM job_runs WHERE id = 'r-204'`,
+      `SELECT COUNT(*) AS n FROM job_runs WHERE id = 'r-604'`,
     ).first<{ n: number }>();
     expect(newest?.n).toBe(1);
   });
@@ -321,7 +322,7 @@ describe('maintenance — pruning', () => {
     // pruning targets its OWN `running` row — deleting it would make the run
     // that just did the work vanish from GET /api/admin/jobs.
     await env.DB.prepare(
-      `WITH RECURSIVE c(v) AS (SELECT 0 UNION ALL SELECT v + 1 FROM c WHERE v < 204)
+      `WITH RECURSIVE c(v) AS (SELECT 0 UNION ALL SELECT v + 1 FROM c WHERE v < 604)
        INSERT INTO job_runs (id, job, trigger, started_at, finished_at, status, stats, error)
        SELECT 'k-' || v, 'maintenance', 'cron', ?1 + v, ?1 + v, 'ok', NULL, NULL FROM c`,
     )
@@ -335,7 +336,7 @@ describe('maintenance — pruning', () => {
       .bind(NOW - 600_000)
       .run();
 
-    // 206 rows, 200 kept: the 6 oldest FINISHED ones go, the running one stays.
+    // 606 rows, 600 kept: the 6 oldest FINISHED ones go, the running one stays.
     expect((await pruneJobRuns(env, JOB_RUNS_KEPT_PER_JOB)).count).toBe(5);
     const live = await env.DB.prepare(
       `SELECT COUNT(*) AS n FROM job_runs WHERE id = 'k-live'`,
