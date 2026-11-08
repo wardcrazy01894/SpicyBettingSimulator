@@ -12,6 +12,7 @@ import {
   localDateKey,
 } from './datetime.js';
 import { BET_LEAGUE_LABEL } from './labels.js';
+import type { BoardFilter } from './board-filter.js';
 import type { BetView, GameCard } from '../../shared/api-types.js';
 import type { BetLeague, EpochMs, League } from '../../shared/types.js';
 
@@ -96,27 +97,62 @@ export function groupBoardGames(league: League, games: readonly GameCard[]): rea
  * (there is no picker to try another one with) and says why the board can be
  * thin: ESPN carries MLB lines on game day only, and tomorrow's games appear
  * after midnight ET (PLAN.md §23.5).
+ *
+ * Basketball (M13d, PLAN.md §24.14) has no weeks either. College basketball's
+ * window is three ET dates, and its board opens on the Top 25 filter, so a
+ * board emptied by that DEFAULT says so and points at All games; the NBA's
+ * says tomorrow's games arrive a day ahead (its window is today + tomorrow).
+ * `filter` is what emptied the board; football and MLB ignore it.
  */
 export function boardEmptyCopy(
   league: League,
   filteredOut: boolean,
+  filter: BoardFilter = 'all',
 ): { readonly title: string; readonly hint: string } {
+  if (filteredOut && league === 'ncaab') {
+    return filter === 'top25'
+      ? {
+          title: 'No Top 25 games in the next three days.',
+          hint: 'Try All games, or pick a conference.',
+        }
+      : {
+          title: 'No games match that filter in the next three days.',
+          hint: 'Pick another conference, or All games.',
+        };
+  }
   if (filteredOut) {
     return {
       title: 'No games match that filter this week.',
       hint: 'Pick another conference, or All games.',
     };
   }
-  if (!BOARD_HAS_WEEKS[league]) {
-    return {
-      title: 'No MLB games on the board today.',
-      hint: "Lines post on game day — tomorrow's games appear after midnight Eastern.",
-    };
+  switch (league) {
+    case 'mlb':
+      return {
+        title: 'No MLB games on the board today.',
+        hint: "Lines post on game day — tomorrow's games appear after midnight Eastern.",
+      };
+    case 'ncaab':
+      return {
+        title: 'No college basketball games on the board.',
+        hint: 'The board covers today and the next two days, Eastern — check back as lines post.',
+      };
+    case 'nba':
+      return {
+        title: 'No NBA games on the board.',
+        hint: "Tomorrow's games appear with their lines a day ahead.",
+      };
+    case 'nfl':
+    case 'ncaaf':
+      return {
+        title: 'No games in this window.',
+        hint: 'Try another week, or check back once the schedule is ingested.',
+      };
+    default: {
+      const unreachable: never = league;
+      return unreachable;
+    }
   }
-  return {
-    title: 'No games in this window.',
-    hint: 'Try another week, or check back once the schedule is ingested.',
-  };
 }
 
 function byKickoff(a: GameCard, b: GameCard): number {

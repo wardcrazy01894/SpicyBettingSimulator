@@ -1169,11 +1169,16 @@ describe('M13a: in-app alerts as GitHub issues (PLAN.md §24.6b)', () => {
   });
 
   it('the issue body, comments and reopens begin with @ALERT_MENTION_LOGIN when configured; no mention when empty', async () => {
-    expect(readConfig(env).alertMentionLogin).toBe('alancast');
-    await step(T0, [PARKED_COND]);
-    await step(T0 + HOUR, [PARKED_COND]);
-    await step(T0 + HOUR + ALERT_RESOLVE_AFTER_MS, []);
-    await step(T0 + HOUR + ALERT_RESOLVE_AFTER_MS + HOUR, [PARKED_COND]);
+    // Set the login explicitly: a local `.dev.vars` (shipped with
+    // ALERT_MENTION_LOGIN="" so a scratch repo never pings the real account)
+    // overrides wrangler.jsonc's value inside the test pool, and this test must
+    // not depend on which one a developer has.
+    const loud = envWith({ mention: 'alancast' });
+    expect(readConfig(loud).alertMentionLogin).toBe('alancast');
+    await step(T0, [PARKED_COND], loud);
+    await step(T0 + HOUR, [PARKED_COND], loud);
+    await step(T0 + HOUR + ALERT_RESOLVE_AFTER_MS, [], loud);
+    await step(T0 + HOUR + ALERT_RESOLVE_AFTER_MS + HOUR, [PARKED_COND], loud);
     expect(String(creates(gh)[0]?.body['body'])).toMatch(/^@alancast\b/);
     const posted = comments(gh).map((c) => String(c.body['body']));
     // comment, closing comment, reopen comment

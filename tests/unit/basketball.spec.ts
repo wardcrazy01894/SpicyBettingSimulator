@@ -4,7 +4,7 @@
  * `describe`. M13c added `'ncaab'` and `'nba'` to `LEAGUES` and discharged its
  * own: the board windows, the parser on the three committed captures, pull
  * counting, `gameAction` and `postponedVoidConfirmAt`, and the teaser refusal.
- * M13d's board-filter contracts stay `it.todo` until M13d.
+ * M13d discharged the board-filter contracts (`src/web/lib/board-filter.ts`).
  *
  * The URL contracts and the truncation warning are about `src/worker/espn.ts`,
  * which this node project cannot import (the tsconfig boundary): they are real
@@ -18,7 +18,10 @@ import {
   gameAction,
   postponedVoidConfirmAt,
 } from '../../src/shared/action.js';
+import type { GameCard } from '../../src/shared/api-types.js';
 import {
+  CBB_CONFERENCES,
+  CFB_CONFERENCES,
   MLB_POSTPONED_CONFIRM_MS,
   NBA_BOARD_ET_DAYS,
   NCAAB_BOARD_ET_DAYS,
@@ -28,8 +31,15 @@ import {
 import { parseScoreboard } from '../../src/shared/espn.js';
 import { boardWindowEnd, etDateKey, etDayBounds, etDaysEnd } from '../../src/shared/time.js';
 import { LEAGUES } from '../../src/shared/types.js';
-import type { League } from '../../src/shared/types.js';
+import type { Game, League } from '../../src/shared/types.js';
 import { isTeasableLeague } from '../../src/shared/validate.js';
+import {
+  BOARD_FILTERS,
+  OTHER_CONFERENCE,
+  boardFilterOptions,
+  defaultBoardFilter,
+  filterGames,
+} from '../../src/web/lib/board-filter.js';
 import { ncaabScoreboard, nbaScoreboard } from './fixtures.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -262,7 +272,95 @@ describe('M13c: settlement (PLAN.md §24.11)', () => {
 });
 
 describe('M13d: the board filter (PLAN.md §24.14)', () => {
-  it.todo('ncaab offers CBB_CONFERENCES with default top25');
-  it.todo('"Other" includes games with no conference id');
-  it.todo('nba, nfl and mlb have no filter; ncaaf keeps CFB_CONFERENCES with default all');
+  const captured = parseScoreboard(ncaabScoreboard(), 'ncaab', FETCHED_AT).games;
+
+  /** A board card for a parsed capture game (GameTeamView is GameTeam's shape). */
+  function toCard(game: Game): GameCard {
+    const { name: _name, shortName: _short, originalKickoffAt: _orig, ...rest } = game;
+    return { ...rest, lockAt: game.kickoffAt, bettable: false, lines: null };
+  }
+
+  /** A card from the committed capture, conference ids and ranks overridden per side. */
+  function cbbCard(
+    id: string,
+    home: { conf: string | null; rank?: number },
+    away: { conf: string | null; rank?: number },
+  ): GameCard {
+    const base = toCard(captured[0] ?? fail());
+    return {
+      ...base,
+      id,
+      home: { ...base.home, conferenceId: home.conf, rank: home.rank ?? null },
+      away: { ...base.away, conferenceId: away.conf, rank: away.rank ?? null },
+    };
+  }
+
+  it('ncaab offers CBB_CONFERENCES with default top25', () => {
+    const spec = BOARD_FILTERS.ncaab;
+    expect(spec).not.toBeNull();
+    expect(spec?.conferences).toBe(CBB_CONFERENCES);
+    expect(spec?.defaultFilter).toBe('top25');
+    expect(defaultBoardFilter('ncaab')).toBe('top25');
+    expect(CBB_CONFERENCES).toHaveLength(32);
+    const values = boardFilterOptions(BOARD_FILTERS.ncaab ?? fail()).map((o) => o.value);
+    expect(values).toEqual([
+      'all',
+      'top25',
+      ...CBB_CONFERENCES.map((c) => `conf:${c.id}`),
+      OTHER_CONFERENCE,
+    ]);
+    // BASKETBALL ids: the SEC is 23 here (8 in football, where 8 is the Big 12).
+    const sec = cbbCard('sec', { conf: '23' }, { conf: '23' });
+    const b12 = cbbCard('b12', { conf: '8', rank: 4 }, { conf: '8' });
+    expect(filterGames('ncaab', [sec, b12], 'conf:23').map((g) => g.id)).toEqual(['sec']);
+    expect(filterGames('ncaab', [sec, b12], 'top25').map((g) => g.id)).toEqual(['b12']);
+  });
+
+  it('"Other" includes games with no conference id', () => {
+    const noId = cbbCard('none', { conf: null }, { conf: null });
+    const unlisted = cbbCard('indy', { conf: '999' }, { conf: '999' });
+    const acc = cbbCard('acc', { conf: '2' }, { conf: '2' });
+    expect(filterGames('ncaab', [noId, unlisted, acc], OTHER_CONFERENCE).map((g) => g.id)).toEqual([
+      'none',
+      'indy',
+    ]);
+    // The real capture: the 13 D-I-vs-non-D-I games have one side with no id,
+    // and every one of them lands in "Other".
+    const cards = captured.map(toCard);
+    const unfiled = cards.filter(
+      (g) => g.home.conferenceId === null || g.away.conferenceId === null,
+    );
+    expect(unfiled).toHaveLength(13);
+    const other = filterGames('ncaab', cards, OTHER_CONFERENCE);
+    for (const g of unfiled) expect(other).toContain(g);
+    // The game-day shape (§24.2): ESPN omits conferenceId on a game's own ET
+    // date, so a slate first seen that day is ALL "Other" — never dropped.
+    const payload = ncaabScoreboard() as {
+      events: { competitions: { competitors: { team: Record<string, unknown> }[] }[] }[];
+    };
+    for (const event of payload.events) {
+      for (const c of event.competitions[0]?.competitors ?? []) delete c.team['conferenceId'];
+    }
+    const gameDay = parseScoreboard(payload, 'ncaab', FETCHED_AT).games.map(toCard);
+    expect(filterGames('ncaab', gameDay, OTHER_CONFERENCE)).toEqual(gameDay);
+    expect(filterGames('ncaab', gameDay, 'conf:2')).toEqual([]);
+  });
+
+  it('nba, nfl and mlb have no filter; ncaaf keeps CFB_CONFERENCES with default all', () => {
+    for (const league of ['nba', 'nfl', 'mlb'] as const) {
+      expect(BOARD_FILTERS[league]).toBeNull();
+      expect(defaultBoardFilter(league)).toBe('all');
+      // No filter means the slate is untouched, whatever filter value is held.
+      const slate = [cbbCard('x', { conf: null }, { conf: null })];
+      expect(filterGames(league, slate, 'top25')).toBe(slate);
+    }
+    expect(BOARD_FILTERS.ncaaf?.conferences).toBe(CFB_CONFERENCES);
+    expect(BOARD_FILTERS.ncaaf?.defaultFilter).toBe('all');
+    expect(defaultBoardFilter('ncaaf')).toBe('all');
+    expect(Object.keys(BOARD_FILTERS).sort()).toEqual([...LEAGUES].sort());
+  });
 });
+
+function fail(): never {
+  throw new Error('expected a board filter spec');
+}

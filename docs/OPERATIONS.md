@@ -388,9 +388,11 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
 
 - **Basketball (since M13c, PLAN §24).** Two more leagues, `ncaab` (every Division I men's game,
   `groups=50`) and `nba`, each one target per ET date: three `ncaab:date:*` (today + 2) and two
-  `nba:date:*` (today + 1) in `coverage[]`. **Betting is CLOSED until M13d**: the boards show both
-  leagues with lines, but `bettable` is false and placement answers `409 GAME_NOT_BETTABLE`
-  (`LEAGUE_BETTING_OPEN` in `src/worker/bets.ts`). No teasers and no secondary sweeps, ever. A final
+  `nba:date:*` (today + 1) in `coverage[]`. **Basketball betting is OPEN since M13d
+  (2026-11-07).** The kill switch is `LEAGUE_BETTING_OPEN` in `src/worker/bets.ts`, one key per
+  league — `nfl`, `ncaaf`, `mlb`, `ncaab`, `nba` — set one `false` and deploy, and that board shows
+  `bettable: false` while `POST /api/bets` answers `409 GAME_NOT_BETTABLE` for its legs (open bets
+  still settle). No teasers and no secondary sweeps, ever. A final
   has action on every market, overtime included — EXCEPT a final short of regulation (NBA
   `period` < 4, college < 2: an abandoned game), which is held `undecidable`: the bet stays
   `pending`, reaches `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`, and the `settle-stuck` alert
@@ -446,6 +448,16 @@ login` first — the token is stale.)
   the ~430-statement college refresh (Spike S2's exit). `stats.offTheBoard` counts pulled ("OFF")
   markets — on a college slate full of 30-point favourites it is routinely non-zero, and it is not
   a parser failure.
+
+  **The first basketball day after M13d (betting open).** Close the M13d verification gate (PLAN
+  §24.17): Spike S7 shows a college slate of at least 60 games finishing `outcome: ok` with no park,
+  and one final of EACH league settles end to end — find a settled `ncaab` and `nba` bet in
+  `GET /api/admin/jobs` (the settle run's stats) — followed by a clean
+  `npm run db:reconcile -- --remote`. On the first big Saturday also read the board payload
+  (§24.14): `/api/games?league=ncaab` in the browser's network tab should be under ~300 KB raw and
+  well under `BOARD_MAX_GAMES` (300); if it is not, or the GET's `cpuTime` in `wrangler tail`
+  nears the refresh runs' 30 ms, the client moves to one ET day per request (`from` / `to`) — no
+  contract change. If anything misbehaves, close the league with its kill-switch key above.
 
 ## Checks
 

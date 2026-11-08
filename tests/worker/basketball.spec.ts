@@ -3,13 +3,13 @@
  * (M13c, PLAN.md §24.15): the ESPN URLs and the truncation warning (the
  * contracts tests/unit/basketball.spec.ts cannot reach across the tsconfig
  * boundary), the planner's targets, pull counting through a refresh, the
- * kill switches (betting CLOSED in M13c), the teaser refusal, settlement end
- * to end with the shared FULL_ACTION arm, the next-day postponed void, the
- * dormant per-conference switch (§24.8), and the §24.13 write-budget soak.
+ * kill switches (betting OPEN since M13d, PLAN.md §24.17), the teaser refusal,
+ * settlement end to end with the shared FULL_ACTION arm, the next-day
+ * postponed void, the dormant per-conference switch (§24.8), and the §24.13
+ * write-budget soak.
  *
- * Betting is closed, so the tests that need a placed bet open the gate for
- * the one call through a cast and restore it in a `finally` (the
- * mlb.spec.ts `closeMlb` pattern, inverted).
+ * Betting is open, so the kill-switch test closes the gate for its block
+ * through a cast and restores it in a `finally` (mlb.spec.ts's `closeMlb`).
  */
 import { env } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -117,16 +117,20 @@ async function registerAccount(): Promise<{ cookie: string; id: string }> {
   return { cookie, id: body.user.id };
 }
 
-/** Open basketball betting for ONE block (M13d's flip, simulated); always restored. */
-async function withBasketballOpen<T>(fn: () => Promise<T>): Promise<T> {
+/** Close basketball betting for ONE block (the kill switch, used); always restored. */
+async function withBasketballClosed<T>(fn: () => Promise<T>): Promise<T> {
   const gate = LEAGUE_BETTING_OPEN as Record<League, boolean>;
-  gate.ncaab = true;
-  gate.nba = true;
+  // Restore what was THERE, never a hard-coded true: a restore to `true` would
+  // re-open a gate the source had closed and let every later test in the file
+  // pass against a closed flag (found by mutation in the M13d review).
+  const before = { ncaab: gate.ncaab, nba: gate.nba };
+  gate.ncaab = false;
+  gate.nba = false;
   try {
     return await fn();
   } finally {
-    gate.ncaab = false;
-    gate.nba = false;
+    gate.ncaab = before.ncaab;
+    gate.nba = before.nba;
   }
 }
 
@@ -390,21 +394,17 @@ describe('M13c: planner and refresh', () => {
 });
 
 /* ------------------------------------------------------------------ *
- * Betting is CLOSED (M13c) — and what M13d will open
+ * Betting is OPEN (M13d) — and the kill switch that can close it
  * ------------------------------------------------------------------ */
 
-describe('M13c: the kill switches, the teaser refusal and settlement', () => {
-  it('LEAGUE_BETTING_OPEN lands false for both; the board is read-only; placement → 409', async () => {
-    expect(LEAGUE_BETTING_OPEN.ncaab).toBe(false);
-    expect(LEAGUE_BETTING_OPEN.nba).toBe(false);
+describe('M13c/M13d: the kill switches, the teaser refusal and settlement', () => {
+  it('LEAGUE_BETTING_OPEN is true for both (M13d): a fresh card is bettable and a straight places', async () => {
+    expect(LEAGUE_BETTING_OPEN.ncaab).toBe(true);
+    expect(LEAGUE_BETTING_OPEN.nba).toBe(true);
     const { cookie } = await registerAccount();
     const now = Date.now();
-    const cbbId = `ncaab:k${String(seq)}`;
-    const nbaId = `nba:k${String(seq)}`;
-    for (const [id, league] of [
-      [cbbId, 'ncaab'],
-      [nbaId, 'nba'],
-    ] as const) {
+    for (const league of ['ncaab', 'nba'] as const) {
+      const id = `${league}:o${String(seq)}`;
       await seedGameWithLine(env.DB, {
         id,
         league,
@@ -414,10 +414,7 @@ describe('M13c: the kill switches, the teaser refusal and settlement', () => {
         lastSeenAt: now,
       });
       const res = await get(`/api/games/${encodeURIComponent(id)}`, cookie);
-      const card = (await res.json<{ game: GameCard }>()).game;
-      expect(card.league).toBe(league);
-      expect(card.lines?.stale).toBe(false);
-      expect(card.bettable).toBe(false);
+      expect((await res.json<{ game: GameCard }>()).game.bettable).toBe(true);
       const req: PlaceBetRequest = {
         league,
         betType: 'straight',
@@ -425,12 +422,47 @@ describe('M13c: the kill switches, the teaser refusal and settlement', () => {
         legs: [{ gameId: id, market: 'spread', side: 'home' }],
       };
       const placed = await post('/api/bets', req, cookie);
-      expect(placed.status).toBe(409);
-      expect((await placed.json<ApiErrorBody>()).error.code).toBe('GAME_NOT_BETTABLE');
+      expect(placed.status, await placed.clone().text()).toBe(201);
     }
   });
 
-  it('basketball legs cannot be teased: 400 TEASER_INVALID even with betting open', async () => {
+  it('the kill switch still works: closed, the board is read-only and placement → 409', async () => {
+    const { cookie } = await registerAccount();
+    const now = Date.now();
+    const cbbId = `ncaab:k${String(seq)}`;
+    const nbaId = `nba:k${String(seq)}`;
+    await withBasketballClosed(async () => {
+      for (const [id, league] of [
+        [cbbId, 'ncaab'],
+        [nbaId, 'nba'],
+      ] as const) {
+        await seedGameWithLine(env.DB, {
+          id,
+          league,
+          season: 2027,
+          week: null,
+          kickoffAt: now + 2 * HOUR,
+          lastSeenAt: now,
+        });
+        const res = await get(`/api/games/${encodeURIComponent(id)}`, cookie);
+        const card = (await res.json<{ game: GameCard }>()).game;
+        expect(card.league).toBe(league);
+        expect(card.lines?.stale).toBe(false);
+        expect(card.bettable).toBe(false);
+        const req: PlaceBetRequest = {
+          league,
+          betType: 'straight',
+          stakeCents: 1000,
+          legs: [{ gameId: id, market: 'spread', side: 'home' }],
+        };
+        const placed = await post('/api/bets', req, cookie);
+        expect(placed.status).toBe(409);
+        expect((await placed.json<ApiErrorBody>()).error.code).toBe('GAME_NOT_BETTABLE');
+      }
+    });
+  });
+
+  it('basketball legs cannot be teased: 400 TEASER_INVALID with betting open', async () => {
     expect(TEASABLE_LEAGUES).toEqual(['nfl', 'ncaaf']);
     const { cookie } = await registerAccount();
     const now = Date.now();
@@ -445,7 +477,7 @@ describe('M13c: the kill switches, the teaser refusal and settlement', () => {
         lastSeenAt: now,
       });
     }
-    await withBasketballOpen(async () => {
+    {
       const res = await post(
         '/api/bets',
         {
@@ -462,7 +494,7 @@ describe('M13c: the kill switches, the teaser refusal and settlement', () => {
       );
       expect(res.status, await res.clone().text()).toBe(400);
       expect((await res.json<ApiErrorBody>()).error.code).toBe('TEASER_INVALID');
-    });
+    }
   });
 
   it('a final settles on every market, overtime included and a NULL period included (FULL_ACTION)', async () => {
@@ -483,7 +515,7 @@ describe('M13c: the kill switches, the teaser refusal and settlement', () => {
         { totalTenths: 2225 },
       );
     }
-    const bets = await withBasketballOpen(async () => {
+    const bets = await (async () => {
       const place = (req: PlaceBetRequest) => placeBet(env, user.id, req, now);
       // College spread home −3.5, NBA over 222.5, NBA moneyline home.
       const spread = await place({
@@ -508,7 +540,7 @@ describe('M13c: the kill switches, the teaser refusal and settlement', () => {
         ],
       });
       return { spread: spread.bet, over: over.bet, parlay: parlay.bet };
-    });
+    })();
     expect(bets.parlay.league).toBe('mixed');
     // College: one overtime (period 3), home by 5 — covers −3.5.
     await updateGame(env.DB, cbbId, { status: 'final', homeScore: 81, awayScore: 76, period: 3 });

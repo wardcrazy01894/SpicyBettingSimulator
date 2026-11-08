@@ -9,6 +9,7 @@ import {
   weeksFromGames,
 } from '../../src/web/lib/grouping.js';
 import { betView, gameCard, localMs } from './factories.js';
+import type { GameCard } from '../../src/shared/api-types.js';
 
 describe('groupGamesByLocalDate', () => {
   it('returns one group per local calendar day, ascending', () => {
@@ -226,5 +227,67 @@ describe('boardEmptyCopy (M12c)', () => {
       title: 'No games match that filter this week.',
       hint: 'Pick another conference, or All games.',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M13d: the basketball boards (PLAN.md §24.14). Both group by ET date across
+// their windows — the MLB path — and their empty copy names the league and
+// never tells anyone to try another week.
+// ---------------------------------------------------------------------------
+
+describe('groupBoardGames — basketball by ET date across the window (M13d)', () => {
+  const at = (iso: string): number => Date.parse(iso);
+  const cbb = (id: string, iso: string): GameCard =>
+    gameCard({ id, league: 'ncaab', week: null, kickoffAt: at(iso) });
+
+  it('ncaab: a three-date window is three ET day groups; a 9 PM ET tip stays on its date', () => {
+    const groups = groupBoardGames('ncaab', [
+      cbb('mon', '2026-11-10T00:00:00Z'),
+      cbb('satLate', '2026-11-08T02:00:00Z'),
+      cbb('sat', '2026-11-07T17:00:00Z'),
+      cbb('sun', '2026-11-08T18:00:00Z'),
+    ]);
+    expect(groups.map((g) => g.dateKey)).toEqual(['2026-11-07', '2026-11-08', '2026-11-09']);
+    expect(groups[0]?.games.map((g) => g.id)).toEqual(['sat', 'satLate']);
+    expect(groups[2]?.games.map((g) => g.id)).toEqual(['mon']);
+  });
+
+  it('nba: today and tomorrow, split at ET midnight (05:00Z in EST)', () => {
+    const groups = groupBoardGames('nba', [
+      gameCard({ id: 'b', league: 'nba', week: null, kickoffAt: at('2026-11-08T05:00:00Z') }),
+      gameCard({ id: 'a', league: 'nba', week: null, kickoffAt: at('2026-11-08T04:59:00Z') }),
+    ]);
+    expect(groups.map((g) => g.dateKey)).toEqual(['2026-11-07', '2026-11-08']);
+  });
+});
+
+describe('boardEmptyCopy — basketball (M13d)', () => {
+  it('ncaab: the Top 25 default emptying the board says so and points at All games', () => {
+    const copy = boardEmptyCopy('ncaab', true, 'top25');
+    expect(copy.title).toBe('No Top 25 games in the next three days.');
+    expect(copy.hint).toMatch(/All games/);
+  });
+
+  it('ncaab: a conference that empties the board says "next three days", not "this week"', () => {
+    const copy = boardEmptyCopy('ncaab', true, 'conf:23');
+    expect(copy.title).toBe('No games match that filter in the next three days.');
+    expect(copy.hint).toBe('Pick another conference, or All games.');
+  });
+
+  it('ncaab and nba with nothing on the board name the league; neither mentions a week', () => {
+    const cbb = boardEmptyCopy('ncaab', false);
+    const nba = boardEmptyCopy('nba', false);
+    expect(cbb.title).toMatch(/college basketball/i);
+    expect(nba.title).toMatch(/NBA/);
+    expect(nba.hint).toBe("Tomorrow's games appear with their lines a day ahead.");
+    for (const copy of [cbb, nba]) {
+      expect(`${copy.title} ${copy.hint}`).not.toMatch(/week|MLB/i);
+    }
+  });
+
+  it('football and MLB copy is unchanged by the optional filter argument', () => {
+    expect(boardEmptyCopy('ncaaf', true, 'top25')).toEqual(boardEmptyCopy('ncaaf', true));
+    expect(boardEmptyCopy('mlb', false, 'all')).toEqual(boardEmptyCopy('mlb', false));
   });
 });
