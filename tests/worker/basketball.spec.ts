@@ -181,6 +181,7 @@ async function readTarget(id: string): Promise<IngestTargetRow> {
     next_run_at: number;
     consecutive_failures: number;
     incomplete_attempts: number;
+    last_ok_at: number | null;
     conference_id: string | null;
   }>();
   if (row === null) throw new Error(`no target ${id}`);
@@ -194,7 +195,7 @@ async function readTarget(id: string): Promise<IngestTargetRow> {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
-    lastOkAt: null,
+    lastOkAt: row.last_ok_at,
     incompleteAttempts: row.incomplete_attempts,
     conferenceId: row.conference_id,
   };

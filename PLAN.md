@@ -8690,11 +8690,20 @@ still claims what it bumped (§9.3).
   is older than the T − 1 ms stamp and wins. The burst test uses `in_progress`
   slates only, so it cannot see (b); it is bounded to one tick per slip. (c)
   Fetch FAILURES interact with the grid (F5): a never-fetched date whose fetch
-  fails on its discovery tick retries at the NEXT discovery tick, not the next
-  general one — `computeNextRunAt` sends a `last_ok_at IS NULL` target back to
-  the grid, and every later backoff step is a whole number of discovery periods
-  — so a 403 inside a burst costs no general tick; only a target that has
-  fetched before retries on the very next tick, and it pays with its own slot. Before F2 the planner
+  fails retries at the NEXT discovery tick, not the next general one —
+  `computeNextRunAt` sends a `last_ok_at IS NULL` target back to the grid, and
+  every later backoff step is a whole number of discovery periods. Alone, that
+  costs no general tick (tested). INSIDE A BURST it is not enough: the next
+  grid slot already belongs to the next burst date, stamped 1 ms earlier, which
+  wins the discovery pick; the failed date is then the oldest due row on the
+  general tick after it and runs alone there — **at most ONE live tick per
+  failed burst date**, accepted and tested as a bound (two of ~22 fetches
+  403'd on the first night, so a 10-date burst expects about one such tick).
+  The F2 chain anchor excludes failed rows, so the chain does not step around
+  the retry; the fix, if this ever matters, is to re-stamp a failed
+  never-fetched date at the END of the chain in the reschedule itself. A
+  target that has fetched before retries on the very next tick and pays with
+  its own slot. Before F2 the planner
   stamped `next_run_at = now`, and the burst drained on consecutive general
   ticks ahead of every live slate for ~24–30 minutes (~60 before M13b); bet
   locks are kickoff-based, so no money ever moved.

@@ -185,6 +185,7 @@ async function loadTarget(id: string): Promise<IngestTargetRow> {
     next_run_at: number;
     consecutive_failures: number;
     incomplete_attempts: number;
+    last_ok_at: number | null;
   }>();
   if (row === null) throw new Error(`no target ${id}`);
   return {
@@ -197,7 +198,7 @@ async function loadTarget(id: string): Promise<IngestTargetRow> {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
-    lastOkAt: null,
+    lastOkAt: row.last_ok_at,
     incompleteAttempts: row.incomplete_attempts,
   };
 }
@@ -1450,6 +1451,50 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
     }
     // A target that HAS fetched before still pays only its own next tick (the
     // sibling test above); this exception is for the never-fetched alone.
+  });
+
+  it('(F5) inside a BURST a failed new date costs the live slate at most ONE general tick (accepted residual, PLAN.md §24.7 (c))', async () => {
+    // Two burst dates stamped 1 ms before consecutive discovery ticks; the
+    // first 403s once. Its grid retry collides with the second date's slot and
+    // spills to the next general tick — the bound this test pins is "one".
+    const d1 = nextDiscoveryTick(GENERAL);
+    const d2 = nextDiscoveryTick(d1);
+    const live = await insertTarget({
+      day: 0,
+      nextRunAt: d1 - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 10,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5-burst');
+    // The live slate keeps answering with a live game, so it stays on the live
+    // tier (an EMPTY board would drop it to the 6 h discovery tier).
+    espn.set(keyOf(0), [event('nfl', 'in', T0 - HOUR)]);
+    const date1 = await insertTarget({ day: 2, nextRunAt: d1 - 1 });
+    const date2 = await insertTarget({ day: 3, nextRunAt: d2 - 1 });
+    let date1Calls = 0;
+    espn.setResponder(keyOf(2), () => {
+      date1Calls += 1;
+      return date1Calls === 1 ? new Response('forbidden', { status: 403 }) : emptyBoard();
+    });
+    espn.setResponder(keyOf(3), () => emptyBoard());
+
+    const processed = async (tick: number): Promise<string[]> => {
+      const run = await runJob(env, 'refresh', 'cron', tick + 5_000, { scheduledTime: tick });
+      expect(run.status).toBe('ok');
+      return (run.stats as { coverage: { targetId: string }[] }).coverage.map((c) => c.targetId);
+    };
+
+    expect(await processed(d1)).toEqual([date1]); // the discovery pick; 403
+    expect((await guardRow(date1)).next_run_at).toBe(d2); // back to the grid…
+    for (let k = 1; k < 5; k += 1) expect(await processed(d1 + k * TICK)).toEqual([live]);
+    expect(await processed(d2)).toEqual([date2]); // …but date2 owns that slot
+    const after: string[][] = [];
+    for (let k = 1; k < 5; k += 1) after.push(await processed(d2 + k * TICK));
+    const liveTicks = after.filter((ids) => ids.includes(live)).length;
+    const date1Ticks = after.filter((ids) => ids.includes(date1)).length;
+    expect(date1Ticks).toBe(1); // the spilled retry, exactly once
+    expect(liveTicks).toBeGreaterThanOrEqual(3); // the live slate loses at most one
+    expect((await guardRow(date1)).last_status).toBe('ok'); // and the retry succeeded
   });
 
   it('(F5) a live slate that 403s ONCE is due at the very next tick, and a 200 there puts it back on every tick', async () => {

@@ -803,11 +803,15 @@ export function packCount(
  * stamps them one per DISCOVERY tick, starting at the next one: each is that
  * tick's discovery pick and none is ever the oldest due row on a general
  * tick, so a burst of k dates fills within k discovery ticks (≤ 15·k min) and
- * the live slates never wait — including when a new date's fetch FAILS: F5's
- * first-failure retry goes back to the discovery grid for a never-fetched
- * target (`computeNextRunAt`), never onto a general tick. (Stamped `now`, as
- * before F2, the burst drained on consecutive general ticks ahead of every
- * live slate for ~24-30 min.)
+ * the live slates never wait. When a new date's fetch FAILS, F5 sends a
+ * never-fetched target's first retry back to the discovery grid rather than
+ * the next general tick — but inside a burst that grid slot already belongs to
+ * the next burst date (stamped 1 ms earlier), so the retry spills to the
+ * following general tick and costs the live slates AT MOST ONE tick per failed
+ * burst date. Accepted residual, PLAN.md §24.7 (c); the fix if it ever matters
+ * is to re-stamp a failed never-fetched date at the END of the F2 chain.
+ * (Stamped `now`, as before F2, the burst drained on consecutive general ticks
+ * ahead of every live slate for ~24-30 min.)
  *
  * NOTE this reads but does not write: the lease (PLAN.md §9.2) is what makes two
  * runs non-overlapping, so "claiming" needs no marker row and costs no writes.
@@ -828,7 +832,7 @@ export async function claimDueTargets(
     limit: number,
   ): Promise<readonly ClaimDbRow[]> => {
     const res = await env.DB.prepare(
-      `SELECT ${TARGET_COLUMNS}, games_seen, last_ok_at FROM ingest_targets AS t
+      `SELECT ${TARGET_COLUMNS}, games_seen FROM ingest_targets AS t
         WHERE next_run_at <= ? ${notInClause(exclude.length)}
           AND ${NOT_PARKED} ${where}
         ORDER BY priority ASC, next_run_at ASC, id ASC
@@ -1346,6 +1350,9 @@ export function computeNextRunAt(
     // grid; every later step is a multiple of REFRESH_BACKOFF_BASE_TICKS (= a
     // discovery period), so it stays there until a success. A target that HAS
     // fetched before carries its own weight and pays only its own tick.
+    // Known residual (§24.7 (c)): inside a rollover burst the next grid slot
+    // is already the next burst date's, so this retry spills to the general
+    // tick after it — at most one live tick per failed burst date.
     if (streak === 1 && target.lastOkAt === null) return nextDiscoveryTick(base);
     return base + failureBackoffTicks(streak) * REFRESH_TICK_MS;
   }

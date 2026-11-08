@@ -88,6 +88,7 @@ interface TargetDbRow {
   readonly consecutive_failures: number;
   readonly games_seen: number;
   readonly incomplete_attempts: number;
+  readonly last_ok_at: number | null;
 }
 
 function targetDbRow(id: string): Promise<TargetDbRow | null> {
@@ -107,7 +108,7 @@ async function loadTarget(id: string): Promise<IngestTargetRow> {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
-    lastOkAt: null,
+    lastOkAt: row.last_ok_at,
     incompleteAttempts: row.incomplete_attempts,
   };
 }
@@ -1172,11 +1173,15 @@ describe('upstream failures leave the database untouched', () => {
     it(`${label} leaves the database completely untouched`, async () => {
       const t = await sundayNflTarget();
       await ingestSlate([BASE_SPEC], T0, t);
+      // Reload: the successful ingest set last_ok_at, so this is a FETCHED
+      // target whose first failure retries on the next tick (F5).
+      const fetched = await loadTarget(t.id);
+      expect(fetched.lastOkAt).not.toBeNull();
       const before = await gameRow('nfl:401872925');
       const beforeLine = await lineRow('nfl:401872925');
 
       espn.setResponder(t.key, responder);
-      const res = await ingestTarget(env, new EspnProvider(env), t, T0 + HOUR);
+      const res = await ingestTarget(env, new EspnProvider(env), fetched, T0 + HOUR);
       expect(res.error).not.toBeNull();
       expect(res.gamesUpserted).toBe(0);
       expect(res.linesUpserted).toBe(0);
@@ -1186,11 +1191,10 @@ describe('upstream failures leave the database untouched', () => {
       const row = await targetDbRow(t.id);
       expect(row?.last_status).toBe('error');
       expect(row?.consecutive_failures).toBe(1);
-      // A FIRST failure retries on the next tick (F5) for a target that has
-      // fetched before; THIS one never has (last_ok_at NULL — it weighs big and
-      // would run alone), so it goes back to the discovery grid instead of
-      // taking a general tick from the live slates (F5 as built, §24.7 (c)).
-      expect(row?.next_run_at).toBe(nextDiscoveryTick(T0 + HOUR));
+      // A FIRST failure of a FETCHED target retries on the next tick (F5), not
+      // 15 min later; a never-fetched one goes to the discovery grid instead
+      // (the computeNextRunAt unit case below).
+      expect(row?.next_run_at).toBe(T0 + HOUR + LIVE_MS);
     });
   }
 
