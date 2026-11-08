@@ -316,15 +316,16 @@ async function act(
   if (action === 'resolve') {
     if (!changed(await env.DB.prepare(RESOLVE_SQL).bind(now, fingerprint).run())) return 'lost';
     const row = await readRow(env, fingerprint);
-    if (row === null || row.issue_number === null) return 'done';
+    const issueNumber = row?.issue_number ?? null;
+    if (row === null || issueNumber === null) return 'done';
     try {
       await commentOnIssue(
         github,
-        row.issue_number,
+        issueNumber,
         `Quiet for ${hours(ALERT_RESOLVE_AFTER_MS)} h, closing. ${plural(row.occurrences, 'occurrence')} in all, the last at ${iso(row.last_seen_at)}.`,
         ALERT_GITHUB_TIMEOUT_MS,
       );
-      await setIssueState(github, row.issue_number, 'closed', ALERT_GITHUB_TIMEOUT_MS);
+      await setIssueState(github, issueNumber, 'closed', ALERT_GITHUB_TIMEOUT_MS);
       return 'done';
     } catch (err) {
       logFailure(fingerprint, action, err);

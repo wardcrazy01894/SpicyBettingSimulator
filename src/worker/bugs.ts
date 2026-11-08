@@ -160,7 +160,7 @@ async function githubRequest(
     throw new Error(`GitHub responded ${String(response.status)}`);
   }
   try {
-    return (await response.json()) as unknown;
+    return await response.json<unknown>();
   } catch {
     return null;
   }
