@@ -17,7 +17,7 @@ import { REFILL_DEFAULT_CENTS } from '../../shared/constants.js';
 import { formatCents } from '../../shared/validate.js';
 
 export const REFILL_HINT =
-  'Only for a busted account — balance under $1 with no open bet. Each refill adds a 💀 to ' +
+  'Only for a busted account — balance under $1 with no open bet. Each refill adds a bust badge to ' +
   'their name and joins what they have bought in, so the money they lost stays lost on the board.';
 
 export function AdminRefillForm(props: {

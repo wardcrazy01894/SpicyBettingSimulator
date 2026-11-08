@@ -8,6 +8,8 @@ import {
   LEDGER_KIND_LABEL,
   MARKET_HEAD_LABEL,
   betShapeLabel,
+  BUST_BADGE_IMAGE_SRC,
+  bustBadgeGlyph,
   bustBadgeTitle,
   bustSummary,
   gameClockLabel,
@@ -221,6 +223,16 @@ describe('bust badges (PLAN.md §4.5)', () => {
     expect(bustSummary(1, 0)).toBe('1 bust');
     expect(bustSummary(1, 1)).toBe('1 bust, 1 bought off');
     expect(bustSummary(3, 2)).toBe('3 busts, 2 bought off');
+  });
+
+  it('bust badges show a skull, then a shrimp, then the photo; the sequence is fixed by position', () => {
+    expect(bustBadgeGlyph(0)).toEqual({ kind: 'emoji', text: '💀' });
+    expect(bustBadgeGlyph(1)).toEqual({ kind: 'emoji', text: '🍤' });
+    expect(bustBadgeGlyph(2)).toEqual({ kind: 'image', src: BUST_BADGE_IMAGE_SRC });
+    expect(BUST_BADGE_IMAGE_SRC).toBe('/bust-3.png');
+    // Defensive: a negative or oversized index never throws.
+    expect(bustBadgeGlyph(-1).kind).toBe('emoji');
+    expect(bustBadgeGlyph(7).kind).toBe('image');
   });
 
   it('bustBadgeTitle pluralises by hand and is empty at zero', () => {

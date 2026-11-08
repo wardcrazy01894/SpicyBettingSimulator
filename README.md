@@ -11,7 +11,7 @@ games at the prices the books are posting. Games go final, bets grade
 themselves, the money moves, and a leaderboard settles the argument. There is
 no top-up button, so bet like it's real: lose the lot and a "Run out of
 money?" prompt will refill you $1,000, but the loss stays on the board and a
-💀 goes beside your name.
+a badge goes beside your name — 💀 the first time, 🍤 the second, a photo the third.
 
 ---
 
@@ -38,7 +38,8 @@ money?" prompt will refill you $1,000, but the loss stays on the board and a
   (today and the next two days) and every NBA game (today and tomorrow, when the lines are
   already up), with DraftKings' spread, total and moneyline. The college board opens on the
   **Top 25** (a Saturday is ~155 games); the **Show** menu switches to All games, one of the 32
-  conferences, or Other. The NBA board has no filter. A final counts overtime on every market, a
+  conferences, or Other. Both boards have a **Day** row — All, Today, Tomorrow and, on the college
+  board, the day after by name (e.g. Monday) — that works alongside the Show menu. A final counts overtime on every market, a
   postponed game is voided the next morning, and basketball legs can't go in a teaser (PLAN.md §24).
 - **Moneylines, spreads and totals** on each game.
 - **Straight bets** on one thing, or **parlays** on 2 to 25 legs (as at
@@ -87,7 +88,7 @@ money?" prompt will refill you $1,000, but the loss stays on the board and a
    "Run out of money?" prompt appears on every page with one button: a $1,000
    refill (an admin can do it for you too). But
    the refill joins what you've bought in, so your net profit still shows the
-   $1,000 you lost, and a 💀 sits beside your name on the leaderboard. Get
+   $1,000 you lost, and a bust badge sits beside your name on the leaderboard. Get
    back above $1,000 and your account page offers to remove a badge for
    exactly $1,000, after telling you what it will deduct. That pays the
    refill back to the house, so your net profit doesn't move — only your
