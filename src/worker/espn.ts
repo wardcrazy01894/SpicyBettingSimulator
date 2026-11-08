@@ -132,6 +132,13 @@ export function truncationWarning(league: League, eventCount: number): ParseWarn
 }
 
 /**
+ * The ONE status `fetchScoreboard` retries once, immediately: ESPN's edge 403
+ * of the Worker's egress IP (see the call site). Exported so the spec can say
+ * why it sends it.
+ */
+export const ESPN_RETRY_STATUS = 403;
+
+/**
  * GET + JSON.parse, with an AbortSignal timeout. Throws ProviderError on
  * non-2xx / timeout / bad JSON. NEVER partially applies anything — the caller
  * gets a complete slate or an exception, so a bad upstream cannot corrupt rows.
@@ -144,38 +151,28 @@ export async function fetchScoreboard(
 ): Promise<ProviderSlate> {
   const url = buildScoreboardUrl(baseUrl, league, target);
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'GET',
-      // ESPN's edge filters on User-Agent. MEASURED 2026-09-14 (5/5 each):
-      //   (none) / '' / 'Mozilla/5.0 (compatible; …)' / a real Chrome UA -> 403
-      //   'SpicyBettingSimulator/0.1'            (no comment)          -> 403
-      //   'SpicyBettingSimulator/0.1 (+https://example.com)'           -> 403
-      //   'SpicyBettingSimulator/0.1 (+https://github.com/…/…)'        -> 200
-      //   'curl/8.7.1'                                                 -> 200
-      // The filter is opaque; the product name and version are free, but the
-      // "(+https://github.com/…)" comment is load-bearing. Do NOT shorten or
-      // "tidy" ESPN_USER_AGENT without re-running the probe in docs/OPERATIONS.md.
-      headers: { accept: 'application/json', 'user-agent': ESPN_USER_AGENT },
-      // A hung upstream must not burn the job's wall clock; the lease TTL is
-      // only 5 minutes and two targets share one invocation (PLAN.md §14.8).
-      signal: AbortSignal.timeout(ESPN_TIMEOUT_MS),
-    });
-  } catch (err) {
-    // An abort, a DNS failure and a TLS failure are all retryable: none of them
-    // says anything about the shape of the data. `AbortSignal.timeout` rejects
-    // with a `TimeoutError`; anything else is the network (PLAN.md §24.6).
-    const name = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : null;
-    const kind = name === 'TimeoutError' ? 'timeout' : 'network';
-    throw new ProviderError(`espn: request failed (${describe(err)})`, true, null, kind);
+  let response = await requestScoreboard(url);
+  let retried = false;
+  if (response.status === ESPN_RETRY_STATUS) {
+    // ESPN's edge 403s the Worker's shared egress INTERMITTENTLY — measured
+    // 2026-11-08: 2 of 13 fetches, the same URLs with the same User-Agent 200
+    // from a laptop minutes later (PLAN.md §14.8). The IP is being scored, not
+    // the request, so ONE immediate retry (a fresh subrequest) is the cheapest
+    // possible answer; a second 403 is reported as the 403 it is, and the
+    // schedule backs the target off (§8.4). Nothing else is retried here: a
+    // 429 says back off, and that is what the schedule does.
+    retried = true;
+    // Release the 403's connection before opening the retry's: Workers cap
+    // simultaneous outbound connections, and an unread body holds one until GC.
+    await response.body?.cancel().catch(() => undefined);
+    response = await requestScoreboard(url);
   }
 
   if (!response.ok) {
     // 5xx and 429 are transient; a 4xx probably means we built a bad URL, but we
     // still back off rather than hammering.
     throw new ProviderError(
-      `espn: HTTP ${String(response.status)} for ${url}`,
+      `espn: HTTP ${String(response.status)} for ${url}${retried ? ' (after one immediate retry)' : ''}`,
       response.status >= 500 || response.status === 429,
       response.status,
       'http',
@@ -207,7 +204,41 @@ export async function fetchScoreboard(
     fetchedAt: now,
     season: parsed.season,
     week: parsed.week,
+    retried,
   };
+}
+
+/**
+ * One GET, with the headers ESPN's edge requires and an AbortSignal timeout.
+ * Resolves with ANY status; throws `ProviderError` only when there was no
+ * response at all (`timeout` / `network`).
+ */
+async function requestScoreboard(url: string): Promise<Response> {
+  try {
+    return await fetch(url, {
+      method: 'GET',
+      // ESPN's edge filters on User-Agent. MEASURED 2026-09-14 (5/5 each):
+      //   (none) / '' / 'Mozilla/5.0 (compatible; …)' / a real Chrome UA -> 403
+      //   'SpicyBettingSimulator/0.1'            (no comment)          -> 403
+      //   'SpicyBettingSimulator/0.1 (+https://example.com)'           -> 403
+      //   'SpicyBettingSimulator/0.1 (+https://github.com/…/…)'        -> 200
+      //   'curl/8.7.1'                                                 -> 200
+      // The filter is opaque; the product name and version are free, but the
+      // "(+https://github.com/…)" comment is load-bearing. Do NOT shorten or
+      // "tidy" ESPN_USER_AGENT without re-running the probe in docs/OPERATIONS.md.
+      headers: { accept: 'application/json', 'user-agent': ESPN_USER_AGENT },
+      // A hung upstream must not burn the job's wall clock; the lease TTL is
+      // only 5 minutes and two targets share one invocation (PLAN.md §14.8).
+      signal: AbortSignal.timeout(ESPN_TIMEOUT_MS),
+    });
+  } catch (err) {
+    // An abort, a DNS failure and a TLS failure are all retryable: none of them
+    // says anything about the shape of the data. `AbortSignal.timeout` rejects
+    // with a `TimeoutError`; anything else is the network (PLAN.md §24.6).
+    const name = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : null;
+    const kind = name === 'TimeoutError' ? 'timeout' : 'network';
+    throw new ProviderError(`espn: request failed (${describe(err)})`, true, null, kind);
+  }
 }
 
 /** A short, safe rendering of a thrown value for an error message. */

@@ -48,6 +48,12 @@ export interface ProviderSlate {
    * §24.10). Optional so a hand-built test slate need not name it; absent = 0.
    */
   readonly pulled?: number;
+  /**
+   * True when ESPN answered the first request 403 and this slate came from the
+   * immediate retry (`src/worker/espn.ts`, PLAN.md §14.8). Optional like
+   * `pulled`; absent = false.
+   */
+  readonly retried?: boolean;
   readonly fetchedAt: number;
   readonly season: number | null;
   readonly week: number | null;

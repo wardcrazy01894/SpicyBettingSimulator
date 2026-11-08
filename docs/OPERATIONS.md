@@ -285,16 +285,23 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
     'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=20260914'   # expect 200
   ```
 
-  If 403s reappear in `GET /api/admin/jobs` → `stats.failures[]`, re-run the probe with candidate
-  strings, change the constant, `npm run deploy`. A 403 degrades gracefully (rows untouched) but is
-  only discovered by looking — check `failures[]` and `dayRowsWritten` weekly.
+  If 403s reappear in `GET /api/admin/jobs` → `stats.failures[]`, run the probe first: if the
+  laptop gets 200 with the same string, it is the Worker's shared egress IP being scored (what
+  has been happening since 2026-11-08, PLAN §14.8), not the UA — nothing to change. Only if the
+  probe 403s too, re-run it with candidate strings, change the constant, `npm run deploy`. A 403
+  degrades gracefully (rows untouched). Since 2026-11-08 every 403 is retried once at once inside
+  the same fetch: `stats.espnRecovered` counts the fetches that recovered (they are `'200'` in
+  `espnStatus`), and `espnStatus['403']` counts only the ones the retry did not save.
 
 - **Failure backoff (since F5, PLAN §8.4 / §14.8).** A slate whose fetch fails (403, 429, 5xx,
   timeout, bad JSON) retries on the **next tick**; only from the second consecutive failure does it
   back off — 15 min, 30, 60, 120, 240, then every 6 h — so a sustained outage costs at most 4
   fetches an hour per slate. ESPN's edge intermittently 403s the Worker's shared egress IP (2 of 13
-  fetches on 2026-11-08, the same URLs 200 from a laptop); one such answer now costs a live slate
-  one tick, not 15 minutes. A single 403 still opens the `espn-status: 403` alert (below); a
+  fetches on 2026-11-08, the same URLs 200 from a laptop); such an answer is first retried once
+  inside the same fetch, and one that survives the retry costs a live slate one tick, not 15
+  minutes. It opens NO alert: `espn-status` fires only at 3 consecutive failures on one target
+  (≈ 18 min of failing), for 403 and 429 like every other outcome (since 2026-11-08; before that
+  the first 403 alerted, and intermittent ones made the issue reopen for nothing). A
   `consecutive_failures` above 1 on the Jobs page is a real outage, not a blip. A date target that
   has never fetched OK (`last_ok_at` NULL — a brand-new date) is the exception: it retries on the
   15-minute discovery grid, never on a general tick, so a failed first fetch of a new day never
@@ -595,9 +602,10 @@ by itself.
   job still records the alert rows and reports `stats.alerts.enabled: false`, and nothing is
   posted). One issue per incident; comments back off 1 h → 2 → 4 → 8 → 16 → 24 h; closed after 6
   quiet hours; reopened (not duplicated) if it recurs within 24 h. Kinds: `refresh-stale`,
-  `target-parked`, `job-error` (including a run the reaper found killed), `espn-status` (`403` /
-  `429` on the first one; `5xx` / `timeout` / `network` / `bad-json` after 3 in a row on one
-  target), `espn-all-failing`, `settle-stuck` (one issue for every stuck bet),
+  `target-parked`, `job-error` (including a run the reaper found killed), `espn-status` (any ESPN
+  outcome — `403` / `429` / `5xx` / `timeout` / `network` / `bad-json` — after 3 in a row on one
+  target, ≈ 18 min of failing; a single 403 or 429 no longer alerts, since 2026-11-08),
+  `espn-all-failing`, `settle-stuck` (one issue for every stuck bet),
   `secondary-budget-exhausted`, `d1-rows-near-cap` (rolling 24 h ≥ 60,000 rows: the instruction to
   set `REFRESH_LIVE_TICKS` to 2). At most 2 GitHub calls per job run; a GitHub
   failure is logged as `[alert]` and never fails the job.

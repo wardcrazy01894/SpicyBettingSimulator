@@ -572,11 +572,15 @@ describe('M13a: the poison-target guard (PLAN.md §24.4)', () => {
       fetchedAt: T0,
       season: 2026,
       week: 1,
+      // …fetched on the 403 retry. The FETCH recovered, so it stays a '200' and
+      // is still counted as recovered even though the target then fails in D1.
+      retried: true,
     };
     const provider: ScoreProvider = { name: 'broken', fetchSlate: () => Promise.resolve(broken) };
     const result = await ingestTarget(env, provider, await loadTarget(a), T0);
     expect(result.error).toMatch(/CHECK|constraint/i);
     expect(result.espn).toBe('200');
+    expect(result.espnRetried).toBe(true);
     const row = await guardRow(a);
     expect(row.incomplete_attempts).toBe(0);
     expect(row.attempt_started_at).toBeNull();
@@ -1474,7 +1478,9 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
     let date1Calls = 0;
     espn.setResponder(keyOf(2), () => {
       date1Calls += 1;
-      return date1Calls === 1 ? new Response('forbidden', { status: 403 }) : emptyBoard();
+      // Two 403s: the first is retried at once inside the same fetch, so ONE
+      // would be recovered in-flight and never reach the schedule.
+      return date1Calls <= 2 ? new Response('forbidden', { status: 403 }) : emptyBoard();
     });
     espn.setResponder(keyOf(3), () => emptyBoard());
 
@@ -1583,16 +1589,20 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
     expect(failed.status).toBe('ok');
     const stats = failed.stats as {
       espnStatus: Record<string, number>;
+      espnRecovered: number;
       failures: { targetId: string; espn: string; consecutiveFailures: number }[];
     };
-    // The ESPN status counter (and so the `espn-status` alert) sees the 403
-    // exactly as before: the schedule does not touch what is counted.
+    // The ESPN status counter sees the 403 (the one that survived the in-flight
+    // retry) exactly as before: the schedule does not touch what is counted.
     expect(stats.espnStatus['403']).toBe(1);
+    expect(stats.espnRecovered).toBe(0);
     expect(stats.failures).toEqual([
       expect.objectContaining({ targetId: id, espn: '403', consecutiveFailures: 1 }),
     ]);
-    // …and the per-run regime alert fires on that single 403, regardless of backoff.
-    expect((await alertRow('espn-status:403'))?.state).toBe('firing');
+    // …and NO alert: since 2026-11-08 a 403 alerts only on a streak of three,
+    // like every other ESPN outcome (a transient that fixes itself is not an
+    // email — the owner's requirement, PLAN.md §24.6b).
+    expect(await alertRow('espn-status:403')).toBeNull();
     let row = await guardRow(id);
     expect(row.consecutive_failures).toBe(1);
     expect(row.last_status).toBe('error');
@@ -1615,7 +1625,38 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
     expect(row.next_run_at).toBe(GENERAL + TICK + REFRESH_LIVE_TICKS * TICK);
   });
 
-  it('(F5) a sustained outage backs off 1, 5, 10, 20 ticks — unchanged but for the first step', async () => {
+  it('a live slate whose 403 recovers on the immediate retry is a 200: no failure, no backoff, no alert, and espnRecovered counts it', async () => {
+    const id = await insertTarget({
+      day: 0,
+      nextRunAt: GENERAL - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 1,
+    });
+    await makeLive('nfl', 0, 'nfl-live-retry');
+    let calls = 0;
+    espn.setResponder(keyOf(0), () => {
+      calls += 1;
+      return calls === 1 ? new Response('forbidden', { status: 403 }) : emptyBoard();
+    });
+    const run = await runJob(env, 'refresh', 'cron', GENERAL + 5_000, { scheduledTime: GENERAL });
+    expect(run.status).toBe('ok');
+    const stats = run.stats as {
+      espnStatus: Record<string, number>;
+      espnRecovered: number;
+      failures: unknown[];
+    };
+    expect(calls).toBe(2);
+    expect(stats.espnStatus['403']).toBeUndefined();
+    expect(stats.espnStatus['200']).toBeGreaterThanOrEqual(1);
+    expect(stats.espnRecovered).toBe(1);
+    expect(stats.failures).toEqual([]);
+    const row = await guardRow(id);
+    expect(row.consecutive_failures).toBe(0);
+    expect(row.last_status).toBe('ok');
+    expect(await alertRow('espn-status:403')).toBeNull();
+  });
+
+  it('(F5) a sustained outage backs off 1, 5, 10, 20 ticks — unchanged but for the first step — and the 403 alert fires at the THIRD in a row', async () => {
     const id = await insertTarget({
       day: 0,
       nextRunAt: GENERAL - HOUR,
@@ -1633,6 +1674,15 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
       const row = await guardRow(id);
       expect(row.consecutive_failures).toBe(n);
       steps.push((row.next_run_at - tick) / TICK);
+      // `espn-status` is a streak alert for 403 too (since 2026-11-08): silent
+      // at one and two in a row, firing at three — ticks 0, 1 and 6, so at
+      // least 18 minutes of a slate failing before anyone is emailed.
+      const alert = await alertRow('espn-status:403');
+      if (n < 3) expect(alert, `run ${String(n)}`).toBeNull();
+      else {
+        expect(alert?.state, `run ${String(n)}`).toBe('firing');
+        expect(alert?.last_detail).toContain(`${id} (${String(n)} in a row)`);
+      }
       tick = row.next_run_at;
       // Only this target, so the planner's never-fetched dates do not crowd it out.
       await env.DB.prepare('DELETE FROM ingest_targets WHERE id <> ?1').bind(id).run();

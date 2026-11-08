@@ -86,11 +86,20 @@ export interface AlertContext {
 const DETAIL_MAX = 500;
 const HOUR_MS = 60 * 60 * 1000;
 
-/** `5xx`/`timeout`/`network`/`bad-json` alert only on a streak: a blip is not an email. */
-const ESPN_STREAK_OUTCOMES = new Set(['5xx', 'timeout', 'network', 'bad-json']);
+/**
+ * EVERY ESPN outcome alerts only on a streak — `consecutive_failures >=
+ * ESPN_STREAK_MIN` on ONE target with that outcome — because a blip is not an
+ * email. 403 and 429 fired on the FIRST until 2026-11-08, as a "regime signal";
+ * then ESPN's edge started 403ing the Worker's egress intermittently while the
+ * next tick 200'd (PLAN.md §14.8), and every one of those was an alert about
+ * nothing. The owner's requirement is an alert when something is BROKEN, not
+ * when a transient fixed itself. With §8.4's backoff (ticks 0, 1, 6) the third
+ * consecutive failure is ≥ 18 min after the first, so the alert now means
+ * "this slate has been failing for about twenty minutes" (≥ 30 min for a
+ * never-fetched date, which retries on the 15-minute discovery grid).
+ */
+const ESPN_STREAK_OUTCOMES = new Set(['403', '429', '5xx', 'timeout', 'network', 'bad-json']);
 const ESPN_STREAK_MIN = 3;
-/** 403 and 429 are a regime signal (an edge block, a rate limit): the first one alerts. */
-const ESPN_REGIME_OUTCOMES = ['403', '429'] as const;
 
 /* ------------------------------------------------------------------ *
  * The guarded statements
@@ -569,17 +578,6 @@ async function conditionsFor(
 
   const stats = record(run.stats);
   if (job === 'refresh') {
-    const espn = record(stats['espnStatus']);
-    for (const status of ESPN_REGIME_OUTCOMES) {
-      const n = num(espn[status]);
-      if (n > 0) {
-        out.push({
-          kind: 'espn-status',
-          key: status,
-          detail: `ESPN answered ${status} to ${plural(n, 'target fetch')} in refresh run ${run.id}`,
-        });
-      }
-    }
     const streaks = new Map<string, string[]>();
     const failures = Array.isArray(stats['failures']) ? (stats['failures'] as unknown[]) : [];
     for (const f of failures) {

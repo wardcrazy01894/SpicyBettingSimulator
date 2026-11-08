@@ -162,6 +162,13 @@ export interface IngestStats extends LineGapStats {
    */
   readonly espnStatus: Readonly<Record<string, number>>;
   /**
+   * Fetches this run that ESPN answered 403 and that succeeded on the ONE
+   * immediate retry `fetchScoreboard` makes (PLAN.md §14.8). They count as
+   * `'200'` in `espnStatus`, so this is the gauge of how much the retry buys;
+   * a 403 that survives the retry is the `'403'` in `espnStatus`.
+   */
+  readonly espnRecovered: number;
+  /**
    * Every PARKED target (`incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS`)
    * after this run, read once from the ~30-row table. The admin Jobs page shows
    * the newest run's list as a banner (PLAN.md §24.4).
@@ -250,6 +257,8 @@ export interface IngestTargetResult extends LineGapStats {
   readonly error: string | null;
   /** The fetch's outcome in §24.6's vocabulary; `'200'` when the fetch succeeded. */
   readonly espn: string;
+  /** The fetch was answered 403 and succeeded on the immediate retry (`ProviderSlate.retried`). */
+  readonly espnRetried: boolean;
   /**
    * Parser warnings for this target, already rendered as text. They are the
    * schema-drift alarm (PLAN.md §14.8) and are surfaced in `job_runs.stats`, so
@@ -1587,6 +1596,7 @@ export async function ingestTarget(
       rowsSkipped: 0,
       error: errorText(err),
       espn: 'skipped',
+      espnRetried: false,
       warnings: [],
       offTheBoard: 0,
       ...lineGapsOf(EMPTY_SLATE, now),
@@ -1654,6 +1664,7 @@ export async function ingestTarget(
     rowsSkipped: skipped,
     error,
     espn: espnOutcome(fetchError),
+    espnRetried: slate?.retried ?? false,
     warnings: (slate?.warnings ?? []).map(warningText),
     offTheBoard: slate?.pulled ?? 0,
     ...lineGapsOf(slate ?? EMPTY_SLATE, now),
@@ -1701,6 +1712,7 @@ export async function runRefresh(
   const warnings: string[] = [];
   const failures: IngestFailure[] = [];
   const espnStatus: Record<string, number> = {};
+  let espnRecovered = 0;
   const gaps = {
     upcomingGames: 0,
     lineGaps: 0,
@@ -1728,6 +1740,7 @@ export async function runRefresh(
       lineGaps: result.lineGaps,
     });
     espnStatus[result.espn] = (espnStatus[result.espn] ?? 0) + 1;
+    if (result.espnRetried) espnRecovered += 1;
     if (result.error !== null) {
       failures.push({
         targetId: target.id,
@@ -1767,6 +1780,7 @@ export async function runRefresh(
     offTheBoard,
     failures,
     espnStatus,
+    espnRecovered,
     parked,
     ...gaps,
     lineGapDetails: lineGapDetails.slice(0, ESPN_MAX_WARNINGS_RECORDED),
