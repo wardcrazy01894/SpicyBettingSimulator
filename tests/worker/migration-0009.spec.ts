@@ -110,10 +110,21 @@ function migration(prefix: string): readonly string[] {
   return m.queries;
 }
 
-/** Run migration files' statements as ONE atomic batch, in the order given. */
+/**
+ * Run migration files' statements as ONE atomic batch, in the order given.
+ *
+ * Any run that includes 0009 also re-applies 0012's four `ALTER TABLE
+ * ingest_targets ADD COLUMN`s (M13a, PLAN.md §24.4) at the end: 0009 rebuilds
+ * `ingest_targets` from ITS text, which predates the guard columns, so
+ * composing forward means putting them back. 0012's `CREATE TABLE alerts` is
+ * not re-run — 0009 never touches that table.
+ */
 async function rerun(...prefixes: string[]): Promise<void> {
   const queries = prefixes.flatMap((p) => migration(p));
-  await env.DB.batch(queries.map((q) => env.DB.prepare(q)));
+  const guard = prefixes.includes('0009_')
+    ? migration('0012_').filter((q) => q.includes('ALTER TABLE ingest_targets'))
+    : [];
+  await env.DB.batch([...queries, ...guard].map((q) => env.DB.prepare(q)));
 }
 
 /**
