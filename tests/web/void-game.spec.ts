@@ -35,9 +35,11 @@ describe('cardOffersVoid (the game card control)', () => {
     expect(cardOffersVoid(true, 'nba', 'final', 4)).toBe(false);
     // A NULL period graded (PLAN.md §24.11), so no button.
     expect(cardOffersVoid(true, 'ncaab', 'final', null)).toBe(false);
-    // Football and MLB finals are never undecidable by period alone here.
+    // Football finals are never undecidable; an MLB final with a NULL period IS
+    // undecidable, but its remedy is correcting the period, so no button.
     expect(cardOffersVoid(true, 'nfl', 'final', 4)).toBe(false);
     expect(cardOffersVoid(true, 'mlb', 'final', 9)).toBe(false);
+    expect(cardOffersVoid(true, 'mlb', 'final', null)).toBe(false);
     // Not an admin, or not a final: never.
     expect(cardOffersVoid(false, 'ncaab', 'final', 1)).toBe(false);
     for (const status of [

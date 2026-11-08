@@ -554,7 +554,8 @@ Jobs can be kicked manually as an admin: `POST /api/admin/jobs/{refresh|settle|m
 and one game's slate with `POST /api/admin/games/:id/refresh` (the Refresh button admins see on
 each game card).
 A game an admin decides was abandoned is canceled with `POST /api/admin/games/:id/void` (the
-"Void game…" button beside Refresh on a SHORT final's card — the `undecidable` case — and beside
+"Void game…" button beside Refresh on a SHORT basketball final's card — the `undecidable` case,
+never offered for MLB, whose NULL-period final wants its period corrected instead — and beside
 each game under a SETTLE run's `stuckGames` on the Jobs tab; the route also accepts a scheduled,
 live, postponed or ordinary final game, which the buttons do not invite); the next settle run
 voids its legs. A void cannot be undone — `canceled` is terminal in ingest.

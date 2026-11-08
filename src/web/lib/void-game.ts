@@ -39,6 +39,9 @@ export function cardOffersVoid(
   status: GameStatus,
   period: number | null,
 ): boolean {
+  // Basketball only: MLB's `undecidable` (a final with a NULL period) is
+  // missing data, and its remedy is correcting the period, never a void.
+  if (league !== 'ncaab' && league !== 'nba') return false;
   return (
     isAdmin && status === 'final' && gameAction(league, { status, period }).kind === 'undecidable'
   );

@@ -143,9 +143,11 @@ previous sha leaves the column in place and unused.
 - **Refresh one game**: admins see a Refresh button on every game card. It pulls that game's
   whole date slate from ESPN now (`POST /api/admin/games/:id/refresh`) and shows up in the Jobs
   tab as an admin-triggered refresh run.
-- **Void one game**: on a SHORT final's card (a basketball final below regulation — the
-  `undecidable` case) and beside each game under a SETTLE run's `stuckGames` on the Jobs tab,
-  admins see **Void game…**. It cancels the game (`POST /api/admin/games/:id/void`, optional
+- **Void one game**: on a SHORT basketball final's card (below regulation — the `undecidable`
+  case; the card never offers it for MLB) and beside each game under a SETTLE run's `stuckGames`
+  on the Jobs tab, admins see **Void game…**. That Jobs list can also hold a NULL-period MLB final
+  (§23.6): that is missing data, so correct its `period` (the SQL under Basketball below) rather
+  than void it. It cancels the game (`POST /api/admin/games/:id/void`, optional
   reason) so the next settle run voids every leg on it — the remedy for a stuck short basketball
   final (procedure under Basketball below). It moves no money itself. The route also accepts a
   scheduled, live, postponed or ordinary final game (voiding a scheduled game refunds its open
@@ -408,7 +410,7 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   opens a GitHub issue (PLAN §24.11). **Procedure for a stuck short final** — decide from the box score, then either VOID it, so
   the next settle voids every leg on that game (a straight is refunded; a parlay drops the leg
   and grades the rest at the reduced price), or correct the period (below). **To void, use the
-  app:** as an admin, press **Void game…** on the game's card (shown on every final game) or
+  app:** as an admin, press **Void game…** on the game's card (shown on a short basketball final's card) or
   beside the game id under the settle run's `stuckGames` on the Jobs tab of `/admin`, give a
   reason (optional; it defaults to "abandoned game") and confirm. That is
   `POST /api/admin/games/:id/void` (PLAN §11.6): one guarded UPDATE to `canceled` with
