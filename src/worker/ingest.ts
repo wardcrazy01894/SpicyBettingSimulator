@@ -82,6 +82,7 @@ import {
   etDateKey,
   etDateKeyRange,
   etDayBounds,
+  failureBackoffTicks,
 } from '../shared/time.js';
 import { LEAGUES } from '../shared/types.js';
 import type { EpochMs, Game, GameLines, League } from '../shared/types.js';
@@ -268,13 +269,6 @@ const DAY_MS = 24 * HOUR_MS;
  * staleness window that is derived from them; `KICKOFF_GRACE_MS` is only
  * meaningful to the planner and stays here. */
 const KICKOFF_GRACE_MS = 4 * 60 * 60 * 1000;
-/**
- * Failure backoff: `min(5 ticks × 2^consecutive_failures, 120 ticks)` = 15 min
- * doubling to 6 h — the pre-M13b wall-clock values, kept so a failing ESPN is
- * not retried 20 times an hour (§24.7). Counted from the tick's base.
- */
-const BACKOFF_BASE_MS = REFRESH_BACKOFF_BASE_TICKS * REFRESH_TICK_MS;
-const BACKOFF_CAP_MS = REFRESH_DISCOVERY_TICKS * REFRESH_TICK_MS;
 /** A target whose window ended this long ago is retired by the planner. */
 const TARGET_RETIRE_AFTER_MS = 2 * DAY_MS;
 
@@ -1231,7 +1225,9 @@ export async function upsertSlate(
  *   kickoff < 48h         -> +REFRESH_SOON_TICKS      (20 ticks = 60 min)
  *   otherwise             -> +REFRESH_DISCOVERY_TICKS (120 ticks = 6 h)
  *   all games final       -> +24 h
- * On failure: `min(15min * 2^consecutiveFailures, 6h)`.
+ * On failure: `failureBackoffTicks(streak)` (src/shared/time.ts, F5) — the
+ *   first failure retries on the NEXT tick, then 5, 10, 20, … ticks, capped at
+ *   120 ticks (6 h).
  * MLB, NCAAB and the NBA (§24.11): a target holding an unfinished game is capped at
  * `postponedVoidConfirmAt(league, windowEndAt)` while that is still ahead
  * (PLAN.md §23.7) — see the end of the function.
@@ -1266,11 +1262,12 @@ export function computeNextRunAt(
   // still decides WHICH tier (distances to kickoff); `base` decides WHEN.
   const base = refreshTickBase(tick);
   if (failed) {
-    // `2 ** 40` is finite but enormous; clamp the exponent so the arithmetic
-    // stays exact and the cap is what actually decides.
-    const exponent = Math.min(Math.max(target.consecutiveFailures, 0), 20);
-    const delay = Math.min(BACKOFF_BASE_MS * 2 ** exponent, BACKOFF_CAP_MS);
-    return base + delay;
+    // `consecutiveFailures` is the STORED streak; the failure being scheduled
+    // makes it one longer. The first failure retries on the next tick (one
+    // transient ESPN 403 must not freeze a live slate, F5); the doubling from
+    // the second keeps a real outage off ESPN's back.
+    const streak = Math.max(target.consecutiveFailures, 0) + 1;
+    return base + failureBackoffTicks(streak) * REFRESH_TICK_MS;
   }
 
   const games = slate?.games ?? [];

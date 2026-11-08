@@ -1394,10 +1394,12 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
       expect(computeNextRunAt(target, slateOf(league, [], now), false, now, base), league).toBe(
         base + REFRESH_DISCOVERY_TICKS * TICK,
       );
-      // Failure backoff: 5 ticks × 2^n from the base, capped at the discovery tier.
+      // Failure backoff (F5): the first failure retries on the next tick, then
+      // 5 ticks × 2^(n−2) from the base, capped at the discovery tier.
       for (const [failures, ticks] of [
-        [0, REFRESH_BACKOFF_BASE_TICKS],
-        [1, 2 * REFRESH_BACKOFF_BASE_TICKS],
+        [0, 1],
+        [1, REFRESH_BACKOFF_BASE_TICKS],
+        [2, 2 * REFRESH_BACKOFF_BASE_TICKS],
         [9, REFRESH_DISCOVERY_TICKS],
       ] as const) {
         expect(
@@ -1411,6 +1413,83 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
     expect(REFRESH_SOON_TICKS * TICK).toBe(HOUR);
     expect(REFRESH_DISCOVERY_TICKS * TICK).toBe(6 * HOUR);
     expect(REFRESH_BACKOFF_BASE_TICKS * TICK).toBe(15 * MIN);
+  });
+
+  it('(F5) a live slate that 403s ONCE is due at the very next tick, and a 200 there puts it back on every tick', async () => {
+    // Measured 2026-11-08 04:24 UTC: one transient 403 on the live CFB slate
+    // backed it off 15 min. Now the first failure costs exactly one tick.
+    const id = await insertTarget({
+      day: 0,
+      nextRunAt: GENERAL - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 1,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5');
+    const dropOthers = (): Promise<unknown> =>
+      env.DB.prepare('DELETE FROM ingest_targets WHERE id <> ?1').bind(id).run();
+
+    espn.setResponder(keyOf(0), () => new Response('forbidden', { status: 403 }));
+    const failed = await runJob(env, 'refresh', 'cron', GENERAL + 5_000, {
+      scheduledTime: GENERAL,
+    });
+    expect(failed.status).toBe('ok');
+    const stats = failed.stats as {
+      espnStatus: Record<string, number>;
+      failures: { targetId: string; espn: string; consecutiveFailures: number }[];
+    };
+    // The ESPN status counter (and so the `espn-status` alert) sees the 403
+    // exactly as before: the schedule does not touch what is counted.
+    expect(stats.espnStatus['403']).toBe(1);
+    expect(stats.failures).toEqual([
+      expect.objectContaining({ targetId: id, espn: '403', consecutiveFailures: 1 }),
+    ]);
+    // …and the per-run regime alert fires on that single 403, regardless of backoff.
+    expect((await alertRow('espn-status:403'))?.state).toBe('firing');
+    let row = await guardRow(id);
+    expect(row.consecutive_failures).toBe(1);
+    expect(row.last_status).toBe('error');
+    expect(row.next_run_at).toBe(GENERAL + TICK);
+
+    // The next tick claims it (not one tick sooner).
+    await dropOthers();
+    expect(ids(await claimDueTargets(env, GENERAL + TICK - 1, 5, false))).toEqual([]);
+    expect(ids(await claimDueTargets(env, GENERAL + TICK + 5_000, 5, false))).toEqual([id]);
+
+    // ESPN answers 200 there: the streak resets and the slate is live again.
+    espn.set(keyOf(0), [event('nfl', 'in', T0 - HOUR)]);
+    const healed = await runJob(env, 'refresh', 'cron', GENERAL + TICK + 5_000, {
+      scheduledTime: GENERAL + TICK,
+    });
+    expect(healed.status).toBe('ok');
+    row = await guardRow(id);
+    expect(row.consecutive_failures).toBe(0);
+    expect(row.last_status).toBe('ok');
+    expect(row.next_run_at).toBe(GENERAL + TICK + REFRESH_LIVE_TICKS * TICK);
+  });
+
+  it('(F5) a sustained outage backs off 1, 5, 10, 20 ticks — unchanged but for the first step', async () => {
+    const id = await insertTarget({
+      day: 0,
+      nextRunAt: GENERAL - HOUR,
+      lastOkAt: T0 - DAY,
+      gamesSeen: 1,
+    });
+    await makeLive('nfl', 0, 'nfl-live-f5-outage');
+    espn.setResponder(keyOf(0), () => new Response('forbidden', { status: 403 }));
+
+    let tick = GENERAL;
+    const steps: number[] = [];
+    for (let n = 1; n <= 4; n += 1) {
+      const run = await runJob(env, 'refresh', 'cron', tick + 5_000, { scheduledTime: tick });
+      expect(run.status).toBe('ok');
+      const row = await guardRow(id);
+      expect(row.consecutive_failures).toBe(n);
+      steps.push((row.next_run_at - tick) / TICK);
+      tick = row.next_run_at;
+      // Only this target, so the planner's never-fetched dates do not crowd it out.
+      await env.DB.prepare('DELETE FROM ingest_targets WHERE id <> ?1').bind(id).run();
+    }
+    expect(steps).toEqual([1, REFRESH_BACKOFF_BASE_TICKS, 10, 20]);
   });
 
   it('a target with last_ok_at NULL weighs as big', async () => {

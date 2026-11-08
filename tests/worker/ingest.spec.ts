@@ -1060,7 +1060,8 @@ describe('upstream failures leave the database untouched', () => {
       const row = await targetDbRow(t.id);
       expect(row?.last_status).toBe('error');
       expect(row?.consecutive_failures).toBe(1);
-      expect(row?.next_run_at).toBe(T0 + HOUR + 15 * MIN);
+      // A FIRST failure retries on the next tick (F5), not 15 min later.
+      expect(row?.next_run_at).toBe(T0 + HOUR + LIVE_MS);
     });
   }
 
@@ -1751,8 +1752,9 @@ describe('computeNextRunAt', () => {
     expect(computeNextRunAt(target, live, false, late, T0)).toBe(T0 + LIVE_MS);
     const far = makeSlate([spec({ status: 'pre', kickoffAt: T0 + 8 * DAY })], 'nfl', late);
     expect(computeNextRunAt(target, far, false, late)).toBe(T0 + 6 * HOUR);
+    // A second consecutive failure (one stored): 5 ticks = 15 min (F5).
     expect(computeNextRunAt({ ...target, consecutiveFailures: 1 }, null, true, late)).toBe(
-      T0 + 30 * MIN,
+      T0 + 15 * MIN,
     );
   });
 
@@ -1844,14 +1846,16 @@ describe('computeNextRunAt', () => {
     expect(computeNextRunAt(target, slate, false, T0)).toBe(T0 + LIVE_MS);
   });
 
-  it('failure -> exponential backoff capped at 6h', () => {
+  it('failure -> the next tick the first time, then exponential backoff capped at 6h (F5)', () => {
+    // `consecutiveFailures` is the STORED streak, before this failure.
     const branches: readonly [number, number][] = [
-      [0, 15 * MIN],
-      [1, 30 * MIN],
-      [2, 60 * MIN],
-      [3, 120 * MIN],
-      [4, 240 * MIN],
-      [5, 6 * HOUR], // 480 min, capped
+      [0, LIVE_MS], // the first failure: the very next tick (3 min)
+      [1, 15 * MIN],
+      [2, 30 * MIN],
+      [3, 60 * MIN],
+      [4, 120 * MIN],
+      [5, 240 * MIN],
+      [6, 6 * HOUR], // 480 min, capped
       [8, 6 * HOUR],
       [40, 6 * HOUR], // no overflow to Infinity
     ];

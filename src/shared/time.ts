@@ -27,6 +27,7 @@ import {
   LINE_STALE_MULTIPLIER,
   NBA_BOARD_ET_DAYS,
   NCAAB_BOARD_ET_DAYS,
+  REFRESH_BACKOFF_BASE_TICKS,
   REFRESH_DISCOVERY_TICKS,
   REFRESH_LIVE_TICKS,
   REFRESH_SOON_TICKS,
@@ -308,6 +309,25 @@ export const REFRESH_SOON_MS = REFRESH_SOON_TICKS * REFRESH_TICK_MS;
 export const REFRESH_DISCOVERY_MS = REFRESH_DISCOVERY_TICKS * REFRESH_TICK_MS;
 /** …once every game in it is final. */
 export const REFRESH_DONE_MS = REFRESH_DONE_TICKS * REFRESH_TICK_MS;
+/**
+ * Failure backoff, in ticks from the tick's nominal instant (PLAN.md §8.4,
+ * §24.7; F5). `consecutiveFailures` is the streak INCLUDING the failure being
+ * scheduled (1 = the first). The FIRST failure retries on the very next tick —
+ * ESPN's edge intermittently 403s the Worker's shared egress IP, and one bad
+ * answer must not freeze a live slate for 15 min (two measured on 2026-11-08).
+ * From the second consecutive failure on it is `REFRESH_BACKOFF_BASE_TICKS ×
+ * 2^(n−2)` — 5, 10, 20, … ticks — capped at the discovery tier (120 ticks =
+ * 6 h), so a sustained outage costs at most 4 fetches in any hour per target.
+ * The poison guard's provisional stamp is a DIFFERENT schedule and does not
+ * use this (`provisionalNextRunAt`, §24.4).
+ */
+export function failureBackoffTicks(consecutiveFailures: number): number {
+  if (consecutiveFailures <= 1) return 1;
+  // Clamp the exponent so `2 ** n` stays exact and the cap is what decides.
+  const exponent = Math.min(consecutiveFailures - 2, 20);
+  return Math.min(REFRESH_BACKOFF_BASE_TICKS * 2 ** exponent, REFRESH_DISCOVERY_TICKS);
+}
+
 /** "kickoff within 3 h" / "within 48 h" — the two tier boundaries. */
 export const LIVE_HORIZON_MS = 3 * HOUR_MS;
 export const SOON_HORIZON_MS = 48 * HOUR_MS;
