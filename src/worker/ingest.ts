@@ -453,6 +453,33 @@ export async function bumpTargetForGame(
  * and a target already created keeps refreshing until the retirement rule takes
  * it, so a game that leaves the BOARD keeps being ingested (§22.3).
  *
+ * WHEN A NEW DATE IS DUE (PLAN.md §24.7, F2, owner decision 2026-11-07). A new
+ * target is stamped 1 ms before a DISCOVERY tick, ONE PER DISCOVERY TICK: the
+ * first at `nextDiscoveryTick(tick)` (the next one strictly after this tick,
+ * never this one), each further new date — in this run or still waiting from
+ * an earlier one — a discovery period after the last. So a Sunday rollover
+ * burst of k dates fills in on k discovery ticks (≤ 15·k min), one as each
+ * tick's discovery pick, and the live slates keep every general tick. Why each
+ * part is needed:
+ *   - ONE PER TICK, not all at the next one: the discovery pick takes one
+ *     target, and the rest of a shared stamp would be the oldest due rows on
+ *     the following GENERAL tick — the starvation this exists to end.
+ *   - 1 ms BEFORE the tick: the tier rows a discovery-tick run stamped land
+ *     exactly ON later discovery ticks; a tie there is broken by id, and a
+ *     burst date that loses it leaks onto the next general tick. A whole tick
+ *     earlier is the general tick before, so the 1 ms costs nothing.
+ *   - The chain's anchor is the latest stamp of a NEVER-ATTEMPTED row still in
+ *     the future (`last_ok_at IS NULL`, no failure, no blame): those are only
+ *     ever planner stamps, so it is grid-aligned. An admin bump (0), a quiet
+ *     stamp (`now`) or a failed first fetch's backoff never anchors it.
+ * THE QUIET EXCEPTION: when no game anywhere is in progress AND no target is
+ * due, there is no live load to protect and waiting up to 15 minutes is pure
+ * latency (a fresh database, `npm run dev`'s first board load, 4 AM), so the
+ * run stamps `now`. ONE read decides it, before the INSERTs: it is a planner
+ * INPUT, not a guard on a write (rule 5), and every INSERT of the run must
+ * share the answer — evaluated inside each INSERT, the first new row would
+ * make the second see "something due".
+ *
  * Returns the number of targets CREATED (0 on a steady-state rerun), which is
  * what makes the idempotency assertion in the spec a one-liner.
  */
@@ -477,13 +504,32 @@ export async function planTargets(
   env: Env,
   now: EpochMs,
   shape: NcaabTargetShape = NCAAB_TARGET_SHAPE,
+  tick: EpochMs = refreshTickBase(now),
 ): Promise<number> {
   const statements: D1PreparedStatement[] = [];
+  // The quiet exception's ONE read (see above). Both EXISTS are index probes
+  // (`idx_games_status`, `idx_ingest_targets_due`).
+  const busy = await env.DB.prepare(
+    `SELECT (EXISTS (SELECT 1 FROM games WHERE status = 'in_progress')
+             OR EXISTS (SELECT 1 FROM ingest_targets WHERE next_run_at <= ?1)) AS busy`,
+  )
+    .bind(now)
+    .first<{ busy: number }>();
+  // ?6 = now. Busy: ?8 = the first discovery stamp, ?9 = one discovery period.
+  const stagger = busy !== null && busy.busy === 1;
+  const staggerArgs = stagger
+    ? [nextDiscoveryTick(tick) - NEW_TARGET_HEAD_START_MS, DISCOVERY_PERIOD_MS]
+    : [];
+  const stamp = stagger
+    ? `MAX(?8,COALESCE((SELECT MAX(next_run_at) FROM ingest_targets
+                            WHERE last_ok_at IS NULL AND consecutive_failures = 0
+                              AND incomplete_attempts = 0 AND next_run_at > ?6), 0) + ?9)`
+    : '?6';
   const insert = env.DB.prepare(
     `INSERT INTO ingest_targets
        (id, league, kind, key, window_start_at, window_end_at, priority,
         next_run_at, consecutive_failures, games_seen, created_at, updated_at, conference_id)
-     VALUES (?, ?, 'date', ?, ?, ?, 100, ?, 0, 0, ?, ?, ?)
+     VALUES (?1, ?2, 'date', ?3, ?4, ?5, 100, ${stamp}, 0, 0, ?6, ?6, ?7)
      ON CONFLICT(id) DO NOTHING`,
   );
   let ncaabFullIds: string[] = [];
@@ -498,14 +544,9 @@ export async function planTargets(
             day.key,
             day.startAt,
             day.endAt,
-            // Due immediately: a brand new date has no lines at all, and its
-            // own tier (§24.7) paces it afterwards. NOTE this makes a burst of
-            // new dates the OLDEST due rows: see the ROLLOVER BURST note on
-            // planTargets.
-            now,
-            now,
             now,
             t.conferenceId,
+            ...staggerArgs,
           ),
         );
       }
@@ -648,6 +689,28 @@ export function isDiscoveryTick(tick: EpochMs): boolean {
   return (base / REFRESH_TICK_MS) % REFRESH_DISCOVERY_EVERY_NTH_TICK === 0;
 }
 
+/** One discovery period: 5 ticks = 15 min, an epoch multiple like the ticks. */
+const DISCOVERY_PERIOD_MS = REFRESH_DISCOVERY_EVERY_NTH_TICK * REFRESH_TICK_MS;
+
+/**
+ * How far AHEAD of its discovery tick `planTargets` stamps a new date (F2,
+ * PLAN.md §24.7): enough to sort before a tier row stamped exactly on that
+ * tick, far less than the tick before it.
+ */
+const NEW_TARGET_HEAD_START_MS = 1;
+
+/**
+ * The first DISCOVERY tick strictly after `tick` (PLAN.md §24.7, F2): the
+ * smallest grid instant `t > tick` with `isDiscoveryTick(t)`. The current
+ * tick, even a discovery one, is never the answer — `planTargets` runs before
+ * that tick's claim, whose discovery pick is already somebody else's. Pure
+ * epoch arithmetic (discovery ticks are multiples of 15 min since the epoch),
+ * so DST never enters; `t - t % p` is the floor without `Math.floor` (rule 2).
+ */
+export function nextDiscoveryTick(tick: EpochMs): EpochMs {
+  return tick - (tick % DISCOVERY_PERIOD_MS) + DISCOVERY_PERIOD_MS;
+}
+
 /**
  * A target's WEIGHT for the per-run budget (PLAN.md §24.7): `games_seen` from
  * its last SUCCESSFUL fetch, at least 1 (an empty slate that succeeded still
@@ -728,13 +791,13 @@ export function packCount(
  * Budget (computed, PLAN.md §8.4/§22/§23.11): at most 19 in-window targets
  * plus two or three past MLB dates on the +24 h tier; ≈ 70 discovery
  * refreshes a day against 96 discovery-first ticks. ROLLOVER BURST: the
- * Sunday rollover adds seven or eight never-fetched dates at once, stamped
- * `next_run_at = now`. Each weighs big and runs alone, and because they are
- * then the OLDEST due rows they drain on consecutive GENERAL ticks ahead of
- * every live slate — about 24 minutes during which no live slate is refreshed
- * (before M13b the same burst starved live slates for ~60 min). Bet locks are
- * kickoff-based, so no money moves; whether the planner should stamp new dates
- * at the next discovery tick instead is an owner question (PLAN.md §24.7).
+ * Sunday rollover adds seven to ten never-fetched dates at once. Each weighs
+ * big and runs alone, so since F2 (owner decision 2026-11-07) `planTargets`
+ * stamps them one per DISCOVERY tick, starting at the next one: each is that
+ * tick's discovery pick and none is ever the oldest due row on a general
+ * tick, so a burst of k dates fills within k discovery ticks (≤ 15·k min) and
+ * the live slates never wait. (Stamped `now`, as before F2, the burst drained
+ * on consecutive general ticks ahead of every live slate for ~24-30 min.)
  *
  * NOTE this reads but does not write: the lease (PLAN.md §9.2) is what makes two
  * runs non-overlapping, so "claiming" needs no marker row and costs no writes.
@@ -1589,9 +1652,10 @@ export async function runRefresh(
   maxTargets: number,
   options: RefreshOptions = { forceSecondaryGameId: null },
 ): Promise<IngestStats> {
-  await planTargets(env, now);
-
   const tick = refreshTickBase(now, options.scheduledTime);
+  // New dates are stamped from the tick, like every cadence (F2, §24.7).
+  await planTargets(env, now, NCAAB_TARGET_SHAPE, tick);
+
   const discoveryFirst = options.trigger !== 'admin' && isDiscoveryTick(tick);
   const targets = await claimDueTargets(env, now, maxTargets, discoveryFirst);
   const provider = new EspnProvider(env, now);

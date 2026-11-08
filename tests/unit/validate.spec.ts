@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   RESERVED_USERNAME_PREFIX,
+  VOID_REASON_MAX,
+  adminVoidDetail,
   formatCents,
   formatSignedCents,
   formatLineTenths,
@@ -17,6 +19,7 @@ import {
   validatePlaceBet,
   validateSignup,
   validateUsername,
+  validateVoidGame,
 } from '../../src/shared/validate.js';
 import type { PlaceBetInput } from '../../src/shared/validate.js';
 import type { PlaceBetRequest } from '../../src/shared/api-types.js';
@@ -829,5 +832,39 @@ describe('isBusted', () => {
   it('is NOT busted while a stake is in flight, whatever the balance', () => {
     expect(isBusted({ balanceCents: 0, pendingStakeCents: MIN_STAKE_CENTS })).toBe(false);
     expect(isBusted({ balanceCents: 0, pendingStakeCents: 5_000 })).toBe(false);
+  });
+});
+
+describe('validateVoidGame (POST /api/admin/games/:id/void, PLAN.md §11.6)', () => {
+  it('an absent body, an empty object, null or a blank reason all mean "no reason"', () => {
+    for (const body of [undefined, null, {}, { reason: null }, { reason: '' }, { reason: '   ' }]) {
+      expect(validateVoidGame(body)).toEqual({ ok: true, value: { reason: null } });
+    }
+  });
+
+  it('keeps a reason, trimmed', () => {
+    expect(validateVoidGame({ reason: '  roof leak, called at half  ' })).toEqual({
+      ok: true,
+      value: { reason: 'roof leak, called at half' },
+    });
+  });
+
+  it('accepts exactly 200 characters and refuses one more', () => {
+    expect(VOID_REASON_MAX).toBe(200);
+    expect(validateVoidGame({ reason: 'x'.repeat(VOID_REASON_MAX) }).ok).toBe(true);
+    const tooLong = validateVoidGame({ reason: 'x'.repeat(VOID_REASON_MAX + 1) });
+    expect(tooLong.ok).toBe(false);
+    if (!tooLong.ok) expect(tooLong.field).toBe('reason');
+  });
+
+  it('refuses a non-string reason and a non-object body', () => {
+    for (const body of [{ reason: 7 }, { reason: ['a'] }, 'abandoned', 3, []]) {
+      expect(validateVoidGame(body).ok, JSON.stringify(body)).toBe(false);
+    }
+  });
+
+  it("adminVoidDetail names the reason, defaulting to 'abandoned game'", () => {
+    expect(adminVoidDetail(null)).toBe('admin void: abandoned game');
+    expect(adminVoidDetail('roof leak')).toBe('admin void: roof leak');
   });
 });

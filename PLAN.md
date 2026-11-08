@@ -1337,6 +1337,10 @@ Both halves are now fixed:
 
 2. **Manual reset.** `POST /api/admin/bets/:id/retry-settlement` (§11.6) zeroes
    the counter, for the case where the game row itself needed fixing.
+3. **Admin void (F1).** `POST /api/admin/games/:id/void` (§11.6) sets the game
+   `canceled` with `updated_at = now` in one guarded UPDATE, so the reset sweep
+   above re-selects every parked bet on it and the same run voids the leg —
+   the remedy when the game, not the bet, is the problem (§24.11).
 
 A _partially_ final parlay never enters this path at all: it fails the
 `NOT EXISTS`, is never selected, and never touches `settle_attempts`. It is the
@@ -1588,6 +1592,7 @@ the full per-bet detail is recorded alongside the one-line message.
 | `deferred`                 | selected but graded `pending`; `settle_attempts` incremented                                                                                                                                                              |
 | `reset`                    | deferred bets handed a fresh budget by the opening sweep (`meta.changes`)                                                                                                                                                 |
 | `stuck[]`                  | ids parked at `MAX_SETTLE_ATTEMPTS`, capped at 50 — an alarm, not a work queue                                                                                                                                            |
+| `stuckGames[]`             | the games behind `stuck[]` that `gameAction` calls `undecidable` (a short basketball final, a NULL-period MLB final); read only when `stuck[]` is non-empty. The Jobs page puts "Void game…" beside each (F1)             |
 | `won`/`lost`/`push`/`void` | outcome counts among `settled`                                                                                                                                                                                            |
 | `paidCents`                | Σ payout among `settled`                                                                                                                                                                                                  |
 | `earlyLost`                | bets the §7.1b early-loss pass settled `lost` before all their games finished (already counted in `settled` and `lost`)                                                                                                   |
@@ -1903,7 +1908,7 @@ id ASC`. The first always runs; the next joins while the summed weight stays
    until retired — so for an hour or two after midnight there are TWO live MLB
    targets (yesterday's late game and today's). 00:00 ET is also MLB's daily
    rollover, so a CFB Sunday-rollover burst is eight new targets, not seven;
-   never fetched, each runs alone, one a tick. Discovery demand at the widest
+   never fetched, each runs alone, one per DISCOVERY tick since F2 (§24.7). Discovery demand at the widest
    point is ≈ 70 of the 96 discovery-first ticks. An MLB day (≤ 16 games) shares
    a run with an NFL date.
 
@@ -3019,21 +3024,22 @@ note says it in a sentence.
 
 ### 11.6 Admin (requires `users.is_admin = 1`)
 
-| Method | Path                                   | Notes                                                                                                                                                                                                               |
-| ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/admin/games/:id/refresh`         | pulls the slate this game is on, now (§9.3) → `200 {run}`; `404 GAME_NOT_FOUND`, `400 VALIDATION` (slate retired: all final > 2 days), `409 JOB_LOCKED`                                                             |
-| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                                                            |
-| GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                                                            |
-| GET    | `/api/admin/users`                     | list — `AdminUserView[]`, **including deleted accounts** (`isDeleted`, `deletedAt`). The only surface that still shows them.                                                                                        |
-| GET    | `/api/admin/invite`                    | `{inviteRequired, inviteCode}` — the shared signup code read back (null when unset), so the admin page can build the join link `/login?invite=<code>` (§10.5). No DB.                                               |
-| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets. `404` for a deleted account.                                                                                                                                                                       |
-| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}` → `204`. Disabling EVICTS every live session in the same batch. Refused with `400 VALIDATION` for your own account, or for the last enabled admin (§10.5). `404` for a deleted account.       |
-| DELETE | `/api/admin/users/:id`                 | **SOFT delete** → `204` (also `204` when already deleted). Guards: `400` self, or an admin while only one enabled admin remains, `404` unknown, `409 ACCOUNT_HAS_PENDING_BETS`. Full semantics in §10.5.            |
-| POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check. `404` for a deleted account.          |
-| POST   | `/api/admin/users/:id/refill`          | `{amountCents?, memo?}` → `204`. Re-funds a BUSTED account: one `deposit_refill` row = one bust badge, amount defaulting to `REFILL_DEFAULT_CENTS`. `409 NOT_BUSTED` otherwise; `404` for a deleted account (§4.5). |
-| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                                                      |
-| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                                                             |
-| GET    | `/api/admin/bugs`                      | last 50 `bug_reports`, newest first — `{reports: BugReportView[]}`, INCLUDING the ones GitHub refused (`issueNumber: null`, `error` set), which is the reason the list exists (§11.7)                               |
+| Method | Path                                   | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------ | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/admin/games/:id/refresh`         | pulls the slate this game is on, now (§9.3) → `200 {run}`; `404 GAME_NOT_FOUND`, `400 VALIDATION` (slate retired: all final > 2 days), `409 JOB_LOCKED`                                                                                                                                                                                                                                                                                                                                                                                                        |
+| POST   | `/api/admin/games/:id/void`            | `{reason?}` (≤ 200 chars) → `200 {id, status, statusDetail, affectedBets}`: ONE guarded UPDATE to `canceled` (§24.11) from any of `final`, `postponed`, `scheduled`, `in_progress` (voiding a scheduled game refunds its open bets on the next settle run — the same path as an ESPN cancellation; a void cannot be undone, `canceled` is terminal in ingest). `400 VALIDATION` if already canceled, `404 GAME_NOT_FOUND`. The UI invites it ONLY where it is meant: the card on a short final (`undecidable`), the Jobs tab under a SETTLE run's `stuckGames` |
+| POST   | `/api/admin/jobs/:job`                 | `job ∈ {refresh, settle, maintenance}` → `200 {run}` or `409 JOB_LOCKED`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| GET    | `/api/admin/jobs`                      | last 50 `job_runs`, each with a rolling-24h `stats.dayRowsWritten` folded IN (see below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| GET    | `/api/admin/users`                     | list — `AdminUserView[]`, **including deleted accounts** (`isDeleted`, `deletedAt`). The only surface that still shows them.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| GET    | `/api/admin/invite`                    | `{inviteRequired, inviteCode}` — the shared signup code read back (null when unset), so the admin page can build the join link `/login?invite=<code>` (§10.5). No DB.                                                                                                                                                                                                                                                                                                                                                                                          |
+| POST   | `/api/admin/users/:id/password`        | `{dk}` → resets. `404` for a deleted account.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| POST   | `/api/admin/users/:id/disabled`        | `{disabled: boolean}` → `204`. Disabling EVICTS every live session in the same batch. Refused with `400 VALIDATION` for your own account, or for the last enabled admin (§10.5). `404` for a deleted account.                                                                                                                                                                                                                                                                                                                                                  |
+| DELETE | `/api/admin/users/:id`                 | **SOFT delete** → `204` (also `204` when already deleted). Guards: `400` self, or an admin while only one enabled admin remains, `404` unknown, `409 ACCOUNT_HAS_PENDING_BETS`. Full semantics in §10.5.                                                                                                                                                                                                                                                                                                                                                       |
+| POST   | `/api/admin/users/:id/adjust`          | `{amountCents, memo?}` → `204`. Either sign; one `admin_adjust` ledger row. An overdraft is `409 INSUFFICIENT_FUNDS` **from the trigger** (§4.4), never an application check. `404` for a deleted account.                                                                                                                                                                                                                                                                                                                                                     |
+| POST   | `/api/admin/users/:id/refill`          | `{amountCents?, memo?}` → `204`. Re-funds a BUSTED account: one `deposit_refill` row = one bust badge, amount defaulting to `REFILL_DEFAULT_CENTS`. `409 NOT_BUSTED` otherwise; `404` for a deleted account (§4.5).                                                                                                                                                                                                                                                                                                                                            |
+| POST   | `/api/admin/bets/:id/retry-settlement` | zeroes `settle_attempts`/`settle_error` on a parked bet (§7.1). Never changes status or money.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| POST   | `/api/admin/reconcile`                 | recomputes `SUM(ledger) vs balance_cents` per bankroll, returns any drift (read-only; never auto-fixes)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| GET    | `/api/admin/bugs`                      | last 50 `bug_reports`, newest first — `{reports: BugReportView[]}`, INCLUDING the ones GitHub refused (`issueNumber: null`, `error` set), which is the reason the list exists (§11.7)                                                                                                                                                                                                                                                                                                                                                                          |
 
 Non-admins get `404` on `/api/admin/*` (not `403`), so the surface is invisible.
 Anonymous callers get `401`, like every other private route.
@@ -6452,6 +6458,10 @@ has not.
   first. Assert that all seven have been claimed within 7 runs of an idle queue
   and that no single run claims more than `REFRESH_TARGETS_PER_RUN`. This is the test behind the runbook's "it fills
   in over an hour or four" answer; without it that sentence is a guess.
+  (Since F2, §24.7, the new dates are stamped one per discovery tick, so the
+  idle-queue test runs to the last stamp, and a second test — two live slates
+  at the NFL and at the CFB rollover — asserts that the live slates are claimed
+  on EVERY general tick while date k drains on discovery tick k.)
 
 ### 22.6 What an operator sees, and the docs that must move with it
 
@@ -6485,19 +6495,21 @@ The two effects to expect, stated for the runbook:
 3. **Next week's board fills in over about an hour or four, not at the stroke of
    the rollover.** This is the support answer, so it belongs in the runbook
    rather than being rediscovered at 1am. At the rollover the window gains SEVEN
-   ET dates for that league at once, and each is a brand-new `ingest_targets` row
-   with `next_run_at = now`. Since M13b (§24.7) a never-fetched target weighs
-   "big" and runs ALONE, and `ORDER BY priority ASC, next_run_at ASC` serves the
-   OLDEST overdue target first — the new rows are the least overdue thing in the
-   queue. At one tick every 3 minutes on an otherwise idle queue that is about
-   24 minutes to pull all eight (seven CFB dates and MLB's) — and the same
-   ~24 minutes behind a live Saturday, because the new rows are the OLDEST due
-   rows and win the general ticks ahead of the live slates, which wait (§24.7).
-   (Before M13b: two slots per 15-minute run, about an hour idle and ~60 min of
-   live starvation behind a live Saturday.) Since M13c the basketball windows
-   roll a date at every ET midnight too (NCAAB's third date, the NBA's second),
-   so the Sunday 00:00 ET burst is TEN new targets (~30 min), and every other
-   midnight adds three (MLB's, NCAAB's, the NBA's: ~9 min). So at 00:15 ET on a Sunday a CFB board can legitimately be a
+   ET dates for that league at once, and each is a brand-new `ingest_targets`
+   row. Since M13b (§24.7) a never-fetched target weighs "big" and runs ALONE,
+   and since F2 (owner decision 2026-11-07, §24.7) `planTargets` stamps the new
+   rows ONE PER DISCOVERY TICK (:00 :15 :30 :45), starting at the next one, so
+   **the new week's dates appear over ≤ 2.5 h behind live load; live slates are
+   never starved** — each date is the discovery pick of its own tick, and the
+   four general ticks in five keep serving the live slates. Since M13c the
+   basketball windows roll a date at every ET midnight too (NCAAB's third date,
+   the NBA's second), so the Sunday 00:00 ET burst is TEN new targets (≤ 2.5 h),
+   the NFL's at 20:00 ET seven (≤ 1¾ h), and every other midnight adds three
+   (MLB's, NCAAB's, the NBA's: ≤ 45 min). With nothing live and nothing due (a
+   fresh database, `npm run dev`) the new rows are due at once instead and
+   drain one a tick. (Before F2 they were stamped `next_run_at = now` and
+   drained on consecutive ticks AHEAD of the live slates, ~24–30 min with no
+   live refresh; before M13b, ~60 min.) So at 00:15 ET on a Sunday a CFB board can legitimately be a
    handful of games with no lines yet, filling as the runs go by. Nothing is
    broken and nothing needs kicking; `GET /api/admin/jobs` shows the targets
    being taken. (An operator in a hurry can force it with the per-game Refresh
@@ -8642,17 +8654,44 @@ still claims what it bumped (§9.3).
 - _No discovery starvation._ A discovery-first tick serves the most overdue
   non-live target if one is due, and live slates cannot take that tick. So a due
   non-live target with k others ahead of it waits at most `15·(k + 1)` minutes.
-  A rollover burst is the exception, AS BUILT: the planner stamps new dates
-  `next_run_at = now`, which makes them the oldest due rows, so the eight new
-  dates drain on consecutive GENERAL ticks ahead of every live slate in ~24
-  minutes, during which no live slate is refreshed (before M13b the same burst
-  starved live slates for ~60 min; bet locks are kickoff-based, so no money
-  moves). The NFL's rollover is Sunday 20:00 ET, ~20 minutes before the Sunday
-  Night Football kickoff, so its ~24-minute burst covers that game's last
-  pre-kickoff line updates: bets stay open at a line at most ~24 minutes old,
-  well inside `LINE_STALE_MS` (3 h), so correctness is unaffected. OPEN for the
-  owner: stamp planner-created dates at the next discovery tick instead, so a
-  burst fills in ≤ 2 h strictly behind live load.
+- _A rollover burst fills on discovery ticks; live slates never wait_ (F2,
+  owner decision 2026-11-07 — this closes the OPEN note M13b left here). A new
+  date is never-fetched, so it weighs big and runs alone. `planTargets` stamps
+  each one **1 ms before a discovery tick, one per discovery tick**: the first
+  at `nextDiscoveryTick(tick)` (the next one strictly after the planning tick,
+  never that tick itself), each further one a discovery period (15 min) after
+  the latest stamp of a never-attempted date still waiting (`last_ok_at IS NULL`,
+  no failure, no blame, `next_run_at > now` — only planner stamps match, so the
+  chain stays on the grid), all inside the INSERT. So each new date is the
+  discovery pick of its own tick and is never the oldest due row on a general
+  tick. **A burst of k new dates fills within k discovery ticks, ≤ 15·k
+  minutes** (the Sunday 00:00 ET burst of ten, ≤ 2.5 h; the NFL's seven at
+  20:00 ET, ≤ 1¾ h), and the live slates keep every general tick — including
+  Sunday Night Football's last pre-kickoff line moves, ~20 minutes after the
+  NFL rollover (a single tick's slip is possible there; see the residual
+  below). Both parts are load-bearing, and the burst test in
+  `tests/worker/ingest.spec.ts` fails without either: sharing ONE stamp leaves
+  all but the first as the oldest due rows on the next general tick; stamping
+  exactly ON the tick ties with tier rows a discovery-tick run stamped there,
+  and a tie lost on id leaks the date onto a general tick. The 1 ms costs
+  nothing (the general tick before is a whole tick earlier). **The quiet
+  exception**: if no game anywhere is in progress AND no target is due, there
+  is no live load to protect and the wait is pure latency (a fresh database,
+  `npm run dev`'s first board load, 4 AM), so the run stamps `now`. One read
+  decides it before the INSERTs — a planner input, not a guard on a write, and
+  every INSERT of the run must share the answer. Residual, two causes: a
+  discovery tick whose pick goes to an OLDER due non-live target leaves that
+  tick's new date for a general tick, where it runs alone (one tick's slip, no
+  money moves). (a) A discovery backlog — steady-state demand is ≈ 70 of 96
+  ticks, so transient. (b) `NO_LIVE_GAME` counts only `in_progress` games, so a
+  PRE-KICKOFF slate on the live tier (within 3 h of tip or kickoff — SNF's own
+  date between 20:00 and 20:20 ET is one) counts as non-live for the discovery
+  pick; if it missed the previous tick because big slates were taking turns, it
+  is older than the T − 1 ms stamp and wins. The burst test uses `in_progress`
+  slates only, so it cannot see (b); it is bounded to one tick per slip. Before F2 the planner
+  stamped `next_run_at = now`, and the burst drained on consecutive general
+  ticks ahead of every live slate for ~24–30 minutes (~60 before M13b); bet
+  locks are kickoff-based, so no money ever moved.
 - _Live slates degrade explicitly._ Between bursts live slates are perpetually
   due, so the four general ticks in every five serve them round-robin
   (`next_run_at ASC`; a non-live target whose tier expires takes one tick). With L
@@ -8735,6 +8774,14 @@ by the cron. Still not worth moving the bump inside the lease.
 segments (`groups=<id>`, §24.2), each ~1/32 of the work. The owner chose the
 3-minute tick partly so this would be cheap to turn on. It stays OFF until the
 evidence says otherwise.
+
+**The switch must revisit F2 before it is flipped.** §24.7's planner chains
+every NEW target one discovery period behind the last waiting one; with 32
+segments per date that is ~8 h to stamp one day's segments and ~8 h more every
+midnight. Before `NCAAB_TARGET_SHAPE` becomes `'conference'`, exempt segment
+targets (non-NULL `conference_id`) from the chain — stamp a date's segments as
+one group at the next discovery tick, or let them pack under the weight budget
+on general ticks — and re-run the burst fairness test with segments in it.
 
 **The switch is ONE planner decision.** M13c ships every piece the sharded shape
 needs, dormant. Turning it on is a one-line change of
@@ -9011,7 +9058,14 @@ college below `BASKETBALL_REGULATION_PERIODS.ncaab` (2 halves), NBA below
 `.nba` (4 quarters) — can only be an abandoned game, so the arm returns
 `undecidable` and the bet stays pending in `stuck[]` for an admin, instead of
 being paid on a result some books void (college games below 35 played minutes,
-NBA below 43). ESPN does not give minutes played, so the period is the only
+NBA below 43). **An admin voids it in-app (F1):** "Void game…" on the final
+game's card, or beside the game in the settle run's `stats.stuckGames` on the
+Jobs page, calls `POST /api/admin/games/:id/void` (§11.6) — `status =
+'canceled'`, `status_detail = 'admin void: <reason>'`, `updated_at = now` in
+ONE guarded UPDATE — and the next settle run re-selects the parked bets
+(`RESET_DEFERRED_SQL`) and voids every leg on it. The hand-run SQL in
+docs/OPERATIONS.md stays as the fallback, and is still the only way to take the
+other branch (correct an under-reported `period` so the game grades). ESPN does not give minutes played, so the period is the only
 evidence; a game called early in its FINAL period still grades as final, which
 is the remaining, smaller residual. `gradeLeg`, `gradeBet` and `projectLeg` are
 untouched and league-unaware (rule 7, rule 8g(i)).

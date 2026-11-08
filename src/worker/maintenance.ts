@@ -234,6 +234,84 @@ export async function autoVoidStuckGames(env: Env, now: EpochMs): Promise<AutoVo
 }
 
 /**
+ * The statuses an admin may void (F1, PLAN.md §11.6). `canceled` is absent —
+ * re-voiding would overwrite the first `status_detail` and bump `updated_at`
+ * for nothing — and so is `unknown`, a status no ingest path has ever written.
+ */
+export const ADMIN_VOIDABLE_STATUSES = ['final', 'postponed', 'scheduled', 'in_progress'] as const;
+
+/**
+ * THE guarded write of the admin void: the same three columns, the same shape,
+ * as `autoVoidStuckGames`' UPDATE, and the guard is the WHERE clause (CLAUDE.md
+ * rule 5). `updated_at = now` is load-bearing, not bookkeeping: a bet parked at
+ * `MAX_SETTLE_ATTEMPTS` is re-selected only when one of its games'
+ * `updated_at` is newer than its `settle_attempted_at` (`RESET_DEFERRED_SQL`
+ * in settle.ts). Without it the bet would stay in `stuck[]` for good.
+ */
+export const ADMIN_VOID_SQL = `
+UPDATE games
+   SET status        = 'canceled',
+       status_detail = ?2,
+       updated_at    = ?3
+ WHERE id = ?1
+   AND status IN (${ADMIN_VOIDABLE_STATUSES.map((s) => `'${s}'`).join(', ')})`;
+
+export type AdminVoidOutcome =
+  | {
+      readonly kind: 'voided';
+      readonly id: string;
+      readonly statusDetail: string | null;
+      /** Pending bets with a leg on the game, counted AFTER the write. */
+      readonly affectedBets: number;
+    }
+  | { readonly kind: 'not-found' }
+  | { readonly kind: 'not-voidable'; readonly status: string };
+
+/**
+ * `POST /api/admin/games/:id/void`: cancel ONE game so the next settle run
+ * voids every leg on it — a straight is refunded, a parlay drops the leg and
+ * reprices (§7.4). The remedy for a basketball final short of regulation,
+ * which `gameAction` holds `undecidable` (§24.11).
+ *
+ * ONE batch: the guarded UPDATE, then two reads of the state it left — the row
+ * (to tell "no such game" from "not voidable" when the UPDATE matched nothing,
+ * with no pre-flight read at all) and the pending-bet count for the admin's
+ * confirmation. Like maintenance, it never touches `bets`, `ledger` or
+ * `bankrolls`: the money moves only in settle's own atomic batch. `canceled`
+ * is terminal in both ingest upsert paths, so ESPN cannot flip it back.
+ */
+export async function adminVoidGame(
+  env: Env,
+  gameId: string,
+  statusDetail: string,
+  now: EpochMs,
+): Promise<AdminVoidOutcome> {
+  const results = await env.DB.batch([
+    env.DB.prepare(ADMIN_VOID_SQL).bind(gameId, statusDetail, now),
+    env.DB.prepare('SELECT status, status_detail FROM games WHERE id = ?1').bind(gameId),
+    env.DB.prepare(
+      `SELECT COUNT(DISTINCT b.id) AS n
+         FROM bets b JOIN bet_legs l ON l.bet_id = b.id
+        WHERE l.game_id = ?1 AND b.status = 'pending'`,
+    ).bind(gameId),
+  ]);
+  const row = (results[1]?.results[0] ?? null) as {
+    status: string;
+    status_detail: string | null;
+  } | null;
+  if (row === null) return { kind: 'not-found' };
+  // Tested for 0, never === 1 (D1 counts trigger writes in `changes`).
+  if (changesAt(results, 0) === 0) return { kind: 'not-voidable', status: row.status };
+  const count = (results[2]?.results[0] ?? null) as { n: number } | null;
+  return {
+    kind: 'voided',
+    id: gameId,
+    statusDetail: row.status_detail,
+    affectedBets: count?.n ?? 0,
+  };
+}
+
+/**
  * Reported, never auto-changed: `in_progress` for > 12 h past kickoff with a
  * `last_seen_at` older than 6 h. PLAN.md §7.5 is explicit that this must NOT
  * auto-void — a game that might just be a feed glitch is a human's call.

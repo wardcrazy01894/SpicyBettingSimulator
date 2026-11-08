@@ -143,6 +143,17 @@ previous sha leaves the column in place and unused.
 - **Refresh one game**: admins see a Refresh button on every game card. It pulls that game's
   whole date slate from ESPN now (`POST /api/admin/games/:id/refresh`) and shows up in the Jobs
   tab as an admin-triggered refresh run.
+- **Void one game**: on a SHORT basketball final's card (below regulation — the `undecidable`
+  case; the card never offers it for MLB) and beside each game under a SETTLE run's `stuckGames`
+  on the Jobs tab, admins see **Void game…**. That Jobs list can also hold a NULL-period MLB final
+  (§23.6): that is missing data, so correct its `period` (the SQL under Basketball below) rather
+  than void it. It cancels the game (`POST /api/admin/games/:id/void`, optional
+  reason) so the next settle run voids every leg on it — the remedy for a stuck short basketball
+  final (procedure under Basketball below). It moves no money itself. The route also accepts a
+  scheduled, live, postponed or ordinary final game (voiding a scheduled game refunds its open
+  bets on the next settle run, the same path as an ESPN cancellation); the buttons do not invite
+  that, and a void cannot be undone — `canceled` is terminal in ingest, so ESPN's later result is
+  ignored.
 - Admin page: `/admin` in the SPA, four tabs — **Jobs** (run refresh / settle / maintenance by
   hand, last 50 runs), **Ledger** (reconcile), **Users** (disable, password reset, delete),
   **Bug reports**. The tab is in the URL (`/admin?tab=users`), so links to a section work.
@@ -244,10 +255,12 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   their summed game counts stay ≤ 40 (`REFRESH_WEIGHT_BUDGET`): a CFB Saturday or a slate never
   fetched before always runs ALONE; an NFL date and an MLB day share. Every fifth tick (:00 :15 :30
   :45) serves a non-live slate first, so next week's lines are discovered behind any live load.
-  With two or three big live slates at once they take turns, each every 2nd or 3rd tick. The one
-  exception is the Sunday rollover burst: the seven or eight NEW dates are the oldest due rows and
-  drain on consecutive ticks AHEAD of the live slates, so for ~24 minutes after 00:00 ET and after
-  20:00 ET on a Sunday no live slate is refreshed (PLAN §24.7).
+  With two or three big live slates at once they take turns, each every 2nd or 3rd tick. A NEW date
+  (the Sunday rollover burst, a midnight's new days) is due at its own discovery tick, one per tick
+  from the next one, so the new week's dates appear over ≤ 2.5 h after 00:00 ET (≤ 1¾ h after the
+  NFL's 20:00 ET) strictly behind live load, and live slates are never starved (one tick's slip is possible; PLAN §24.7) (PLAN §24.7, F2).
+  With nothing live and nothing due — a fresh database, `npm run dev`'s first board load — new
+  dates are due at once instead.
 - Per-run work is capped by two `wrangler.jsonc` vars: `REFRESH_TARGETS_PER_RUN` (5: a COUNT cap
   under the weight budget above) and `SETTLE_CHUNK` (20 bets per settle). Do not raise
   `SETTLE_CHUNK` before PLAN Spike S2 is measured — see below.
@@ -404,14 +417,20 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   has action on every market, overtime included — EXCEPT a final short of regulation (NBA
   `period` < 4, college < 2: an abandoned game), which is held `undecidable`: the bet stays
   `pending`, reaches `stats.stuck[]` after `MAX_SETTLE_ATTEMPTS`, and the `settle-stuck` alert
-  opens a GitHub issue (PLAN §24.11). **Procedure for a stuck short final** — there is no in-app
-  void yet (an admin "void game" action is the follow-up; `retry-settlement` would regrade the same
-  final): decide from the box score, then either VOID it, so the next settle voids every leg on
-  that game (a straight bet is refunded; a parlay drops the leg and grades the rest at the reduced
-  price):
+  opens a GitHub issue (PLAN §24.11). **Procedure for a stuck short final** — decide from the box score, then either VOID it, so
+  the next settle voids every leg on that game (a straight is refunded; a parlay drops the leg
+  and grades the rest at the reduced price), or correct the period (below). **To void, use the
+  app:** as an admin, press **Void game…** on the game's card (shown on a short basketball final's card) or
+  beside the game id under the settle run's `stuckGames` on the Jobs tab of `/admin`, give a
+  reason (optional; it defaults to "abandoned game") and confirm. That is
+  `POST /api/admin/games/:id/void` (PLAN §11.6): one guarded UPDATE to `canceled` with
+  `status_detail = 'admin void: <reason>'` and `updated_at = now`, answering with how many
+  pending bets ride on the game; an already-canceled game is refused with `400 VALIDATION`.
+  (`retry-settlement` is no substitute — it would regrade the same short final.) **Fallback,
+  only if the app is unreachable** — the same statement by hand:
 
   ```bash
-  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET status = 'canceled', status_detail = 'admin: abandoned game, voided', updated_at = unixepoch() * 1000 WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
+  npx wrangler d1 execute spicybetting --remote --command "UPDATE games SET status = 'canceled', status_detail = 'admin void: abandoned game', updated_at = unixepoch() * 1000 WHERE id = 'ncaab:<espnEventId>' AND status = 'final'"
   ```
 
   or, if ESPN under-reported the period and the game WAS complete, correct it so it grades

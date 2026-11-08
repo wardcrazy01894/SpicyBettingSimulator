@@ -50,6 +50,7 @@ import {
   ingestTarget,
   isDiscoveryTick,
   NO_LIVE_GAME,
+  nextDiscoveryTick,
   planTargets,
   refreshTickBase,
   RETIRE_PREDICATE,
@@ -1618,6 +1619,34 @@ describe('M13b: the three-minute tick (PLAN.md §24.7)', () => {
     expect(run.status).toBe('ok');
     expect((await guardRow(quiet)).last_ok_at).toBe(T0 + 4_000);
     expect((await guardRow(live)).last_ok_at).toBe(T0 - DAY);
+  });
+
+  it('nextDiscoveryTick is the first discovery tick STRICTLY after the tick, on the epoch grid', () => {
+    const P = REFRESH_DISCOVERY_EVERY_NTH_TICK * TICK; // 15 min
+    // The current tick IS a discovery tick: the NEXT one, never now.
+    expect(isDiscoveryTick(T0)).toBe(true);
+    expect(nextDiscoveryTick(T0)).toBe(T0 + P);
+    // Every general tick of the window points at the same next discovery tick.
+    for (let k = 1; k < REFRESH_DISCOVERY_EVERY_NTH_TICK; k += 1) {
+      expect(nextDiscoveryTick(T0 + k * TICK)).toBe(T0 + P);
+    }
+    // An off-grid instant (the floor fallback's input) still lands on the grid.
+    expect(nextDiscoveryTick(T0 + P - 1)).toBe(T0 + P);
+    expect(nextDiscoveryTick(T0 + 1)).toBe(T0 + P);
+    // Exhaustive over a day: on the grid, strictly later, and nothing between.
+    for (let t = T0; t < T0 + DAY; t += TICK) {
+      const next = nextDiscoveryTick(t);
+      expect(isDiscoveryTick(next)).toBe(true);
+      expect(next % TICK).toBe(0);
+      expect(next).toBeGreaterThan(t);
+      for (let between = t + TICK; between < next; between += TICK) {
+        expect(isDiscoveryTick(between)).toBe(false);
+      }
+    }
+    // DST is irrelevant: epoch multiples. The fall-back Sunday 2026-11-01 has
+    // two 01:00–02:00 ET hours and the grid does not notice.
+    const fallBack = Date.parse('2026-11-01T05:57:00Z'); // 01:57 EDT
+    expect(nextDiscoveryTick(fallBack)).toBe(Date.parse('2026-11-01T06:00:00Z')); // 01:00 EST
   });
 
   it('an admin run is always general', async () => {
