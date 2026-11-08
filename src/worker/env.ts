@@ -35,6 +35,12 @@ export interface Env {
    * in dev and a stub host in tests. Only read when ODDS_API_KEY is set.
    */
   readonly ODDS_API_BASE_URL: string;
+  /**
+   * The GitHub login the in-app alerts @mention (PLAN.md §24.6b): the mention
+   * IS the email, because GitHub never notifies the token's own account of its
+   * own issues. Empty or unset = no mention. Not a secret.
+   */
+  readonly ALERT_MENTION_LOGIN?: string;
 
   // --- secrets (wrangler secret put) -------------------------------------
   /** Shared signup gate. When unset, signup is open (reported by /api/health). */
@@ -71,6 +77,8 @@ export interface RuntimeConfig {
   readonly github: GitHubConfig | null;
   /** The secondary odds provider. `null` = feature off (no `ODDS_API_KEY`). */
   readonly oddsApi: OddsApiConfig | null;
+  /** `ALERT_MENTION_LOGIN`, validated; `''` = alerts mention nobody. */
+  readonly alertMentionLogin: string;
 }
 
 /**
@@ -87,7 +95,23 @@ export function readConfig(env: Env): RuntimeConfig {
     inviteRequired: typeof env.INVITE_CODE === 'string' && env.INVITE_CODE.length > 0,
     github: readGitHub(env),
     oddsApi: readOddsApiConfig(env),
+    alertMentionLogin: readMentionLogin(env),
   };
+}
+
+/**
+ * Optional, like the other alert/bug settings: a malformed login turns the
+ * mention OFF with a logged reason rather than 500ing every request. A GitHub
+ * login is 1–39 alphanumerics or single hyphens, never leading with a hyphen.
+ */
+function readMentionLogin(env: Env): string {
+  const raw = (env.ALERT_MENTION_LOGIN ?? '').trim().replace(/^@/, '');
+  if (raw === '') return '';
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(raw)) {
+    console.error('[config] ALERT_MENTION_LOGIN is not a GitHub login; alerts mention nobody');
+    return '';
+  }
+  return raw;
 }
 
 /**

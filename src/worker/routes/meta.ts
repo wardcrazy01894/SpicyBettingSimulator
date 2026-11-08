@@ -1,4 +1,8 @@
-/** Public routes: /api/health, /api/config, /api/auth/kdf. No auth, no DB for health. */
+/**
+ * Public routes: /api/health, /api/health/ingest, /api/config, /api/auth/kdf.
+ * No auth. `/api/health` touches no DB and is always 200 (the SPA reads it on
+ * every page load); `/api/health/ingest` is the uptime monitor's (PLAN.md §24.5).
+ */
 
 import { Hono } from 'hono';
 import type { ConfigResponse, HealthResponse, KdfParamsResponse } from '../../shared/api-types.js';
@@ -14,8 +18,23 @@ import {
   TEASER_POINTS_TENTHS,
 } from '../../shared/constants.js';
 import { LEAGUES } from '../../shared/types.js';
+import type { EpochMs } from '../../shared/types.js';
 import { currentSeasonFor } from '../bankroll.js';
+import { readIngestHealth } from '../ingest.js';
+import type { IngestHealthReason } from '../ingest.js';
 import type { AppContext } from '../middleware.js';
+
+/**
+ * `GET /api/health/ingest`'s body (PLAN.md §24.5). Local on purpose: the
+ * browser never reads it, so the frozen `api-types.ts` is untouched.
+ */
+interface IngestHealthBody {
+  readonly ok: boolean; // false ⇔ 503
+  readonly now: EpochMs;
+  readonly lastRefreshOkAt: EpochMs | null;
+  readonly parkedTargets: number;
+  readonly reasons: readonly IngestHealthReason[];
+}
 
 export function metaRoutes(): Hono<AppContext> {
   const app = new Hono<AppContext>();
@@ -29,6 +48,22 @@ export function metaRoutes(): Hono<AppContext> {
       bugReportsEnabled: c.var.config.github !== null,
     };
     return c.json(body);
+  });
+
+  // The ONE health signal that can see a refresh killed for CPU: the run that
+  // died records nothing, so an outside monitor polls this and alerts on any
+  // non-200 (PLAN.md §24.5, docs/OPERATIONS.md "Uptime monitor"). One read,
+  // nothing written, public and unthrottled like /api/config.
+  app.get('/health/ingest', async (c) => {
+    const health = await readIngestHealth(c.env, c.var.now);
+    const body: IngestHealthBody = {
+      ok: health.reasons.length === 0,
+      now: c.var.now,
+      lastRefreshOkAt: health.lastRefreshOkAt,
+      parkedTargets: health.parkedTargets,
+      reasons: health.reasons,
+    };
+    return c.json(body, body.ok ? 200 : 503);
   });
 
   app.get('/config', async (c) => {

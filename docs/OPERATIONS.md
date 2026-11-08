@@ -52,7 +52,7 @@ check failed). Roll back manually if the site is actually broken; the workflow d
 ```bash
 printf '%s' 'new-code'  | npx wrangler secret put INVITE_CODE    # shared signup code (one code for everyone)
 printf '%s' "$(openssl rand -hex 24)" | npx wrangler secret put IP_HASH_SALT   # rotating this resets IP throttle keys only
-printf '%s' 'github_pat_…' | npx wrangler secret put GITHUB_TOKEN   # in-app bug reports → GitHub issues (optional)
+printf '%s' 'github_pat_…' | npx wrangler secret put GITHUB_TOKEN   # in-app bug reports + ops alerts → GitHub issues (optional)
 printf '%s' 'odds-api-key…' | npx wrangler secret put ODDS_API_KEY   # secondary odds provider, The Odds API (optional)
 ```
 
@@ -101,7 +101,7 @@ Applied migrations, newest last:
 | `0009_mlb_league.sql`              | **Ships in the M12a PR** (with the code that writes `'mlb'`). REBUILDS `games`, `game_lines`, `bets`, `bet_legs`, `ledger` and `ingest_targets` (rows copied, ledger triggers recreated after the copy) to add `'mlb'` to four league CHECKs (PLAN §23.3) | on merge of M12a, by the Deploy workflow — count the rows first (below) and run `npm run db:reconcile -- --remote` afterwards                                                          |
 | `0010_parlay_25_legs.sql`          | REBUILDS `bets` + `bet_legs` + `ledger` (rows copied, triggers recreated after the copy) so `bets.leg_count` allows 1–25 (parlays up to 25 legs) and a new CHECK holds a teaser to 10 legs (PLAN §16.2)                                                   | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
 | `0011_ledger_refill_buyout.sql`    | REBUILDS `ledger` alone (rows copied, the five triggers recreated after the copy) so `ledger.kind` admits `deposit_refill` and `bust_buyout` — bust refills and badge buyouts (PLAN §4.5)                                                                 | on merge to `main`, by the Deploy workflow — run `npm run db:reconcile -- --remote` afterwards                                                                                         |
-| `0012_ingest_guard.sql`            | **PLANNED, not written: ships in the M13a PR.** Four `ADD COLUMN`s on `ingest_targets` (`attempt_started_at`, `incomplete_attempts`, `last_ok_at`, `conference_id`) and the `alerts` table, with no rebuild (PLAN §24.4, §24.6b)                          | on merge of M13a, by the Deploy workflow                                                                                                                                               |
+| `0012_ingest_guard.sql`            | Four plain `ADD COLUMN`s on `ingest_targets` (`attempt_started_at`, `incomplete_attempts`, `last_ok_at`, `conference_id`) and the `alerts` table, with no rebuild (PLAN §24.4, §24.6b) — the poison-target guard and the in-app alerts (M13a)             | on merge to `main`, by the Deploy workflow                                                                                                                                             |
 | `0013_basketball_leagues.sql`      | **PLANNED, not written: ships in the M13c PR.** REBUILDS the six tables 0009 did, so four league CHECKs admit `'ncaab'` and `'nba'` (PLAN §24.9)                                                                                                          | on merge of M13c, by the Deploy workflow, on a Tuesday or Wednesday only after the write estimate is under 60,000 rows (PLAN §24.9). Run `npm run db:reconcile -- --remote` afterwards |
 
 (0003, 0004, 0005 and 0006 were written on parallel branches and numbered by reservation; wrangler
@@ -189,7 +189,9 @@ the free plan retains a few days). Every line is prefixed so you can filter:
 | `[client-error]`        | `POST /api/bugs/client-errors` | a browser hit an uncaught error; the line is that browser's diagnostics log (last errors, API calls, routes), at most one per 30 s per user                                                                                                                                                      |
 | `[cron]`                | the scheduled handler          | every job run: name, status, error                                                                                                                                                                                                                                                               |
 | `[bugs]`                | bug filing                     | GitHub refused a report, or the row could not be marked filed                                                                                                                                                                                                                                    |
-| `[config]`              | `readConfig`                   | `GITHUB_TOKEN` (or `ODDS_API_KEY`) set but a var is missing — that feature stays OFF                                                                                                                                                                                                             |
+| `[config]`              | `readConfig`                   | `GITHUB_TOKEN` (or `ODDS_API_KEY`) set but a var is missing — that feature stays OFF; or `ALERT_MENTION_LOGIN` is not a GitHub login — alerts mention nobody                                                                                                                                     |
+| `[alert]`               | the in-app alerts (M13a)       | a job run recorded or sent an alert (its stats as JSON), a GitHub call failed (fingerprint, action, status — the run is still `ok`), or an evaluation threw and was contained (PLAN §24.6b)                                                                                                      |
+| `[jobs]`                | `withJobRun`                   | a `job_runs` write, the reaper, or the alert-stats fold failed — the run itself still completed                                                                                                                                                                                                  |
 | `[secondary]`           | the secondary odds sweep       | `unauthorized — check ODDS_API_KEY`; a malformed 2xx (schema drift); or a sweep that threw and was contained (the run is still `ok`; PLAN §21.9)                                                                                                                                                 |
 
 ```bash
@@ -438,37 +440,77 @@ ungrouped PRs, outside `open-pull-requests-limit`, and the `ignore` rules apply 
 vulnerability fixed only in an ignored major produces no PR and stays visible only in the Security
 tab, which is worth a look when the weekly PRs are reviewed.
 
-## Uptime monitor and alerts (from M13a — PLANNED, PLAN §24.5 / §24.6b)
+## Uptime monitor and alerts (since M13a, PLAN §24.5 / §24.6b)
 
-Two complementary alarms. Neither exists until M13a merges, and this section is the setup to do on
-that day.
+Two complementary alarms. The code is live from the M13a deploy; the monitor and the mention are
+operator steps, done once, the day M13a merges.
+
+**Expect one-time alerts on the first runs after the M13a deploy, and do not read them as a
+regression.** Each job's first run reaps its own historical `running` rows (runs killed before
+M13a existed) into one `job-error` issue for that job — up to three issues, `refresh`, `settle`
+and `maintenance`; an existing `stats.stuck[]` or an exhausted secondary budget
+opens its issue on the first settle or refresh. Read them, confirm the @mention email arrived and
+that the `ops-alert` label is on the issue, and close them — that is the recipient check happening
+by itself.
 
 - **External monitor** (it catches everything dead at once: a cron outage, a broken deploy, D1
-  unreachable). Create a free UptimeRobot-class HTTP monitor on the ingest health route M13a adds
-  (PLAN §24.5 names it; the M13a PR writes the full URL here once the route is live, since this
-  runbook may only cite routes the Worker serves), interval 5 minutes, alerting
-  on any non-200 by email to the owner. The body's `reasons[]` say why: `refresh-stale` (no
-  successful refresh within 5 refresh periods), `targets-parked`, `espn-all-failing`. The first
+  unreachable). Create a free UptimeRobot-class HTTP monitor on
+  **`https://spicybetting.wardcrazy01894.workers.dev/api/health/ingest`**, interval 5 minutes,
+  alerting on any non-200 by email to the owner. It answers `200` with `ok: true`, or `503` with
+  `reasons[]` saying why: `refresh-stale` (no refresh run recorded `ok` within 5 refresh periods —
+  75 min under today's 15-minute cron, 15 min from M13b), `targets-parked`, `espn-all-failing`. The
+  body also carries `lastRefreshOkAt` and `parkedTargets`. One read, nothing written. The first
   check after the M13a deploy must be 200. `/api/health` itself stays 200 and DB-free; do not point
   the monitor there.
-- **In-app alerts** (detail, and a dead refresh seen by the next settle run): GitHub issues labelled
-  `ops-alert`, titled `[alert] <kind>: <key>`, opened with `GITHUB_TOKEN` (OFF without it). One issue
-  per incident; comments back off 1 h → 24 h; closed after 6 quiet hours; reopened (not
-  duplicated) if it recurs within 24 h. **The @mention is what sends the email.** `GITHUB_TOKEN`
-  belongs to `wardcrazy01894`, the repo's own account, and GitHub never notifies an account of its
-  own activity, so without a mention nobody is emailed. Set the `wrangler.jsonc` var
-  `ALERT_MENTION_LOGIN` (not a secret) to the GitHub login that should get the email. The issue
-  body and every throttled comment then start with `@<login>`, and that account needs GitHub
-  notification setting "Participating, @mentions and custom → Email" on. Watching the repo (Watch →
-  Custom → Issues) also works, but only for an account other than the token's. Empty = no mention.
-  Then force one alert and confirm the email arrives.
 
-## Parked target (from M13a — PLANNED, PLAN §24.4)
+  ```bash
+  curl -s -w '\n%{http_code}\n' https://spicybetting.wardcrazy01894.workers.dev/api/health/ingest
+  ```
+
+- **In-app alerts** (detail, and a dead refresh seen by the next settle run): GitHub issues labelled
+  `ops-alert`, titled `[alert] <kind>: <key>`, opened with `GITHUB_TOKEN` (OFF without it: every
+  job still records the alert rows and reports `stats.alerts.enabled: false`, and nothing is
+  posted). One issue per incident; comments back off 1 h → 2 → 4 → 8 → 16 → 24 h; closed after 6
+  quiet hours; reopened (not duplicated) if it recurs within 24 h. Kinds: `refresh-stale`,
+  `target-parked`, `job-error` (including a run the reaper found killed), `espn-status` (`403` /
+  `429` on the first one; `5xx` / `timeout` / `network` / `bad-json` after 3 in a row on one
+  target), `espn-all-failing`, `settle-stuck` (one issue for every stuck bet),
+  `secondary-budget-exhausted`, `d1-rows-near-cap` (rolling 24 h ≥ 60,000 rows: the instruction to
+  set `REFRESH_LIVE_TICKS` to 2 once M13b is in). At most 2 GitHub calls per job run; a GitHub
+  failure is logged as `[alert]` and never fails the job.
+
+  **The @mention is what sends the email.** `GITHUB_TOKEN` belongs to `wardcrazy01894`, the repo's
+  own account, and GitHub never notifies an account of its own activity, so without a mention
+  nobody is emailed. The `wrangler.jsonc` var `ALERT_MENTION_LOGIN` (not a secret) is `alancast`.
+  The issue body, every throttled comment and every reopen start with `@alancast`; the closing
+  comment does not. That account needs GitHub notification setting "Participating, @mentions and
+  custom → Email" on. Watching the repo (Watch → Custom → Issues) also works, but only for an
+  account other than the token's. Empty = no mention.
+
+  **Recipient check, once after the M13a deploy:** force one alert and confirm the email arrives.
+  Plant a firing alert row, then run any job from `/admin` → Jobs (its evaluation creates the issue
+  within that run); the issue's body must begin with `@alancast` and the email must arrive. The row
+  goes quiet on its own and the issue closes itself 6 hours later.
+
+  ```bash
+  npx wrangler d1 execute spicybetting --remote --command "INSERT INTO alerts (fingerprint, kind, key, state, opened_at, last_seen_at, occurrences, pending, last_detail) VALUES ('job-error:recipient-check', 'job-error', 'recipient-check', 'firing', CAST(strftime('%s','now') AS INTEGER) * 1000, CAST(strftime('%s','now') AS INTEGER) * 1000, 1, 1, 'M13a recipient check (OPERATIONS.md)')"
+  ```
+
+  ```bash
+  npx wrangler d1 execute spicybetting --remote --command "SELECT fingerprint, state, issue_number, occurrences, pending, comments, last_seen_at FROM alerts ORDER BY last_seen_at DESC"
+  ```
+
+## Parked target (since M13a, PLAN §24.4)
 
 A refresh target whose invocation was killed (CPU) three times in a row is **parked**: the scheduler
 skips it, `GET /api/admin/jobs` shows it in the newest refresh run's `stats.parked` (and as a banner
 on the Jobs page), the ingest health route answers 503 `targets-parked`, and a `target-parked` alert
-opens. Every other league keeps refreshing.
+opens. Every other league keeps refreshing. A target is stamped immediately before its own fetch
+and both reschedules clear the stamp, so only an invocation that DIED mid-target (CPU or wall
+limit, an evicted isolate) leaves `ingest_targets.incomplete_attempts` raised; an ESPN error or
+timeout is an ordinary failure with its own backoff. A target with one strike already runs alone
+on its next claim. The killed run's `job_runs` row turns from `running` to `error` ("no finish
+recorded: killed …") on the next run of that job at least 15 minutes later.
 
 1. `npx wrangler tail --format json` and look for `exceededCpu` on refresh invocations. That
    confirms a CPU kill rather than a crash.

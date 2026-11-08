@@ -134,6 +134,7 @@ describe('job_runs', () => {
       targetsProcessed: 3,
       gamesUpserted: 7,
       dayRowsWritten: 0,
+      dayEspnStatus: {},
     });
   });
 
@@ -197,7 +198,9 @@ describe('job_runs', () => {
       });
       expect(bodyRan).toBe(true);
       expect(run.status).toBe('ok');
-      expect(run.stats).toEqual({ ok: true });
+      // The body's stats, plus — since M13a — the alert evaluation's: with no
+      // refresh run ever recorded, `refresh-stale` holds (PLAN.md §24.6b).
+      expect(run.stats).toMatchObject({ ok: true, alerts: { recorded: 1 } });
     } finally {
       env.DB.prepare = realPrepare;
     }

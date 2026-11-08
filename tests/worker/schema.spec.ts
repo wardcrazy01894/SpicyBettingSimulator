@@ -275,6 +275,110 @@ describe('migration 0001', () => {
     );
   });
 
+  it('0012 added the four guard columns to ingest_targets, unindexed, with the incomplete_attempts CHECK', async () => {
+    const cols = await env.DB.prepare('PRAGMA table_info(ingest_targets)').all<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>();
+    const byName = new Map(cols.results.map((c) => [c.name, c]));
+    expect(byName.get('attempt_started_at')).toMatchObject({ type: 'INTEGER', notnull: 0 });
+    expect(byName.get('incomplete_attempts')).toMatchObject({
+      type: 'INTEGER',
+      notnull: 1,
+      dflt_value: '0',
+    });
+    expect(byName.get('last_ok_at')).toMatchObject({ type: 'INTEGER', notnull: 0 });
+    expect(byName.get('conference_id')).toMatchObject({ type: 'TEXT', notnull: 0 });
+    // None of them is indexed: the reschedule's extra SET entries cost no row (§24.4).
+    const idx = await env.DB.prepare('PRAGMA index_list(ingest_targets)').all<{ name: string }>();
+    for (const i of idx.results) {
+      const ic = await env.DB.prepare(`PRAGMA index_info(${i.name})`).all<{ name: string }>();
+      for (const c of ic.results) {
+        expect([
+          'attempt_started_at',
+          'incomplete_attempts',
+          'last_ok_at',
+          'conference_id',
+        ]).not.toContain(c.name);
+      }
+    }
+    await env.DB.prepare(
+      `INSERT INTO ingest_targets (id, league, kind, key, window_start_at, window_end_at, priority,
+                                   next_run_at, consecutive_failures, games_seen, created_at, updated_at)
+       VALUES ('nfl:date:20990101', 'nfl', 'date', '20990101', 0, 1, 100, 0, 0, 0, 0, 0)`,
+    ).run();
+    const row = await env.DB.prepare(
+      `SELECT attempt_started_at, incomplete_attempts, last_ok_at, conference_id
+         FROM ingest_targets WHERE id = 'nfl:date:20990101'`,
+    ).first();
+    expect(row).toEqual({
+      attempt_started_at: null,
+      incomplete_attempts: 0,
+      last_ok_at: null,
+      conference_id: null,
+    });
+    await expect(
+      env.DB.prepare(
+        "UPDATE ingest_targets SET incomplete_attempts = -1 WHERE id = 'nfl:date:20990101'",
+      ).run(),
+    ).rejects.toThrow(/CHECK/);
+    await env.DB.prepare("DELETE FROM ingest_targets WHERE id = 'nfl:date:20990101'").run();
+  });
+
+  it('0012 created alerts keyed by fingerprint, with the state and counter CHECKs', async () => {
+    const cols = await env.DB.prepare('PRAGMA table_info(alerts)').all<{
+      name: string;
+      pk: number;
+    }>();
+    expect(cols.results.map((c) => c.name)).toEqual([
+      'fingerprint',
+      'kind',
+      'key',
+      'state',
+      'issue_number',
+      'opened_at',
+      'last_seen_at',
+      'last_notified_at',
+      'resolved_at',
+      'occurrences',
+      'pending',
+      'comments',
+      'last_detail',
+    ]);
+    expect(cols.results.find((c) => c.pk === 1)?.name).toBe('fingerprint');
+    const insert = (fp: string, state: string) =>
+      env.DB.prepare(
+        `INSERT INTO alerts (fingerprint, kind, key, state, opened_at, last_seen_at)
+         VALUES (?1, 'job-error', 'x', ?2, 0, 0)`,
+      )
+        .bind(fp, state)
+        .run();
+    await insert('job-error:schema', 'firing');
+    const row = await env.DB.prepare(
+      "SELECT last_notified_at, occurrences, pending, comments, issue_number, resolved_at FROM alerts WHERE fingerprint = 'job-error:schema'",
+    ).first();
+    expect(row).toEqual({
+      last_notified_at: 0,
+      occurrences: 0,
+      pending: 0,
+      comments: 0,
+      issue_number: null,
+      resolved_at: null,
+    });
+    await expect(insert('job-error:bad', 'open')).rejects.toThrow(/CHECK/);
+    await expect(insert('job-error:schema', 'firing')).rejects.toThrow(/UNIQUE|PRIMARY/);
+    for (const col of ['occurrences', 'pending', 'comments']) {
+      await expect(
+        env.DB.prepare(
+          `UPDATE alerts SET ${col} = -1 WHERE fingerprint = 'job-error:schema'`,
+        ).run(),
+      ).rejects.toThrow(/CHECK/);
+    }
+    await env.DB.prepare("DELETE FROM alerts WHERE fingerprint = 'job-error:schema'").run();
+  });
+
   it('bug_reports.user_id must reference an existing user', async () => {
     await expect(
       env.DB.prepare(

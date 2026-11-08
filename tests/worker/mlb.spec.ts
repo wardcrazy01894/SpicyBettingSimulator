@@ -605,7 +605,7 @@ async function legResults(betId: string): Promise<(string | null)[]> {
 async function readTarget(id: string): Promise<IngestTargetRow & { lastRunAt: number | null }> {
   const row = await env.DB.prepare(
     `SELECT id, league, kind, key, window_start_at, window_end_at, priority, next_run_at,
-            consecutive_failures, last_run_at
+            consecutive_failures, incomplete_attempts, last_run_at
        FROM ingest_targets WHERE id = ?1`,
   )
     .bind(id)
@@ -619,6 +619,7 @@ async function readTarget(id: string): Promise<IngestTargetRow & { lastRunAt: nu
       priority: number;
       next_run_at: number;
       consecutive_failures: number;
+      incomplete_attempts: number;
       last_run_at: number | null;
     }>();
   if (row === null) throw new Error(`target ${id} should exist`);
@@ -632,6 +633,7 @@ async function readTarget(id: string): Promise<IngestTargetRow & { lastRunAt: nu
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    incompleteAttempts: row.incomplete_attempts,
     lastRunAt: row.last_run_at,
   };
 }

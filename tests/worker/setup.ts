@@ -31,6 +31,7 @@ import { beforeAll } from 'vitest';
 beforeAll(async () => {
   await applyD1Migrations(env.DB, [...env.TEST_MIGRATIONS]);
   installDefaultOddsStub();
+  installDefaultGitHubStub();
 });
 
 /**
@@ -56,6 +57,33 @@ function installDefaultOddsStub(): void {
       return new Response('[]', { status: 200, headers: { ...headers, 'x-requests-last': '0' } });
     }
     return new Response('[]', { status: 200, headers: { ...headers, 'x-requests-last': '3' } });
+  };
+}
+
+/**
+ * `GITHUB_TOKEN` is bound for the whole worker project too, and since M13a
+ * every job run evaluates the in-app alerts (PLAN.md §24.6b) — a settle run in
+ * a spec with no refresh history opens `refresh-stale`, a failing job opens
+ * `job-error`. Without this default those would be real requests to
+ * `https://github.test`. It answers like GitHub (an issue number on create,
+ * 201 on a comment, 200 on a PATCH); `bugs.spec.ts` and
+ * `scheduler-hardening.spec.ts` install their own recording stubs on top.
+ */
+function installDefaultGitHubStub(): void {
+  const original = globalThis.fetch;
+  let issue = 9000;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (!url.startsWith('https://github.test/')) return original(input, init);
+    const path = new URL(url).pathname;
+    if (init?.method === 'POST' && path.endsWith('/issues')) {
+      issue += 1;
+      return Response.json(
+        { number: issue, html_url: `https://github.com/x/y/issues/${String(issue)}` },
+        { status: 201 },
+      );
+    }
+    return Response.json({}, { status: init?.method === 'POST' ? 201 : 200 });
   };
 }
 

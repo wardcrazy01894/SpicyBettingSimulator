@@ -57,8 +57,14 @@ import { postponedVoidConfirmAt } from '../shared/action.js';
 import {
   ESPN_MAX_WARNINGS_RECORDED,
   GAME_SEEN_TOUCH_MS,
+  HEALTH_STALE_TICKS,
+  INGEST_MAX_INCOMPLETE_ATTEMPTS,
+  INGEST_PARKED_RETRY_MS,
   INGEST_WINDOW_MS,
   LINE_SEEN_TOUCH_MS,
+  REFRESH_BACKOFF_BASE_TICKS,
+  REFRESH_DISCOVERY_TICKS,
+  REFRESH_TICK_MS,
   RESERVED_DISCOVERY_SLOTS,
 } from '../shared/constants.js';
 import type { ParseWarning } from '../shared/espn.js';
@@ -80,6 +86,7 @@ import { changesAt, MAX_BATCH_STATEMENTS, rowsWrittenAt, rowsWrittenOf, runBatch
 import type { Env } from './env.js';
 import { readConfig } from './env.js';
 import { EspnProvider } from './espn.js';
+import { ProviderError } from './providers.js';
 import type { ProviderSlate, ScoreProvider, SlateTarget } from './providers.js';
 import { runSecondary } from './secondary.js';
 import type { SecondaryStats } from './secondary.js';
@@ -95,6 +102,12 @@ export interface IngestTargetRow {
   readonly priority: number;
   readonly nextRunAt: EpochMs;
   readonly consecutiveFailures: number;
+  /**
+   * The poison-target guard's counter (PLAN.md §24.4): attempts stamped but
+   * never rescheduled. > 0 means the target runs alone; at
+   * `INGEST_MAX_INCOMPLETE_ATTEMPTS` it is PARKED.
+   */
+  readonly incompleteAttempts: number;
 }
 
 export interface IngestStats extends LineGapStats {
@@ -112,7 +125,24 @@ export interface IngestStats extends LineGapStats {
   /** Upsert UNITS (one per game, one per line) the compare-and-skip guard left alone. */
   readonly rowsSkipped: number;
   readonly warnings: readonly string[];
-  readonly failures: readonly { readonly targetId: string; readonly error: string }[];
+  /**
+   * One entry per failed target. `espn` is the fetch's outcome (§24.6's
+   * vocabulary) and `consecutiveFailures` the streak AFTER this failure, which
+   * is what the `espn-status` alert keys on (§24.6b: a blip is not an email).
+   */
+  readonly failures: readonly IngestFailure[];
+  /**
+   * ESPN outcomes, one per target fetched this run, in §24.6's fixed vocabulary
+   * (`'200'`, `'403'`, `'429'`, `'5xx'`, `'4xx'`, `'timeout'`, `'network'`,
+   * `'bad-json'`), so the totals are summable across runs (`dayEspnStatus`).
+   */
+  readonly espnStatus: Readonly<Record<string, number>>;
+  /**
+   * Every PARKED target (`incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS`)
+   * after this run, read once from the ~30-row table. The admin Jobs page shows
+   * the newest run's list as a banner (PLAN.md §24.4).
+   */
+  readonly parked: readonly ParkedTarget[];
   /**
    * The `LineGapStats` counts per target, because the run total conflates two
    * different things: the live date's board (what a bettor sees today) and the
@@ -122,6 +152,19 @@ export interface IngestStats extends LineGapStats {
   readonly coverage: readonly TargetCoverage[];
   /** The secondary odds sweep's report for this run, every path (PLAN.md §21.8). */
   readonly secondary: SecondaryStats;
+}
+
+export interface IngestFailure {
+  readonly targetId: string;
+  readonly error: string;
+  readonly espn: string;
+  readonly consecutiveFailures: number;
+}
+
+export interface ParkedTarget {
+  readonly targetId: string;
+  readonly incompleteAttempts: number;
+  readonly attemptStartedAt: EpochMs | null;
 }
 
 export interface RefreshOptions {
@@ -170,6 +213,8 @@ export interface IngestTargetResult extends LineGapStats {
   readonly rowsWritten: number;
   readonly rowsSkipped: number;
   readonly error: string | null;
+  /** The fetch's outcome in §24.6's vocabulary; `'200'` when the fetch succeeded. */
+  readonly espn: string;
   /**
    * Parser warnings for this target, already rendered as text. They are the
    * schema-drift alarm (PLAN.md §14.8) and are surfaced in `job_runs.stats`, so
@@ -286,7 +331,11 @@ export async function bumpTargetForGame(
        (id, league, kind, key, window_start_at, window_end_at, priority,
         next_run_at, consecutive_failures, games_seen, created_at, updated_at)
      VALUES (?1, ?2, 'date', ?3, ?4, ?5, 100, 0, 0, 0, ?6, ?6)
-     ON CONFLICT(id) DO UPDATE SET next_run_at = 0, updated_at = excluded.updated_at`,
+     ON CONFLICT(id) DO UPDATE SET next_run_at = 0, updated_at = excluded.updated_at,
+       -- The admin UN-PARK (PLAN.md §24.4): the one sanctioned reset outside
+       -- the two reschedule paths (CLAUDE.md rule 8i). The run this bump then
+       -- triggers stamps attempt 1.
+       incomplete_attempts = 0, attempt_started_at = NULL`,
   )
     .bind(id, game.league, key, bounds.startAt, bounds.endAt, now)
     .run();
@@ -316,6 +365,23 @@ export async function bumpTargetForGame(
  * Returns the number of targets CREATED (0 on a steady-state rerun), which is
  * what makes the idempotency assertion in the spec a one-liner.
  */
+/**
+ * The retire rule's WHERE clause, `?1` = the cutoff. A NULL `conference_id` —
+ * every target the planner emits today — makes the added parenthesis TRUE, so
+ * it selects exactly what the pre-M13a SQL selected; a non-NULL one scopes the
+ * "anything still moving" test to that conference's games (PLAN.md §24.8's
+ * dormant per-conference groundwork). Exported for the equivalence test.
+ */
+export const RETIRE_PREDICATE = `window_end_at < ?1
+        AND NOT EXISTS (
+          SELECT 1 FROM games g
+           WHERE g.league = ingest_targets.league
+             AND g.kickoff_at >= ingest_targets.window_start_at
+             AND g.kickoff_at <  ingest_targets.window_end_at
+             AND (ingest_targets.conference_id IS NULL
+                  OR ingest_targets.conference_id IN (g.home_conference_id, g.away_conference_id))
+             AND g.status NOT IN ('final', 'canceled'))`;
+
 export async function planTargets(env: Env, now: EpochMs): Promise<number> {
   const statements: D1PreparedStatement[] = [];
   for (const league of LEAGUES) {
@@ -351,16 +417,7 @@ export async function planTargets(env: Env, now: EpochMs): Promise<number> {
   // Retire: window ended > 2 days ago AND nothing in it can still move. The
   // NOT EXISTS is the guard — a postponed game keeps its date alive so the
   // maintenance job can still watch it (PLAN.md §7.5).
-  await env.DB.prepare(
-    `DELETE FROM ingest_targets
-      WHERE window_end_at < ?
-        AND NOT EXISTS (
-          SELECT 1 FROM games g
-           WHERE g.league = ingest_targets.league
-             AND g.kickoff_at >= ingest_targets.window_start_at
-             AND g.kickoff_at <  ingest_targets.window_end_at
-             AND g.status NOT IN ('final', 'canceled'))`,
-  )
+  await env.DB.prepare(`DELETE FROM ingest_targets WHERE ${RETIRE_PREDICATE}`)
     .bind(now - TARGET_RETIRE_AFTER_MS)
     .run();
 
@@ -381,6 +438,7 @@ interface TargetDbRow {
   readonly priority: number;
   readonly next_run_at: number;
   readonly consecutive_failures: number;
+  readonly incomplete_attempts: number;
 }
 
 function toTargetRow(row: TargetDbRow): IngestTargetRow {
@@ -394,19 +452,37 @@ function toTargetRow(row: TargetDbRow): IngestTargetRow {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    incompleteAttempts: row.incomplete_attempts,
   };
 }
 
 const TARGET_COLUMNS = `id, league, kind, key, window_start_at, window_end_at,
-                        priority, next_run_at, consecutive_failures`;
+                        priority, next_run_at, consecutive_failures, incomplete_attempts`;
 
-/** The `NOT EXISTS` that makes a target "not live" — no in-progress game in it. */
-const NO_LIVE_GAME = `NOT EXISTS (
+/**
+ * The `NOT EXISTS` that makes a target "not live" — no in-progress game in it.
+ * The `conference_id` parenthesis is TRUE for a NULL id (every target today),
+ * so for those it is byte-for-byte the pre-M13a predicate; a segment target
+ * (§24.8, dormant) is judged by its own conference's games only. Exported for
+ * the equivalence test.
+ */
+export const NO_LIVE_GAME = `NOT EXISTS (
   SELECT 1 FROM games g
    WHERE g.league = t.league
      AND g.kickoff_at >= t.window_start_at
      AND g.kickoff_at <  t.window_end_at
+     AND (t.conference_id IS NULL
+          OR t.conference_id IN (g.home_conference_id, g.away_conference_id))
      AND g.status = 'in_progress')`;
+
+/**
+ * NOT PARKED, or parked long enough for ONE probation attempt (PLAN.md §24.4).
+ * Bound: `?` = now. A parked target's `attempt_started_at` is never NULL (the
+ * stamp wrote it; only the reschedules and the admin un-park clear it, and both
+ * also zero the counter), so the NULL comparison never decides anything.
+ */
+const NOT_PARKED = `(incomplete_attempts < ${String(INGEST_MAX_INCOMPLETE_ATTEMPTS)}
+       OR attempt_started_at <= ? - ${String(INGEST_PARKED_RETRY_MS)})`;
 
 /**
  * `id NOT IN (...)` with a literal placeholder list. The ids are our own target
@@ -455,8 +531,17 @@ function notInClause(count: number): string {
  * always distinct ids. If the reserved slot has no eligible non-live target, it
  * falls through to the general queue (same exclusion) so a run is never wasted.
  *
+ * THE POISON-TARGET GUARD (PLAN.md §24.4, M13a). A PARKED target
+ * (`incomplete_attempts >= INGEST_MAX_INCOMPLETE_ATTEMPTS`) is skipped until
+ * `INGEST_PARKED_RETRY_MS` after its last attempt, then claimable for one
+ * probation run. A BLAMED one (`incomplete_attempts > 0`) is only ever claimed
+ * into slot 1, and then alone: slot 2 is skipped, and the later queries all
+ * add `incomplete_attempts = 0`.
+ *
  * NOTE this reads but does not write: the lease (PLAN.md §9.2) is what makes two
  * runs non-overlapping, so "claiming" needs no marker row and costs no writes.
+ * The guard's stamp is NOT a claim marker — it is issued per target, by
+ * `ingestTarget`, immediately before that target's own fetch.
  */
 export async function claimDueTargets(
   env: Env,
@@ -485,14 +570,36 @@ export async function claimDueTargets(
     for (const row of res.results) claimed.push(toTargetRow(row));
   };
 
-  // Slot 1 (and any further general slots): the most-due target overall.
-  if (general > 0) {
+  // Slot 1: the most-due target overall that is not parked — a parked one
+  // only on its probation attempt (PLAN.md §24.4).
+  await pick(
+    `SELECT ${TARGET_COLUMNS} FROM ingest_targets
+      WHERE next_run_at <= ? /*EXCLUDE*/
+        AND ${NOT_PARKED}
+      ORDER BY priority ASC, next_run_at ASC, id ASC
+      LIMIT 1`,
+    [now],
+  );
+  const first = claimed[0];
+  if (first === undefined) return claimed; // nothing at all is due
+
+  // A BLAMED TARGET RUNS ALONE (§24.4, M13a rule (a)): CPU accumulates across
+  // one invocation, so nothing may share a run with a target that may have
+  // been killed by its own cost — or that may be the innocent victim of a
+  // neighbour's. Slot 2 is skipped outright.
+  if (first.incompleteAttempts > 0) return claimed;
+
+  // Every later slot adds `incomplete_attempts = 0` (rule (b)), so a blamed
+  // target is never packed BEHIND another one. That also excludes every parked
+  // target, so NOT_PARKED is not repeated.
+  if (general > 1) {
     await pick(
       `SELECT ${TARGET_COLUMNS} FROM ingest_targets
         WHERE next_run_at <= ? /*EXCLUDE*/
+          AND incomplete_attempts = 0
         ORDER BY priority ASC, next_run_at ASC, id ASC
         LIMIT ?`,
-      [general],
+      [general - 1],
     );
   }
 
@@ -503,6 +610,7 @@ export async function claimDueTargets(
     await pick(
       `SELECT ${TARGET_COLUMNS} FROM ingest_targets AS t
         WHERE next_run_at <= ? /*EXCLUDE*/
+          AND incomplete_attempts = 0
           AND ${NO_LIVE_GAME}
         ORDER BY priority ASC, next_run_at ASC, id ASC
         LIMIT 1`,
@@ -510,15 +618,16 @@ export async function claimDueTargets(
     );
     if (claimed.length === before) {
       // Nothing non-live is due: fall through to the general queue (same
-      // exclusion) so the run is never wasted.
+      // exclusion, and still never a blamed target) so the run is never wasted.
       await pick(
         `SELECT ${TARGET_COLUMNS} FROM ingest_targets
           WHERE next_run_at <= ? /*EXCLUDE*/
+            AND incomplete_attempts = 0
           ORDER BY priority ASC, next_run_at ASC, id ASC
           LIMIT 1`,
         [],
       );
-      if (claimed.length === before) break; // nothing at all is due
+      if (claimed.length === before) break; // nothing else is due
     }
   }
 
@@ -1098,7 +1207,87 @@ function errorText(err: unknown): string {
   return typeof err === 'string' ? err.slice(0, 500) : typeof err;
 }
 
-/** Fetch + parse + upsert one target. Never throws; failures are returned. */
+/**
+ * The ESPN outcome of one target fetch in §24.6's FIXED vocabulary, so per-run
+ * tallies sum across runs: `null` (no fetch error) is `'200'`; an HTTP error is
+ * `'403'`, `'429'`, `'5xx'` (500–599) or `'4xx'` (any other status); then
+ * `'timeout'`, `'network'`, `'bad-json'`. Anything that is not a
+ * `ProviderError` failed before or around the request and counts as network.
+ * Parser warnings are never a status: a 200 that partly failed to parse is 200.
+ * A target whose guard stamp failed was never fetched and reports `'skipped'`
+ * (written by `ingestTarget`, never by this function).
+ */
+export function espnOutcome(err: unknown): string {
+  if (err === null) return '200';
+  if (!(err instanceof ProviderError)) return 'network';
+  switch (err.kind) {
+    case 'timeout':
+    case 'network':
+    case 'bad-json':
+      return err.kind;
+    case 'unsupported':
+      return '4xx';
+    case 'http': {
+      const status = err.status ?? 0;
+      if (status === 403 || status === 429) return String(status);
+      return status >= 500 && status <= 599 ? '5xx' : '4xx';
+    }
+  }
+}
+
+/**
+ * The provisional `next_run_at` the guard's stamp writes (PLAN.md §24.4):
+ * `base + min(REFRESH_BACKOFF_BASE_TICKS × 2^incomplete_attempts,
+ * REFRESH_DISCOVERY_TICKS) × REFRESH_TICK_MS` — 15, 30, then 60 min. Under
+ * M13a's 15-minute cron the base is §24.7's floor fallback, the tick at or
+ * before `now` (`scheduledTime` reaches `runJob` only in M13b). Integer
+ * arithmetic throughout: `now - now % tick` is the floor without `Math.floor`.
+ */
+export function provisionalNextRunAt(target: IngestTargetRow, now: EpochMs): EpochMs {
+  const base = now - (now % REFRESH_TICK_MS);
+  const exponent = Math.min(Math.max(target.incompleteAttempts, 0), 20);
+  const ticks = Math.min(REFRESH_BACKOFF_BASE_TICKS * 2 ** exponent, REFRESH_DISCOVERY_TICKS);
+  return base + ticks * REFRESH_TICK_MS;
+}
+
+/**
+ * THE GUARD'S STAMP (PLAN.md §24.4). One `UPDATE … WHERE id = ?` issued
+ * IMMEDIATELY BEFORE this target's own fetch — never for the whole claim at
+ * once — so when an invocation is killed for CPU exactly one target, the one in
+ * flight, is left blamed. Both reschedule paths in `ingestTarget` undo it; a
+ * kill, which no `catch` can see, is the only way it survives. The provisional
+ * `next_run_at` drops a killed target BEHIND the other due ones instead of
+ * letting it win slot 1 on the very next tick. Never move this after the
+ * fetch (CLAUDE.md rule 8i). Returns D1's `rows_written` (2: the row and
+ * `idx_ingest_targets_due`).
+ */
+export async function stampAttempt(
+  env: Env,
+  target: IngestTargetRow,
+  now: EpochMs,
+): Promise<number> {
+  const res = await env.DB.prepare(
+    `UPDATE ingest_targets
+        SET attempt_started_at  = ?1,
+            incomplete_attempts = incomplete_attempts + 1,
+            next_run_at         = ?2,
+            updated_at          = ?1
+      WHERE id = ?3`,
+  )
+    .bind(now, provisionalNextRunAt(target, now), target.id)
+    .run();
+  return rowsWrittenOf(res);
+}
+
+/**
+ * Fetch + parse + upsert one target. Never throws; failures are returned.
+ *
+ * Stamp first (`stampAttempt`), then fetch, then exactly one of the two
+ * reschedules — each of which resets the guard (`incomplete_attempts = 0`,
+ * `attempt_started_at = NULL`; success also sets `last_ok_at`). A failure the
+ * code can SEE (thrown fetch, non-2xx, timeout, bad JSON, a D1 error in
+ * `upsertSlate`) is not an incomplete attempt: its reschedule runs.
+ */
 export async function ingestTarget(
   env: Env,
   provider: ScoreProvider,
@@ -1107,26 +1296,47 @@ export async function ingestTarget(
 ): Promise<IngestTargetResult> {
   let slate: ProviderSlate | null = null;
   let error: string | null = null;
+  let fetchError: unknown = null;
+
+  // The stamp's own write is part of the run's §8.6 total. If it throws (D1
+  // down) the target is not fetched at all and NOTHING else is written for it:
+  // no reschedule (which would erase earlier strikes and count a D1 blip as an
+  // ESPN failure), no ESPN outcome (`'skipped'`, which no alert streak counts).
+  let rowsWritten = 0;
+  try {
+    rowsWritten += await stampAttempt(env, target, now);
+  } catch (err) {
+    return {
+      gamesUpserted: 0,
+      linesUpserted: 0,
+      rowsWritten,
+      rowsSkipped: 0,
+      error: errorText(err),
+      espn: 'skipped',
+      warnings: [],
+      ...lineGapsOf(EMPTY_SLATE, now),
+    };
+  }
 
   try {
     // Fetch AND parse before anything touches the database: an outage or a
     // schema change must leave existing rows exactly as they were (§14.8).
     slate = await provider.fetchSlate(target.league, toSlateTarget(target));
   } catch (err) {
+    fetchError = err;
     error = errorText(err);
   }
 
   let games = 0;
   let lines = 0;
   let skipped = 0;
-  let rowsWritten = 0;
   if (slate !== null) {
     try {
       const written = await upsertSlate(env, slate, now);
       games = written.games;
       lines = written.lines;
       skipped = written.skipped;
-      rowsWritten = written.rowsWritten;
+      rowsWritten += written.rowsWritten;
     } catch (err) {
       // A D1 failure mid-slate is still a target failure: back the target off
       // and report it. Each statement is idempotent, so a partial apply heals.
@@ -1139,12 +1349,14 @@ export async function ingestTarget(
 
   // The reschedule is itself a row write (plus `idx_ingest_targets_due`, since
   // `next_run_at` is indexed), so it belongs in the same total the §8.6 budget
-  // is measured against rather than being quietly excluded.
+  // is measured against rather than being quietly excluded. BOTH paths reset
+  // the poison guard (§24.4); its columns are unindexed, so that is free.
   const reschedule = failed
     ? await env.DB.prepare(
         `UPDATE ingest_targets
             SET next_run_at = ?, last_run_at = ?, last_status = 'error', last_error = ?,
-                consecutive_failures = consecutive_failures + 1, updated_at = ?
+                consecutive_failures = consecutive_failures + 1, updated_at = ?,
+                incomplete_attempts = 0, attempt_started_at = NULL
           WHERE id = ?`,
       )
         .bind(nextRunAt, now, error, now, target.id)
@@ -1152,10 +1364,11 @@ export async function ingestTarget(
     : await env.DB.prepare(
         `UPDATE ingest_targets
             SET next_run_at = ?, last_run_at = ?, last_status = 'ok', last_error = NULL,
-                consecutive_failures = 0, games_seen = ?, updated_at = ?
+                consecutive_failures = 0, games_seen = ?, updated_at = ?,
+                incomplete_attempts = 0, attempt_started_at = NULL, last_ok_at = ?
           WHERE id = ?`,
       )
-        .bind(nextRunAt, now, slate?.games.length ?? 0, now, target.id)
+        .bind(nextRunAt, now, slate?.games.length ?? 0, now, now, target.id)
         .run();
   rowsWritten += rowsWrittenOf(reschedule);
 
@@ -1165,6 +1378,7 @@ export async function ingestTarget(
     rowsWritten,
     rowsSkipped: skipped,
     error,
+    espn: espnOutcome(fetchError),
     warnings: (slate?.warnings ?? []).map(warningText),
     ...lineGapsOf(slate ?? EMPTY_SLATE, now),
   };
@@ -1205,7 +1419,8 @@ export async function runRefresh(
   let rowsSkipped = 0;
   let rowsWritten = 0;
   const warnings: string[] = [];
-  const failures: { targetId: string; error: string }[] = [];
+  const failures: IngestFailure[] = [];
+  const espnStatus: Record<string, number> = {};
   const gaps = {
     upcomingGames: 0,
     lineGaps: 0,
@@ -1231,7 +1446,18 @@ export async function runRefresh(
       upcomingGames: result.upcomingGames,
       lineGaps: result.lineGaps,
     });
-    if (result.error !== null) failures.push({ targetId: target.id, error: result.error });
+    espnStatus[result.espn] = (espnStatus[result.espn] ?? 0) + 1;
+    if (result.error !== null) {
+      failures.push({
+        targetId: target.id,
+        error: result.error,
+        espn: result.espn,
+        // A skipped target (its stamp failed) wrote no reschedule, so its
+        // counter in the database did not move; report what is stored.
+        consecutiveFailures:
+          result.espn === 'skipped' ? target.consecutiveFailures : target.consecutiveFailures + 1,
+      });
+    }
   }
 
   // LAST, after the primary has written: the decision sees the board ESPN just
@@ -1239,6 +1465,15 @@ export async function runRefresh(
   // throws (PLAN.md §21.2); its row writes join the run's §8.6 total.
   const secondary = await runSecondary(env, now, { force: options.forceSecondaryGameId });
   for (const sweep of secondary.sweeps) rowsWritten += sweep.rowsWritten;
+
+  // A read that fails here must not turn a finished run into `error` (and drop
+  // its rowsWritten from dayRowsWritten): report no parked targets and log.
+  let parked: readonly ParkedTarget[] = [];
+  try {
+    parked = await listParkedTargets(env);
+  } catch (err) {
+    console.error('[refresh] listParkedTargets failed; reporting none this run', err);
+  }
 
   return {
     targetsProcessed: targets.length,
@@ -1249,6 +1484,8 @@ export async function runRefresh(
     // The cap governs what is RECORDED, never what is parsed (PLAN.md §8.3).
     warnings: warnings.slice(0, ESPN_MAX_WARNINGS_RECORDED),
     failures,
+    espnStatus,
+    parked,
     ...gaps,
     lineGapDetails: lineGapDetails.slice(0, ESPN_MAX_WARNINGS_RECORDED),
     coverage,
@@ -1264,4 +1501,74 @@ export async function runRefresh(
 export function refreshTargetsPerRun(env: Env, trigger: 'cron' | 'admin'): number {
   const configured = readConfig(env).refreshTargetsPerRun;
   return trigger === 'admin' ? 1 : configured;
+}
+
+/**
+ * Every PARKED target, by id (PLAN.md §24.4). One read of a ~30-row table; the
+ * refresh run reports it in `stats.parked` and the alerts name each one.
+ */
+export async function listParkedTargets(env: Env): Promise<readonly ParkedTarget[]> {
+  const res = await env.DB.prepare(
+    `SELECT id, incomplete_attempts, attempt_started_at FROM ingest_targets
+      WHERE incomplete_attempts >= ?1
+      ORDER BY id`,
+  )
+    .bind(INGEST_MAX_INCOMPLETE_ATTEMPTS)
+    .all<{ id: string; incomplete_attempts: number; attempt_started_at: number | null }>();
+  return res.results.map((r) => ({
+    targetId: r.id,
+    incompleteAttempts: r.incomplete_attempts,
+    attemptStartedAt: r.attempt_started_at,
+  }));
+}
+
+/* ------------------------------------------------------------------ *
+ * Ingest health (PLAN.md §24.5) — read by GET /api/health/ingest and by the
+ * `refresh-stale` / `espn-all-failing` alerts (§24.6b), so the monitor and the
+ * email can never disagree about what "stale" means.
+ * ------------------------------------------------------------------ */
+
+/**
+ * The refresh cron's period while M13a is deployed (`*\/15`). M13b's tick
+ * switches the factor below to `REFRESH_TICK_MS` (§24.16); until then the
+ * threshold is measured in the periods of the cron that actually runs.
+ */
+const M13A_REFRESH_PERIOD_MS = 15 * MIN_MS;
+
+/** No `ok` refresh run for this long = `refresh-stale`: 5 × 15 min = 75 min in M13a. */
+export const HEALTH_STALE_AFTER_MS = HEALTH_STALE_TICKS * M13A_REFRESH_PERIOD_MS;
+
+export type IngestHealthReason = 'refresh-stale' | 'targets-parked' | 'espn-all-failing';
+
+export interface IngestHealth {
+  readonly lastRefreshOkAt: EpochMs | null;
+  readonly parkedTargets: number;
+  readonly reasons: readonly IngestHealthReason[];
+}
+
+/**
+ * ONE statement, three scalar subqueries, each on an index or the ~30-row
+ * target table (§24.5). Nothing is written. `espn-all-failing` ignores targets
+ * the planner just created (`last_status` NULL) and cannot fire while any
+ * target's newest fetch succeeded.
+ */
+export async function readIngestHealth(env: Env, now: EpochMs): Promise<IngestHealth> {
+  const row = await env.DB.prepare(
+    `SELECT
+       (SELECT MAX(started_at) FROM job_runs
+         WHERE job = 'refresh' AND status = 'ok')                  AS last_ok,
+       (SELECT COUNT(*) FROM ingest_targets
+         WHERE incomplete_attempts >= ?1)                           AS parked,
+       (EXISTS (SELECT 1 FROM ingest_targets WHERE last_status = 'error')
+        AND NOT EXISTS (SELECT 1 FROM ingest_targets WHERE last_status = 'ok')) AS all_failing`,
+  )
+    .bind(INGEST_MAX_INCOMPLETE_ATTEMPTS)
+    .first<{ last_ok: number | null; parked: number; all_failing: number }>();
+  const lastOk = row?.last_ok ?? null;
+  const parked = row?.parked ?? 0;
+  const reasons: IngestHealthReason[] = [];
+  if (lastOk === null || lastOk < now - HEALTH_STALE_AFTER_MS) reasons.push('refresh-stale');
+  if (parked > 0) reasons.push('targets-parked');
+  if (row?.all_failing === 1) reasons.push('espn-all-failing');
+  return { lastRefreshOkAt: lastOk, parkedTargets: parked, reasons };
 }

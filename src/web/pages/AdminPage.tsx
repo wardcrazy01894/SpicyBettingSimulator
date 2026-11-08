@@ -33,11 +33,13 @@ import {
 } from '../hooks/useApi.js';
 import { invalidate } from '../hooks/useResource.js';
 import { ADMIN_TABS, parseAdminTab } from '../lib/admin-tabs.js';
+import { ingestBanner } from '../lib/ingest-health.js';
 import { inviteLink } from '../lib/invite.js';
 import type { AdminTab } from '../lib/admin-tabs.js';
 import { formatDateTime } from '../lib/datetime.js';
 import { useSession } from '../state/session.js';
 import { formatCents } from '../../shared/validate.js';
+import { INGEST_PARKED_RETRY_MS } from '../../shared/constants.js';
 import type { AdminJob } from '../api/client.js';
 import type {
   AdminUserView,
@@ -396,6 +398,35 @@ function UserList(props: {
   );
 }
 
+/**
+ * Parked targets (the poison guard, PLAN.md §24.4) as an error banner, and the
+ * rolling-24h ESPN response tally (§24.6) as a line under it.
+ */
+function IngestBannerView(props: { readonly runs: readonly JobRunView[] }): ReactElement | null {
+  const banner = ingestBanner(props.runs);
+  if (banner.parked.length === 0 && banner.espn === null) return null;
+  return (
+    <>
+      {banner.parked.length > 0 && (
+        <div className="banner banner-error">
+          <p className="banner-text">
+            Parked ingest targets — skipped until their {String(INGEST_PARKED_RETRY_MS / 3_600_000)}
+            -hour probation, or until an admin Refresh on one of their games:
+          </p>
+          <ul>
+            {banner.parked.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {banner.espn !== null && (
+        <p className="muted page-note">ESPN responses, last 24 h: {banner.espn}</p>
+      )}
+    </>
+  );
+}
+
 function JobsPanel(): ReactElement {
   const jobs = useAdminJobs();
   const [busyJob, setBusyJob] = useState<AdminJob | null>(null);
@@ -432,6 +463,8 @@ function JobsPanel(): ReactElement {
         ))}
       </ul>
       {jobError !== null && <ErrorBanner error={jobError} />}
+
+      {jobs.data !== undefined && <IngestBannerView runs={jobs.data.runs} />}
 
       <h3 className="section-title">Recent runs</h3>
       {jobs.error !== undefined && jobs.data === undefined && (

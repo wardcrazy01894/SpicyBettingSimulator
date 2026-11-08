@@ -82,6 +82,7 @@ interface TargetDbRow {
   readonly last_error: string | null;
   readonly consecutive_failures: number;
   readonly games_seen: number;
+  readonly incomplete_attempts: number;
 }
 
 function targetDbRow(id: string): Promise<TargetDbRow | null> {
@@ -101,6 +102,7 @@ async function loadTarget(id: string): Promise<IngestTargetRow> {
     priority: row.priority,
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
+    incompleteAttempts: row.incomplete_attempts,
   };
 }
 
@@ -1602,7 +1604,9 @@ describe('A/B split: rows written per kind of change (PLAN.md §8.5)', () => {
     // The ingest_targets reschedule is a bare `.run()`, so the batch probe does
     // not see it — hence the >= on the reported figure.
     expect(probe.rows).toBe(8);
-    expect(res.rowsWritten).toBe(10); // ...+ 2 for the reschedule
+    // ...+ 2 for the reschedule + 2 for M13a's guard stamp issued before the
+    // fetch (PLAN.md §24.4: `next_run_at` is indexed, so each is row + index).
+    expect(res.rowsWritten).toBe(12);
   });
 
   it('SET LIST GUARD: (B) contains no indexed column', () => {
@@ -1656,6 +1660,7 @@ describe('computeNextRunAt', () => {
     priority: 100,
     nextRunAt: T0,
     consecutiveFailures: 0,
+    incompleteAttempts: 0,
   };
 
   it('live or < 3h out -> +15 min', () => {
@@ -1999,17 +2004,19 @@ describe('runRefresh', () => {
     const again = await runRefresh(env, T0 + MIN, 2);
     expect(again.gamesUpserted).toBe(0);
     expect(again.linesUpserted).toBe(0);
-    // ...except for the two target reschedules, which are unavoidable: this is
-    // the ONLY floor a quiet run has, and it is what §8.6 budgets at 192/day.
-    expect(again.rowsWritten).toBe(4); // 2 targets x (row + idx_ingest_targets_due)
+    // ...except for the two target reschedules and, since M13a, the two guard
+    // stamps (PLAN.md §24.4), which are unavoidable: this is the ONLY floor a
+    // quiet run has (§8.6 / §24.13 budget it as stamp 2 + reschedule 2).
+    expect(again.rowsWritten).toBe(8); // 2 targets x 2 writes x (row + idx_ingest_targets_due)
   });
 
   it('reports rowsWritten, and job_runs.stats carries it (PLAN.md §8.6)', async () => {
     const key = etDateKey(T0);
     espn.set(key, [BASE_SPEC]);
     const stats = await runRefresh(env, T0, 2);
-    // 6 (game INSERT) + 2 (line INSERT) + 2 x 2 (target reschedules).
-    expect(stats.rowsWritten).toBe(12);
+    // 6 (game INSERT) + 2 (line INSERT) + 2 x 2 (target reschedules) + 2 x 2
+    // (M13a's guard stamps, PLAN.md §24.4).
+    expect(stats.rowsWritten).toBe(16);
     expect(stats.gamesUpserted).toBe(1);
 
     // ...and it survives the trip through job_runs.stats as a number.
