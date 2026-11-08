@@ -31,6 +31,9 @@ export function cardOffersVoid(isAdmin: boolean, status: GameStatus): boolean {
 /** The confirmation line after a successful void. */
 export function voidReceipt(res: AdminVoidGameResponse): string {
   if (res.affectedBets === 0) return 'Voided. No pending bets were on this game.';
-  const bets = res.affectedBets === 1 ? '1 pending bet settles' : `${String(res.affectedBets)} pending bets settle`;
+  const bets =
+    res.affectedBets === 1
+      ? '1 pending bet settles'
+      : `${String(res.affectedBets)} pending bets settle`;
   return `Voided. ${bets} on the next settle run (a straight is refunded; a parlay drops the leg).`;
 }

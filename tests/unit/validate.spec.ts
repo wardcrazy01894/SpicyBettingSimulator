@@ -849,7 +849,7 @@ describe('validateVoidGame (POST /api/admin/games/:id/void, PLAN.md §11.6)', ()
     });
   });
 
-  it("accepts exactly 200 characters and refuses one more", () => {
+  it('accepts exactly 200 characters and refuses one more', () => {
     expect(VOID_REASON_MAX).toBe(200);
     expect(validateVoidGame({ reason: 'x'.repeat(VOID_REASON_MAX) }).ok).toBe(true);
     const tooLong = validateVoidGame({ reason: 'x'.repeat(VOID_REASON_MAX + 1) });

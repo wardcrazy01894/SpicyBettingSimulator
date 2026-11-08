@@ -20,7 +20,13 @@ describe('cardOffersVoid (the game card control)', () => {
   it('only for an admin, and only on a final game', () => {
     expect(cardOffersVoid(true, 'final')).toBe(true);
     expect(cardOffersVoid(false, 'final')).toBe(false);
-    for (const status of ['scheduled', 'in_progress', 'postponed', 'canceled', 'unknown'] as const) {
+    for (const status of [
+      'scheduled',
+      'in_progress',
+      'postponed',
+      'canceled',
+      'unknown',
+    ] as const) {
       expect(cardOffersVoid(true, status), status).toBe(false);
     }
   });

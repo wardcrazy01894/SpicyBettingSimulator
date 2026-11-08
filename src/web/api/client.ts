@@ -25,6 +25,8 @@ import type {
   AdminSetDisabledRequest,
   AdminSetPasswordRequest,
   AdminUsersResponse,
+  AdminVoidGameRequest,
+  AdminVoidGameResponse,
   BankrollsResponse,
   BetResponse,
   BetsResponse,
@@ -403,6 +405,20 @@ export function postAdminJob(job: AdminJob): Promise<JobRunResponse> {
 /** PLAN.md §9.3: pulls the slate this game is on, now. */
 export function postAdminGameRefresh(gameId: string): Promise<JobRunResponse> {
   return apiSend<JobRunResponse>('POST', `/api/admin/games/${encodeURIComponent(gameId)}/refresh`);
+}
+
+/**
+ * F1 (PLAN.md §11.6): cancel one game so the next settle run voids every leg
+ * on it. A blank reason is sent as no reason; the server writes
+ * `admin void: abandoned game`.
+ */
+export function postAdminGameVoid(gameId: string, reason: string): Promise<AdminVoidGameResponse> {
+  const body: AdminVoidGameRequest = reason.trim() === '' ? {} : { reason: reason.trim() };
+  return apiSend<AdminVoidGameResponse>(
+    'POST',
+    `/api/admin/games/${encodeURIComponent(gameId)}/void`,
+    body,
+  );
 }
 
 export function getAdminJobs(): Promise<JobRunsResponse> {
