@@ -286,6 +286,17 @@ the one failure mode the whole checklist has.
    D-I target or an `exceededCpu` (§24.8). A pulled ("OFF") market is COUNTED
    (`stats.offTheBoard`), never a warning (§24.10). `MAX_ABS_LINE_TENTHS` is
    ±400 points: a basketball total is 140–240.
+   8j. **A game's home/away orientation is fixed at first sight (PLAN.md §8.5,
+   2026-11-08).** `games.home_team_id` / `away_team_id` (and the abbrs) are
+   INSERT-only, and `game_lines`'s home/away columns, every `bet_legs.side` and
+   `gradeLeg` are all written and read in the ROW's orientation. ESPN swaps
+   `homeAway` on some neutral-site events between discovery and game day, so
+   `upsertSlate` reads the stored ids and `orientSlate`
+   (`src/shared/orientation.ts`) swaps such a payload — scores, names, logos,
+   ranks, conferences AND its line's spread/moneyline sides — onto the stored
+   row before any statement is built. Never "fix" this by updating the identity
+   columns: that re-grades every leg on the game against the other team. A swap
+   is counted in `stats.sidesReoriented`, never warned.
 
 9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
    2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will
@@ -460,7 +471,9 @@ errors. That is the ONLY transaction you get.
 src/shared/   pure domain: types, odds, grading, espn parser, validation, time,
               lines (the per-market merge), odds-api (the secondary's parser),
               action (which markets of a final game have action — MLB's
-              shortened-game rule, PLAN.md §23.6)
+              shortened-game rule, PLAN.md §23.6), orientation (mapping an
+              ESPN payload whose home/away is swapped onto the stored row,
+              rule 8j)
 src/worker/   Hono API + cron jobs + D1 access; secondary.ts owns the Odds API
               sweep and its credit budget, and never edits ingest.ts's SQL;
               alerts.ts owns the GitHub-issue alerts (PLAN.md §24.6b) and

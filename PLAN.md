@@ -2094,6 +2094,33 @@ board where the rank is the most visible thing about a matchup. None of them is
 indexed, so refreshing them rides along in (B) for the 1 row it was already going
 to cost.
 
+**Orientation is fixed at first sight (2026-11-08).** `home_team_id` /
+`home_abbr` / `away_team_id` / `away_abbr` are identity and INSERT-only, and
+everything downstream of a row is written in ITS orientation: `game_lines`'s
+`*_home_*` / `*_away_*` columns, every `bet_legs.side`, the leg's
+`home_abbr` / `away_abbr` snapshot, and `gradeLeg` reading `home_score` against
+`side`. ESPN, though, re-publishes some **neutral-site** events with `homeAway`
+exchanged between discovery and game day — the Lake Tahoe Classic's Houston–Cal
+and USC–Wichita State both arrived "HOU @ CAL" on 11-07 and came back "CAL @
+HOU" on 11-08. With the identity columns frozen and (B) writing the new home's
+name, logo and **score** onto the old home's row, the card read "CAL Houston
+Cougars 86 / HOU California Golden Bears 68" and a Houston moneyline leg
+(`side = 'away'`) graded as a **loss** on an 86–68 Houston win. The fix is not
+to update the identity columns — that would re-grade every leg on the game
+against the other team — but to map the payload onto the stored row: before any
+statement is built, `upsertSlate` reads `home_team_id` / `away_team_id` for the
+slate's known games (≤ 90 ids per statement, under D1's 100-parameter bind
+limit) and `orientSlate` (`src/shared/orientation.ts`) SWAPS a game whose two
+ids arrive the other way round — scores, names, logos, ranks, conference ids —
+and its line with it (spread and moneyline sides; a total has none). A
+different pair of ids is a different game and is written as parsed, exactly as
+before. The read-then-write is safe because what it reads is INSERT-only. ESPN's
+`name` / `short_name` text is kept as sent: nothing grades or labels from it,
+and at a neutral site "CAL VS HOU" is neither orientation. The count is
+`stats.sidesReoriented` on the Jobs page (normally 0) and one `[ingest]` log
+line per run that swapped anything. Repairing the two live rows and the one bet
+is in docs/OPERATIONS.md under "Swapped home/away".
+
 **L2 — no line writes for non-scheduled games.** Measured on the committed
 samples: **0 of 84** in-progress/final events carried odds, **16 of 16** scheduled
 NFL events did. Writing `game_lines` for a live game is therefore pure waste. The

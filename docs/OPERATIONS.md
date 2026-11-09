@@ -307,6 +307,21 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   15-minute discovery grid, never on a general tick, so a failed first fetch of a new day never
   takes a tick from the live slates (PLAN §24.7 (c)).
 
+- **Swapped home/away (since 2026-11-08, PLAN §8.5, CLAUDE.md rule 8j).** ESPN re-publishes some
+  neutral-site events with the two teams' `homeAway` exchanged between the day the event appears and
+  game day. A game's orientation is fixed when its row is first inserted; a payload that arrives the
+  other way round is swapped back onto the row before the upsert (scores, names, logos, ranks,
+  conference ids and the line's spread/moneyline sides), so a bet leg's `side` keeps meaning the team
+  it was placed on. The count is `stats.sidesReoriented` on the Jobs page (normally 0) and one
+  `[ingest] … re-oriented onto stored sides` line in `wrangler tail`. A card that reads one team's
+  abbreviation beside the other team's name and score is the symptom of a swap the code missed. Before
+  the fix two rows had it (Houston–Cal and USC–Wichita State, 11-08); the repair was: swap the six
+  side-field pairs (`home_name`/`away_name`, `_logo`, `_rank`, `_conference_id`, `_score`, never the
+  team ids or abbrs) and the line's `spread_home_*`/`spread_away_*` and `ml_home_*`/`ml_away_*`, then
+  put the ONE mis-graded bet back to `pending` (`status`, `payout_cents = NULL`, `settled_at`,
+  `settle_run_id`, `settle_attempts = 0`) with its legs' `result`/`graded_at` NULL, and let the next
+  settle run grade and pay it through the normal path. Do that only AFTER the fix is deployed, or the
+  next refresh re-swaps the rows.
 - Budget: `GET /api/admin/jobs` → newest run's `stats.dayRowsWritten` is the rolling 24 h rows-written
   total against D1's hard 100,000/day. Measured ≈ 8k for the CFB soak, modelled ≈ 17k with the
   fixed streams on a college Saturday at the 3-minute tick, ≈ 11k of it on the gauge (PLAN §24.13).
