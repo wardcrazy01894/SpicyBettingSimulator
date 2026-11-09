@@ -297,7 +297,11 @@ the one failure mode the whole checklist has.
    row before any statement is built. Never "fix" this by updating the identity
    columns: that re-grades every leg on the game against the other team. A swap
    is counted in `stats.sidesReoriented` (plus one `[ingest]` log line), never
-   a parser warning.
+   a parser warning. The secondary matcher applies the same idea the other way
+   (PLAN.md §21.7 pass 3, 2026-11-09): a NEUTRAL-SITE game the Odds API lists
+   the other way round is matched and its sides are exchanged onto the row's
+   (`swapOddsApiSides`, named under `reoriented`); at a real venue the swap is
+   still refused (`swapped`).
 
 9. `migrations/0001_init.sql` is **FROZEN**. It was applied to the remote D1 on
    2026-09-14 and D1 recorded it in `d1_migrations`; re-running migrations will

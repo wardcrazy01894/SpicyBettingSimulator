@@ -88,6 +88,7 @@ interface GameOpts {
   readonly status?: 'scheduled' | 'in_progress' | 'final';
   readonly home?: string;
   readonly away?: string;
+  readonly neutralSite?: boolean;
   /** Which markets the PRIMARY row carries. Default: spread only (total + ML gapped). */
   readonly primary?: 'none' | 'spread' | 'spread+total' | 'full';
   readonly spreadHomeTenths?: number;
@@ -109,6 +110,7 @@ async function game(opts: GameOpts = {}): Promise<string> {
     awayAbbr: opts.away ?? AWAY,
     homeRank: opts.homeRank ?? null,
     awayRank: opts.awayRank ?? null,
+    neutralSite: opts.neutralSite ?? false,
     lastSeenAt: NOW,
   });
   const primary = opts.primary ?? 'spread';
@@ -330,6 +332,38 @@ describe('secondary sweep — the decision (PLAN.md §21.2 / §21.5)', () => {
     expect(stats.secondary.remaining).toBe(497);
     expect((await budget())?.remaining_credits).toBe(497);
     expect((await budget())?.last_status).toBe('ok');
+  });
+
+  it('a NEUTRAL-SITE game the API lists the other way round is filled with its sides exchanged; at a real venue the same swap is refused (PLAN.md §21.7 pass 3)', async () => {
+    const neutral = await game({ neutralSite: true });
+    // The API: Dallas listed home at -3.5 (-110), h2h Dallas -180 / Tampa +155.
+    odds.set(NFL, [apiEvent({ homeTeam: AWAY, awayTeam: HOME })]);
+    const stats = await refresh(NOW);
+    const sweep = stats.secondary.sweeps.find((s) => s.league === 'nfl');
+    expect(sweep).toMatchObject({ matched: 1, swapped: [], reoriented: [`${AWAY} @ ${HOME}`] });
+    expect(sweep?.filled).toEqual({ spread: 0, total: 1, moneyline: 1 });
+    const row = await secondaryRow(neutral);
+    // Re-oriented onto the ROW's home (Tampa): +3.5, and Tampa's +155.
+    expect(row).toMatchObject({
+      provider: 'odds-api',
+      spread_home_tenths: 35,
+      total_tenths: 475,
+      ml_home_price: 155,
+      ml_book: 'draftkings',
+    });
+
+    // The same swap on a game at a real venue: refused and named, no row.
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM game_lines'),
+      env.DB.prepare('DELETE FROM games'),
+    ]);
+    await setBudget('nfl_last_sweep_at = 0, last_attempt_at = 0');
+    const venue = await game();
+    odds.set(NFL, [apiEvent({ homeTeam: AWAY, awayTeam: HOME })]);
+    const again = await refresh(NOW + 3 * HOUR);
+    const sweep2 = again.secondary.sweeps.find((s) => s.league === 'nfl');
+    expect(sweep2).toMatchObject({ matched: 0, swapped: [`${AWAY} @ ${HOME}`], reoriented: [] });
+    expect(await secondaryRow(venue)).toBeUndefined();
   });
 
   it('a fully-lined slate → no fetch at all, skipped: no-gap', async () => {

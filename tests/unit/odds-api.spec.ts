@@ -7,6 +7,7 @@ import {
   matchOddsApiEvents,
   normaliseTeamName,
   parseOddsApi,
+  swapOddsApiSides,
 } from '../../src/shared/odds-api.js';
 import type { MatchCandidate, OddsApiEvent } from '../../src/shared/odds-api.js';
 import type { League } from '../../src/shared/types.js';
@@ -499,6 +500,7 @@ function candidatesOf(payload: unknown, league: League): MatchCandidate[] {
     kickoffAt: g.kickoffAt,
     homeName: g.home.name,
     awayName: g.away.name,
+    neutralSite: g.neutralSite,
     label: g.shortName,
   }));
 }
@@ -508,6 +510,7 @@ const cand = (over: Partial<MatchCandidate> & { gameId: string }): MatchCandidat
   kickoffAt: Date.parse('2026-09-20T17:00:00Z'),
   homeName: HOME,
   awayName: AWAY,
+  neutralSite: false,
   label: 'DAL @ TB',
   ...over,
 });
@@ -535,24 +538,71 @@ describe('matchOddsApiEvents — the measured counts, reproduced from the commit
     expect(out.swappedCandidates).toEqual([]);
   });
 
-  it('NCAAF: pass 1 alone matches 68/75; pass 2 recovers all five abbreviation misses (73/75); the two neutral-site swaps are refused', () => {
+  it('NCAAF: pass 1 alone matches 68/75; pass 2 recovers all five abbreviation misses (73/75); pass 3 takes the two neutral-site swaps (75/75)', () => {
     const events = parseOddsApi(oddsApiNcaaf(), 'ncaaf').events;
     const candidates = candidatesOf(espnCfbRange(), 'ncaaf');
     const keys = new Set(candidates.map((c) => exactKey(c.homeName, c.awayName)));
     expect(events.filter((e) => keys.has(exactKey(e.homeTeam, e.awayTeam)))).toHaveLength(68);
     const out = matchOddsApiEvents(candidates, events);
-    expect(out.matched.size).toBe(73);
-    expect(out.unmatchedEvents).toBe(2);
-    // ESPN names both as neutral-site "VS" games with the teams the other way
-    // round from the API. Refused on purpose: a swapped match would put the
-    // wrong sign on every spread (PLAN.md §21.7).
-    expect(out.swappedCandidates).toEqual(['ASU VS KU', 'WVU VS UVA']);
-    // Every match is the same two teams by mascot, in orientation.
+    expect(out.matched.size).toBe(75);
+    expect(out.unmatchedEvents).toBe(0);
+    // (`unmatchedGames` is the rest of the FBS week ESPN carries and the API
+    // sample does not — not a matcher miss.)
+    // ESPN lists both as neutral-site "VS" games with the teams the other way
+    // round from the API. Since 2026-11-09 they match with their sides
+    // exchanged (PLAN.md §21.7 / §21.12) and nothing is refused.
+    expect(out.swappedCandidates).toEqual([]);
+    expect([...out.swappedMatches].sort()).toEqual(['ncaaf:401856802', 'ncaaf:401856812']);
+    // Every match is the same two teams by mascot — in orientation, or
+    // crosswise for exactly the swapped two.
     for (const [gameId, e] of out.matched) {
       const c = candidates.find((x) => x.gameId === gameId);
-      expect(mascotOf(c?.homeName ?? '')).toBe(mascotOf(e.homeTeam));
-      expect(mascotOf(c?.awayName ?? '')).toBe(mascotOf(e.awayTeam));
+      const crosswise = out.swappedMatches.has(gameId);
+      expect(c?.neutralSite ?? false).toBe(crosswise ? true : (c?.neutralSite ?? false));
+      expect(mascotOf(c?.homeName ?? '')).toBe(mascotOf(crosswise ? e.awayTeam : e.homeTeam));
+      expect(mascotOf(c?.awayName ?? '')).toBe(mascotOf(crosswise ? e.homeTeam : e.awayTeam));
     }
+  });
+
+  it("the swapped pair, re-oriented, carries ESPN's own sign: KU +5.5 / ASU −5.5 and UVA −10.5 / WVU +10.5 (read from the committed captures)", () => {
+    const events = parseOddsApi(oddsApiNcaaf(), 'ncaaf').events;
+    const candidates = candidatesOf(espnCfbRange(), 'ncaaf');
+    const out = matchOddsApiEvents(candidates, events);
+    // ESPN 401856812 "ASU VS KU": home Kansas Jayhawks, away Arizona State Sun
+    // Devils, ESPN's own DraftKings details "ASU -5.5". The API lists Arizona
+    // State home at -5.5 (-108) / Kansas +5.5 (-112), h2h ASU -218 / KU +180.
+    const ku = out.matched.get('ncaaf:401856812');
+    expect(ku?.homeTeam).toBe('Arizona State Sun Devils');
+    expect(ku?.markets.spread?.homeTenths).toBe(-55);
+    const kuSides = swapOddsApiSides(ku!.markets);
+    expect(kuSides.spread).toEqual({
+      homeTenths: 55,
+      homePrice: -112,
+      awayTenths: -55,
+      awayPrice: -108,
+      book: 'draftkings',
+    });
+    expect(kuSides.moneyline).toEqual({ homePrice: 180, awayPrice: -218, book: 'draftkings' });
+    expect(kuSides.total).toEqual({
+      tenths: 505,
+      overPrice: -115,
+      underPrice: -105,
+      book: 'draftkings',
+    });
+    // ESPN 401856802 "WVU VS UVA": home Virginia Cavaliers, away West Virginia
+    // Mountaineers, ESPN details "UVA -10.5". The API lists West Virginia home,
+    // Virginia -10.5 (-110) / West Virginia +10.5 (-110), h2h UVA -395 / WVU +310.
+    const uva = out.matched.get('ncaaf:401856802');
+    expect(uva?.homeTeam).toBe('West Virginia Mountaineers');
+    const uvaSides = swapOddsApiSides(uva!.markets);
+    expect(uvaSides.spread).toEqual({
+      homeTenths: -105,
+      homePrice: -110,
+      awayTenths: 105,
+      awayPrice: -110,
+      book: 'draftkings',
+    });
+    expect(uvaSides.moneyline).toEqual({ homePrice: -395, awayPrice: 310, book: 'draftkings' });
   });
 
   it('kickoffs agree: over the matched pairs the median |diff| is 0 and the max ≤ 30 min (sizes SECONDARY_MATCH_WINDOW_MS)', () => {
@@ -569,7 +619,7 @@ describe('matchOddsApiEvents — the measured counts, reproduced from the commit
       }
     }
     diffs.sort((a, b) => a - b);
-    expect(diffs.length).toBe(105); // 32 NFL + 73 NCAAF
+    expect(diffs.length).toBe(107); // 32 NFL + 75 NCAAF
     expect(diffs[diffs.length >> 1]).toBe(0);
     expect(diffs[diffs.length - 1]).toBeLessThanOrEqual(30 * MIN);
     expect(30 * MIN).toBeLessThan(SECONDARY_MATCH_WINDOW_MS);
@@ -666,13 +716,85 @@ describe('matchOddsApiEvents — pass 2, the mascot fallback', () => {
     expect(matchOddsApiEvents([c], [near]).matched.size).toBe(1);
   });
 
-  it('an oriented swap is refused and named in swappedCandidates', () => {
+  it('an oriented swap at a REAL venue is refused and named in swappedCandidates', () => {
     const c = cand({ gameId: 'nfl:1' });
     const swapped = ev({ eventId: 'x', homeTeam: AWAY, awayTeam: HOME });
     const out = matchOddsApiEvents([c], [swapped]);
     expect(out.matched.size).toBe(0);
     expect(out.swappedCandidates).toEqual([c.label]);
     expect(out.unmatchedGames).toEqual([c.label]);
+    expect(out.swappedMatches.size).toBe(0);
+  });
+
+  it('pass 3: a NEUTRAL-SITE swap is matched and reported in swappedMatches, not refused', () => {
+    const c = cand({ gameId: 'nfl:1', neutralSite: true });
+    const swapped = ev({ eventId: 'x', homeTeam: AWAY, awayTeam: HOME });
+    const out = matchOddsApiEvents([c], [swapped]);
+    expect(out.matched.get('nfl:1')).toBe(swapped);
+    expect([...out.swappedMatches]).toEqual(['nfl:1']);
+    expect(out.swappedCandidates).toEqual([]);
+    expect(out.unmatchedGames).toEqual([]);
+    expect(out.unmatchedEvents).toBe(0);
+  });
+
+  it("pass 3 keeps pass 2's guards: outside the kickoff window, or across leagues, a neutral-site swap is simply unmatched", () => {
+    const c = cand({ gameId: 'nfl:1', neutralSite: true });
+    const far = ev({
+      eventId: 'x',
+      homeTeam: AWAY,
+      awayTeam: HOME,
+      commenceAt: c.kickoffAt + 91 * MIN,
+    });
+    expect(matchOddsApiEvents([c], [far]).matched.size).toBe(0);
+    expect(matchOddsApiEvents([c], [far]).swappedCandidates).toEqual([]);
+    const otherLeague = ev({ eventId: 'y', league: 'ncaaf', homeTeam: AWAY, awayTeam: HOME });
+    expect(matchOddsApiEvents([c], [otherLeague]).matched.size).toBe(0);
+  });
+
+  it('pass 3 refuses an AMBIGUOUS neutral-site swap: two swapped events, or a second candidate the event also fits', () => {
+    const c = cand({ gameId: 'nfl:1', neutralSite: true });
+    const e1 = ev({ eventId: 'x', homeTeam: AWAY, awayTeam: HOME });
+    const e2 = ev({ eventId: 'y', homeTeam: AWAY, awayTeam: HOME });
+    const two = matchOddsApiEvents([c], [e1, e2]);
+    expect(two.matched.size).toBe(0);
+    expect(two.swappedCandidates).toEqual([c.label]);
+    // The event fits a second candidate in ORIENTATION: that one takes it in
+    // pass 2 and the neutral-site one is left honestly unmatched.
+    const oriented = cand({ gameId: 'nfl:2', homeName: AWAY, awayName: HOME, label: 'TB @ DAL' });
+    const shared = matchOddsApiEvents([c, oriented], [e1]);
+    expect(shared.matched.get('nfl:2')).toBe(e1);
+    expect(shared.matched.has('nfl:1')).toBe(false);
+    expect(shared.swappedMatches.size).toBe(0);
+  });
+
+  it('swapOddsApiSides exchanges spread and moneyline sides, keeps the total and the books, and is an involution', () => {
+    const markets = {
+      spread: {
+        homeTenths: -35,
+        homePrice: -112,
+        awayTenths: 35,
+        awayPrice: -108,
+        book: 'draftkings',
+      },
+      total: { tenths: 475, overPrice: -110, underPrice: -110, book: 'fanduel' },
+      moneyline: { homePrice: -180, awayPrice: 155, book: 'draftkings' },
+    };
+    const swapped = swapOddsApiSides(markets);
+    expect(swapped.spread).toEqual({
+      homeTenths: 35,
+      homePrice: -108,
+      awayTenths: -35,
+      awayPrice: -112,
+      book: 'draftkings',
+    });
+    expect(swapped.moneyline).toEqual({ homePrice: 155, awayPrice: -180, book: 'draftkings' });
+    expect(swapped.total).toBe(markets.total);
+    expect(swapOddsApiSides(swapped)).toEqual(markets);
+    expect(swapOddsApiSides({ spread: null, total: null, moneyline: null })).toEqual({
+      spread: null,
+      total: null,
+      moneyline: null,
+    });
   });
 
   it('never matches across leagues, even on identical names and kickoffs', () => {

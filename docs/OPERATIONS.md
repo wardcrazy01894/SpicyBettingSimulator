@@ -389,8 +389,11 @@ npx wrangler d1 execute spicybetting --remote --command "SELECT created_at, user
   a failed sweep, so the monthly reset is noticed without any date arithmetic and an outage costs
   ~0 credits. If `remaining` sits under 25 for days: the month is spent; nothing is broken and the
   board is primary-only until the 1st. If `last_status` in `secondary_budget` reads `unauthorized`:
-  the key was revoked — `wrangler secret put ODDS_API_KEY` again. A ranked game whose two feeds
-  disagree on home/away (neutral sites) is refused on purpose and named under `swapped`.
+  the key was revoked — `wrangler secret put ODDS_API_KEY` again. A game whose two feeds disagree
+  on home/away is handled by where it is played (PLAN §21.7 pass 3, since 2026-11-09): at a
+  NEUTRAL site the match is taken and the API's sides are exchanged onto the row's — named under
+  `reoriented`; at a real venue it is refused on purpose and named under `swapped`, because one
+  feed has the venue wrong.
 - **MLB (M12, PLAN §23; board live since M12a; MLB betting OPEN since M12b).** One ingest target
   per US-Eastern day, id `mlb:date:YYYYMMDD`, created by the first refresh after 00:00 ET — the
   MLB board shows TODAY only, so tomorrow's games appear at midnight, not when DraftKings posts
