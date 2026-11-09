@@ -2621,3 +2621,211 @@ describe('conference id (migration 0004)', () => {
     });
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * home/away orientation is fixed at first sight (PLAN.md §8.5)
+ *
+ * 2026-11-08: ESPN re-published two neutral-site Lake Tahoe Classic games with
+ * `homeAway` exchanged between discovery and game day. The row's identity
+ * columns never moved, but (B) wrote the new home's name, logo and SCORE onto
+ * the old home's row, and a Houston moneyline graded as a loss on an 86–68
+ * Houston win. Now the payload is swapped onto the stored sides instead.
+ * ------------------------------------------------------------------ */
+
+interface SidesRow {
+  readonly home_team_id: string;
+  readonly home_abbr: string;
+  readonly home_name: string;
+  readonly home_logo: string | null;
+  readonly home_rank: number | null;
+  readonly home_score: number | null;
+  readonly away_team_id: string;
+  readonly away_abbr: string;
+  readonly away_name: string;
+  readonly away_logo: string | null;
+  readonly away_rank: number | null;
+  readonly away_score: number | null;
+  readonly name: string;
+  readonly short_name: string;
+  readonly neutral_site: number;
+}
+
+function sidesRow(id: string): Promise<SidesRow | null> {
+  return env.DB.prepare(
+    `SELECT home_team_id, home_abbr, home_name, home_logo, home_rank, home_score,
+            away_team_id, away_abbr, away_name, away_logo, away_rank, away_score,
+            name, short_name, neutral_site
+       FROM games WHERE id = ?`,
+  )
+    .bind(id)
+    .first<SidesRow>();
+}
+
+describe('home/away orientation is fixed at first sight (PLAN.md §8.5)', () => {
+  const GAME = 'nfl:401872925';
+  /** The same game as BASE_SPEC with ESPN's sides exchanged: TB listed home. */
+  const SWAPPED_ODDS: EventSpecOdds = {
+    spreadHome: 3.5,
+    spreadHomePrice: -108,
+    spreadAwayPrice: -112,
+    total: 50.5,
+    overPrice: -108,
+    underPrice: -112,
+    mlHome: 164,
+    mlAway: -198,
+  };
+  const swapped = (overrides: SpecOverrides = {}): EventSpec =>
+    spec({ homeAbbr: 'TB', awayAbbr: 'CIN', neutralSite: true, odds: SWAPPED_ODDS, ...overrides });
+
+  it('a payload with the sides exchanged lands every side field on the team it describes', async () => {
+    const t = await sundayNflTarget();
+    await ingestSlate([spec({ homeRank: 7 })], T0, t);
+    const before = await sidesRow(GAME);
+    expect(before?.home_abbr).toBe('CIN');
+    expect(before?.home_rank).toBe(7);
+    expect(before?.away_rank).toBeNull();
+
+    // Game day: ESPN now says "CIN @ TB", with TB's rank on TB.
+    espn.set(t.key, [swapped({ awayRank: 7 })]);
+    const result = await ingestTarget(env, new EspnProvider(env), t, T0 + HOUR);
+    expect(result.error).toBeNull();
+    expect(result.sidesReoriented).toBe(1);
+
+    const after = await sidesRow(GAME);
+    // Identity columns never move.
+    expect(after?.home_team_id).toBe(before?.home_team_id);
+    expect(after?.away_team_id).toBe(before?.away_team_id);
+    expect(after?.home_abbr).toBe('CIN');
+    expect(after?.away_abbr).toBe('TB');
+    // And the side fields still describe the row's own team.
+    expect(after?.home_name).toBe('CIN Full Name');
+    expect(after?.away_name).toBe('TB Full Name');
+    expect(after?.home_logo).toContain('/cin.png');
+    expect(after?.away_logo).toContain('/tb.png');
+    expect(after?.home_rank).toBe(7);
+    expect(after?.away_rank).toBeNull();
+    // ESPN's text is kept as sent: nothing grades or labels from it.
+    expect(after?.short_name).toBe('CIN @ TB');
+    // neutral_site stays INSERT-only (the documented decision above).
+    expect(after?.neutral_site).toBe(0);
+  });
+
+  it("the swapped line is swapped with it, so spread_home_* and ml_home_* keep meaning the row's home", async () => {
+    const t = await sundayNflTarget();
+    await ingestSlate([spec({})], T0, t);
+    const before = await lineRow(GAME);
+    expect(before?.spread_home_tenths).toBe(-35);
+    expect(before?.ml_home_price).toBe(-198);
+
+    // The SAME market the other way round is not a line move: nothing is written
+    // (inside LINE_SEEN_TOUCH_MS, so the L3 touch cannot fire either).
+    const res = await ingestSlate([swapped()], T0 + 10 * MIN, t);
+    expect(res.linesUpserted).toBe(0);
+    const after = await lineRow(GAME);
+    expect(after?.spread_home_tenths).toBe(-35);
+    expect(after?.spread_home_price).toBe(-112);
+    expect(after?.spread_away_tenths).toBe(35);
+    expect(after?.spread_away_price).toBe(-108);
+    expect(after?.ml_home_price).toBe(-198);
+    expect(after?.ml_away_price).toBe(164);
+    expect(after?.total_tenths).toBe(505);
+    expect(after?.captured_at).toBe(before?.captured_at);
+
+    // A genuine move, published in the swapped orientation, lands re-oriented.
+    await ingestSlate(
+      [swapped({ odds: { ...SWAPPED_ODDS, spreadHome: 4.5, mlHome: 180, mlAway: -220 } })],
+      T0 + 20 * MIN,
+      t,
+    );
+    const moved = await lineRow(GAME);
+    expect(moved?.spread_home_tenths).toBe(-45);
+    expect(moved?.spread_away_tenths).toBe(45);
+    expect(moved?.ml_home_price).toBe(-220);
+    expect(moved?.ml_away_price).toBe(180);
+  });
+
+  it('the final score lands on the right team — the 2026-11-08 bug', async () => {
+    const t = await sundayNflTarget();
+    await ingestSlate([spec({})], T0, t);
+    // Kickoff, then final, both published with TB listed home: TB 30, CIN 20.
+    await ingestSlate(
+      [swapped({ status: 'in', homeScore: 14, awayScore: 10, odds: undefined })],
+      T0 + HOUR,
+      t,
+    );
+    let row = await sidesRow(GAME);
+    expect(row?.home_abbr).toBe('CIN');
+    expect(row?.home_score).toBe(10);
+    expect(row?.away_score).toBe(14);
+
+    await ingestSlate(
+      [swapped({ status: 'post', homeScore: 30, awayScore: 20, odds: undefined })],
+      T0 + 4 * HOUR,
+      t,
+    );
+    row = await sidesRow(GAME);
+    expect((await gameRow(GAME))?.status).toBe('final');
+    expect(row?.home_abbr).toBe('CIN');
+    expect(row?.home_score).toBe(20);
+    expect(row?.away_abbr).toBe('TB');
+    expect(row?.away_score).toBe(30);
+  });
+
+  it('a payload in the stored orientation is untouched and uncounted', async () => {
+    const t = await sundayNflTarget();
+    await ingestSlate([spec({})], T0, t);
+    espn.set(t.key, [spec({ homeScore: 3, status: 'in', odds: undefined })]);
+    const result = await ingestTarget(env, new EspnProvider(env), t, T0 + HOUR);
+    expect(result.sidesReoriented).toBe(0);
+    const row = await sidesRow(GAME);
+    expect(row?.home_abbr).toBe('CIN');
+    expect(row?.home_score).toBe(3);
+  });
+
+  it('a brand-new game is inserted in the orientation it arrived in', async () => {
+    const t = await sundayNflTarget();
+    espn.set(t.key, [swapped()]);
+    const result = await ingestTarget(env, new EspnProvider(env), t, T0);
+    expect(result.sidesReoriented).toBe(0);
+    const row = await sidesRow(GAME);
+    expect(row?.home_abbr).toBe('TB');
+    expect(row?.away_abbr).toBe('CIN');
+    expect((await lineRow(GAME))?.spread_home_tenths).toBe(35);
+  });
+
+  it('a slate wider than one stored-sides read (> 90 games) still finds the swap in the second chunk', async () => {
+    const t = await sundayNflTarget();
+    const slate = (swapLast: boolean): EventSpec[] =>
+      Array.from({ length: 95 }, (_v, i) => {
+        const last = swapLast && i === 94;
+        return spec({
+          eventId: `5${String(i).padStart(8, '0')}`,
+          homeAbbr: last ? `B${String(i)}` : `A${String(i)}`,
+          awayAbbr: last ? `A${String(i)}` : `B${String(i)}`,
+          odds: undefined,
+          ...(last ? { status: 'post', homeScore: 30, awayScore: 20 } : {}),
+        });
+      });
+    await ingestSlate(slate(false), T0, t);
+    espn.set(t.key, slate(true));
+    const result = await ingestTarget(env, new EspnProvider(env), t, T0 + HOUR);
+    expect(result.error).toBeNull();
+    expect(result.sidesReoriented).toBe(1);
+    const row = await sidesRow('nfl:500000094');
+    expect(row?.home_abbr).toBe('A94');
+    expect(row?.home_score).toBe(20);
+    expect(row?.away_score).toBe(30);
+  });
+
+  it('a different pair of teams under a known id is NOT a swap and is written as parsed', async () => {
+    const t = await sundayNflTarget();
+    await ingestSlate([spec({})], T0, t);
+    espn.set(t.key, [spec({ homeAbbr: 'TB', awayAbbr: 'KC', odds: undefined })]);
+    const result = await ingestTarget(env, new EspnProvider(env), t, T0 + HOUR);
+    expect(result.sidesReoriented).toBe(0);
+    const row = await sidesRow(GAME);
+    // Identity columns are INSERT-only, so the abbrs stay; the live fields follow the payload.
+    expect(row?.home_abbr).toBe('CIN');
+    expect(row?.home_name).toBe('TB Full Name');
+  });
+});
