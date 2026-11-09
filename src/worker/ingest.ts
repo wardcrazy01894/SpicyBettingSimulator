@@ -71,6 +71,8 @@ import {
   REFRESH_WEIGHT_BUDGET,
 } from '../shared/constants.js';
 import type { ParseWarning } from '../shared/espn.js';
+import { orientSlate } from '../shared/orientation.js';
+import type { StoredSides } from '../shared/orientation.js';
 import {
   LIVE_HORIZON_MS,
   REFRESH_DISCOVERY_MS,
@@ -149,6 +151,13 @@ export interface IngestStats extends LineGapStats {
    * drift under the warning cap. The market still counts in `lineGaps`.
    */
   readonly offTheBoard: number;
+  /**
+   * Games ESPN listed the other way round from their stored row — the
+   * neutral-site home/away swap — and that were mapped back onto it before the
+   * upsert (PLAN.md §8.5). Normally 0; a non-zero run is worth a glance at the
+   * game's card, never an error.
+   */
+  readonly sidesReoriented: number;
   /**
    * One entry per failed target. `espn` is the fetch's outcome (§24.6's
    * vocabulary) and `consecutiveFailures` the streak AFTER this failure, which
@@ -267,6 +276,8 @@ export interface IngestTargetResult extends LineGapStats {
   readonly warnings: readonly string[];
   /** Pulled ("OFF") markets in this target's slate; 0 when nothing parsed (§24.10). */
   readonly offTheBoard: number;
+  /** Games swapped onto their stored home/away orientation before the upsert (§8.5). */
+  readonly sidesReoriented: number;
   // The LineGapStats fields measure the PARSED slate, like `warnings`: zeros
   // when the fetch or parse failed (no slate), but a slate whose upsert threw
   // is still measured, and reported alongside its `error`.
@@ -932,7 +943,17 @@ export function toSlateTarget(row: IngestTargetRow): SlateTarget {
  *     adding a column to the compare tuple that never moves. If ESPN is ever
  *     observed to correct it, move it into (B), where it costs 1 row.
  *   * `provider_event_id`, `league`, `season`, `season_type`, team ids/abbrs —
- *     identity. A change there is a different game.
+ *     identity. A change there is a different game — EXCEPT the one change
+ *     ESPN actually makes: the same two teams with `homeAway` exchanged, which
+ *     it does to neutral-site events between discovery and game day
+ *     (2026-11-08, PLAN.md §8.5). Because `bet_legs.side`, the leg's abbr
+ *     snapshot and `game_lines`'s home/away columns are all written in the
+ *     ROW's orientation, that payload is swapped onto the stored sides
+ *     (`orientSlate`, `src/shared/orientation.ts`) BEFORE these statements
+ *     are built, so the identity columns never need to move and every side
+ *     field lands on the team it describes. Never update the team ids/abbrs
+ *     here instead: that re-grades every bet on the game against the other
+ *     team.
  */
 
 /** The three INDEXED mutable columns. A change here is what (A) exists for. */
@@ -1248,6 +1269,40 @@ export interface SlateWriteCounts {
   readonly rowsWritten: number;
   /** Upsert UNITS (one per game, one per line) that wrote nothing at all. */
   readonly skipped: number;
+  /**
+   * Games the payload listed the other way round from their stored row and
+   * that were swapped onto it before the upsert (PLAN.md §8.5).
+   */
+  readonly reoriented: number;
+}
+
+/** D1 binds at most 100 parameters per statement; the ids read per statement. */
+const STORED_SIDES_CHUNK = 90;
+
+/**
+ * The stored `home_team_id` / `away_team_id` of every game in the slate that
+ * already has a row, keyed by game id. Read-then-write is safe HERE (contrast
+ * CLAUDE.md rule 5): the identity columns are INSERT-only, so what this reads
+ * cannot change under the upsert; and a game not yet stored is simply absent
+ * and takes the INSERT path in the orientation it arrived in.
+ */
+async function loadStoredSides(
+  db: D1Database,
+  games: readonly { readonly id: string }[],
+): Promise<Map<string, StoredSides>> {
+  const out = new Map<string, StoredSides>();
+  for (let i = 0; i < games.length; i += STORED_SIDES_CHUNK) {
+    const ids = games.slice(i, i + STORED_SIDES_CHUNK).map((g) => g.id);
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = await db
+      .prepare(`SELECT id, home_team_id, away_team_id FROM games WHERE id IN (${placeholders})`)
+      .bind(...ids)
+      .all<{ id: string; home_team_id: string; away_team_id: string }>();
+    for (const row of rows.results) {
+      out.set(row.id, { homeTeamId: row.home_team_id, awayTeamId: row.away_team_id });
+    }
+  }
+  return out;
 }
 
 /**
@@ -1263,9 +1318,23 @@ export interface SlateWriteCounts {
  */
 export async function upsertSlate(
   env: Env,
-  slate: ProviderSlate,
+  parsed: ProviderSlate,
   now: EpochMs,
 ): Promise<SlateWriteCounts> {
+  // A game's home/away orientation is fixed at first sight (PLAN.md §8.5): a
+  // payload that lists a known game's two teams the other way round is swapped
+  // onto the stored row — its line with it — before any statement is built.
+  const stored = await loadStoredSides(env.DB, parsed.games);
+  const oriented = orientSlate(parsed.games, parsed.lines, stored);
+  if (oriented.swapped > 0) {
+    const ids = parsed.games
+      .filter((g, i) => oriented.games[i] !== g)
+      .map((g) => `${g.id} (${g.away.abbr} @ ${g.home.abbr} as sent)`);
+    console.warn(
+      `[ingest] ${String(oriented.swapped)} game(s) re-oriented onto stored sides: ${ids.join(', ')}`,
+    );
+  }
+  const slate: ProviderSlate = { ...parsed, games: oriented.games, lines: oriented.lines };
   const lines = lineRowsWorthWriting(slate);
 
   // Interleaved (A, B) per game so the pair is always adjacent and always in
@@ -1299,7 +1368,13 @@ export async function upsertSlate(
   }
 
   const units = slate.games.length + lineStatements.length;
-  return { games, lines: lineCount, rowsWritten, skipped: units - games - lineCount };
+  return {
+    games,
+    lines: lineCount,
+    rowsWritten,
+    skipped: units - games - lineCount,
+    reoriented: oriented.swapped,
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1599,6 +1674,7 @@ export async function ingestTarget(
       espnRetried: false,
       warnings: [],
       offTheBoard: 0,
+      sidesReoriented: 0,
       ...lineGapsOf(EMPTY_SLATE, now),
     };
   }
@@ -1615,12 +1691,14 @@ export async function ingestTarget(
   let games = 0;
   let lines = 0;
   let skipped = 0;
+  let sidesReoriented = 0;
   if (slate !== null) {
     try {
       const written = await upsertSlate(env, slate, now);
       games = written.games;
       lines = written.lines;
       skipped = written.skipped;
+      sidesReoriented = written.reoriented;
       rowsWritten += written.rowsWritten;
     } catch (err) {
       // A D1 failure mid-slate is still a target failure: back the target off
@@ -1667,6 +1745,7 @@ export async function ingestTarget(
     espnRetried: slate?.retried ?? false,
     warnings: (slate?.warnings ?? []).map(warningText),
     offTheBoard: slate?.pulled ?? 0,
+    sidesReoriented,
     ...lineGapsOf(slate ?? EMPTY_SLATE, now),
   };
 }
@@ -1709,6 +1788,7 @@ export async function runRefresh(
   let rowsSkipped = 0;
   let rowsWritten = 0;
   let offTheBoard = 0;
+  let sidesReoriented = 0;
   const warnings: string[] = [];
   const failures: IngestFailure[] = [];
   const espnStatus: Record<string, number> = {};
@@ -1732,6 +1812,7 @@ export async function runRefresh(
     rowsWritten += result.rowsWritten;
     warnings.push(...result.warnings);
     offTheBoard += result.offTheBoard;
+    sidesReoriented += result.sidesReoriented;
     for (const key of Object.keys(gaps) as (keyof typeof gaps)[]) gaps[key] += result[key];
     lineGapDetails.push(...result.lineGapDetails);
     coverage.push({
@@ -1778,6 +1859,7 @@ export async function runRefresh(
     // The cap governs what is RECORDED, never what is parsed (PLAN.md §8.3).
     warnings: warnings.slice(0, ESPN_MAX_WARNINGS_RECORDED),
     offTheBoard,
+    sidesReoriented,
     failures,
     espnStatus,
     espnRecovered,
