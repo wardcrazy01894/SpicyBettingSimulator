@@ -163,6 +163,10 @@ const setBudget = (sets: string, ...values: unknown[]): Promise<D1Result> =>
 interface LineDbRow {
   provider: string;
   spread_home_tenths: number | null;
+  spread_home_price: number | null;
+  spread_away_tenths: number | null;
+  spread_away_price: number | null;
+  ml_away_price: number | null;
   total_tenths: number | null;
   total_over_price: number | null;
   total_book: string | null;
@@ -347,8 +351,12 @@ describe('secondary sweep — the decision (PLAN.md §21.2 / §21.5)', () => {
     expect(row).toMatchObject({
       provider: 'odds-api',
       spread_home_tenths: 35,
+      spread_home_price: -110,
+      spread_away_tenths: -35,
+      spread_away_price: -110,
       total_tenths: 475,
       ml_home_price: 155,
+      ml_away_price: -180,
       ml_book: 'draftkings',
     });
 

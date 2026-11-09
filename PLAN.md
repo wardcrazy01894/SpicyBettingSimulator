@@ -5925,7 +5925,8 @@ secondary: {
     events: number,              // events in the response
     matched: number,
     unmatchedEspn: string[],     // eligible games nothing matched, capped
-    swapped: string[],           // home/away disagreement, refused
+    swapped: string[],           // home/away disagreement at a real venue, refused
+    reoriented: string[],        // neutral-site swaps matched with sides exchanged (pass 3)
     filled: { spread: number, total: number, moneyline: number },
     stamped: number,             // games still gapped afterwards (secondary_tried_at)
     rowsWritten: number,         // meta.rows_written, folded into the run total

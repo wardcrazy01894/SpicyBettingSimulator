@@ -558,7 +558,7 @@ describe('matchOddsApiEvents — the measured counts, reproduced from the commit
     for (const [gameId, e] of out.matched) {
       const c = candidates.find((x) => x.gameId === gameId);
       const crosswise = out.swappedMatches.has(gameId);
-      expect(c?.neutralSite ?? false).toBe(crosswise ? true : (c?.neutralSite ?? false));
+      if (crosswise) expect(c?.neutralSite).toBe(true);
       expect(mascotOf(c?.homeName ?? '')).toBe(mascotOf(crosswise ? e.awayTeam : e.homeTeam));
       expect(mascotOf(c?.awayName ?? '')).toBe(mascotOf(crosswise ? e.homeTeam : e.awayTeam));
     }
@@ -765,6 +765,19 @@ describe('matchOddsApiEvents — pass 2, the mascot fallback', () => {
     expect(shared.matched.get('nfl:2')).toBe(e1);
     expect(shared.matched.has('nfl:1')).toBe(false);
     expect(shared.swappedMatches.size).toBe(0);
+    // Two NEUTRAL-SITE candidates fighting over one swapped event refuse each
+    // other, whichever comes first (the rival check reads every unmatched
+    // candidate, not just the ones already visited).
+    const twin = cand({ gameId: 'nfl:3', neutralSite: true, label: 'DAL @ TB (2)' });
+    for (const order of [
+      [c, twin],
+      [twin, c],
+    ]) {
+      const fought = matchOddsApiEvents(order, [e1]);
+      expect(fought.matched.size).toBe(0);
+      expect(fought.swappedMatches.size).toBe(0);
+      expect([...fought.swappedCandidates].sort()).toEqual([c.label, twin.label].sort());
+    }
   });
 
   it('swapOddsApiSides exchanges spread and moneyline sides, keeps the total and the books, and is an involution', () => {
