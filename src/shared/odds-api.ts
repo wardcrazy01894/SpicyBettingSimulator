@@ -408,9 +408,10 @@ export function parseOddsApi(payload: unknown, league: League): ParsedOddsApi {
  * 32/32 NFL and 68/75 NCAAF events match on this key alone; the mascot
  * fallback then recovers all five abbreviation misses (73/75), and the two
  * remaining events are neutral-site games the two feeds orient the other way
- * round, refused on purpose (PLAN.md §21.7). It is what makes "San José State
- * Spartans" equal "San Jose State Spartans" and "Louisiana Ragin' Cajuns" equal
- * "Louisiana Ragin Cajuns".
+ * round, matched with their sides exchanged since 2026-11-09 (75/75,
+ * PLAN.md §21.7 / §21.12). It is what makes "San José State Spartans" equal
+ * "San Jose State Spartans" and "Louisiana Ragin' Cajuns" equal "Louisiana
+ * Ragin Cajuns".
  */
 export function normaliseTeamName(raw: string): string {
   return raw
@@ -440,6 +441,14 @@ export interface MatchCandidate {
   /** `games.home_name` / `away_name` — ESPN's `team.displayName`. */
   readonly homeName: string;
   readonly awayName: string;
+  /**
+   * `games.neutral_site`. The ONE case a candidate may match an event whose
+   * home and away are the other way round (PLAN.md §21.7, §21.12): at a
+   * neutral site neither feed's orientation means anything — ESPN itself
+   * flips it between discovery and game day (§8.5) — so the markets are
+   * re-oriented by team name instead of refused.
+   */
+  readonly neutralSite: boolean;
   /** `"HOU @ TTU"`, for the unmatched list in job_runs.stats. */
   readonly label: string;
 }
@@ -453,11 +462,48 @@ export interface MatchOutcome {
   readonly unmatchedEvents: number;
   /**
    * Candidates whose only plausible event had home and away the OTHER WAY
-   * ROUND. Refused, never matched, and counted separately so a neutral-site
-   * disagreement between the two feeds is visible instead of silent — taking
-   * such a match would invert every spread sign on the card.
+   * ROUND and that were NOT matched: a game at a real venue (one feed has the
+   * venue wrong, and taking the match would invert every spread sign on the
+   * card), or a neutral-site game whose swapped event is ambiguous. Refused
+   * and counted separately so the disagreement is visible instead of silent.
    */
   readonly swappedCandidates: readonly string[];
+  /**
+   * Game ids in `matched` whose event lists the teams the other way round: a
+   * NEUTRAL-SITE game, matched under pass 3 (PLAN.md §21.7). The caller must
+   * exchange the event's sides (`swapOddsApiSides`) before writing, so the
+   * `*_home_*` columns keep meaning the ROW's home team.
+   */
+  readonly swappedMatches: ReadonlySet<string>;
+}
+
+/**
+ * The same markets with the spread and moneyline SIDES exchanged — what a
+ * swapped match (`MatchOutcome.swappedMatches`) needs before its row is
+ * written. The total has no side. Books travel with their market.
+ */
+export function swapOddsApiSides(markets: OddsApiMarkets): OddsApiMarkets {
+  return {
+    spread:
+      markets.spread === null
+        ? null
+        : {
+            homeTenths: markets.spread.awayTenths,
+            homePrice: markets.spread.awayPrice,
+            awayTenths: markets.spread.homeTenths,
+            awayPrice: markets.spread.homePrice,
+            book: markets.spread.book,
+          },
+    total: markets.total,
+    moneyline:
+      markets.moneyline === null
+        ? null
+        : {
+            homePrice: markets.moneyline.awayPrice,
+            awayPrice: markets.moneyline.homePrice,
+            book: markets.moneyline.book,
+          },
+  };
 }
 
 /**
@@ -491,6 +537,18 @@ export interface MatchOutcome {
  * "Bulldogs" 4, "Bears" 4, "Wildcats" 4, biggest simultaneous kickoff bucket 12.
  * The single mascot is ambiguous; the ORDERED PAIR plus two-way uniqueness is
  * what makes a false positive impossible rather than merely unobserved.
+ *
+ * Pass 3 — THE NEUTRAL-SITE SWAP (2026-11-09, closing §21.12's open question).
+ * A candidate with `neutralSite` that passes 1 and 2 left unmatched may match
+ * an unclaimed event whose mascots fit THE OTHER WAY ROUND, under exactly pass
+ * 2's guards — same league, inside the kickoff window, unique in BOTH
+ * directions (counting both orientations on the event's side) — and is then
+ * reported in `swappedMatches` so the caller exchanges the event's sides. The
+ * sign is safe because the parser already orients every outcome by TEAM NAME:
+ * exchanging the sides puts the API's number for ESPN's home team on the home
+ * column. A swapped fit on a game at a real venue is still REFUSED and named
+ * in `swappedCandidates`: there one feed has the venue wrong, and that is a
+ * data error worth seeing, not a convention to paper over.
  *
  * Eligibility keeps the candidate set small and is the other half of the
  * argument: only NFL games and top-25 CFB games are ever candidates (§21.2), so
@@ -561,8 +619,14 @@ export function matchOddsApiEvents(
     return ch !== '' && ca !== '' && ch === ea && ca === eh && near(c, e);
   };
 
+  // Either orientation: what makes an event "unambiguous about the candidate"
+  // once swapped fits are admitted at all (pass 3).
+  const eitherOk = (c: MatchCandidate, e: OddsApiEvent): boolean =>
+    fallbackOk(c, e) || swappedOk(c, e);
+
   const unmatchedGames: string[] = [];
   const swappedCandidates: string[] = [];
+  const swappedMatches = new Set<string>();
   for (const c of leftover) {
     const fits = unclaimed.filter((e) => !claimed.has(e) && fallbackOk(c, e));
     const only = fits.length === 1 ? fits[0] : undefined;
@@ -576,10 +640,24 @@ export function matchOddsApiEvents(
         continue;
       }
     }
-    unmatchedGames.push(c.label);
-    if (fits.length === 0 && unclaimed.some((e) => !claimed.has(e) && swappedOk(c, e))) {
-      swappedCandidates.push(c.label);
+    // Pass 3 — a neutral-site game may take its swapped event, under pass 2's
+    // guards. Anything else that fits only swapped is refused and named.
+    const swappedFits =
+      fits.length === 0 ? unclaimed.filter((e) => !claimed.has(e) && swappedOk(c, e)) : [];
+    const swappedOnly = swappedFits.length === 1 ? swappedFits[0] : undefined;
+    if (c.neutralSite && swappedOnly !== undefined) {
+      const rivals = leftover.filter(
+        (o) => o !== c && !matched.has(o.gameId) && eitherOk(o, swappedOnly),
+      );
+      if (rivals.length === 0) {
+        matched.set(c.gameId, swappedOnly);
+        claimed.add(swappedOnly);
+        swappedMatches.add(c.gameId);
+        continue;
+      }
     }
+    unmatchedGames.push(c.label);
+    if (swappedFits.length > 0) swappedCandidates.push(c.label);
   }
 
   return {
@@ -587,5 +665,6 @@ export function matchOddsApiEvents(
     unmatchedGames,
     unmatchedEvents: events.length - claimed.size,
     swappedCandidates,
+    swappedMatches,
   };
 }

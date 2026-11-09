@@ -5792,11 +5792,12 @@ orientation the live script tried both ways; the committed test does not, and
 abbreviation misses, for **73/75**, and the two events left are neutral-site
 games the feeds orient the other way round — "Kansas @ Arizona State" and
 "Virginia @ West Virginia", which ESPN lists as `ASU VS KU` / `WVU VS UVA` with
-the teams swapped — refused and counted in `swappedCandidates` exactly as the
-orientation rule below says. Whether a `neutralSite` game should be allowed to
-match swapped, with its markets re-oriented BY TEAM NAME (which the parser
-already does per outcome, so the spread sign would be right), is an open
-question for M9c — §21.12.
+the teams swapped. Until 2026-11-09 they were refused and counted in
+`swappedCandidates`; **pass 3 below now matches them with their sides
+exchanged, for 75/75** (§21.12 is closed). The committed test reads the
+re-oriented numbers back: KU +5.5 (−112) / ASU −5.5 (−108), h2h KU +180 / ASU
+−218, and UVA −10.5 / WVU +10.5, h2h UVA −395 / WVU +310 — the sign ESPN's own
+`details` carry for the same games.
 
 **The capture is one MERGED file per league, not one date.** ESPN's unit is a
 single ET date (§8.1) and each API sample spans several — measured exactly:
@@ -5828,11 +5829,28 @@ It is what makes "San José State Spartans" equal "San Jose State Spartans" and
 "Louisiana Ragin' Cajuns" equal "Louisiana Ragin Cajuns" — verified in a REPL,
 both pairs collapse to the same key.
 
-Orientation is part of the key deliberately. If a neutral-site game arrives with
-home and away the other way round, pass 1 fails, pass 2 fails, the game is NOT
-filled and the candidate is counted in `swappedCandidates`. Accepting such a
-match would invert every spread sign on the card; refusing it costs one unfilled
-market and leaves a visible counter.
+Orientation is part of the key deliberately. If a game at a REAL venue arrives
+with home and away the other way round, pass 1 fails, pass 2 fails, the game is
+NOT filled and the candidate is counted in `swappedCandidates`: one feed has the
+venue wrong, accepting the match would invert every spread sign on the card, and
+refusing it costs one unfilled market and leaves a visible counter. A
+**neutral-site** game is the exception — pass 3.
+
+**Pass 3 — the neutral-site swap (2026-11-09, the owner's yes to §21.12's
+question).** A candidate whose row has `neutral_site = 1` and that passes 1
+and 2 left unmatched may take an unclaimed event whose two mascots fit THE
+OTHER WAY ROUND, under exactly pass 2's guards — same league, inside the
+90-minute window, unique in both directions (the event must fit no other
+candidate in EITHER orientation). The match is reported in
+`MatchOutcome.swappedMatches` and the sweep exchanges the event's spread and
+moneyline sides (`swapOddsApiSides`; a total has no side) before writing, so
+the `*_home_*` columns keep meaning the ROW's home team. The sign is safe
+because the parser already orients every outcome BY TEAM NAME: the API's number
+for ESPN's home team lands on the home column whichever team the API called
+"home". At a neutral site neither feed's orientation means anything — ESPN
+itself flips it between discovery and game day (§8.5) — so refusing cost a
+ranked game its fill for a convention. The sweep names these under
+`reoriented` in `job_runs.stats.secondary`; `swapped` keeps the refused ones.
 
 **Pass 2 — mascot fallback.** A candidate matches an unclaimed event only when
 ALL of: same league; `|kickoffAt − commenceAt| ≤ SECONDARY_MATCH_WINDOW_MS`
@@ -5907,7 +5925,8 @@ secondary: {
     events: number,              // events in the response
     matched: number,
     unmatchedEspn: string[],     // eligible games nothing matched, capped
-    swapped: string[],           // home/away disagreement, refused
+    swapped: string[],           // home/away disagreement at a real venue, refused
+    reoriented: string[],        // neutral-site swaps matched with sides exchanged (pass 3)
     filled: { spread: number, total: number, moneyline: number },
     stamped: number,             // games still gapped afterwards (secondary_tried_at)
     rowsWritten: number,         // meta.rows_written, folded into the run total
@@ -5957,7 +5976,7 @@ at read time. Each sweep's `rowsWritten` is added to the run's existing
 | Two secondary rows for one game with different `seen_at` | impossible: `PRIMARY KEY (game_id, provider)` with `provider` a constant. §21.3.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | A book change the compare-and-skip hides                 | closed by the secondary's own upsert: the three `*_book` columns are in BOTH halves of the compare tuple, so FanDuel replacing DraftKings at the identical number is a write. §21.3.                                                                                                                                                                                                                                                                                                                                |
 | A secondary fill vanishing mid-Saturday                  | the re-sweep rule fires `SECONDARY_RESWEEP_MARGIN_MS` (45 min = three cron ticks) before the row's own staleness window closes. If the reserve is blocking it DOES vanish — see §21.5's degradation note, and `budgetSkipped` says why.                                                                                                                                                                                                                                                                             |
-| Matching false positive (shared mascots, same kickoff)   | pass 2 requires BOTH mascots AND uniqueness in BOTH directions; the Auburn/Clemson pair in the committed ESPN sample is why one direction is not enough. Pass 1 is oriented, so a neutral-site home/away swap refuses rather than inverting.                                                                                                                                                                                                                                                                        |
+| Matching false positive (shared mascots, same kickoff)   | pass 2 requires BOTH mascots AND uniqueness in BOTH directions; the Auburn/Clemson pair in the committed ESPN sample is why one direction is not enough. Pass 1 is oriented, so a home/away swap at a real venue refuses rather than inverting; a NEUTRAL-SITE swap is matched by pass 3 with the sides exchanged (2026-11-09).                                                                                                                                                                                     |
 | Chasing a moneyline no book posts                        | §21.2's rule: a missing moneyline is a gap only below a 30.0-point spread. Measured: 15 of 75 NCAAF events have no moneyline anywhere, every one at ≥ 33.5.                                                                                                                                                                                                                                                                                                                                                         |
 | A rescheduled game                                       | pass 1 ignores kickoff entirely and still matches. Only the fallback is time-sensitive.                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Timezones                                                | the API path has none: `commence_time` is UTC and `games.kickoff_at` is epoch ms. ET enters only through the window bound the caller passes in (`boardWindowEnd`, §22), which is a calendar question and is answered in one place.                                                                                                                                                                                                                                                                                  |
@@ -6075,9 +6094,11 @@ Tests, written first:
 - `mascotOf`: "Southern Miss Golden Eagles" and "Southern Mississippi Golden
   Eagles" both give `eagles`.
 - `matchOddsApiEvents` pass 1 against the MERGED same-date ESPN captures:
-  **32/32 NFL and 68/75 NCAAF**, and the full matcher **73/75** with the two
-  neutral-site swaps named in `swappedCandidates`, asserted as numbers so a
-  future normalisation change cannot quietly lose matches.
+  **32/32 NFL and 68/75 NCAAF**, and the full matcher **75/75** with the two
+  neutral-site swaps in `swappedMatches` (73/75 and `swappedCandidates` before
+  2026-11-09), asserted as numbers so a future normalisation change cannot
+  quietly lose matches; a second test reads the re-oriented spread and
+  moneyline of both swapped games back from the captures.
 - the same test asserts the kickoff agreement that sizes
   `SECONDARY_MATCH_WINDOW_MS`: over the matched pairs the median
   `|kickoffAt − commenceAt|` is 0 and the max is ≤ 30 min, comfortably inside the
@@ -6090,7 +6111,17 @@ Tests, written first:
   straight from `docs/samples/espn-cfb-scoreboard.json` rather than synthesised,
   because that is the shape the data actually has.
 - Pass 2 refuses at 91 minutes.
-- An oriented swap is refused and lands in `swappedCandidates`.
+- An oriented swap at a real venue is refused and lands in `swappedCandidates`.
+- Pass 3: a neutral-site swap is matched and lands in `swappedMatches`; it
+  keeps pass 2's window and league guards; it refuses an ambiguous swap (two
+  swapped events, or an event a second candidate fits in orientation);
+  `swapOddsApiSides` exchanges spread and moneyline sides, keeps the total and
+  the books, and is an involution.
+- Worker (`secondary.spec.ts`): a neutral-site game the API lists the other
+  way round is filled with its sides exchanged (+3.5 and the away team's
+  moneyline land on the row's home columns) and named under `reoriented`; the
+  same swap at a real venue is refused, named under `swapped`, and writes no
+  row.
 - Never matches across leagues, even on identical names and kickoffs.
 - A rescheduled candidate (kickoff moved 6 h) still matches in pass 1.
 - Unmatched events are counted, unmatched candidates are named.
@@ -6242,17 +6273,21 @@ debit drift only, and the "31 × 3 = 93 < 100" arithmetic that justified the old
 figure is deleted rather than left to be quoted at somebody.
 
 **Q — neutral-site games the two feeds orient the other way round (found by
-M9a's committed test).** "Kansas @ Arizona State" and "Virginia @ West Virginia"
-(ESPN: `ASU VS KU`, `WVU VS UVA`, both `neutralSite`) are the ONLY two NCAAF
-events on the captured week that nothing matches, and both are the kind of game
-the owner wants filled. The orientation rule refuses them because a swapped
-match would put the wrong sign on every spread — but the parser already orients
-every outcome BY TEAM NAME, so a swapped match re-oriented by name would carry
-the right sign. Proposal for M9c: when the ESPN game is `neutralSite`, accept a
-swapped pass-1 / pass-2 match and map the API's markets onto the ESPN sides by
-team name (home spread = the API outcome named for ESPN's home team; moneyline
-likewise; the total is symmetric). Needs the owner's yes, a test on exactly
-those two games, and `swappedCandidates` becomes "swapped AND not neutral-site".
+M9a's committed test) — RESOLVED 2026-11-09, owner's yes.** "Kansas @ Arizona
+State" and "Virginia @ West Virginia" (ESPN: `ASU VS KU`, `WVU VS UVA`, both
+`neutralSite`) were the ONLY two NCAAF events on the captured week that nothing
+matched, and both are the kind of game the owner wants filled. The orientation
+rule refused them because a swapped match would put the wrong sign on every
+spread — but the parser already orients every outcome BY TEAM NAME, so a
+swapped match re-oriented by name carries the right sign. The same day's ESPN
+incident (§8.5: ESPN flipping `homeAway` on two neutral-site basketball games
+between discovery and game day) settled it: at a neutral site neither feed's
+orientation is information. Shipped as §21.7's **pass 3**: a `neutral_site`
+candidate accepts a swapped match under pass 2's guards, the sweep exchanges
+the API's spread and moneyline sides onto the row's (`swapOddsApiSides`), the
+committed test asserts exactly those two games with their re-oriented numbers
+(75/75), and `swappedCandidates` is now "swapped AND not neutral-site (or
+ambiguous)".
 
 Nothing else here needs the product owner. The two choices that are genuinely
 his — "is a partly-secondary board acceptable at all" and "what should happen

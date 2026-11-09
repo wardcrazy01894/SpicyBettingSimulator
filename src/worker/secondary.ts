@@ -46,7 +46,7 @@ import {
 import type { SecondaryLeague } from '../shared/constants.js';
 import { mergeEffectiveLine, missingMarkets } from '../shared/lines.js';
 import type { EffectiveLine, LineRowView } from '../shared/lines.js';
-import { matchOddsApiEvents } from '../shared/odds-api.js';
+import { matchOddsApiEvents, swapOddsApiSides } from '../shared/odds-api.js';
 import type { MatchCandidate } from '../shared/odds-api.js';
 import { boardWindowEnd, lineStaleAfterMs } from '../shared/time.js';
 import type { EpochMs } from '../shared/types.js';
@@ -105,8 +105,16 @@ export interface SecondarySweep {
   readonly matched: number;
   /** Eligible games nothing matched, by label. Capped by the caller. */
   readonly unmatchedEspn: readonly string[];
-  /** Home/away disagreement between the feeds: refused, never matched. */
+  /**
+   * Home/away disagreement between the feeds on a game at a REAL venue (or an
+   * ambiguous neutral-site one): refused, never matched (PLAN.md §21.7).
+   */
   readonly swapped: readonly string[];
+  /**
+   * NEUTRAL-SITE games the feeds orient the other way round, matched with the
+   * API's sides exchanged onto the row's (pass 3, since 2026-11-09). By label.
+   */
+  readonly reoriented: readonly string[];
   readonly filled: {
     readonly spread: number;
     readonly total: number;
@@ -410,6 +418,7 @@ interface CandidateRow {
   home_name: string;
   away_name: string;
   short_name: string;
+  neutral_site: number;
   secondary_tried_at: number | null;
   provider: string | null;
   spread_home_tenths: number | null;
@@ -436,7 +445,8 @@ interface Candidate {
 }
 
 const CANDIDATES_SQL = `
-SELECT g.id, g.kickoff_at, g.home_name, g.away_name, g.short_name, g.secondary_tried_at,
+SELECT g.id, g.kickoff_at, g.home_name, g.away_name, g.short_name, g.neutral_site,
+       g.secondary_tried_at,
        l.provider, l.spread_home_tenths, l.spread_home_price, l.spread_away_tenths,
        l.spread_away_price, l.spread_book, l.total_tenths, l.total_over_price,
        l.total_under_price, l.total_book, l.ml_home_price, l.ml_away_price, l.ml_book,
@@ -494,6 +504,7 @@ async function loadCandidates(
         kickoffAt: game.kickoff_at,
         homeName: game.home_name,
         awayName: game.away_name,
+        neutralSite: game.neutral_site === 1,
         label: game.short_name,
       },
       triedAt: game.secondary_tried_at,
@@ -530,6 +541,7 @@ function skipped(league: SecondaryLeague, why: SweepSkipped): SecondarySweep {
     matched: 0,
     unmatchedEspn: [],
     swapped: [],
+    reoriented: [],
     filled: { spread: 0, total: 0, moneyline: 0 },
     stamped: 0,
     rowsWritten: 0,
@@ -678,7 +690,9 @@ async function sweepInner(
   for (const c of candidates) {
     const e = outcome.matched.get(c.match.gameId);
     if (e === undefined) continue;
-    const m = e.markets;
+    // A neutral-site game matched the other way round: the API's sides are
+    // exchanged so the `*_home_*` columns mean the ROW's home team (§21.7).
+    const m = outcome.swappedMatches.has(c.match.gameId) ? swapOddsApiSides(e.markets) : e.markets;
     if (m.spread === null && m.total === null && m.moneyline === null) {
       stmts.push(env.DB.prepare(SECONDARY_LINE_BLANK_SQL).bind(c.match.gameId, now));
       continue;
@@ -736,6 +750,10 @@ async function sweepInner(
     matched: outcome.matched.size,
     unmatchedEspn: outcome.unmatchedGames.slice(0, ESPN_MAX_WARNINGS_RECORDED),
     swapped: outcome.swappedCandidates.slice(0, ESPN_MAX_WARNINGS_RECORDED),
+    reoriented: candidates
+      .filter((c) => outcome.swappedMatches.has(c.match.gameId))
+      .map((c) => c.match.label)
+      .slice(0, ESPN_MAX_WARNINGS_RECORDED),
     filled,
     stamped: stamps.length,
     rowsWritten,
