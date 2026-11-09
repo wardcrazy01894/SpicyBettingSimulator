@@ -2793,6 +2793,30 @@ describe('home/away orientation is fixed at first sight (PLAN.md §8.5)', () => 
     expect((await lineRow(GAME))?.spread_home_tenths).toBe(35);
   });
 
+  it('a slate wider than one stored-sides read (> 90 games) still finds the swap in the second chunk', async () => {
+    const t = await sundayNflTarget();
+    const slate = (swapLast: boolean): EventSpec[] =>
+      Array.from({ length: 95 }, (_v, i) => {
+        const last = swapLast && i === 94;
+        return spec({
+          eventId: `5${String(i).padStart(8, '0')}`,
+          homeAbbr: last ? `B${String(i)}` : `A${String(i)}`,
+          awayAbbr: last ? `A${String(i)}` : `B${String(i)}`,
+          odds: undefined,
+          ...(last ? { status: 'post', homeScore: 30, awayScore: 20 } : {}),
+        });
+      });
+    await ingestSlate(slate(false), T0, t);
+    espn.set(t.key, slate(true));
+    const result = await ingestTarget(env, new EspnProvider(env), t, T0 + HOUR);
+    expect(result.error).toBeNull();
+    expect(result.sidesReoriented).toBe(1);
+    const row = await sidesRow('nfl:500000094');
+    expect(row?.home_abbr).toBe('A94');
+    expect(row?.home_score).toBe(20);
+    expect(row?.away_score).toBe(30);
+  });
+
   it('a different pair of teams under a known id is NOT a swap and is written as parsed', async () => {
     const t = await sundayNflTarget();
     await ingestSlate([spec({})], T0, t);
