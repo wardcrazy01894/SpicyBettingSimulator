@@ -345,6 +345,10 @@ describe('M12a — ingest and the board', () => {
       ).first<{ n: number }>();
       expect(finals?.n).toBe(GAMES);
     },
+    // Vitest's 5 s default was within reach on a CI runner once each tick also
+    // reads the stored sides (PLAN.md §8.5); the CFB and basketball soaks carry
+    // the same allowance.
+    120_000,
   );
 
   // 'the CFB-Saturday < 5,000 regression still passes unchanged beside it' —
