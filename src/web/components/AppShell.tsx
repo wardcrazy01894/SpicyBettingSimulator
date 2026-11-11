@@ -1,4 +1,4 @@
-/** Header, nav tabs, <Outlet/>, and the sticky bet-slip bar on small screens. */
+/** Header, nav tabs, <Outlet/>, the site footer, and the sticky bet-slip bar on small screens. */
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import type { ReactElement } from 'react';
 
@@ -7,6 +7,7 @@ import { BetSlipBar } from './BetSlipBar.js';
 import { BugReportSheet } from './BugReportSheet.js';
 import { NavTabs } from './NavTabs.js';
 import { RefillPrompt } from './RefillPrompt.js';
+import { SiteFooter } from './SiteFooter.js';
 import { Spinner } from './Spinner.js';
 import { useBalances, useHealth } from '../hooks/useApi.js';
 import { BugReportProvider, useBugReport } from '../state/bug-report.js';
@@ -117,6 +118,7 @@ function Shell(): ReactElement {
       <main className="app-main">
         <Outlet />
       </main>
+      <SiteFooter />
       <BetSlipBar />
       <BetSlip />
       <BugReportMount />
