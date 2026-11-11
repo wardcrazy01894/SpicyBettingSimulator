@@ -3287,7 +3287,9 @@ main.tsx
     │   └── <ConfigProvider>                /api/config, cached for the session
     │       └── <BetSlipProvider>           ONE cross-league slip, localStorage `sbs.slip.v3`
     │           ├── <AppShell>              header + <BankrollBadge> + <NavTabs> + <RefillBanner> + <Outlet>
-    │           │   │                       + <BetSlipBar> + <BetSlip>; redirects anon to /login.
+    │           │   │                       + <SiteFooter> + <BetSlipBar> + <BetSlip>; redirects anon to /login.
+    │           │   │                       <SiteFooter> is the one-line studio credit under every page
+    │           │   │                       (<AuthPage> ends with it too, being outside the shell).
     │           │   │                       <RefillBanner> is <RefillPrompt variant=banner>, "Run out of
     │           │   │                       money?" on every page while isBusted — POST /api/bankroll/refill
     │           │   ├── route "/"           <GamesPage>

@@ -169,6 +169,16 @@ button:disabled {
   padding-bottom: calc(84px + env(safe-area-inset-bottom));
 }
 
+/* The studio credit (<SiteFooter>): the last line of every page, small and
+   dim. In the shell it sits above `.app-shell`'s bottom padding, so the fixed
+   slip bar never covers it once the page is scrolled to the end. */
+.site-footer {
+  padding: 20px var(--gap) 4px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 .boot {
   display: grid;
   place-items: center;

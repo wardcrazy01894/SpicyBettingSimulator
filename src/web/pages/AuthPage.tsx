@@ -20,6 +20,7 @@ import { Navigate, useSearchParams } from 'react-router-dom';
 
 import { ErrorBanner } from '../components/ErrorBanner.js';
 import { Segmented } from '../components/Segmented.js';
+import { SiteFooter } from '../components/SiteFooter.js';
 import { Spinner } from '../components/Spinner.js';
 import { useHealth } from '../hooks/useApi.js';
 import { INVITE_PARAM, inviteCodeFromParam } from '../lib/invite.js';
@@ -166,6 +167,7 @@ export function AuthPage(): ReactElement {
         Your password is stretched in this browser before it is sent — that pause is the
         210,000-round key derivation, not a slow network.
       </p>
+      <SiteFooter />
     </main>
   );
 }
