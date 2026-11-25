@@ -1229,6 +1229,88 @@ describe('runSettle — effective price write-back', () => {
     await expectNoDrift();
   });
 
+  // Teaser middles (PLAN.md §5.2d). Home -3.0 / away +3.0 teased 6 points is
+  // home +3.0 and away +9.0: both win when home's margin is strictly between
+  // -3 and +9. Grading is the ordinary per-leg rule — nothing knows the two
+  // legs share a game.
+  const middle = (gameId: string): PlaceBetRequest => ({
+    league: 'nfl',
+    betType: 'teaser',
+    teaserPoints: 60,
+    stakeCents: 1000,
+    legs: [
+      { gameId, market: 'spread', side: 'home' },
+      { gameId, market: 'spread', side: 'away' },
+    ],
+  });
+
+  it('a spread MIDDLE wins when the game lands between the two teased lines', async () => {
+    const user = await register();
+    const a = await seedScheduled(g(1), { spreadHomeTenths: -30, spreadAwayTenths: 30 });
+    const { bet: placed } = await placeBet(env, user.id, middle(a), NOW);
+    await finalize(a, 24, 20); // home by 4: covers +3.0 AND away covers +9.0
+    await runSettle(env, NOW + 1, 20);
+    const bet = await betRow(placed.id);
+    expect(bet.status).toBe('won');
+    expect(bet.payout_cents).toBe(1833);
+    await expectNoDrift();
+  });
+
+  it('a spread MIDDLE loses when the game lands outside it, on either side', async () => {
+    const user = await register();
+    const a = await seedScheduled(g(1), { spreadHomeTenths: -30, spreadAwayTenths: 30 });
+    const b = await seedScheduled(g(2), { spreadHomeTenths: -30, spreadAwayTenths: 30 });
+    const high = await placeBet(env, user.id, middle(a), NOW);
+    const low = await placeBet(env, user.id, middle(b), NOW);
+    await finalize(a, 34, 20); // home by 14: away +9.0 loses
+    await finalize(b, 17, 24); // home loses by 7: home +3.0 loses
+    await runSettle(env, NOW + 1, 20);
+    for (const placed of [high.bet, low.bet]) {
+      const bet = await betRow(placed.id);
+      expect(bet.status).toBe('lost');
+      expect(bet.payout_cents).toBe(0);
+    }
+    await expectNoDrift();
+  });
+
+  it('a 2-leg MIDDLE that lands exactly on one teased line is refunded (one push = no action)', async () => {
+    const user = await register();
+    const a = await seedScheduled(g(1), { spreadHomeTenths: -30, spreadAwayTenths: 30 });
+    const { bet: placed } = await placeBet(env, user.id, middle(a), NOW);
+    await finalize(a, 30, 21); // home by 9: away +9.0 pushes, home +3.0 wins
+    await runSettle(env, NOW + 1, 20);
+    const bet = await betRow(placed.id);
+    expect(bet.status).toBe('push');
+    expect(bet.payout_cents).toBe(1000);
+    await expectNoDrift();
+  });
+
+  it('a total MIDDLE wins between the teased over and under', async () => {
+    const user = await register();
+    const a = await seedScheduled(g(1), { totalTenths: 450 }); // over 39.0, under 51.0
+    const { bet: placed } = await placeBet(
+      env,
+      user.id,
+      {
+        league: 'nfl',
+        betType: 'teaser',
+        teaserPoints: 60,
+        stakeCents: 1000,
+        legs: [
+          { gameId: a, market: 'total', side: 'over' },
+          { gameId: a, market: 'total', side: 'under' },
+        ],
+      },
+      NOW,
+    );
+    await finalize(a, 24, 21); // 45: over 39.0 and under 51.0 both win
+    await runSettle(env, NOW + 1, 20);
+    const bet = await betRow(placed.id);
+    expect(bet.status).toBe('won');
+    expect(bet.payout_cents).toBe(1833);
+    await expectNoDrift();
+  });
+
   it('a 2-leg teaser with one pushed leg is refunded (fewer than two survivors = no action)', async () => {
     const user = await register();
     const a = await seedScheduled(g(1), { spreadHomeTenths: -30, spreadAwayTenths: 30 }); // teased +3.0

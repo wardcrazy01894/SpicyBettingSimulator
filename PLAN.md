@@ -452,12 +452,16 @@ kickoff_at_snapshot, home_abbr, away_abbr, result, graded_at`.
   "we polled it" stamp), and when the user locked it in.
 - `home_abbr`/`away_abbr` are denormalized so a settled bet renders identically
   forever even if a team is renamed or the game row is pruned.
-- `UNIQUE(bet_id, game_id, market)` (migration 0008) is the DB half of the
-  same-game rule: one leg per market per game. Its sibling, the
-  `bet_legs_bi_one_side_per_game` BEFORE INSERT trigger, refuses a spread beside
-  a moneyline on one game — the half no UNIQUE can express. Together they say
-  what §5.2c says: a game contributes at most one side pick and one total. (It
-  used to be `UNIQUE(bet_id, game_id)`, one leg per game, until M11.)
+- `UNIQUE(bet_id, game_id, market, side)` (migration 0014) is the DB half of
+  the same-game rule: never the same pick twice. Two BEFORE INSERT triggers say
+  what no UNIQUE can: `bet_legs_bi_one_side_per_game` (0008) refuses a spread
+  beside a moneyline on one game, and `bet_legs_bi_middle_teaser_only` (0014)
+  refuses the OTHER side of a market the bet already holds on that game unless
+  the bet is a teaser and the market has a line to move. Together they say what
+  §5.2c and §5.2d say: a game contributes at most one side pick and one total,
+  except that a teaser may take both sides of either — a middle.
+  (It used to be `UNIQUE(bet_id, game_id)`, one leg per game, until M11, and
+  `UNIQUE(bet_id, game_id, market)` from 0008 until 0014.)
   `UNIQUE(bet_id, leg_index)` keeps ordering stable.
 - `result`/`graded_at` are **NULL until the whole bet settles** (see §7.3).
 
@@ -513,25 +517,25 @@ value so a later optimisation needs no migration; nothing constructs one in v1.
 
 ### 4.1 Invariants (each enforced by the database, not by application code)
 
-| Invariant                                                          | Enforcement                                                                                                                     |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Balance is never negative                                          | `BEFORE INSERT ON ledger` trigger `RAISE(ABORT)` (unsuppressable, §4.2) **plus** `CHECK(balance_cents >= 0)` on `bankrolls`     |
-| No ledger row against a non-existent balance                       | a SECOND `BEFORE INSERT` trigger, `ledger_bi_bankroll_exists`, testing `NOT EXISTS` — never a `COALESCE(…, -1)` sentinel (§4.2) |
-| Balance always equals the sum of its ledger rows                   | `AFTER INSERT ON ledger` trigger `ledger_ai_apply` is the _only_ writer of `balance_cents`                                      |
-| …and nothing else may write `balance_cents`                        | `bankrolls_bu_balance_guard` (`BEFORE UPDATE OF balance_cents`) aborts any UPDATE that leaves it ≠ `SUM(ledger)` (§4.2)         |
-| A balance always opens at 0                                        | `bankrolls_bi_balance_guard` (`BEFORE INSERT`) aborts a row inserted with a non-zero `balance_cents` (§4.2)                     |
-| Ledger is append-only                                              | `BEFORE UPDATE`/`BEFORE DELETE` triggers `RAISE(ABORT)`                                                                         |
-| A bet is paid at most once                                         | `UNIQUE(bankroll_id, kind, ref_id)` on `ledger`                                                                                 |
-| A bet is refunded at most once                                     | same unique key, `kind='bet_refund'`                                                                                            |
-| Exactly one opening deposit per balance                            | same unique key, `kind='deposit_initial'`, `ref_id='init'`                                                                      |
-| Exactly one `main` balance per user                                | partial `UNIQUE INDEX ON bankrolls(user_id) WHERE kind = 'main'`                                                                |
-| A bet is staked against a balance its owner owns                   | `AND EXISTS (SELECT 1 FROM bankrolls WHERE id = :bankrollId AND user_id = :userId)` inside the placement INSERT (§14.2)         |
-| Stake ≥ $1.00                                                      | `CHECK(stake_cents >= 100)` on `bets`                                                                                           |
-| A teaser has a tier and nothing else does                          | `CHECK ((bet_type = 'teaser') = (teaser_points_tenths IS NOT NULL))` + `CHECK (teaser_points_tenths IN (60,65,70))`             |
-| Payout ≤ `MAX_PAYOUT_CENTS` (so no money column can become `REAL`) | `CHECK(potential_payout_cents BETWEEN 0 AND 100000000)` and the same on `payout_cents`                                          |
-| A leg price is a small bounded integer                             | `CHECK(abs(american_price) BETWEEN 100 AND 100000)` on `bet_legs`                                                               |
-| 1–25 legs; a teaser 2–10                                           | `CHECK(leg_count BETWEEN 1 AND 25)` + `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` (0010) + validation                     |
-| One side pick and one total per game per bet (§5.2c)               | `UNIQUE(bet_id, game_id, market)` + the `bet_legs_bi_one_side_per_game` trigger on `bet_legs` (0008)                            |
+| Invariant                                                          | Enforcement                                                                                                                                                    |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Balance is never negative                                          | `BEFORE INSERT ON ledger` trigger `RAISE(ABORT)` (unsuppressable, §4.2) **plus** `CHECK(balance_cents >= 0)` on `bankrolls`                                    |
+| No ledger row against a non-existent balance                       | a SECOND `BEFORE INSERT` trigger, `ledger_bi_bankroll_exists`, testing `NOT EXISTS` — never a `COALESCE(…, -1)` sentinel (§4.2)                                |
+| Balance always equals the sum of its ledger rows                   | `AFTER INSERT ON ledger` trigger `ledger_ai_apply` is the _only_ writer of `balance_cents`                                                                     |
+| …and nothing else may write `balance_cents`                        | `bankrolls_bu_balance_guard` (`BEFORE UPDATE OF balance_cents`) aborts any UPDATE that leaves it ≠ `SUM(ledger)` (§4.2)                                        |
+| A balance always opens at 0                                        | `bankrolls_bi_balance_guard` (`BEFORE INSERT`) aborts a row inserted with a non-zero `balance_cents` (§4.2)                                                    |
+| Ledger is append-only                                              | `BEFORE UPDATE`/`BEFORE DELETE` triggers `RAISE(ABORT)`                                                                                                        |
+| A bet is paid at most once                                         | `UNIQUE(bankroll_id, kind, ref_id)` on `ledger`                                                                                                                |
+| A bet is refunded at most once                                     | same unique key, `kind='bet_refund'`                                                                                                                           |
+| Exactly one opening deposit per balance                            | same unique key, `kind='deposit_initial'`, `ref_id='init'`                                                                                                     |
+| Exactly one `main` balance per user                                | partial `UNIQUE INDEX ON bankrolls(user_id) WHERE kind = 'main'`                                                                                               |
+| A bet is staked against a balance its owner owns                   | `AND EXISTS (SELECT 1 FROM bankrolls WHERE id = :bankrollId AND user_id = :userId)` inside the placement INSERT (§14.2)                                        |
+| Stake ≥ $1.00                                                      | `CHECK(stake_cents >= 100)` on `bets`                                                                                                                          |
+| A teaser has a tier and nothing else does                          | `CHECK ((bet_type = 'teaser') = (teaser_points_tenths IS NOT NULL))` + `CHECK (teaser_points_tenths IN (60,65,70))`                                            |
+| Payout ≤ `MAX_PAYOUT_CENTS` (so no money column can become `REAL`) | `CHECK(potential_payout_cents BETWEEN 0 AND 100000000)` and the same on `payout_cents`                                                                         |
+| A leg price is a small bounded integer                             | `CHECK(abs(american_price) BETWEEN 100 AND 100000)` on `bet_legs`                                                                                              |
+| 1–25 legs; a teaser 2–10                                           | `CHECK(leg_count BETWEEN 1 AND 25)` + `CHECK (bet_type <> 'teaser' OR leg_count <= 10)` (0010) + validation                                                    |
+| One side pick and one total per game per bet (§5.2c)               | `UNIQUE(bet_id, game_id, market, side)` + the `bet_legs_bi_one_side_per_game` (0008) and `bet_legs_bi_middle_teaser_only` (0014, §5.2d) triggers on `bet_legs` |
 
 The point of pushing these into DDL: a settlement bug becomes a failed `batch()`
 (loud, rolled back, retried next run) instead of silent money creation.
@@ -957,12 +961,14 @@ and a total are still mildly correlated for a big favourite in a high-total
 game — that is the industry condition under which books have always sold the
 pair at straight parlay odds, and it is accepted here as it is there.
 
-**Both sides of one market** are the same slot too, so a home −3.5 with an away
-+3.5 (a guaranteed push-or-loss) is refused on the later leg's `market`, with
-the message naming the market. **Where it is refused**: `validatePlaceBet`, as
+**Both sides of one market** are the same slot too, so in a PARLAY a home −3.5
+with an away +3.5 (a guaranteed push-or-loss) is refused on the later leg's
+`market`, with the message naming the market. A TEASER is the one exception —
+the middle, §5.2d. **Where it is refused**: `validatePlaceBet`, as
 `400 VALIDATION` on `legs[i].market` for the LATER leg (the market is what the
-user would change); under that, `UNIQUE(bet_id, game_id, market)` and the
-`bet_legs_bi_one_side_per_game` trigger (0008, §3.2), which the server maps to
+user would change); under that, `UNIQUE(bet_id, game_id, market, side)`, the
+`bet_legs_bi_one_side_per_game` trigger (0008, §3.2) and the
+`bet_legs_bi_middle_teaser_only` trigger (0014), which the server maps to
 `409 DUPLICATE_GAME_IN_PARLAY` — the code keeps its name and its meaning, "one
 game, too many legs".
 
@@ -972,6 +978,57 @@ collapses a repeated id, so a same-game parlay would never have matched. `:n`
 is now the number of distinct game ids, bound after them, in both the INSERT
 and `editCancelSql` (§14.2). Settlement, the cancel lock and the edit lock are
 all per-leg or `NOT EXISTS` over `bet_legs JOIN games` and needed no change.
+
+### 5.2d Teaser middles ("tease the middle", 2026-11-25)
+
+**A teaser may hold BOTH sides of one market on one game**: home and away of
+the spread, or the over and the under of the total. Each leg is teased its own
+way (§5.8), so the two lines move APART by twice the tier and both legs win
+when the game lands between them. At 6 points a home −3.5 / away +3.5 becomes
+home +2.5 / away +9.5, and the bet wins when the home side loses by 2 or fewer
+or wins by 9 or fewer. One game can carry both middles at once (four legs), and
+a middle can sit beside any other teaser leg.
+
+**It is two ordinary teaser legs and nothing else.** Pricing is the card at the
+bet's leg count (a two-leg 6-point middle is the 2-leg cell, −120: 1833¢ back
+on 1000¢, §5.8); grading is `gradeLeg` per leg, which does not know the two
+share a game; the push rules are §5.8's, so a two-leg middle that lands exactly
+on one teased line has one survivor and is refunded as no action.
+
+**Why the card price needs no correlation model.** The two legs are
+NEGATIVELY correlated: they cannot both lose, and each one's losing region
+lies inside the other's winning region. If the legs lose with probabilities
+`q1` and `q2`, the middle wins with probability exactly `1 − q1 − q2`, against
+`(1 − q1)(1 − q2) = 1 − q1 − q2 + q1·q2` for two independent legs with the same
+chances. So a middle is never a better bet than teasing those two legs on two
+different, equally predictable games at the same card price — it opens no
+edge the card did not already offer. That is the opposite of the spread +
+moneyline pair §5.2c refuses, which is positively correlated and overpays.
+This says nothing about whether a given tier is generous in the first place:
+that is the card's own pricing (`docs/teaser-odds.md`), unchanged here.
+
+**What is still refused.** A parlay or straight holding both sides of a market
+(unteased it cannot win); the identical pick twice; both moneylines (no line
+to move, and teasers refuse a moneyline anyway); a spread beside a moneyline.
+`isMiddlePair` / `legsConflict(a, b, teaser)` / `sameGameConflict(legs, leg,
+teaser)` in `validate.ts` are the one definition, run by the slip and the
+server; the schema half is 0014's `UNIQUE(bet_id, game_id, market, side)` and
+`bet_legs_bi_middle_teaser_only`, which reads `bets.bet_type` (the bet row is
+always inserted before its legs) and refuses a leg whose bet row is absent.
+
+**Provenance.** This is not a DraftKings product. DraftKings' house rules
+(Massachusetts filing, October 2026) define a teaser without mentioning
+same-game legs at all, and betting guides say most books refuse both sides of
+one game while some accept it; the bet itself is long-standing at books that
+do. It is here because the owner asked for it (2026-11-25), like the wider
+teaser tiers before it.
+
+**The slip.** In teaser mode a tap on the other side of a held market ADDS the
+leg; in every other mode it still replaces the pick. So Teaser is selectable
+with ONE leg in the slip (Parlay still needs two) and a one-leg teaser is kept
+across leg removals and reloads — it is the only way into a two-leg middle —
+with the preview naming the two ways to finish it. Leaving teaser mode keeps
+the later pick of each middle and says so in the slip notice.
 
 ### 5.3 Payout
 
@@ -1212,7 +1269,8 @@ price, not the legs.
 **Scope.** 2-10 legs; spread and total only; cross-league allowed (NFL and CFB
 share a point schedule, which is the industry condition for mixing); a spread
 and a total from the same game may be teased together, under §5.2c's one-per-
-slot rule, exactly as in a parlay. The payout cap is checked on the same
+slot rule, exactly as in a parlay, and a teaser alone may also take both sides
+of either market — a middle, §5.2d. The payout cap is checked on the same
 shared path but is unreachable in practice — the worst cell at the full
 bankroll, 10 legs at 6 points (+2500) on 100,000¢, returns **2,600,000¢** against
 a 100,000,000¢ cap (verified).
@@ -2707,39 +2765,39 @@ stops a proxy from ever mis-parsing us. A body that is absent or unparseable is
 its canonical status. The list is the wire contract: a code is never repurposed
 and never removed, only added.
 
-| Code                       | Status | Raised by                                                                                                                                                                                                                                                              |
-| -------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VALIDATION`               | 400    | any malformed field, and a wrong `Content-Type`                                                                                                                                                                                                                        |
-| `MALFORMED_JSON`           | 400    | a body that is absent or not valid JSON                                                                                                                                                                                                                                |
-| `TEASER_INVALID`           | 400    | a teaser with no tier, or a tier on a non-teaser (§5.8)                                                                                                                                                                                                                |
-| `UNAUTHENTICATED`          | 401    | no session on a private route                                                                                                                                                                                                                                          |
-| `INVALID_CREDENTIALS`      | 401    | login; identical for an unknown user (§10.2)                                                                                                                                                                                                                           |
-| `BAD_INVITE_CODE`          | 401    | signup when `INVITE_CODE` is set and wrong                                                                                                                                                                                                                             |
-| `ACCOUNT_DISABLED`         | 403    | login by a disabled account; also placement/edit when the account is disabled or soft-deleted BETWEEN authentication and the batch (§14.2's account-state guard)                                                                                                       |
-| `CSRF_BLOCKED`             | 403    | missing `X-SBS-Client`, or a cross-origin `Origin` (§10.5) — on every state-changing method, `DELETE` included                                                                                                                                                         |
-| `NOT_FOUND`                | 404    | any unclaimed `/api/*` path, an unknown `:job`, and an admin user route naming an unknown OR soft-deleted account (§10.5)                                                                                                                                              |
-| `GAME_NOT_FOUND`           | 404    | a leg or board lookup naming a game that does not exist                                                                                                                                                                                                                |
-| `BET_NOT_FOUND`            | 404    | a bet that is not yours OR does not exist — never 403 (§11.4)                                                                                                                                                                                                          |
-| `BANKROLL_NOT_FOUND`       | 404    | a balance that is not yours OR does not exist (§4.4)                                                                                                                                                                                                                   |
-| `USERNAME_TAKEN`           | 409    | signup; also a soft delete whose 12- AND 16-hex tombstone names are both taken (§10.5) — a coded, actionable refusal instead of an `INTERNAL`                                                                                                                          |
-| `ACCOUNT_HAS_PENDING_BETS` | 409    | `DELETE /api/admin/users/:id` while the target holds an open bet (§10.5). A NEW code, not a reused one: `BET_NOT_PENDING` is about one bet's status and says the opposite thing, and `VALIDATION` is a 400                                                             |
-| `NOT_BUSTED`               | 409    | `POST /api/admin/users/:id/refill` or `POST /api/bankroll/refill` on an account that can still cover `MIN_STAKE_CENTS` or holds a pending bet (§4.5). A refill is a bust badge, so it is refused rather than silently becoming a bonus — `/adjust` is the plain top-up |
-| `NO_BUST_BADGE`            | 409    | `POST /api/bankroll/buyout` with no badge to remove, or a balance not strictly above `BUST_BUYOUT_CENTS` (§4.5)                                                                                                                                                        |
-| `GAME_NOT_BETTABLE`        | 409    | `status <> 'scheduled'`                                                                                                                                                                                                                                                |
-| `BETTING_CLOSED`           | 409    | past `lockAt`                                                                                                                                                                                                                                                          |
-| `MARKET_UNAVAILABLE`       | 409    | no line for that market, or `seenAt` stale                                                                                                                                                                                                                             |
-| `LINE_CHANGED`             | 409    | `expected` disagrees and `acceptLineChange` is not set                                                                                                                                                                                                                 |
-| `INSUFFICIENT_FUNDS`       | 409    | the `ledger_bi_sufficient_funds` trigger, mapped (§4.2) — never a pre-read                                                                                                                                                                                             |
-| `MIXED_LEAGUE_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span leagues                                                                                                                                                                                                             |
-| `MIXED_SEASON_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span seasons                                                                                                                                                                                                             |
-| `DUPLICATE_GAME_IN_PARLAY` | 409    | 0008's DB backstops under §5.2c — `UNIQUE(bet_id, game_id, market)` or the one-side-pick trigger — after validation let a bet through. Validation itself refuses the same thing as `400 VALIDATION` on `legs[i].market`, so this is a should-not-happen                |
-| `PAYOUT_LIMIT_EXCEEDED`    | 409    | potential payout over `MAX_PAYOUT_CENTS` (§5.2b)                                                                                                                                                                                                                       |
-| `BET_LOCKED`               | 409    | cancel/edit after a leg's game locked (§14.2)                                                                                                                                                                                                                          |
-| `BET_NOT_PENDING`          | 409    | cancel/edit/retry on a bet that is not `pending`                                                                                                                                                                                                                       |
-| `JOB_LOCKED`               | 409    | an admin trigger while the lease is held (§9.3)                                                                                                                                                                                                                        |
-| `RATE_LIMITED`             | 429    | login/signup throttle, with `Retry-After` (§10.5)                                                                                                                                                                                                                      |
-| `UPSTREAM_UNAVAILABLE`     | 503    | **RESERVED — never thrown today.** An ESPN failure is a job-level event: it backs the target off and is recorded in `job_runs`, so no user request is waiting on it. The code is kept for the day a request path reads upstream directly.                              |
-| `INTERNAL`                 | 500    | anything unrecognised, deliberately generic — the original message may carry SQL or a stack                                                                                                                                                                            |
+| Code                       | Status | Raised by                                                                                                                                                                                                                                                                                                             |
+| -------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VALIDATION`               | 400    | any malformed field, and a wrong `Content-Type`                                                                                                                                                                                                                                                                       |
+| `MALFORMED_JSON`           | 400    | a body that is absent or not valid JSON                                                                                                                                                                                                                                                                               |
+| `TEASER_INVALID`           | 400    | a teaser with no tier, or a tier on a non-teaser (§5.8)                                                                                                                                                                                                                                                               |
+| `UNAUTHENTICATED`          | 401    | no session on a private route                                                                                                                                                                                                                                                                                         |
+| `INVALID_CREDENTIALS`      | 401    | login; identical for an unknown user (§10.2)                                                                                                                                                                                                                                                                          |
+| `BAD_INVITE_CODE`          | 401    | signup when `INVITE_CODE` is set and wrong                                                                                                                                                                                                                                                                            |
+| `ACCOUNT_DISABLED`         | 403    | login by a disabled account; also placement/edit when the account is disabled or soft-deleted BETWEEN authentication and the batch (§14.2's account-state guard)                                                                                                                                                      |
+| `CSRF_BLOCKED`             | 403    | missing `X-SBS-Client`, or a cross-origin `Origin` (§10.5) — on every state-changing method, `DELETE` included                                                                                                                                                                                                        |
+| `NOT_FOUND`                | 404    | any unclaimed `/api/*` path, an unknown `:job`, and an admin user route naming an unknown OR soft-deleted account (§10.5)                                                                                                                                                                                             |
+| `GAME_NOT_FOUND`           | 404    | a leg or board lookup naming a game that does not exist                                                                                                                                                                                                                                                               |
+| `BET_NOT_FOUND`            | 404    | a bet that is not yours OR does not exist — never 403 (§11.4)                                                                                                                                                                                                                                                         |
+| `BANKROLL_NOT_FOUND`       | 404    | a balance that is not yours OR does not exist (§4.4)                                                                                                                                                                                                                                                                  |
+| `USERNAME_TAKEN`           | 409    | signup; also a soft delete whose 12- AND 16-hex tombstone names are both taken (§10.5) — a coded, actionable refusal instead of an `INTERNAL`                                                                                                                                                                         |
+| `ACCOUNT_HAS_PENDING_BETS` | 409    | `DELETE /api/admin/users/:id` while the target holds an open bet (§10.5). A NEW code, not a reused one: `BET_NOT_PENDING` is about one bet's status and says the opposite thing, and `VALIDATION` is a 400                                                                                                            |
+| `NOT_BUSTED`               | 409    | `POST /api/admin/users/:id/refill` or `POST /api/bankroll/refill` on an account that can still cover `MIN_STAKE_CENTS` or holds a pending bet (§4.5). A refill is a bust badge, so it is refused rather than silently becoming a bonus — `/adjust` is the plain top-up                                                |
+| `NO_BUST_BADGE`            | 409    | `POST /api/bankroll/buyout` with no badge to remove, or a balance not strictly above `BUST_BUYOUT_CENTS` (§4.5)                                                                                                                                                                                                       |
+| `GAME_NOT_BETTABLE`        | 409    | `status <> 'scheduled'`                                                                                                                                                                                                                                                                                               |
+| `BETTING_CLOSED`           | 409    | past `lockAt`                                                                                                                                                                                                                                                                                                         |
+| `MARKET_UNAVAILABLE`       | 409    | no line for that market, or `seenAt` stale                                                                                                                                                                                                                                                                            |
+| `LINE_CHANGED`             | 409    | `expected` disagrees and `acceptLineChange` is not set                                                                                                                                                                                                                                                                |
+| `INSUFFICIENT_FUNDS`       | 409    | the `ledger_bi_sufficient_funds` trigger, mapped (§4.2) — never a pre-read                                                                                                                                                                                                                                            |
+| `MIXED_LEAGUE_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span leagues                                                                                                                                                                                                                                                            |
+| `MIXED_SEASON_PARLAY`      | 409    | **DEPRECATED (M5b), never thrown** — legs may span seasons                                                                                                                                                                                                                                                            |
+| `DUPLICATE_GAME_IN_PARLAY` | 409    | The DB backstops under §5.2c / §5.2d — `UNIQUE(bet_id, game_id, market, side)`, the one-side-pick trigger (0008) or the middle-only-in-a-teaser trigger (0014) — after validation let a bet through. Validation itself refuses the same thing as `400 VALIDATION` on `legs[i].market`, so this is a should-not-happen |
+| `PAYOUT_LIMIT_EXCEEDED`    | 409    | potential payout over `MAX_PAYOUT_CENTS` (§5.2b)                                                                                                                                                                                                                                                                      |
+| `BET_LOCKED`               | 409    | cancel/edit after a leg's game locked (§14.2)                                                                                                                                                                                                                                                                         |
+| `BET_NOT_PENDING`          | 409    | cancel/edit/retry on a bet that is not `pending`                                                                                                                                                                                                                                                                      |
+| `JOB_LOCKED`               | 409    | an admin trigger while the lease is held (§9.3)                                                                                                                                                                                                                                                                       |
+| `RATE_LIMITED`             | 429    | login/signup throttle, with `Retry-After` (§10.5)                                                                                                                                                                                                                                                                     |
+| `UPSTREAM_UNAVAILABLE`     | 503    | **RESERVED — never thrown today.** An ESPN failure is a job-level event: it backs the target off and is recorded in `job_runs`, so no user request is waiting on it. The code is kept for the day a request path reads upstream directly.                                                                             |
+| `INTERNAL`                 | 500    | anything unrecognised, deliberately generic — the original message may carry SQL or a stack                                                                                                                                                                                                                           |
 
 ### 11.1 Public
 
@@ -2859,8 +2917,10 @@ rejected otherwise; legs must be spread or total (a moneyline is
 means exactly what it always did.
 
 **Same-game legs** (§5.2c): `legs` may name one game twice — once as a side pick
-(spread or moneyline) and once as a total — in a parlay or a teaser. Nothing
-else on the request changes; the bet is priced as any other multi.
+(spread or moneyline) and once as a total — in a parlay or a teaser. A teaser
+may also name BOTH sides of one spread or one total (a middle, §5.2d), so one
+game can appear up to four times in a teaser's `legs`. Nothing else on the
+request changes; the bet is priced as any other multi.
 
 The client **never** sends the price it will be charged. The server reads the current
 `game_lines` row and snapshots it. `expected` is an optional optimistic-concurrency
@@ -4777,6 +4837,23 @@ ms`. `console.error` for 5xx, `console.warn` otherwise; never a body, token or
   `netCents`, `bustCount`, `AdminUserView` gains `balanceCents`, `bustCount`,
   `AdminRefillRequest` is new, and `NOT_BUSTED` / `NO_BUST_BADGE` (409) are
   ADDED to the error vocabulary — never repurposed.
+- **`migrations/0014_bet_legs_teaser_middle.sql`** — teaser middles (§5.2d,
+  2026-11-25). `UNIQUE (bet_id, game_id, market)` becomes
+  `UNIQUE (bet_id, game_id, market, side)` and the new
+  `bet_legs_bi_middle_teaser_only` trigger takes over what the old UNIQUE did
+  for every bet that is not a teaser. `bet_legs` is a LEAF, so this is 0008's
+  one-table pattern again — copy, drop, recreate from 0013's DDL (the last
+  definer) with the one UNIQUE widened, copy back, indexes, both triggers, drop
+  the temp — and `bets`, `ledger` and every balance are never touched.
+  `tests/worker/migration-0014.spec.ts` re-runs it twice on a populated database
+  (teaser middles included) and compares every row and every `sqlite_master`
+  text; every spec that re-runs an older rebuild now composes forward through 0014. **Write cost**: the rebuild writes about 7 rows per `bet_legs` row
+  (§24.9's measured per-row cost for this table), so it is small beside 0013 —
+  count the legs first (docs/OPERATIONS.md) and keep it off a Saturday.
+  `validate.ts` gains `isMiddlePair` and a `teaser` argument on `legsConflict`
+  / `sameGameConflict`; `errors.ts` gains `DB_MESSAGES.middleTeaserOnly`. **No
+  error code, route, constant or API field is added or changed**:
+  `DUPLICATE_GAME_IN_PARLAY` now covers all three backstops.
 
 ## 17. Risks and mitigations
 
@@ -7544,7 +7621,8 @@ cannot be teased.', { field: 'legs[i]' })` — 400, before any statement is buil
   (rule 8c).
 - **Same-game**: rule 8f — one side pick (spread OR moneyline) plus one total per
   game — is exactly DraftKings' MLB same-game rule ("run line OR moneyline, plus
-  total"). `legsConflict`, `sameGameConflict`, `UNIQUE (bet_id, game_id, market)`
+  total"). `legsConflict`, `sameGameConflict`, the `bet_legs` UNIQUE
+  (`(bet_id, game_id, market)` then, `(…, side)` since 0014)
   and `bet_legs_bi_one_side_per_game` are league-blind and stay so. **No
   correlation model**: refusing run line + moneyline IS the correlation guard,
   as for football (§5.2c). A run-line + total parlay on a SHORTENED game grades

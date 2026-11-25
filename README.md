@@ -53,6 +53,9 @@ a badge goes beside your name — 💀 the first time, 🍤 the second, a photo 
   much, and you pay for it in the price. Spreads and totals only, since a
   moneyline has no line to move, and football only: MLB and basketball legs can't be teased. A push still reduces the bet instead of
   killing it, at every tier.
+- **Tease the middle**: in a teaser you can take both sides of one spread, or
+  the over and the under of one total. The two lines move apart, and the bet
+  wins when the game lands between them. It pays the normal teaser card.
 - A **Top 25 / conference filter** on the college tab, because 80 games is a
   lot of games.
 
@@ -64,7 +67,8 @@ a badge goes beside your name — 💀 the first time, 🍤 the second, a photo 
    for every league, so switching tabs never loses a pick.
 3. **Pick the shape**: one leg is a straight, more is a parlay, or flip to
    teaser and choose your points. Tap a game's total next to its spread and
-   you have a same game parlay.
+   you have a same game parlay. To tease the middle, pick one side, flip to
+   teaser, then tap the other side.
 4. **Stake and place.** The server prices the bet from its own current lines.
    If a line moved while you were thinking, you get a "line changed" nudge, not
    a silent fill.

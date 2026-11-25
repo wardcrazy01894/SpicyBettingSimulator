@@ -722,6 +722,11 @@ function isOneSidePickError(err: unknown): boolean {
   return thrownMentions(err, DB_MESSAGES.oneSidePickPerGame);
 }
 
+/** True for 0014's `bet_legs_bi_middle_teaser_only` abort. */
+function isMiddleOutsideTeaserError(err: unknown): boolean {
+  return thrownMentions(err, DB_MESSAGES.middleTeaserOnly);
+}
+
 /**
  * The league label for a bet: the legs' one league, or `'mixed'` when they span
  * both. INFORMATIONAL — it drives the stats filters and the UI, never the money.
@@ -959,11 +964,13 @@ async function runPlacementBatch(
     }
     if (
       isUniqueViolation(err, 'bet_legs.bet_id, bet_legs.game_id, bet_legs.market') ||
-      isOneSidePickError(err)
+      isOneSidePickError(err) ||
+      isMiddleOutsideTeaserError(err)
     ) {
-      // Both are 0008's backstops under `sameGameConflict`, which `validated()`
-      // already ran, so reaching here means the two disagree — still a 409, and
-      // the code keeps its name and its wire meaning: one game, too many legs.
+      // The DB backstops under `sameGameConflict` (0008's trigger, 0014's
+      // UNIQUE and its middle trigger), which `validated()` already ran, so
+      // reaching here means the two disagree — still a 409, and the code keeps
+      // its name and its wire meaning: one game, too many legs.
       throw new AppError(
         'DUPLICATE_GAME_IN_PARLAY',
         'A bet may hold one side pick and one total per game.',

@@ -191,10 +191,17 @@ the one failure mode the whole checklist has.
    8f. **A game may hold ONE side pick (spread OR moneyline) and ONE total per
    bet — same-game parlays, PLAN.md §5.2c.** The rule is `legsConflict` /
    `sameGameConflict` in `validate.ts`, run by the slip and the server alike,
-   and the schema backs it with `UNIQUE(bet_id, game_id, market)` plus the
-   `bet_legs_bi_one_side_per_game` trigger (0008). Pricing is the plain parlay
+   and the schema backs it with `UNIQUE(bet_id, game_id, market, side)` plus the
+   `bet_legs_bi_one_side_per_game` (0008) and `bet_legs_bi_middle_teaser_only`
+   (0014) triggers. Pricing is the plain parlay
    product: there is no correlation model, and refusing spread+moneyline on one
-   game IS the correlation guard. Because a game can repeat in `bet_legs`, the
+   game IS the correlation guard. **The one exception is a teaser MIDDLE
+   (PLAN.md §5.2d, 2026-11-25)**: a teaser — never a parlay or a straight — may
+   hold BOTH sides of one spread or one total on a game (`isMiddlePair`, the
+   `teaser` argument of `legsConflict` / `sameGameConflict`). It is two ordinary
+   teaser legs, priced off the card and graded leg by leg; the pair is
+   negatively correlated, so the card price needs no model. Never pass
+   `teaser = true` for a bet that is not one. Because a game can repeat in `bet_legs`, the
    placement guards compare `COUNT(*) … IN (…)` against the DISTINCT game count
    bound after the ids, never against `leg_count`. MLB (M12) needs no change
    here: DraftKings' MLB same-game rule is the same one — run line OR moneyline,
@@ -324,6 +331,11 @@ the one failure mode the whole checklist has.
      to replace `UNIQUE(bet_id, game_id)` with `UNIQUE(bet_id, game_id, market)`
      and add the `bet_legs_bi_one_side_per_game` trigger — same-game parlays,
      rule 8f and PLAN.md §5.2c.
+     `0014_bet_legs_teaser_middle.sql` (2026-11-25) REBUILDS `bet_legs` alone
+     again, 0008's pattern from 0013's DDL: the UNIQUE becomes
+     `(bet_id, game_id, market, side)` and `bet_legs_bi_middle_teaser_only`
+     is added — teaser middles, rule 8f and PLAN.md §5.2d. Every spec that
+     re-runs an older rebuild composes FORWARD through 0014.
      `0009_mlb_league.sql` (M12a, written from PLAN.md §23.3 verbatim, in the
      same PR as the code that writes `'mlb'` rows) is a children-first rebuild
      of `games`, `game_lines`, `bets`, `bet_legs`, `ledger` and
@@ -507,7 +519,8 @@ migrations/   D1 schema. 0001 is FROZEN (applied to the remote D1 2026-09-14);
               ledger alone for the deposit_refill / bust_buyout kinds (PLAN.md §4.5),
               0012 adds the poison-guard columns to ingest_targets and the
               alerts table (PLAN.md §24.4/§24.6b), 0013 rebuilds six tables
-              to admit leagues 'ncaab' and 'nba' (PLAN.md §24.9)
+              to admit leagues 'ncaab' and 'nba' (PLAN.md §24.9), 0014
+              rebuilds bet_legs for teaser middles (PLAN.md §5.2d)
 tests/unit/   node-env tests for src/shared + docs.spec.ts (the docs-drift guard);
               fixtures.ts reads docs/samples via fs
 tests/worker/ @cloudflare/vitest-plugin tests with a real D1; fixtures.ts SYNTHESISES

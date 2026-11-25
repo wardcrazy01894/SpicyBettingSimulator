@@ -37,10 +37,11 @@ const REBUILT = {
 type Rebuilt = keyof typeof REBUILT;
 const REBUILT_TABLES = Object.keys(REBUILT) as Rebuilt[];
 
-/** EVERY trigger in the database after 0001–0013 — sorted, so compared with toEqual. */
+/** EVERY trigger in the database after 0001–0014 — sorted, so compared with toEqual. */
 const TRIGGERS = [
   'bankrolls_bi_balance_guard',
   'bankrolls_bu_balance_guard',
+  'bet_legs_bi_middle_teaser_only',
   'bet_legs_bi_one_side_per_game',
   'ledger_ai_apply',
   'ledger_bd_block',
@@ -121,10 +122,15 @@ async function rerun(...prefixes: string[]): Promise<void> {
       ? migration('0012_').filter((q) => q.includes('ALTER TABLE ingest_targets'))
       : migration(p),
   );
+  // A chain that reaches 0013 goes on through 0014: 0013 recreates bet_legs
+  // from text that predates teaser middles, and 0014 (bet_legs only, PLAN.md
+  // §5.2d) is what puts them back. A chain that deliberately stops short of
+  // 0013 stops short of 0014 too.
+  if (prefixes.includes('0013_')) queries.push(...migration('0014_'));
   await env.DB.batch(queries.map((q) => env.DB.prepare(q)));
 }
 
-/** 0013 is the LAST rebuild, so it re-runs alone: nothing composes on top of it. */
+/** 0013 re-runs with only 0014 (bet_legs, teaser middles) composed on top — `rerun` adds it. */
 async function rerun0013(): Promise<void> {
   await rerun('0013_');
 }

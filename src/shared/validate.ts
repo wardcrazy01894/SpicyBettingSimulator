@@ -346,9 +346,11 @@ function validateTeaserPoints(
  *   - each leg's market/side combination is coherent
  *     (total <=> over/under; moneyline/spread <=> home/away)
  *   - no two legs occupy the same SLOT of one game (`sameGameConflict`): a game
- *     may contribute one side pick (spread OR moneyline) and one total. The DB
- *     backs it with UNIQUE(bet_id, game_id, market) and the
- *     `bet_legs_bi_one_side_per_game` trigger (migration 0008)
+ *     may contribute one side pick (spread OR moneyline) and one total — except
+ *     that a TEASER may hold both sides of one market, a middle (§5.2d). The DB
+ *     backs it with UNIQUE(bet_id, game_id, market, side), the
+ *     `bet_legs_bi_one_side_per_game` trigger (0008) and the
+ *     `bet_legs_bi_middle_teaser_only` trigger (0014)
  *   - gameIds are non-empty strings
  *
  * WHAT THIS DELIBERATELY NO LONGER CHECKS (M5b): that the legs share a league or
@@ -403,7 +405,8 @@ export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput>
     }
     // Same-game legs are legal (M11) up to one per slot; the LATER leg is the
     // one named, on `market`, because the market is what the user would change.
-    const conflict = sameGameConflict(legs, leg.value);
+    // A teaser may also hold both sides of one market — a middle (§5.2d).
+    const conflict = sameGameConflict(legs, leg.value, betType === 'teaser');
     if (conflict !== null) return bad(conflict, `legs[${String(i)}].market`);
     legs.push(leg.value);
   }
@@ -424,8 +427,9 @@ export function validatePlaceBet(body: unknown): ValidationResult<PlaceBetInput>
  * ("does this team win by enough?") asked twice and therefore correlated — and
  * a total, which asks something else. Same-game parlays (M11, PLAN.md §5.2c)
  * are priced as ordinary parlays; this slot rule is the whole correlation
- * guard, and the schema mirrors it (UNIQUE(bet_id, game_id, market) plus the
- * `bet_legs_bi_one_side_per_game` trigger).
+ * guard, and the schema mirrors it (UNIQUE(bet_id, game_id, market, side) plus
+ * the `bet_legs_bi_one_side_per_game` and `bet_legs_bi_middle_teaser_only`
+ * triggers). A teaser's middle (`isMiddlePair`) is the one exception.
  */
 export type LegSlot = 'side' | 'total';
 
@@ -451,10 +455,26 @@ export function legSlot(market: Market): LegSlot {
 }
 
 /**
- * Whether two legs cannot be in one bet together: the same game AND the same
- * slot. The identical pick counts too — it is the same slot.
+ * A MIDDLE: both sides of ONE market on one game — home and away of the
+ * spread, or the over and the under of the total. Legal in a TEASER only
+ * (PLAN.md §5.2d): the tease moves the two lines apart, so both legs win when
+ * the game lands between them. Unteased it is a guaranteed push-or-loss, which
+ * is why a parlay still refuses it. A moneyline has no line to move, so it is
+ * never half of a middle.
  */
-export function legsConflict(a: LegRef, b: LegRef): boolean {
+export function isMiddlePair(a: LegRef, b: LegRef): boolean {
+  return (
+    a.gameId === b.gameId && a.market === b.market && a.market !== 'moneyline' && a.side !== b.side
+  );
+}
+
+/**
+ * Whether two legs cannot be in one bet together: the same game AND the same
+ * slot. The identical pick counts too — it is the same slot. With `teaser`
+ * set, the one exception is a middle (`isMiddlePair`).
+ */
+export function legsConflict(a: LegRef, b: LegRef, teaser = false): boolean {
+  if (teaser && isMiddlePair(a, b)) return false;
   return a.gameId === b.gameId && legSlot(a.market) === legSlot(b.market);
 }
 
@@ -462,12 +482,19 @@ export function legsConflict(a: LegRef, b: LegRef): boolean {
  * The validation message for adding `leg` to `legs`, or `null` when it fits.
  * Two messages, because they call for different fixes: the same market twice
  * ("pick a side") and a spread beside a moneyline ("pick one of them").
+ * `teaser` admits a middle and nothing else.
  */
-export function sameGameConflict(legs: readonly LegRef[], leg: LegRef): string | null {
-  const clash = legs.find((other) => legsConflict(other, leg));
+export function sameGameConflict(
+  legs: readonly LegRef[],
+  leg: LegRef,
+  teaser = false,
+): string | null {
+  const clash = legs.find((other) => legsConflict(other, leg, teaser));
   if (clash === undefined) return null;
   if (clash.market === leg.market) {
-    return `a bet cannot take the ${leg.market} on one game twice`;
+    return clash.side === leg.side
+      ? 'a bet cannot take the same pick twice'
+      : `a bet cannot take the ${leg.market} on one game twice`;
   }
   return 'a bet cannot pair a spread with a moneyline on one game';
 }

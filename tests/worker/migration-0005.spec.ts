@@ -87,6 +87,8 @@ function rebuildStatements(): readonly string[] {
     ...pick('0011_'),
     ...pick('0012_').filter((q) => q.includes('ALTER TABLE ingest_targets')),
     ...pick('0013_'),
+    // 0014 rebuilds bet_legs once more (teaser middles, PLAN.md §5.2d).
+    ...pick('0014_'),
   ];
 }
 
