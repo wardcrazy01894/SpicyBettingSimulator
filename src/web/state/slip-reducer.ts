@@ -157,12 +157,37 @@ export function staleSlipKeys(): readonly string[] {
  *
  * Which multi it is stays the USER'S choice: adding a third leg to a teaser
  * leaves it a teaser. Only `straight` is overridden upward, because there is no
- * such thing as a two-leg straight; and everything is forced back to `straight`
- * below two legs, because there is no one-leg parlay OR teaser.
+ * such thing as a two-leg straight; and a parlay is forced back to `straight`
+ * below two legs, because there is no one-leg parlay.
+ *
+ * A ONE-LEG TEASER IS KEPT (PLAN.md §5.2d). It is not placeable either, but it
+ * is the only way INTO a two-leg middle: in any other mode a tap on the other
+ * side of a market REPLACES the pick, so the user has to be able to say
+ * "teaser" while holding one leg and then tap the other side. The preview
+ * tells them what to add; an empty slip is always `straight`.
  */
 function modeFor(legs: readonly SlipLeg[], current: SlipMode): SlipMode {
-  if (legs.length <= 1) return 'straight';
+  if (legs.length === 0) return 'straight';
+  if (legs.length === 1) return current === 'teaser' ? 'teaser' : 'straight';
   return current === 'straight' ? 'parlay' : current;
+}
+
+/**
+ * The legs a NON-teaser slip may keep: a middle (both sides of one market) is
+ * teaser-only, so leaving teaser mode keeps the LATER pick of each pair —
+ * the same "the newest tap wins" rule a tap on an occupied slot follows.
+ * Identity in, identity out when nothing is dropped.
+ */
+function withoutMiddles(legs: readonly SlipLeg[]): readonly SlipLeg[] {
+  const kept = legs.filter(
+    (leg, index) => !legs.slice(index + 1).some((later) => legsConflict(leg, later)),
+  );
+  return kept.length === legs.length ? legs : kept;
+}
+
+/** The copy shown when leaving teaser mode drops half of a middle. */
+export function middleDroppedNotice(): string {
+  return 'Both sides of one market only work in a teaser — kept your latest pick.';
 }
 
 /** Every structural write also clears the transient notice. */
@@ -200,11 +225,13 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
       // enforces). A tap on the slot a game already occupies REPLACES that
       // pick (the other side of the spread, or the moneyline for the spread);
       // a tap on the game's other slot ADDS a leg, which is a same-game parlay.
-      const others = slip.legs.filter((l) => !legsConflict(l, action.leg));
+      // IN TEASER MODE the other side of a market ADDS too: that is a middle
+      // (PLAN.md §5.2d), and `legsConflict` lets the pair through.
+      const teaser = slip.mode === 'teaser';
+      const others = slip.legs.filter((l) => !legsConflict(l, action.leg, teaser));
       // `action.maxLegs` is the server's PARLAY cap (25). A teaser stops at the
       // card's width, MAX_TEASER_LEGS (10), which the shared validator enforces
       // on submit — refusing the tap here says so before the user builds past it.
-      const teaser = slip.mode === 'teaser';
       const cap = teaser ? Math.min(action.maxLegs, MAX_TEASER_LEGS) : action.maxLegs;
       if (others.length >= cap) {
         // Full. Change NOTHING — no new arrays, no re-render churn — and say so
@@ -224,10 +251,17 @@ export function slipReducer(state: SlipState, action: SlipAction): SlipState {
 
     case 'SET_MODE': {
       const { slip } = state;
-      // A multi below two legs is not a bet anyone can place, and persisting one
-      // resurrected an unsubmittable slip on the next reload.
-      const mode = action.mode !== 'straight' && slip.legs.length < 2 ? 'straight' : action.mode;
-      return withSlip(state, { ...slip, mode });
+      // A parlay below two legs is not a bet anyone can place, and persisting
+      // one resurrected an unsubmittable slip on the next reload. A teaser is
+      // allowed at ONE leg — the way into a middle, see `modeFor`.
+      if (action.mode === 'teaser') {
+        return withSlip(state, { ...slip, mode: modeFor(slip.legs, 'teaser') });
+      }
+      // Leaving teaser mode: a middle cannot follow.
+      const legs = withoutMiddles(slip.legs);
+      const mode = action.mode === 'parlay' && legs.length < 2 ? 'straight' : action.mode;
+      const next = withSlip(state, { ...slip, legs, mode });
+      return legs === slip.legs ? next : { ...next, notice: middleDroppedNotice() };
     }
 
     case 'SET_TEASER_POINTS':
@@ -369,9 +403,9 @@ export function parseStoredSlip(raw: string | null): Slip | null {
     const leg = parseLeg(rawLeg);
     if (leg === null) return null;
     // One leg per slot per game is a slip INVARIANT (`TOGGLE_LEG` cannot
-    // produce two), so a hand-edited entry that breaks it is corrupt rather
-    // than something to submit and have the server reject.
-    if (sameGameConflict(legs, leg) !== null) return null;
+    // produce two — bar a teaser's middle), so a hand-edited entry that breaks
+    // it is corrupt rather than something to submit and have the server reject.
+    if (sameGameConflict(legs, leg, mode === 'teaser') !== null) return null;
     legs.push(leg);
   }
   // Normalise on the way IN, not just on the way out: a slip persisted as a

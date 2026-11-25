@@ -1035,7 +1035,7 @@ describe('placeBet — parlays', () => {
     await expectLedgerMatchesBalance();
   });
 
-  it('the DB backstops: the same market twice hits the UNIQUE, a spread next to a moneyline hits the trigger', async () => {
+  it('the DB backstops: the same pick twice hits the UNIQUE, the other side and a spread next to a moneyline hit the triggers', async () => {
     const alex = await register();
     await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
     const ok = await post('/api/bets', straight(g(1), 500), alex.cookie); // spread home
@@ -1051,8 +1051,14 @@ describe('placeBet — parlays', () => {
       )
         .bind(bet.id, NOW, `${id}-${String(testIndex)}`, g(1), id.length, market, side, lineTenths)
         .run();
-    // Same market, other side: UNIQUE (bet_id, game_id, market).
-    await expect(insertLeg('a', 'spread', 'away', 35)).rejects.toThrow(/UNIQUE constraint failed/);
+    // Same market, other side, on a bet that is not a teaser: 0014's trigger.
+    await expect(insertLeg('a', 'spread', 'away', 35)).rejects.toThrow(
+      /both sides of a market only in a teaser/,
+    );
+    // The same pick again: UNIQUE (bet_id, game_id, market, side).
+    await expect(insertLeg('dddd', 'spread', 'home', -35)).rejects.toThrow(
+      /UNIQUE constraint failed/,
+    );
     // The other side pick: the trigger.
     await expect(insertLeg('bb', 'moneyline', 'home', null)).rejects.toThrow(
       /one side pick per game/,
@@ -2445,6 +2451,104 @@ describe('placeBet — teasers', () => {
       ...over,
     };
   }
+
+  // Teaser middles (PLAN.md §5.2d): both sides of ONE market on one game.
+  it('a MIDDLE places: both sides of one spread as a 2-leg teaser, each line teased its own way', async () => {
+    const alex = await register();
+    // fullLine: home -3.5 / away +3.5. Teased 6: home +2.5, away +9.5.
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const res = await post(
+      '/api/bets',
+      teaser([g(1)], {
+        legs: [
+          { gameId: g(1), market: 'spread', side: 'home' },
+          { gameId: g(1), market: 'spread', side: 'away' },
+        ],
+      }),
+      alex.cookie,
+    );
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { bet } = await res.json<BetResponse>();
+    expect(bet.betType).toBe('teaser');
+    expect(bet.americanPrice).toBe(-120);
+    expect(bet.potentialPayoutCents).toBe(1833);
+    const legs = await legRows(bet.id);
+    expect(legs.map((l) => [l.side, l.line_tenths, l.original_line_tenths])).toEqual([
+      ['home', 25, -35],
+      ['away', 95, 35],
+    ]);
+    expect((await betRow(bet.id))?.leg_count).toBe(2);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('one game may carry BOTH middles (4 legs), and a middle sits beside other games', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    await seedGameWithLine(env.DB, { id: g(2), kickoffAt: NOW + 3 * HOUR });
+    const four = await post(
+      '/api/bets',
+      teaser([g(1)], {
+        legs: [
+          { gameId: g(1), market: 'spread', side: 'home' },
+          { gameId: g(1), market: 'spread', side: 'away' },
+          { gameId: g(1), market: 'total', side: 'over' },
+          { gameId: g(1), market: 'total', side: 'under' },
+        ],
+      }),
+      alex.cookie,
+    );
+    expect(four.status, await four.clone().text()).toBe(201);
+    const fourBet = (await four.json<BetResponse>()).bet;
+    expect(fourBet.americanPrice).toBe(260); // the card's 4-leg 6-point cell
+    const totals = (await legRows(fourBet.id)).filter((l) => l.market === 'total');
+    // 45.5: the over comes down to 39.5, the under goes up to 51.5.
+    expect(totals.map((l) => [l.side, l.line_tenths])).toEqual([
+      ['over', 395],
+      ['under', 515],
+    ]);
+    const mixed = await post(
+      '/api/bets',
+      teaser([g(1)], {
+        legs: [
+          { gameId: g(1), market: 'total', side: 'over' },
+          { gameId: g(1), market: 'total', side: 'under' },
+          { gameId: g(2), market: 'spread', side: 'away' },
+        ],
+      }),
+      alex.cookie,
+    );
+    expect(mixed.status, await mixed.clone().text()).toBe(201);
+    expect((await mixed.json<BetResponse>()).bet.americanPrice).toBe(150);
+    await expectLedgerMatchesBalance();
+  });
+
+  it('the same pick twice is still refused in a teaser, and a parlay still refuses a middle', async () => {
+    const alex = await register();
+    await seedGameWithLine(env.DB, { id: g(1), kickoffAt: NOW + 2 * HOUR });
+    const twice = await post(
+      '/api/bets',
+      teaser([g(1), g(1)]), // spread home, twice
+      alex.cookie,
+    );
+    expect(twice.status).toBe(400);
+    const middleAsParlay = await post(
+      '/api/bets',
+      {
+        league: 'nfl',
+        betType: 'parlay',
+        stakeCents: 500,
+        legs: [
+          { gameId: g(1), market: 'spread', side: 'home' },
+          { gameId: g(1), market: 'spread', side: 'away' },
+        ],
+      },
+      alex.cookie,
+    );
+    expect(middleAsParlay.status).toBe(400);
+    const body = await middleAsParlay.json<ApiErrorBody>();
+    expect(body.error.details).toMatchObject({ field: 'legs[1].market' });
+    expect(await betCount(alex.id)).toBe(0);
+  });
 
   it('stores the TEASED line, keeps the book line, and prices from the card', async () => {
     const alex = await register();

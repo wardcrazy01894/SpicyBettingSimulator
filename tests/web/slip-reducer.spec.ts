@@ -6,6 +6,7 @@ import {
   EMPTY_SLIP,
   emptySlipState,
   legKey,
+  middleDroppedNotice,
   parseStoredSlip,
   serialiseSlip,
   SLIP_STORAGE_KEY,
@@ -233,9 +234,99 @@ describe('slipReducer', () => {
     expect(state.slip).toMatchObject({ stakeCents: 5000, mode: 'parlay' });
   });
 
-  it('SET_MODE refuses "parlay" and "teaser" below two legs', () => {
+  it('SET_MODE refuses "parlay" below two legs and "teaser" on an empty slip', () => {
     expect(slipReducer(start(), { type: 'SET_MODE', mode: 'parlay' }).slip.mode).toBe('straight');
     expect(slipReducer(start(), { type: 'SET_MODE', mode: 'teaser' }).slip.mode).toBe('straight');
+    const one = slipReducer(start(), { type: 'TOGGLE_LEG', leg: leg('a'), maxLegs: MAX_LEGS });
+    expect(slipReducer(one, { type: 'SET_MODE', mode: 'parlay' }).slip.mode).toBe('straight');
+  });
+
+  // Teaser middles (PLAN.md §5.2d). In any other mode a tap on the other side
+  // of a market REPLACES the pick, so "teaser" has to be selectable at one leg:
+  // it is the only way into a two-leg middle.
+  it('SET_MODE accepts "teaser" at ONE leg, and the other side of that market then ADDS — a middle', () => {
+    let state = slipReducer(start(), {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'spread', 'home'),
+      maxLegs: MAX_LEGS,
+    });
+    state = slipReducer(state, { type: 'SET_MODE', mode: 'teaser' });
+    expect(state.slip.mode).toBe('teaser');
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'spread', 'away'),
+      maxLegs: MAX_LEGS,
+    });
+    expect(state.slip.legs.map((l) => l.side)).toEqual(['home', 'away']);
+    expect(state.slip.mode).toBe('teaser');
+    // Both totals too: one game, four legs.
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'total', 'over'),
+      maxLegs: MAX_LEGS,
+    });
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'total', 'under'),
+      maxLegs: MAX_LEGS,
+    });
+    expect(state.slip.legs).toHaveLength(4);
+    // A tap on a pick already held still toggles it OFF.
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'spread', 'home'),
+      maxLegs: MAX_LEGS,
+    });
+    expect(state.slip.legs.map((l) => `${l.market}:${l.side}`)).toEqual([
+      'spread:away',
+      'total:over',
+      'total:under',
+    ]);
+  });
+
+  it('leaving teaser mode drops the EARLIER half of each middle and says so', () => {
+    let state = slipReducer(start(), {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'spread', 'home'),
+      maxLegs: MAX_LEGS,
+    });
+    state = slipReducer(state, { type: 'SET_MODE', mode: 'teaser' });
+    for (const next of [leg('g1', 'spread', 'away'), leg('g2', 'total', 'over')]) {
+      state = slipReducer(state, { type: 'TOGGLE_LEG', leg: next, maxLegs: MAX_LEGS });
+    }
+    const parlay = slipReducer(state, { type: 'SET_MODE', mode: 'parlay' });
+    expect(parlay.slip.mode).toBe('parlay');
+    expect(parlay.slip.legs.map((l) => `${l.gameId}:${l.side}`)).toEqual(['g1:away', 'g2:over']);
+    expect(parlay.notice).toBe(middleDroppedNotice());
+    // A bare two-leg middle has ONE leg left, which is a straight, not a parlay.
+    const bare = slipReducer(state, {
+      type: 'REMOVE_LEG',
+      gameId: 'g2',
+      market: 'total',
+      side: 'over',
+    });
+    const toParlay = slipReducer(bare, { type: 'SET_MODE', mode: 'parlay' });
+    expect(toParlay.slip.mode).toBe('straight');
+    expect(toParlay.slip.legs.map((l) => l.side)).toEqual(['away']);
+    // No middle, no notice, and the legs array is untouched.
+    const plain = slipReducer(parlay, { type: 'SET_MODE', mode: 'teaser' });
+    const back = slipReducer(plain, { type: 'SET_MODE', mode: 'parlay' });
+    expect(back.notice).toBeNull();
+    expect(back.slip.legs).toBe(plain.slip.legs);
+  });
+
+  it('outside teaser mode the other side of a market still REPLACES', () => {
+    let state = start();
+    for (const next of [leg('g1', 'spread', 'home'), leg('g2', 'spread', 'home')]) {
+      state = slipReducer(state, { type: 'TOGGLE_LEG', leg: next, maxLegs: MAX_LEGS });
+    }
+    expect(state.slip.mode).toBe('parlay');
+    state = slipReducer(state, {
+      type: 'TOGGLE_LEG',
+      leg: leg('g1', 'spread', 'away'),
+      maxLegs: MAX_LEGS,
+    });
+    expect(state.slip.legs.map((l) => `${l.gameId}:${l.side}`)).toEqual(['g2:home', 'g1:away']);
   });
 
   it('a teaser STAYS a teaser as legs are added and removed', () => {
@@ -251,14 +342,19 @@ describe('slipReducer', () => {
     // A third leg, from the OTHER league, and it is still a teaser.
     expect(state.slip.mode).toBe('teaser');
     expect(state.slip.legs).toHaveLength(3);
-    // ...but dropping to one leg forces `straight`, which is the only placeable
-    // shape at that size.
+    // Dropping to ONE leg keeps the teaser (since teaser middles, §5.2d: a
+    // one-leg teaser is the way into a middle, and the preview says what to
+    // add)...
     state = slipReducer(state, { type: 'TOGGLE_LEG', leg: leg('b'), maxLegs: MAX_LEGS });
     state = slipReducer(state, {
       type: 'TOGGLE_LEG',
       leg: leg('c', 'spread', 'home', 'ncaaf'),
       maxLegs: MAX_LEGS,
     });
+    expect(state.slip.mode).toBe('teaser');
+    // ...and an EMPTY slip is always a straight.
+    state = slipReducer(state, { type: 'TOGGLE_LEG', leg: leg('a'), maxLegs: MAX_LEGS });
+    expect(state.slip.legs).toHaveLength(0);
     expect(state.slip.mode).toBe('straight');
   });
 
@@ -352,15 +448,27 @@ describe('persistence', () => {
     );
     expect(offCard?.teaserPointsTenths).toBe(DEFAULT_TEASER_POINTS_TENTHS);
     expect(offCard?.stakeCents).toBe(250);
-    // A ONE-leg "teaser" is not placeable and is normalised back to a straight,
-    // exactly as a one-leg "parlay" already was.
-    const single = serialiseSlip({
-      mode: 'teaser',
-      legs: [leg('g1')],
-      stakeCents: 500,
+    // A ONE-leg teaser survives a reload since teaser middles (PLAN.md §5.2d):
+    // it is the step before tapping the other side, and the preview says so.
+    // A one-leg "parlay" is still normalised back to a straight.
+    const single = (mode: 'teaser' | 'parlay') =>
+      serialiseSlip({ mode, legs: [leg('g1')], stakeCents: 500, teaserPointsTenths: 60 });
+    expect(parseStoredSlip(single('teaser'))?.mode).toBe('teaser');
+    expect(parseStoredSlip(single('parlay'))?.mode).toBe('straight');
+  });
+
+  it('round-trips a teaser MIDDLE, and rejects the same legs stored as a parlay', () => {
+    const legs = [leg('g1', 'spread', 'home'), leg('g1', 'spread', 'away')];
+    const middle = serialiseSlip({ mode: 'teaser', stakeCents: 100, legs, teaserPointsTenths: 60 });
+    expect(parseStoredSlip(middle)?.legs).toHaveLength(2);
+    expect(parseStoredSlip(middle)?.mode).toBe('teaser');
+    const asParlay = serialiseSlip({
+      mode: 'parlay',
+      stakeCents: 100,
+      legs,
       teaserPointsTenths: 60,
     });
-    expect(parseStoredSlip(single)?.mode).toBe('straight');
+    expect(parseStoredSlip(asParlay)).toBeNull();
   });
 
   it('round-trips a same-game slip, and rejects a stored slip with two legs in one slot', () => {

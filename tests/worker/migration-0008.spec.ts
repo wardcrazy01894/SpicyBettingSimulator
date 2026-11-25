@@ -97,6 +97,8 @@ function migration0008(): readonly string[] {
     ...pick('0011_'),
     ...pick('0012_').filter((q) => q.includes('ALTER TABLE ingest_targets')),
     ...pick('0013_'),
+    // 0014 rebuilds bet_legs once more (teaser middles, PLAN.md §5.2d).
+    ...pick('0014_'),
   ];
 }
 
@@ -195,7 +197,12 @@ describe('migration 0008 (bet_legs rebuild)', () => {
       )
         .bind(`rb8-${id}-${String(seq)}`, bet.id, a, market, side, line, now)
         .run();
-    await expect(insert('x', 'spread', 'away', 35)).rejects.toThrow(/UNIQUE constraint failed/);
+    // Since 0014 the other side of a held market is the middle trigger's to
+    // refuse (the bet is a straight, not a teaser); the same pick is the UNIQUE's.
+    await expect(insert('x', 'spread', 'away', 35)).rejects.toThrow(
+      /both sides of a market only in a teaser/,
+    );
+    await expect(insert('w', 'spread', 'home', -35)).rejects.toThrow(/UNIQUE constraint failed/);
     await expect(insert('y', 'moneyline', 'home', null)).rejects.toThrow(/one side pick per game/);
     await expect(insert('z', 'total', 'over', 455)).resolves.toBeDefined();
   });

@@ -188,6 +188,8 @@ export const DB_MESSAGES = {
   uniqueViolation: ['UNIQUE constraint failed'],
   /** `bet_legs_bi_one_side_per_game`, migrations/0008 (same-game parlays). */
   oneSidePickPerGame: ['bet_legs: one side pick per game'],
+  /** `bet_legs_bi_middle_teaser_only`, migrations/0014 (teaser middles). */
+  middleTeaserOnly: ['bet_legs: both sides of a market only in a teaser'],
 } as const;
 
 /** True when the thrown value (or its `cause` chain) mentions any needle. */
