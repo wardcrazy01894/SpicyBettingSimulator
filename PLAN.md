@@ -995,14 +995,17 @@ on 1000¢, §5.8); grading is `gradeLeg` per leg, which does not know the two
 share a game; the push rules are §5.8's, so a two-leg middle that lands exactly
 on one teased line has one survivor and is refunded as no action.
 
-**Why the card price is safe without a correlation model.** The two legs are
-NEGATIVELY correlated: they cannot both lose, but each one's loss is the
-other's win region, so if a single teased leg loses with probability `q` the
-middle wins with probability exactly `1 − 2q`, against `(1 − q)² = 1 − 2q + q²`
-for two independent legs at the same tier. The middle is therefore always the
-slightly WORSE bet at the same price, for every tier and every line. That is
-the opposite of the spread + moneyline pair §5.2c refuses, which is positively
-correlated and overpays.
+**Why the card price needs no correlation model.** The two legs are
+NEGATIVELY correlated: they cannot both lose, and each one's losing region
+lies inside the other's winning region. If the legs lose with probabilities
+`q1` and `q2`, the middle wins with probability exactly `1 − q1 − q2`, against
+`(1 − q1)(1 − q2) = 1 − q1 − q2 + q1·q2` for two independent legs with the same
+chances. So a middle is never a better bet than teasing those two legs on two
+different, equally predictable games at the same card price — it opens no
+edge the card did not already offer. That is the opposite of the spread +
+moneyline pair §5.2c refuses, which is positively correlated and overpays.
+This says nothing about whether a given tier is generous in the first place:
+that is the card's own pricing (`docs/teaser-odds.md`), unchanged here.
 
 **What is still refused.** A parlay or straight holding both sides of a market
 (unteased it cannot win); the identical pick twice; both moneylines (no line
