@@ -39,10 +39,11 @@ const REBUILT = {
 type Rebuilt = keyof typeof REBUILT;
 const REBUILT_TABLES = Object.keys(REBUILT) as Rebuilt[];
 
-/** EVERY trigger in the database after 0001–0009 — sorted, so compared with toEqual. */
+/** EVERY trigger in the database after 0001–0014 — sorted, so compared with toEqual. */
 const TRIGGERS = [
   'bankrolls_bi_balance_guard',
   'bankrolls_bu_balance_guard',
+  'bet_legs_bi_middle_teaser_only',
   'bet_legs_bi_one_side_per_game',
   'ledger_ai_apply',
   'ledger_bd_block',
@@ -129,6 +130,11 @@ async function rerun(...prefixes: string[]): Promise<void> {
     p === '0013_' ? [...guard, ...migration(p)] : migration(p),
   );
   if (!prefixes.includes('0013_')) queries.push(...guard);
+  // A chain composed forward through 0013 goes on through 0014 too: every
+  // file here rebuilds bet_legs from text that predates teaser middles, and
+  // 0014 (a bet_legs-only rebuild, PLAN.md §5.2d) is what puts them back. A
+  // chain that deliberately stops short of 0013 stops short of 0014 as well.
+  if (prefixes.includes('0013_')) queries.push(...migration('0014_'));
   await env.DB.batch(queries.map((q) => env.DB.prepare(q)));
 }
 

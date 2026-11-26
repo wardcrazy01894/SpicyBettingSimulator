@@ -8,6 +8,7 @@ import {
   formatLineTenths,
   isBusted,
   isCoherentMarketSide,
+  isMiddlePair,
   legsConflict,
   listWithOr,
   parseDollarsToCents,
@@ -578,14 +579,20 @@ describe('validatePlaceBet — teasers', () => {
     expect(eleven.message).toBe('a teaser has 2-10 legs');
   });
 
-  it('may tease a spread and a total on the same game, but not two spreads', () => {
+  it('may tease a spread and a total on the same game, and both sides of a spread, but not one pick twice', () => {
     expect(validatePlaceBet(teaser({ legs: [leg('g1'), leg('g1', 'total', 'over')] })).ok).toBe(
       true,
     );
+    // Both sides of one spread is a MIDDLE — legal in a teaser since §5.2d
+    // (this used to be refused; the same pick twice still is).
+    expect(
+      validatePlaceBet(teaser({ legs: [leg('g1', 'spread', 'home'), leg('g1', 'spread', 'away')] }))
+        .ok,
+    ).toBe(true);
     expect(
       fail(
         validatePlaceBet(
-          teaser({ legs: [leg('g1', 'spread', 'home'), leg('g1', 'spread', 'away')] }),
+          teaser({ legs: [leg('g1', 'spread', 'home'), leg('g1', 'spread', 'home')] }),
         ),
       ).field,
     ).toBe('legs[1].market');
@@ -623,6 +630,67 @@ describe('legsConflict / sameGameConflict (same-game parlays)', () => {
     expect(
       sameGameConflict([ref('h', 'spread'), ref('g', 'spread')], ref('g', 'moneyline')),
     ).toMatch(/spread with a moneyline/);
+  });
+
+  // Teaser middles (PLAN.md §5.2d): both sides of ONE market, in a teaser only.
+  it('isMiddlePair: both sides of a spread or a total on one game, never a moneyline', () => {
+    expect(isMiddlePair(ref('g', 'spread', 'home'), ref('g', 'spread', 'away'))).toBe(true);
+    expect(isMiddlePair(ref('g', 'total', 'over'), ref('g', 'total', 'under'))).toBe(true);
+    expect(isMiddlePair(ref('g', 'spread', 'home'), ref('g', 'spread', 'home'))).toBe(false);
+    expect(isMiddlePair(ref('g', 'spread', 'home'), ref('h', 'spread', 'away'))).toBe(false);
+    expect(isMiddlePair(ref('g', 'spread', 'home'), ref('g', 'total', 'over'))).toBe(false);
+    expect(isMiddlePair(ref('g', 'moneyline', 'home'), ref('g', 'moneyline', 'away'))).toBe(false);
+  });
+  it('a middle is no conflict in a teaser and still one everywhere else', () => {
+    const home = ref('g', 'spread', 'home');
+    const away = ref('g', 'spread', 'away');
+    expect(legsConflict(home, away, true)).toBe(false);
+    expect(legsConflict(home, away, false)).toBe(true);
+    expect(legsConflict(home, away)).toBe(true);
+    expect(sameGameConflict([home], away, true)).toBeNull();
+    expect(sameGameConflict([home], away)).toMatch(/spread on one game twice/);
+    // The identical pick is refused even in a teaser, and so is spread+moneyline.
+    expect(legsConflict(home, home, true)).toBe(true);
+    expect(sameGameConflict([home], home, true)).toMatch(/same pick twice/);
+    expect(sameGameConflict([home], ref('g', 'moneyline'), true)).toMatch(
+      /spread with a moneyline/,
+    );
+  });
+  it('validatePlaceBet admits a middle in a teaser — alone, doubled, or beside other legs', () => {
+    const body = (betType: string, legs: unknown[]) => ({
+      league: 'nfl',
+      betType,
+      stakeCents: 1000,
+      ...(betType === 'teaser' ? { teaserPoints: 60 } : {}),
+      legs,
+    });
+    const spreadMiddle = [
+      { gameId: 'g', market: 'spread', side: 'home' },
+      { gameId: 'g', market: 'spread', side: 'away' },
+    ];
+    const totalMiddle = [
+      { gameId: 'g', market: 'total', side: 'over' },
+      { gameId: 'g', market: 'total', side: 'under' },
+    ];
+    expect(validatePlaceBet(body('teaser', spreadMiddle)).ok).toBe(true);
+    expect(validatePlaceBet(body('teaser', totalMiddle)).ok).toBe(true);
+    // One game, four legs: both middles at once.
+    expect(validatePlaceBet(body('teaser', [...spreadMiddle, ...totalMiddle])).ok).toBe(true);
+    expect(
+      validatePlaceBet(
+        body('teaser', [...spreadMiddle, { gameId: 'h', market: 'total', side: 'over' }]),
+      ).ok,
+    ).toBe(true);
+    // A parlay still refuses it, on the later leg's market.
+    const parlay = validatePlaceBet(body('parlay', spreadMiddle));
+    expect(parlay.ok).toBe(false);
+    expect((parlay as { field?: string }).field).toBe('legs[1].market');
+    // A third leg on the same market is the same pick twice.
+    const tripled = validatePlaceBet(
+      body('teaser', [...spreadMiddle, { gameId: 'g', market: 'spread', side: 'home' }]),
+    );
+    expect(tripled.ok).toBe(false);
+    expect((tripled as { field?: string }).field).toBe('legs[2].market');
   });
 });
 
