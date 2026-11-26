@@ -4172,7 +4172,9 @@ PR, and `wrangler` + `@cloudflare/*` as one PR so the two toolchain constraints
 are reviewed side by side: `compatibility_date` in `wrangler.jsonc` is pinned to
 the newest date the workerd bundled with `@cloudflare/vitest-plugin` supports
 (the plugin pins its own wrangler exactly, so the top-level `wrangler`'s workerd
-is allowed to differ; today both are `1.20261023.1` and the date is 2026-10-23 —
+is allowed to differ; today both are `1.20261118.1` and the date is 2026-10-23,
+where #79 left it at workerd `1.20261023.1`: plugin bumps since then have raised
+the ceiling without moving the date —
 `tests/unit/docs.spec.ts` asserts that this sentence quotes `wrangler.jsonc`'s
 date and that the date is not past the plugin's workerd in `package-lock.json`),
 and the plugin's peerDependencies bound the `vitest` major. Moving the date is
