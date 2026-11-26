@@ -46,6 +46,11 @@ const MODE_OPTIONS: readonly { value: SlipMode; label: string }[] = [
   { value: 'teaser', label: 'Teaser' },
 ];
 
+/** How many legs the slip needs before a mode can be SELECTED (not placed). */
+function minLegsToSelect(mode: SlipMode): number {
+  return mode === 'teaser' ? 1 : 2;
+}
+
 function lineText(lineTenths: LineTenths | null, signed: boolean): string {
   return lineTenths === null ? '' : ` ${formatLineTenths(lineTenths, signed)}`;
 }
@@ -71,9 +76,13 @@ export function BetSlip(): ReactElement {
   const editing = slip.editingBetId !== null;
   const blocked = slip.preview.error !== null || slip.submitting;
   const maxStake = slip.availableCents ?? 0;
-  // Neither multi is placeable below two legs, so both are greyed until then.
+  // Neither multi is placeable below two legs, so Parlay is greyed until then.
+  // Teaser opens at ONE leg: it is the way into a middle — in teaser mode a
+  // tap on the other side of that leg's market adds it instead of swapping.
   const modeOptions = MODE_OPTIONS.map((option) =>
-    option.value !== 'straight' && slip.legs.length < 2 ? { ...option, disabled: true } : option,
+    option.value !== 'straight' && slip.legs.length < minLegsToSelect(option.value)
+      ? { ...option, disabled: true }
+      : option,
   );
   const teasing = slip.mode === 'teaser';
   // Each tier shows its price for THIS slip's leg count, straight off the
@@ -132,15 +141,17 @@ export function BetSlip(): ReactElement {
             </div>
             <p className="muted slip-hint">
               Every line moves {teaserPointsLabel(slip.teaserPointsTenths)} your way. Football
-              spreads and totals only — moneylines and MLB cannot be teased.
+              spreads and totals only — moneylines and MLB cannot be teased. Tap both sides of a
+              spread or a total to tease the middle.
             </p>
           </>
         )}
 
         {hasSameGameLegs(slip.legs) && (
           <p className="muted slip-hint">
-            Same game {teasing ? 'teaser' : 'parlay'}: a game can carry one side pick (spread or
-            moneyline) and one total, priced leg by leg like any other multi.
+            {teasing
+              ? 'Same game teaser: a game can carry a spread and a total — and both sides of either, a middle that wins when the game lands between the two teased lines. Priced off the card like any other teaser.'
+              : 'Same game parlay: a game can carry one side pick (spread or moneyline) and one total, priced leg by leg like any other multi.'}
           </p>
         )}
 

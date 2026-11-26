@@ -10,6 +10,7 @@ import {
 } from '../../src/shared/constants.js';
 import { ERROR_MESSAGES, messageForCode, messageForError } from '../../src/web/api/messages.js';
 import {
+  ONE_LEG_TEASER_HINT,
   buildPlaceBetRequest,
   computePreview,
   slipLeague,
@@ -207,6 +208,29 @@ describe('the error-message table', () => {
 describe('computePreview — teasers', () => {
   const teaserLeg = (id: string, market: Market = 'spread'): SlipLeg =>
     leg(id, -110, market, market === 'total' ? 'over' : 'home');
+
+  // Teaser middles (PLAN.md §5.2d).
+  it('a MIDDLE — both sides of one spread — previews at the 2-leg card price, and only as a teaser', () => {
+    const legs = [leg('a', -110, 'spread', 'home'), leg('a', -110, 'spread', 'away')];
+    const teaser = computePreview(slip(legs, 1000, 'teaser', 60), 100_000, TEASER_PAYOUTS);
+    expect(teaser.error).toBeNull();
+    expect(teaser.americanPrice).toBe(-120);
+    expect(teaser.payoutCents).toBe(1833);
+    const parlay = computePreview(slip(legs, 1000, 'parlay'), 100_000, TEASER_PAYOUTS);
+    expect(parlay.error).toBe('a bet cannot take the spread on one game twice');
+    expect(parlay.payoutCents).toBe(0);
+  });
+
+  it('a ONE-leg teaser is told how to finish it, including the middle', () => {
+    const preview = computePreview(
+      slip([teaserLeg('a')], 1000, 'teaser', 60),
+      100_000,
+      TEASER_PAYOUTS,
+    );
+    expect(preview.error).toBe(ONE_LEG_TEASER_HINT);
+    expect(preview.error).toMatch(/other side/);
+    expect(preview.payoutCents).toBe(0);
+  });
 
   it('prices from the card, NOT from the product of the legs', () => {
     // Three -110 legs: as a PARLAY that is 6957c on 1000c (PLAN §5.4's shape);

@@ -159,6 +159,10 @@ function displayAmerican(price: Price | null): AmericanPrice | null {
   }
 }
 
+/** Why a one-leg teaser cannot be placed yet, and the two ways to finish it. */
+export const ONE_LEG_TEASER_HINT =
+  'A teaser needs 2 legs — add another pick, or tap the other side of this one to tease the middle.';
+
 export function computePreview(
   slip: Slip,
   availableCents: Cents | null,
@@ -183,6 +187,18 @@ export function computePreview(
   const leagueError = teaserLeagueError(slip);
   if (leagueError !== null) {
     return { americanPrice, decimalOdds, toWinCents: 0, payoutCents: 0, error: leagueError };
+  }
+
+  // A one-leg teaser is a slip on its way to two legs (the reducer keeps the
+  // mode so a middle can be built), so it gets the next step, not a range.
+  if (slip.mode === 'teaser' && slip.legs.length === 1) {
+    return {
+      americanPrice,
+      decimalOdds,
+      toWinCents: 0,
+      payoutCents: 0,
+      error: ONE_LEG_TEASER_HINT,
+    };
   }
 
   const validation = validatePlaceBet(buildPlaceBetRequest(slip, false));
