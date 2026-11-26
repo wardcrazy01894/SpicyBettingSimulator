@@ -4172,9 +4172,7 @@ PR, and `wrangler` + `@cloudflare/*` as one PR so the two toolchain constraints
 are reviewed side by side: `compatibility_date` in `wrangler.jsonc` is pinned to
 the newest date the workerd bundled with `@cloudflare/vitest-plugin` supports
 (the plugin pins its own wrangler exactly, so the top-level `wrangler`'s workerd
-is allowed to differ; today both are `1.20261118.1` and the date is 2026-10-23,
-where #79 left it at workerd `1.20261023.1`: plugin bumps since then have raised
-the ceiling without moving the date —
+is allowed to differ; today both are `1.20261118.1` and the date is 2026-11-18 —
 `tests/unit/docs.spec.ts` asserts that this sentence quotes `wrangler.jsonc`'s
 date and that the date is not past the plugin's workerd in `package-lock.json`),
 and the plugin's peerDependencies bound the `vitest` major. Moving the date is
@@ -4198,7 +4196,21 @@ after #77 and then #79 moved the plugin to 1.4.7 and 1.4.9 / workerd
 flag: the capnp at both tags carries the same flag dates, and the only ones
 past 2026-10-01 are two `compatEnableDate("2026-11-17")` flags,
 `pipe_to_backward_propagation` and `cache_option_preserves_cache_control`,
-both outside the window. The
+both outside the window. 2026-10-23 → 2026-11-18 (checked 2026-11-26, after
+#106 moved the plugin to 1.8.5 / workerd 1.20261118.1) crossed FOUR enable
+dates, all 2026-11-17, and NO implied flag (the nearest, `python_workers`
+implying after 2026-11-19, is past the window and moot here anyway). The two
+above, plus two flags that workerd dated after the last reading:
+`pipe_to_backward_propagation` (pipe promises now reject with the destination's
+error — the Worker never calls `pipeTo` / `pipeThrough`),
+`cache_option_preserves_cache_control` (the fetch `cache` option no longer
+sets `cf.cacheControl` — none of the three outbound fetches, ESPN, the odds
+API and GitHub, passes `cache`), `new_module_registry` (module specifiers
+resolved as URLs, `import.meta` — the deployed bundle is one ES module with
+no `import`, `require` or `import.meta`) and `enable_request_signal`
+(`Request.signal` on the incoming request — the Worker reads no request
+signal and forwards no incoming `Request` to `fetch`; every subrequest is
+built from a URL string with its own `AbortSignal.timeout()`). The
 worker test project loads `wrangler.jsonc`, so a date the bundled workerd
 refuses fails `npm test` before it can deploy.
 The three ceilings above are `ignore`
