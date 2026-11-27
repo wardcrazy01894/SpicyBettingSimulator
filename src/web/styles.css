@@ -179,6 +179,18 @@ button:disabled {
   color: var(--text-dim);
 }
 
+/* The studio credit links to the hub but keeps reading as the plain line it
+   always was: no colour change, underline only on hover / keyboard focus. */
+.site-footer a.studio-credit {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
+}
+.site-footer a.studio-credit:hover,
+.site-footer a.studio-credit:focus-visible {
+  text-decoration: underline;
+}
+
 .boot {
   display: grid;
   place-items: center;
