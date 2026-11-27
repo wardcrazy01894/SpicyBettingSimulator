@@ -2,5 +2,11 @@
 import type { ReactElement } from 'react';
 
 export function SiteFooter(): ReactElement {
-  return <footer className="site-footer">A Spicy Al Software Solution</footer>;
+  return (
+    <footer className="site-footer">
+      <a className="studio-credit" href="https://spicyals.com" target="_blank" rel="noopener">
+        A Spicy Al Software Solution
+      </a>
+    </footer>
+  );
 }
